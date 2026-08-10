@@ -28,6 +28,13 @@ install -d -o root -g root -m 0755 /opt/careertrellis/staging/releases
 install -d -o careertrellis -g careertrellis -m 0700 /var/lib/careertrellis/staging
 install -d -o root -g root -m 0755 /etc/careertrellis
 install -d -o caddy -g caddy -m 0750 /var/log/caddy
+caddy_access_log=/var/log/caddy/careertrellis-staging-access.log
+if [[ -e ${caddy_access_log} ]]; then
+    chown caddy:caddy "${caddy_access_log}"
+    chmod 0600 "${caddy_access_log}"
+else
+    install -o caddy -g caddy -m 0600 /dev/null "${caddy_access_log}"
+fi
 
 install -o root -g root -m 0644 "${repository_root}/deploy/systemd/careertrellis-web.service" /etc/systemd/system/careertrellis-web.service
 install -o root -g root -m 0644 "${repository_root}/deploy/systemd/careertrellis-worker.service" /etc/systemd/system/careertrellis-worker.service
