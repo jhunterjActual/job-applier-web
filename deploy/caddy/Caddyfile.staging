@@ -1,0 +1,37 @@
+staging-app.jhunterj.com {
+	encode zstd gzip
+
+	# Temporary Stage 1 access gate. WorkOS authentication replaces this before beta.
+	basic_auth argon2id {
+		{$STAGING_BASIC_AUTH_USER} {$STAGING_BASIC_AUTH_HASH}
+	}
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+	}
+
+	reverse_proxy 127.0.0.1:8001 {
+		# Overwrite any client-supplied value with the root-owned origin secret.
+		header_up X-CareerTrellis-Proxy-Token {$CAREERTRELLIS_TRUSTED_PROXY_TOKEN}
+		health_uri /health/ready
+		health_interval 30s
+		health_timeout 5s
+		transport http {
+			dial_timeout 3s
+			response_header_timeout 300s
+		}
+	}
+
+	log {
+		output file /var/log/caddy/careertrellis-staging-access.log {
+			roll_size 10MiB
+			roll_keep 5
+			roll_keep_for 168h
+		}
+		format json
+	}
+}

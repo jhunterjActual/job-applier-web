@@ -15,12 +15,14 @@ import app as app_module
 import application_engagements as application_engagements_module
 import ai_providers as ai_providers_module
 import backup_restore as backup_restore_module
+import config as config_module
 import maps_providers as maps_providers_module
 import database as database_module
 import materials as materials_module
 import operations as operations_module
 import searcher as searcher_module
 import source_diagnostics as source_diagnostics_module
+import worker as worker_module
 from application_insights import build_application_insights
 from application_engagements import (
     EngagementNotFound,
@@ -974,7 +976,7 @@ class FrontendStartupTests(unittest.TestCase):
             with self.subTest(launcher=launcher):
                 source = (project_dir / launcher).read_text(encoding="utf-8")
                 self.assertIn("/api/version", source)
-                self.assertIn("20260808.23", source)
+                self.assertIn(app_module.APP_BUILD, source)
 
     def test_multilingual_assistance_is_saved_and_never_mutates_user_content(self) -> None:
         static_dir = Path(__file__).parent / "static"
@@ -1575,6 +1577,93 @@ class LocalBrowserBoundaryTests(unittest.TestCase):
         response = self.client.get("/api/version", headers={"Host": "attacker.example"})
         self.assertEqual(400, response.status_code)
         self.assertEqual("Invalid local Host header.", response.json()["detail"])
+
+    def test_staging_host_requires_the_configured_loopback_proxy_token(self) -> None:
+        token = "staging-origin-token-with-at-least-32-characters"
+        environment = {
+            "CAREERTRELLIS_ENVIRONMENT": "staging",
+            "CAREERTRELLIS_ALLOWED_HOSTS": "staging-app.jhunterj.com",
+            "CAREERTRELLIS_TRUSTED_PROXY_TOKEN": token,
+        }
+        with patch.dict(os.environ, environment, clear=False):
+            client = TestClient(app_module.app, base_url="https://staging-app.jhunterj.com")
+            try:
+                direct = client.get("/health/live")
+                trusted = client.get(
+                    "/health/live",
+                    headers={app_module.TRUSTED_PROXY_TOKEN_HEADER: token},
+                )
+                same_origin = client.post(
+                    "/api/not-a-real-route",
+                    headers={
+                        app_module.TRUSTED_PROXY_TOKEN_HEADER: token,
+                        "Origin": "https://staging-app.jhunterj.com",
+                        "Sec-Fetch-Site": "same-origin",
+                    },
+                )
+            finally:
+                client.close()
+
+        self.assertEqual(403, direct.status_code)
+        self.assertEqual("Trusted reverse proxy required.", direct.json()["detail"])
+        self.assertEqual(200, trusted.status_code)
+        self.assertEqual("DENY", trusted.headers["x-frame-options"])
+        self.assertEqual("max-age=31536000", trusted.headers["strict-transport-security"])
+        self.assertEqual(404, same_origin.status_code)
+
+    def test_shared_host_runtime_configuration_fails_closed(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "CAREERTRELLIS_ENVIRONMENT": "staging",
+                "CAREERTRELLIS_ALLOWED_HOSTS": "staging-app.jhunterj.com",
+                "CAREERTRELLIS_TRUSTED_PROXY_TOKEN": "short",
+            },
+            clear=False,
+        ):
+            with self.assertRaises(config_module.RuntimeConfigurationError):
+                config_module.validate_runtime_configuration()
+
+        with patch.dict(
+            os.environ,
+            {
+                "CAREERTRELLIS_ENVIRONMENT": "local",
+                "CAREERTRELLIS_ALLOWED_HOSTS": "staging-app.jhunterj.com",
+                "CAREERTRELLIS_TRUSTED_PROXY_TOKEN": "",
+            },
+            clear=False,
+        ):
+            with self.assertRaises(config_module.RuntimeConfigurationError):
+                config_module.validate_runtime_configuration()
+
+    def test_health_endpoints_are_minimal_and_readiness_checks_the_database(self) -> None:
+        connection = sqlite3.connect(":memory:", check_same_thread=False)
+        with patch.object(app_module, "get_db_connection", return_value=connection):
+            live = self.client.get("/health/live")
+            ready = self.client.get("/health/ready")
+
+        self.assertEqual({"status": "ok", "build": app_module.APP_BUILD}, live.json())
+        self.assertEqual({"status": "ready", "build": app_module.APP_BUILD}, ready.json())
+
+    def test_worker_entrypoint_validates_and_writes_a_privacy_safe_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_directory = Path(temp_dir)
+            with (
+                patch.object(worker_module.config, "DATA_DIR", data_directory),
+                patch.object(
+                    worker_module.config,
+                    "validate_runtime_configuration",
+                    return_value={"environment": "staging"},
+                ),
+                patch.object(worker_module.config, "get_worker_heartbeat_seconds", return_value=15),
+            ):
+                worker_module.STOP_EVENT.clear()
+                self.assertEqual(0, worker_module.run(once=True))
+
+            heartbeat = json.loads((data_directory / "worker-heartbeat.json").read_text(encoding="utf-8"))
+            self.assertEqual(app_module.APP_BUILD, heartbeat["build"])
+            self.assertEqual("idle_no_queue", heartbeat["status"])
+            self.assertNotIn("token", heartbeat)
 
     def test_cross_site_writes_are_rejected_but_local_clients_reach_routing(self) -> None:
         hostile_origin = self.client.post(

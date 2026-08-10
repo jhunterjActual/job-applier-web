@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import os
 import sqlite3
@@ -100,6 +101,7 @@ from base_resumes import (
     restore_version,
     save_base_resume,
 )
+from version import APP_BUILD
 from operations import (
     OperationCancelled,
     OperationToken,
@@ -117,12 +119,11 @@ from analytics import (
 )
 from observability import initialize_sentry, sentry_debug_enabled
 
-APP_BUILD = "20260808.23"
 MAX_RESUME_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_RESUME_DOCUMENT_UPLOAD_BYTES = 10 * 1024 * 1024
-LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 SAFE_HTTP_METHODS = {"GET", "HEAD", "OPTIONS"}
 BACKUP_RESTORE_LOCK = Lock()
+TRUSTED_PROXY_TOKEN_HEADER = "x-careertrellis-proxy-token"
 
 initialize_sentry(APP_BUILD)
 
@@ -203,7 +204,8 @@ def _cache_headquarters(cache_key: str, result: HeadquartersResult, selected_pro
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start optional analytics and stop it within a bounded shutdown budget."""
+    """Validate the runtime, start optional analytics, and stop within a bounded budget."""
+    config.validate_runtime_configuration()
     initialize_analytics(APP_BUILD)
     try:
         yield
@@ -214,8 +216,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="CareerTrellis API", lifespan=lifespan)
 
 
-def _local_authority(authority: str, scheme: str = "http") -> Optional[tuple[str, int]]:
-    """Return a normalized loopback host and port, or None for an unsafe authority."""
+def _allowed_authority(authority: str, scheme: str = "http") -> Optional[tuple[str, int]]:
+    """Return an explicitly trusted loopback or configured public host and port."""
     if not authority or any(character in authority for character in "/\\@"):
         return None
     try:
@@ -224,13 +226,16 @@ def _local_authority(authority: str, scheme: str = "http") -> Optional[tuple[str
         port = parsed.port or (443 if scheme == "https" else 80)
     except ValueError:
         return None
-    if hostname not in LOCAL_HOSTS:
+    allowed_hosts = config.LOCAL_HOSTS
+    if config.get_runtime_environment() != "local":
+        allowed_hosts |= config.get_allowed_public_hosts()
+    if hostname not in allowed_hosts:
         return None
     return hostname, port
 
 
-def _same_local_origin(value: str, request_authority: tuple[str, int], scheme: str) -> bool:
-    """Validate an Origin or Referer value against the exact local request origin."""
+def _same_origin(value: str, request_authority: tuple[str, int], scheme: str) -> bool:
+    """Validate an Origin or Referer value against the exact request origin."""
     try:
         parsed = urlsplit(value)
         hostname = (parsed.hostname or "").lower()
@@ -248,10 +253,16 @@ def _same_local_origin(value: str, request_authority: tuple[str, int], scheme: s
 
 @app.middleware("http")
 async def protect_local_browser_boundary(request: Request, call_next):
-    """Enforce the loopback-only browser trust boundary and prevent cross-site writes."""
-    request_authority = _local_authority(request.headers.get("host", ""), request.url.scheme)
+    """Enforce the configured browser boundary and prevent direct origin access."""
+    request_authority = _allowed_authority(request.headers.get("host", ""), request.url.scheme)
     if request_authority is None:
         return JSONResponse({"detail": "Invalid local Host header."}, status_code=400)
+
+    if request_authority[0] not in config.LOCAL_HOSTS:
+        expected_token = config.get_trusted_proxy_token()
+        supplied_token = request.headers.get(TRUSTED_PROXY_TOKEN_HEADER, "")
+        if not expected_token or not hmac.compare_digest(supplied_token, expected_token):
+            return JSONResponse({"detail": "Trusted reverse proxy required."}, status_code=403)
 
     if request.method.upper() not in SAFE_HTTP_METHODS:
         fetch_site = request.headers.get("sec-fetch-site", "").lower()
@@ -261,12 +272,17 @@ async def protect_local_browser_boundary(request: Request, call_next):
         origin = request.headers.get("origin")
         referer = request.headers.get("referer")
         source = origin or referer
-        if source and not _same_local_origin(source, request_authority, request.url.scheme):
-            return JSONResponse({"detail": "Request origin does not match this local app."}, status_code=403)
+        if source and not _same_origin(source, request_authority, request.url.scheme):
+            return JSONResponse({"detail": "Request origin does not match this app."}, status_code=403)
 
     response = await call_next(request)
     if request.url.path == "/" or request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["X-Frame-Options"] = "DENY"
+    if config.get_runtime_environment() != "local":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
     return response
 
 class ProfessionalEvidenceUpdate(BaseModel):
@@ -366,6 +382,32 @@ class FullBackupRequest(BaseModel):
 def get_app_version() -> dict:
     """Identify the running backend so launchers never open a stale instance."""
     return {"build": APP_BUILD}
+
+
+@app.get("/health/live", include_in_schema=False)
+def get_liveness() -> dict:
+    """Report process liveness without touching a dependency or returning secrets."""
+    return {"status": "ok", "build": APP_BUILD}
+
+
+@app.get("/health/ready", include_in_schema=False)
+def get_readiness() -> dict:
+    """Report readiness only when configuration, storage, and the database are usable."""
+    try:
+        config.validate_runtime_configuration()
+        if not all(
+            directory.is_dir() and os.access(directory, os.R_OK | os.W_OK)
+            for directory in (config.DATA_DIR, config.UPLOAD_DIR, config.OUTPUT_DIR)
+        ):
+            raise RuntimeError("Runtime storage is not accessible.")
+        connection = get_db_connection()
+        try:
+            connection.execute("SELECT 1").fetchone()
+        finally:
+            connection.close()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Service is not ready.") from exc
+    return {"status": "ready", "build": APP_BUILD}
 
 
 @app.get("/sentry-debug", include_in_schema=False)
