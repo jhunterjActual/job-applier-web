@@ -69,6 +69,10 @@ The application features a **FastAPI backend** that doubles as a static file ser
    - Supports skip navigation, keyboard-operated workspace and material tabs, visible focus, focus-trapped dialogs with opener restoration, screen-reader status announcements, labeled tables, and reduced-motion preferences.
    - Reflows the fixed desktop navigation, forms, filters, action groups, and dialogs for narrow screens and high zoom. Wide result tables remain keyboard-focusable horizontal regions so their columns are not silently removed.
 
+13. **Multilingual Assistance**:
+   - Saves an English or Spanish interface preference and translates the principal profile, search, job-action, validation, and generated-material review guidance.
+   - Changes guidance and controls only. CareerTrellis never silently translates a saved resume, cover letter, job posting, or other user-entered factual content; review the language and claims in generated materials before use.
+
 ---
 
 ## 🛠️ Architecture
@@ -142,6 +146,7 @@ If you prefer setting up manually or are on macOS/Linux:
 
 1. **Set up Profile**:
    - Go to the **Profile & Resume** tab.
+   - Choose **English** or **Spanish / Español** under **Interface language**. The selection is saved with the local profile and does not translate resume or job content.
    - Enter your contact details and personal links, select **Google Gemini** or **OpenAI**, choose a compatible model, and paste that provider's API key.
    - New profiles use **OpenStreetMap Nominatim** for headquarters lookups by default. You can select **Google Places** instead with a saved Places API key.
    - Each key field shows a privacy-safe **Saved** or **Not saved** status. Saved keys are never displayed; leave the field blank to keep the current key or enter a new key to replace it.

@@ -320,7 +320,7 @@ class MapsProviderAbstractionTests(unittest.TestCase):
             self.assertFalse(maps_provider_ready({"maps_provider": "google", "google_maps_api_key": ""}))
             self.assertTrue(maps_provider_ready({"maps_provider": "openstreetmap", "google_maps_api_key": ""}))
 
-    def test_new_profile_defaults_select_openstreetmap(self) -> None:
+    def test_new_profile_defaults_select_openstreetmap_and_english(self) -> None:
         self.assertEqual("openstreetmap", maps_providers_module.normalize_maps_provider(None))
         profile = app_module.ProfileUpdate(
             name="Candidate",
@@ -332,8 +332,10 @@ class MapsProviderAbstractionTests(unittest.TestCase):
             base_resume_text="Resume",
         )
         self.assertEqual("openstreetmap", profile.maps_provider)
+        self.assertEqual("en", profile.interface_language)
         html = (Path(__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('<option value="openstreetmap" selected>', html)
+        self.assertIn('<option value="en" data-i18n="profile.language.english">', html)
 
     def test_headquarters_fallback_uses_selected_ai_provider_and_requires_verification(self) -> None:
         with (
@@ -905,7 +907,7 @@ class FrontendStartupTests(unittest.TestCase):
             "p-openai-key-status", "p-openai-key-help", "test-ai-provider-btn",
             "p-maps-provider", "test-maps-provider-btn", "maps-provider-test-status",
             "google-maps-key-group", "openstreetmap-policy",
-            "p-prefer-us-headquarters",
+            "p-prefer-us-headquarters", "p-interface-language",
             "p-gemini-key-status", "p-gemini-key-help",
             "p-google-key-status", "p-google-key-help",
             "startup-activity-title", "startup-activity-description",
@@ -962,8 +964,9 @@ class FrontendStartupTests(unittest.TestCase):
             with self.subTest(element_id=element_id):
                 self.assertIn(f'id="{element_id}"', html_source)
         self.assertIn("Checking AI Provider", html_source)
-        self.assertIn("app.js?v=20260808-22", html_source)
-        self.assertIn("index.css?v=20260808-22", html_source)
+        self.assertIn("i18n.js?v=20260808-23", html_source)
+        self.assertIn("app.js?v=20260808-23", html_source)
+        self.assertIn("index.css?v=20260808-23", html_source)
 
     def test_launchers_require_the_current_backend_build(self) -> None:
         project_dir = Path(__file__).parent.parent
@@ -971,7 +974,33 @@ class FrontendStartupTests(unittest.TestCase):
             with self.subTest(launcher=launcher):
                 source = (project_dir / launcher).read_text(encoding="utf-8")
                 self.assertIn("/api/version", source)
-                self.assertIn("20260808.22", source)
+                self.assertIn("20260808.23", source)
+
+    def test_multilingual_assistance_is_saved_and_never_mutates_user_content(self) -> None:
+        static_dir = Path(__file__).parent / "static"
+        html_source = (static_dir / "index.html").read_text(encoding="utf-8")
+        script_source = (static_dir / "app.js").read_text(encoding="utf-8")
+        i18n_source = (static_dir / "i18n.js").read_text(encoding="utf-8")
+
+        self.assertLess(html_source.index("/static/i18n.js"), html_source.index("/static/app.js"))
+        self.assertIn('data-i18n="profile.language.help"', html_source)
+        self.assertIn('data-i18n="materials.boundary"', html_source)
+        self.assertIn('interface_language: i18n.getLanguage()', script_source)
+        self.assertIn('setInterfaceLanguage(profile.interface_language || "en")', script_source)
+        self.assertIn('SUPPORTED_LANGUAGES = new Set(["en", "es"])', i18n_source)
+        self.assertIn('"materials.step.review": "Revise y guarde cualquier cambio a continuación."', i18n_source)
+        self.assertIn("document.documentElement.lang = currentLanguage", i18n_source)
+        self.assertNotIn("innerHTML", i18n_source)
+        self.assertNotIn("tailoredResumeDisplay", i18n_source)
+        self.assertNotIn("coverLetterDisplay", i18n_source)
+
+    def test_profile_rejects_an_unsupported_interface_language(self) -> None:
+        with self.assertRaises(ValueError):
+            app_module.ProfileUpdate(
+                name="Candidate", email="candidate@example.test", phone="",
+                github="", linkedin="", website="", base_resume_text="Resume",
+                interface_language="fr",
+            )
 
     def test_workspace_accessibility_and_mobile_reflow_contract(self) -> None:
         static_dir = Path(__file__).parent / "static"
@@ -1038,12 +1067,14 @@ class FrontendStartupTests(unittest.TestCase):
         app_source = (project_dir / "backend" / "app.py").read_text(encoding="utf-8")
         html_source = (project_dir / "backend" / "static" / "index.html").read_text(encoding="utf-8")
         script_source = (project_dir / "backend" / "static" / "app.js").read_text(encoding="utf-8")
+        i18n_source = (project_dir / "backend" / "static" / "i18n.js").read_text(encoding="utf-8")
         self.assertFalse((project_dir / "backend" / "applier.py").exists())
         self.assertNotIn('@app.post("/api/jobs/{job_id}/apply")', app_source)
         self.assertIn('@app.get("/api/jobs/{job_id}/apply-manually")', app_source)
         self.assertNotIn("Submit Application Now", html_source)
         self.assertNotIn("triggerApplicationSubmission", script_source)
-        self.assertIn("Apply Manually", script_source)
+        self.assertIn('t("job.action.apply")', script_source)
+        self.assertIn('"job.action.apply": "Apply Manually"', i18n_source)
 
     def test_base_resume_controls_are_bound_to_versioned_workflows(self) -> None:
         app_source = (Path(__file__).parent / "app.py").read_text(encoding="utf-8")
@@ -1236,10 +1267,13 @@ class FrontendStartupTests(unittest.TestCase):
         static_dir = Path(__file__).parent / "static"
         html_source = (static_dir / "index.html").read_text(encoding="utf-8")
         script_source = (static_dir / "app.js").read_text(encoding="utf-8")
+        i18n_source = (static_dir / "i18n.js").read_text(encoding="utf-8")
         self.assertNotIn("Fill in your profile details to start.", html_source)
         self.assertIn("updateStartupActivity(profile)", script_source)
-        self.assertIn('title.textContent = "Profile Loaded"', script_source)
-        self.assertIn('title.textContent = "Profile Setup Needed"', script_source)
+        self.assertIn('title.textContent = t("profile.loaded")', script_source)
+        self.assertIn('title.textContent = t("profile.setup")', script_source)
+        self.assertIn('"profile.loaded": "Profile Loaded"', i18n_source)
+        self.assertIn('"profile.setup": "Profile Setup Needed"', i18n_source)
 
 
 class DependencyLockTests(unittest.TestCase):
@@ -1645,7 +1679,8 @@ class UserDataExportTests(unittest.TestCase):
             CREATE TABLE profile (
                 id INTEGER PRIMARY KEY, name TEXT, email TEXT, base_resume_text TEXT,
                 suggested_keywords TEXT, ai_provider TEXT, ai_model TEXT, maps_provider TEXT,
-                prefer_us_headquarters INTEGER, resume_mode TEXT, active_base_resume_id INTEGER,
+                prefer_us_headquarters INTEGER, interface_language TEXT, resume_mode TEXT,
+                active_base_resume_id INTEGER,
                 gemini_api_key TEXT, openai_api_key TEXT, google_maps_api_key TEXT
             );
             CREATE TABLE base_resumes (
@@ -1692,7 +1727,7 @@ class UserDataExportTests(unittest.TestCase):
             );
             INSERT INTO profile VALUES (
                 1, 'Export Candidate', 'candidate@example.test', 'Legacy resume',
-                'analyst', 'openai', 'gpt-5-mini', 'openstreetmap', 1,
+                'analyst', 'openai', 'gpt-5-mini', 'openstreetmap', 1, 'es',
                 'general_professional', 10, 'gemini-secret', 'openai-secret', 'maps-secret'
             );
             INSERT INTO base_resumes VALUES (
@@ -1761,6 +1796,7 @@ class UserDataExportTests(unittest.TestCase):
         self.assertEqual(EXPORT_SCHEMA_VERSION, payload["schema_version"])
         self.assertEqual(10, payload["profile"]["active_base_resume_id"])
         self.assertTrue(payload["profile"]["prefer_us_headquarters"])
+        self.assertEqual("es", payload["profile"]["interface_language"])
         self.assertEqual({"skills": "Analysis"}, payload["base_resumes"][0]["professional_evidence"])
         self.assertTrue(payload["applications"][0]["submission_evidence"]["confirmed_by_user"])
         self.assertEqual({"rejected": 7}, payload["source_diagnostics"][0]["counters"])
@@ -1794,7 +1830,7 @@ class UserDataExportTests(unittest.TestCase):
             response.headers["content-disposition"],
             r'^attachment; filename="career-trellis-user-data-\d{4}-\d{2}-\d{2}\.json"$',
         )
-        self.assertIn('\n  "schema_version": 2,', response.text)
+        self.assertIn('\n  "schema_version": 3,', response.text)
 
 
 class EncryptedFullBackupTests(unittest.TestCase):
@@ -2483,7 +2519,7 @@ class BaseResumeVersionTests(unittest.TestCase):
 
 
 class HeadquartersPreferenceTests(unittest.TestCase):
-    def test_profile_save_persists_disabled_us_preference(self) -> None:
+    def test_profile_save_persists_us_and_language_preferences(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "profile.db"
             connection = sqlite3.connect(db_path)
@@ -2494,6 +2530,7 @@ class HeadquartersPreferenceTests(unittest.TestCase):
                     resume_mode TEXT, ai_provider TEXT, ai_model TEXT,
                     maps_provider TEXT,
                     prefer_us_headquarters INTEGER,
+                    interface_language TEXT,
                     suggested_keywords TEXT, active_base_resume_id INTEGER
                 );
                 CREATE TABLE base_resumes (
@@ -2506,7 +2543,7 @@ class HeadquartersPreferenceTests(unittest.TestCase):
                     version_number INTEGER, name TEXT, resume_mode TEXT,
                     content TEXT, evidence_json TEXT NOT NULL DEFAULT '{}', created_at TEXT
                 );
-                INSERT INTO profile VALUES (1, '', '', '', '', '', '', '', '', 'gemini', 'gemini-2.5-flash', 'google', 1, '', NULL);
+                INSERT INTO profile VALUES (1, '', '', '', '', '', '', '', '', 'gemini', 'gemini-2.5-flash', 'google', 1, 'en', '', NULL);
             """)
             connection.close()
 
@@ -2519,16 +2556,17 @@ class HeadquartersPreferenceTests(unittest.TestCase):
                 name="Candidate", email="candidate@example.test", phone="",
                 github="", linkedin="", website="", base_resume_text="Resume",
                 resume_mode="general_professional", prefer_us_headquarters=False,
+                interface_language="es",
             )
             with patch.object(app_module, "get_db_connection", side_effect=open_test_database):
                 app_module.update_profile(profile)
 
             connection = sqlite3.connect(db_path)
             stored = connection.execute(
-                "SELECT prefer_us_headquarters FROM profile WHERE id = 1"
-            ).fetchone()[0]
+                "SELECT prefer_us_headquarters, interface_language FROM profile WHERE id = 1"
+            ).fetchone()
             connection.close()
-            self.assertEqual(0, stored)
+            self.assertEqual((0, "es"), stored)
 
     def test_us_preference_changes_places_query(self) -> None:
         self.assertEqual("Example Co United States headquarters", _headquarters_query("Example Co", True))
@@ -3347,6 +3385,7 @@ class SourceDiagnosticHistoryTests(unittest.TestCase):
             base_resume_columns = {row[1] for row in connection.execute("PRAGMA table_info(base_resumes)")}
             base_resume_version_columns = {row[1] for row in connection.execute("PRAGMA table_info(base_resume_versions)")}
             maps_provider = connection.execute("SELECT maps_provider FROM profile WHERE id = 1").fetchone()[0]
+            interface_language = connection.execute("SELECT interface_language FROM profile WHERE id = 1").fetchone()[0]
             connection.close()
         self.assertIn("source_diagnostics", tables)
         self.assertIn("headquarters_cache", tables)
@@ -3358,10 +3397,12 @@ class SourceDiagnosticHistoryTests(unittest.TestCase):
         self.assertIn("idx_application_engagements_job", indexes)
         self.assertIn("idx_application_engagements_next_action", indexes)
         self.assertIn("maps_provider", profile_columns)
+        self.assertIn("interface_language", profile_columns)
         self.assertIn("active_base_resume_id", profile_columns)
         self.assertIn("evidence_json", base_resume_columns)
         self.assertIn("evidence_json", base_resume_version_columns)
         self.assertEqual("openstreetmap", maps_provider)
+        self.assertEqual("en", interface_language)
         self.assertTrue({
             "headquarters_source", "headquarters_attribution", "base_resume_id",
             "base_resume_name", "base_resume_version",
@@ -3437,6 +3478,7 @@ class LifecycleSchemaTests(unittest.TestCase):
         profile_columns = {row[1] for row in connection.execute("PRAGMA table_info(profile)")}
         self.assertIn("resume_mode", profile_columns)
         self.assertIn("prefer_us_headquarters", profile_columns)
+        self.assertIn("interface_language", profile_columns)
         self.assertIn("active_base_resume_id", profile_columns)
         self.assertTrue({"ai_provider", "ai_model", "openai_api_key", "maps_provider"}.issubset(profile_columns))
         self.assertEqual(1, connection.execute("PRAGMA foreign_keys").fetchone()[0])

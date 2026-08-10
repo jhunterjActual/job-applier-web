@@ -45,6 +45,7 @@ def init_db() -> None:
         ai_model TEXT NOT NULL DEFAULT 'gemini-2.5-flash',
         maps_provider TEXT NOT NULL DEFAULT 'openstreetmap',
         prefer_us_headquarters INTEGER NOT NULL DEFAULT 1,
+        interface_language TEXT NOT NULL DEFAULT 'en',
         active_base_resume_id INTEGER
     )
     """)
@@ -240,6 +241,7 @@ def init_db() -> None:
     _add_column_if_missing(cursor, "profile", "maps_provider", "TEXT NOT NULL DEFAULT 'google'")
     _add_column_if_missing(cursor, "profile", "resume_mode", "TEXT DEFAULT 'general_professional'")
     _add_column_if_missing(cursor, "profile", "prefer_us_headquarters", "INTEGER NOT NULL DEFAULT 1")
+    _add_column_if_missing(cursor, "profile", "interface_language", "TEXT NOT NULL DEFAULT 'en'")
     _add_column_if_missing(cursor, "profile", "active_base_resume_id", "INTEGER")
     _add_column_if_missing(cursor, "base_resumes", "evidence_json", "TEXT NOT NULL DEFAULT '{}'")
     _add_column_if_missing(cursor, "base_resume_versions", "evidence_json", "TEXT NOT NULL DEFAULT '{}'")

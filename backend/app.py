@@ -117,7 +117,7 @@ from analytics import (
 )
 from observability import initialize_sentry, sentry_debug_enabled
 
-APP_BUILD = "20260808.22"
+APP_BUILD = "20260808.23"
 MAX_RESUME_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_RESUME_DOCUMENT_UPLOAD_BYTES = 10 * 1024 * 1024
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -294,6 +294,7 @@ class ProfileUpdate(BaseModel):
     ai_model: str = Field(default="gemini-2.5-flash", min_length=1, max_length=120, pattern=r"^[A-Za-z0-9._:/-]+$")
     maps_provider: Literal["google", "openstreetmap"] = "openstreetmap"
     prefer_us_headquarters: bool = True
+    interface_language: Literal["en", "es"] = "en"
 
 
 class ProfileSecretsUpdate(BaseModel):
@@ -398,6 +399,9 @@ def get_profile() -> dict:
         result["ai_provider"] = normalize_provider(result.get("ai_provider"))
         result["ai_model"] = str(result.get("ai_model") or default_model(result["ai_provider"]))
         result["maps_provider"] = normalize_maps_provider(result.get("maps_provider"))
+        result["interface_language"] = (
+            result.get("interface_language") if result.get("interface_language") in {"en", "es"} else "en"
+        )
         result["maps_provider_ready"] = maps_provider_ready(row, result["maps_provider"])
         return result
     return {}
@@ -436,13 +440,14 @@ def update_profile(profile: ProfileUpdate) -> dict:
         UPDATE profile
         SET name = ?, email = ?, phone = ?, github = ?, linkedin = ?, website = ?,
             base_resume_text = ?, resume_mode = ?, ai_provider = ?, ai_model = ?,
-            maps_provider = ?, prefer_us_headquarters = ?, suggested_keywords = ''
+            maps_provider = ?, prefer_us_headquarters = ?, interface_language = ?,
+            suggested_keywords = ''
         WHERE id = 1
         """, (
             profile.name, profile.email, profile.phone, profile.github, profile.linkedin,
             profile.website, profile.base_resume_text.strip(), profile.resume_mode,
             profile.ai_provider, profile.ai_model, profile.maps_provider,
-            int(profile.prefer_us_headquarters),
+            int(profile.prefer_us_headquarters), profile.interface_language,
         ))
         conn.commit()
     except BaseResumeNotFound as exc:

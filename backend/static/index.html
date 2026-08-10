@@ -19,7 +19,7 @@
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/index.css?v=20260808-22">
+    <link rel="stylesheet" href="/static/index.css?v=20260808-23">
 </head>
 <body>
     <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -35,19 +35,19 @@
             <nav class="nav-menu" role="tablist" aria-label="Workspace sections" aria-orientation="vertical">
                 <button type="button" class="nav-btn active" id="nav-dashboard" data-tab="dashboard" role="tab" aria-selected="true" aria-controls="tab-dashboard" tabindex="0">
                     <i class="fa-solid fa-chart-line" aria-hidden="true"></i>
-                    <span>Dashboard</span>
+                    <span data-i18n="nav.dashboard">Dashboard</span>
                 </button>
                 <button type="button" class="nav-btn" id="nav-profile" data-tab="profile" role="tab" aria-selected="false" aria-controls="tab-profile" tabindex="-1">
                     <i class="fa-solid fa-user-tie" aria-hidden="true"></i>
-                    <span>Profile & Resume</span>
+                    <span data-i18n="nav.profile">Profile & Resume</span>
                 </button>
                 <button type="button" class="nav-btn" id="nav-search" data-tab="search" role="tab" aria-selected="false" aria-controls="tab-search" tabindex="-1">
                     <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
-                    <span>Search & Match</span>
+                    <span data-i18n="nav.search">Search & Match</span>
                 </button>
                 <button type="button" class="nav-btn" id="nav-logs" data-tab="logs" role="tab" aria-selected="false" aria-controls="tab-logs" tabindex="-1">
                     <i class="fa-solid fa-clipboard-list" aria-hidden="true"></i>
-                    <span>Application Logs</span>
+                    <span data-i18n="nav.logs">Application Logs</span>
                 </button>
             </nav>
 
@@ -199,36 +199,44 @@
                     <!-- Left: Contact Details -->
                     <div class="card">
                         <div class="card-header">
-                            <h2>Candidate Information</h2>
+                            <h2 data-i18n="profile.heading">Candidate Information</h2>
                         </div>
                         <div class="card-body">
                             <form id="profile-form" class="form-grid">
                                 <div class="form-group full-width">
-                                    <label for="p-name">Full Name</label>
+                                    <label for="p-interface-language" data-i18n="profile.language.label">Interface language</label>
+                                    <select id="p-interface-language">
+                                        <option value="en" data-i18n="profile.language.english">English</option>
+                                        <option value="es" data-i18n="profile.language.spanish">Spanish / Español</option>
+                                    </select>
+                                    <small class="form-help language-content-boundary" data-i18n="profile.language.help">Changes CareerTrellis guidance and controls only. Your resume, cover letter, job details, and other factual content are never translated automatically.</small>
+                                </div>
+                                <div class="form-group full-width">
+                                    <label for="p-name" data-i18n="profile.name">Full Name</label>
                                     <input type="text" id="p-name" placeholder="John Doe" required>
                                 </div>
                                 <div class="form-group">
-                                    <label for="p-email">Email Address</label>
+                                    <label for="p-email" data-i18n="profile.email">Email Address</label>
                                     <input type="email" id="p-email" placeholder="john.doe@example.com" required>
                                 </div>
                                 <div class="form-group">
-                                    <label for="p-phone">Phone Number</label>
+                                    <label for="p-phone" data-i18n="profile.phone">Phone Number</label>
                                     <input type="tel" id="p-phone" placeholder="+1 (555) 123-4567">
                                 </div>
                                 <div class="form-group">
-                                    <label for="p-github">GitHub Profile URL</label>
+                                    <label for="p-github" data-i18n="profile.github">GitHub Profile URL</label>
                                     <input type="url" id="p-github" placeholder="https://github.com/johndoe">
                                 </div>
                                 <div class="form-group">
-                                    <label for="p-linkedin">LinkedIn Profile URL</label>
+                                    <label for="p-linkedin" data-i18n="profile.linkedin">LinkedIn Profile URL</label>
                                     <input type="url" id="p-linkedin" placeholder="https://linkedin.com/in/johndoe">
                                 </div>
                                 <div class="form-group full-width">
-                                    <label for="p-website">Portfolio / Personal Website</label>
+                                    <label for="p-website" data-i18n="profile.website">Portfolio / Personal Website</label>
                                     <input type="url" id="p-website" placeholder="https://johndoe.com">
                                 </div>
                                 <div class="form-group full-width">
-                                    <label for="p-resume-mode">Resume mode</label>
+                                    <label for="p-resume-mode" data-i18n="profile.resume_mode">Resume mode</label>
                                     <select id="p-resume-mode">
                                         <option value="general_professional">General professional</option>
                                         <option value="it">IT / Technical</option>
@@ -243,21 +251,21 @@
                                     </select>
                                 </div>
                                 <div class="form-group full-width">
-                                    <label for="p-ai-provider">AI provider</label>
+                                    <label for="p-ai-provider" data-i18n="profile.ai_provider">AI provider</label>
                                     <select id="p-ai-provider">
                                         <option value="gemini">Google Gemini</option>
                                         <option value="openai">OpenAI</option>
                                     </select>
-                                    <small class="form-help">Matching, keyword suggestions, and material tailoring use the selected provider.</small>
+                                    <small class="form-help" data-i18n="profile.ai_provider.help">Matching, keyword suggestions, and material tailoring use the selected provider.</small>
                                 </div>
                                 <div class="form-group full-width">
-                                    <label for="p-ai-model">AI model</label>
+                                    <label for="p-ai-model" data-i18n="profile.ai_model">AI model</label>
                                     <input type="text" id="p-ai-model" list="ai-model-suggestions" maxlength="120" autocomplete="off" spellcheck="false" required pattern="[A-Za-z0-9._:/-]+" placeholder="gemini-2.5-flash">
                                     <datalist id="ai-model-suggestions">
                                         <option value="gemini-2.5-flash"></option>
                                         <option value="gpt-5-mini"></option>
                                     </datalist>
-                                    <small class="form-help">Use a model available to your key that supports structured JSON output.</small>
+                                    <small class="form-help" data-i18n="profile.ai_model.help">Use a model available to your key that supports structured JSON output.</small>
                                 </div>
                                 <div class="form-group full-width">
                                     <label for="p-apikey">Google Gemini API Key</label>
@@ -326,7 +334,7 @@
                                         <i class="fa-solid fa-map-location-dot"></i> Test Saved Maps Provider
                                     </button>
                                     <button type="submit" class="btn btn-primary" id="save-profile-btn">
-                                        <i class="fa-solid fa-floppy-disk"></i> Save Settings
+                                        <i class="fa-solid fa-floppy-disk"></i> <span data-i18n="profile.save">Save Settings</span>
                                     </button>
                                 </div>
                                 <p class="form-help full-width provider-test-status" id="ai-provider-test-status" role="status" aria-live="polite">Save provider, model, and key changes before testing.</p>
@@ -339,7 +347,7 @@
                     <div class="card flex-column">
                         <div class="card-header resume-card-header">
                             <div class="resume-card-title">
-                                <h2>Base Resumes</h2>
+                                <h2 data-i18n="profile.resumes">Base Resumes</h2>
                                 <select id="base-resume-select" aria-label="Selected base resume">
                                     <option value="">Unsaved resume</option>
                                 </select>
@@ -365,16 +373,16 @@
                         </div>
                         <div class="card-body flex-grow flex-column">
                             <div class="form-group margin-bottom-md">
-                                <label for="p-resume-name">Resume name</label>
-                                <input type="text" id="p-resume-name" maxlength="120" placeholder="e.g. Data Leadership" required>
+                                <label for="p-resume-name" data-i18n="profile.resume_name">Resume name</label>
+                                <input type="text" id="p-resume-name" maxlength="120" placeholder="e.g. Data Leadership" data-i18n-placeholder="profile.resume_name.placeholder" required>
                             </div>
                             <details class="professional-evidence-editor margin-bottom-md" id="professional-evidence-editor">
                                 <summary>
-                                    <span><i class="fa-solid fa-layer-group" aria-hidden="true"></i> Role-specific professional evidence</span>
+                                    <span><i class="fa-solid fa-layer-group" aria-hidden="true"></i> <span data-i18n="profile.evidence">Role-specific professional evidence</span></span>
                                     <span class="cleanup-count-badge" id="professional-evidence-count" hidden>0 sections</span>
                                 </summary>
                                 <div class="professional-evidence-body">
-                                    <p class="form-help" id="evidence-mode-guidance">Add factual evidence that the selected resume mode should emphasize. Enter one item per line.</p>
+                                    <p class="form-help" id="evidence-mode-guidance" data-i18n="profile.evidence.help">Add factual evidence that the selected resume mode should emphasize. Enter one item per line.</p>
                                     <div class="professional-evidence-grid">
                                         <div class="form-group">
                                             <label for="p-evidence-skills">Skills</label>
@@ -404,7 +412,8 @@
                                     <small class="form-help">Evidence is saved and versioned with this base resume. When you click Tailor Materials, entered evidence is sent to your selected AI provider; irrelevant entries may be omitted, but missing details or credentials must not be invented.</small>
                                 </div>
                             </details>
-                            <textarea id="p-resume" class="resume-textarea flex-grow" placeholder="Paste your resume content in Plain Text or Markdown format here..." required></textarea>
+                            <textarea id="p-resume" class="resume-textarea flex-grow" placeholder="Paste your resume content in Plain Text or Markdown format here..." data-i18n-placeholder="profile.resume.placeholder" required></textarea>
+                            <p class="form-help language-content-boundary"><i class="fa-solid fa-language" aria-hidden="true"></i> <span data-i18n="profile.content_boundary">CareerTrellis translates interface guidance only. Review generated materials in the language you intend to use; factual resume content is preserved exactly unless you edit it or explicitly ask your AI provider to rewrite it.</span></p>
                             <label class="resume-ocr-consent margin-top-sm" for="resume-ocr-consent">
                                 <input type="checkbox" id="resume-ocr-consent">
                                 Allow my selected AI provider to OCR scanned PDF pages
@@ -445,9 +454,9 @@
                     <div class="card-body">
                         <div class="saved-search-controls margin-bottom-md">
                             <div class="form-group saved-search-picker">
-                                <label for="saved-search-select">Saved searches</label>
+                                <label for="saved-search-select" data-i18n="search.saved">Saved searches</label>
                                 <select id="saved-search-select">
-                                    <option value="">Select a saved search</option>
+                                    <option value="" data-i18n="search.saved.select">Select a saved search</option>
                                 </select>
                             </div>
                             <button type="button" class="btn btn-secondary btn-sm" id="delete-saved-search-btn" disabled>
@@ -456,26 +465,26 @@
                         </div>
                         <form id="search-form" class="search-bar-grid">
                             <div class="form-group">
-                                <label for="s-keywords">Job Title / Keywords</label>
-                                <input type="text" id="s-keywords" placeholder="e.g. Software Engineer (leave blank to auto-suggest)">
+                                <label for="s-keywords" data-i18n="search.keywords">Job Title / Keywords</label>
+                                <input type="text" id="s-keywords" placeholder="e.g. Software Engineer (leave blank to auto-suggest)" data-i18n-placeholder="search.keywords.placeholder">
                             </div>
                             <div class="form-group">
-                                <label for="s-location">Location (Optional)</label>
-                                <input type="text" id="s-location" placeholder="e.g. San Francisco, CA; New York, NY; Remote (separated by semicolons)">
+                                <label for="s-location" data-i18n="search.location">Location (Optional)</label>
+                                <input type="text" id="s-location" placeholder="e.g. San Francisco, CA; New York, NY; Remote (separated by semicolons)" data-i18n-placeholder="search.location.placeholder">
                             </div>
                             <div class="form-actions align-end">
                                 <button type="submit" class="btn btn-primary btn-block" id="search-jobs-btn">
-                                    <i class="fa-solid fa-paper-plane"></i> Search & Analyze
+                                    <i class="fa-solid fa-paper-plane"></i> <span data-i18n="search.action">Search & Analyze</span>
                                 </button>
                             </div>
                             <div class="save-search-options">
-                                <label><input type="checkbox" id="save-search-checkbox"> Save this search</label>
+                                <label><input type="checkbox" id="save-search-checkbox"> <span data-i18n="search.save">Save this search</span></label>
                                 <input type="text" id="saved-search-name" maxlength="80" placeholder="Optional saved-search name">
-                                <label for="saved-search-frequency">Reminder</label>
+                                <label for="saved-search-frequency" data-i18n="search.reminder">Reminder</label>
                                 <select id="saved-search-frequency">
-                                    <option value="none">No reminder</option>
-                                    <option value="daily">Daily</option>
-                                    <option value="weekly">Weekly</option>
+                                    <option value="none" data-i18n="search.reminder.none">No reminder</option>
+                                    <option value="daily" data-i18n="search.reminder.daily">Daily</option>
+                                    <option value="weekly" data-i18n="search.reminder.weekly">Weekly</option>
                                 </select>
                             </div>
                         </form>
@@ -495,16 +504,16 @@
                 <!-- Job Match Results Table -->
                 <div class="card">
                     <div class="card-header justify-between">
-                        <h2>Discovered Job Postings</h2>
+                        <h2 data-i18n="search.results">Discovered Job Postings</h2>
                         <div class="header-actions">
                             <button class="btn btn-primary btn-sm" id="open-job-import-btn">
-                                <i class="fa-solid fa-link"></i> Add Job by URL
+                                <i class="fa-solid fa-link"></i> <span data-i18n="search.import">Add Job by URL</span>
                             </button>
                             <button class="btn btn-secondary btn-sm" id="cleanup-jobs-btn">
-                                <i class="fa-solid fa-broom"></i> Clean Up
+                                <i class="fa-solid fa-broom"></i> <span data-i18n="search.cleanup">Clean Up</span>
                             </button>
                             <button class="btn btn-secondary btn-sm" id="refresh-jobs-btn">
-                                <i class="fa-solid fa-rotate"></i> Refresh
+                                <i class="fa-solid fa-rotate"></i> <span data-i18n="search.refresh">Refresh</span>
                             </button>
                         </div>
                     </div>
@@ -641,7 +650,7 @@
                                     <tr>
                                         <td colspan="7" class="table-empty-state">
                                             <i class="fa-solid fa-briefcase"></i>
-                                            <p>No job postings found yet. Run a search to match jobs with your resume.</p>
+                                            <p data-i18n="search.empty">No job postings found yet. Run a search to match jobs with your resume.</p>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -993,32 +1002,33 @@
     <div class="modal" id="tailor-modal" role="dialog" aria-modal="true" aria-labelledby="tailor-title" aria-hidden="true" inert>
         <div class="modal-content">
             <div class="modal-header">
-                <h2 id="tailor-title">Review Tailored Application Materials</h2>
+                <h2 id="tailor-title" data-i18n="materials.title">Review Tailored Application Materials</h2>
                 <button type="button" class="close-modal-btn" id="close-tailor-modal" aria-label="Close application materials"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
             </div>
             <div class="modal-body">
                 <div class="manual-application-guide">
-                    <strong>Apply on the employer's site</strong>
+                    <p class="language-content-boundary"><i class="fa-solid fa-language" aria-hidden="true"></i> <span data-i18n="materials.boundary">Review the language and every factual claim before using these files. CareerTrellis does not translate your saved resume or job facts when you change the interface language.</span></p>
+                    <strong data-i18n="materials.apply">Apply on the employer's site</strong>
                     <ol>
-                        <li>Review and save any edits below.</li>
-                        <li>Download the resume PDF or accessible DOCX and cover-letter TXT.</li>
-                        <li>Open the employer's application, complete it yourself, then use Mark Applied.</li>
+                        <li data-i18n="materials.step.review">Review and save any edits below.</li>
+                        <li data-i18n="materials.step.download">Download the resume PDF or accessible DOCX and cover-letter TXT.</li>
+                        <li data-i18n="materials.step.complete">Open the employer's application, complete it yourself, then use Mark Applied.</li>
                     </ol>
                     <div class="material-downloads">
                         <a class="btn btn-secondary" id="download-resume-btn" download>
-                            <i class="fa-solid fa-file-pdf"></i> Download Resume PDF
+                            <i class="fa-solid fa-file-pdf"></i> <span data-i18n="materials.resume_pdf">Download Resume PDF</span>
                         </a>
                         <a class="btn btn-secondary" id="download-resume-docx-btn" download>
-                            <i class="fa-solid fa-file-word"></i> Download Accessible DOCX
+                            <i class="fa-solid fa-file-word"></i> <span data-i18n="materials.resume_docx">Download Accessible DOCX</span>
                         </a>
                         <a class="btn btn-secondary" id="download-cover-letter-btn" download>
-                            <i class="fa-solid fa-file-lines"></i> Download Cover Letter TXT
+                            <i class="fa-solid fa-file-lines"></i> <span data-i18n="materials.cover_letter_txt">Download Cover Letter TXT</span>
                         </a>
                     </div>
                 </div>
                 <div class="modal-tabs" role="tablist" aria-label="Application materials">
-                    <button type="button" class="modal-tab-btn active" id="materials-tab-tailored-resume" data-modal-tab="tailored-resume" role="tab" aria-selected="true" aria-controls="modal-tab-tailored-resume" tabindex="0">Tailored Resume</button>
-                    <button type="button" class="modal-tab-btn" id="materials-tab-cover-letter" data-modal-tab="cover-letter" role="tab" aria-selected="false" aria-controls="modal-tab-cover-letter" tabindex="-1">Cover Letter</button>
+                    <button type="button" class="modal-tab-btn active" id="materials-tab-tailored-resume" data-modal-tab="tailored-resume" data-i18n="materials.resume" role="tab" aria-selected="true" aria-controls="modal-tab-tailored-resume" tabindex="0">Tailored Resume</button>
+                    <button type="button" class="modal-tab-btn" id="materials-tab-cover-letter" data-modal-tab="cover-letter" data-i18n="materials.cover_letter" role="tab" aria-selected="false" aria-controls="modal-tab-cover-letter" tabindex="-1">Cover Letter</button>
                 </div>
                 
                 <div class="modal-tab-content active" id="modal-tab-tailored-resume" role="tabpanel" aria-labelledby="materials-tab-tailored-resume">
@@ -1034,12 +1044,12 @@
             </div>
             <div class="modal-footer">
                 <div class="modal-actions">
-                    <button type="button" class="btn btn-secondary" id="close-tailor-modal-btn">Cancel</button>
+                    <button type="button" class="btn btn-secondary" id="close-tailor-modal-btn" data-i18n="materials.cancel">Cancel</button>
                     <button type="button" class="btn btn-secondary" id="save-materials-btn">
-                        <i class="fa-solid fa-floppy-disk"></i> Save Edits
+                        <i class="fa-solid fa-floppy-disk"></i> <span data-i18n="materials.save">Save Edits</span>
                     </button>
                     <a class="btn btn-primary" id="open-manual-application-btn" target="_blank" rel="noopener noreferrer">
-                        <i class="fa-solid fa-arrow-up-right-from-square"></i> Open Application Site
+                        <i class="fa-solid fa-arrow-up-right-from-square"></i> <span data-i18n="materials.open">Open Application Site</span>
                     </a>
                 </div>
             </div>
@@ -1303,6 +1313,7 @@
     </div>
     
     <!-- Custom JS -->
-    <script src="/static/app.js?v=20260808-22"></script>
+    <script src="/static/i18n.js?v=20260808-23"></script>
+    <script src="/static/app.js?v=20260808-23"></script>
 </body>
 </html>

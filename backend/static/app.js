@@ -1,5 +1,10 @@
 // API base url (empty since frontend is served from same origin)
 const API_URL = "";
+const i18n = window.CareerTrellisI18n;
+
+function t(key, replacements = {}) {
+    return i18n.t(key, replacements);
+}
 
 // State variables
 let currentTab = "dashboard";
@@ -28,6 +33,7 @@ let interviewPrepCompany = "";
 let interviewPrepPosition = "";
 let engagementJobId = null;
 let engagementRecords = [];
+let loadedProfile = null;
 const modalStack = [];
 const modalDismissHandlers = new Map();
 
@@ -50,6 +56,7 @@ const pPhone = document.getElementById("p-phone");
 const pGithub = document.getElementById("p-github");
 const pLinkedin = document.getElementById("p-linkedin");
 const pWebsite = document.getElementById("p-website");
+const pInterfaceLanguage = document.getElementById("p-interface-language");
 const pAiProvider = document.getElementById("p-ai-provider");
 const pAiModel = document.getElementById("p-ai-model");
 const pApiKey = document.getElementById("p-apikey");
@@ -307,6 +314,7 @@ const fullRestoreConfirmReplace = document.getElementById("full-restore-confirm-
 
 // Initialize on Load
 document.addEventListener("DOMContentLoaded", () => {
+    setInterfaceLanguage("en");
     setupAccessibility();
     setupAccessibleModals();
     setupTabSwitching();
@@ -314,6 +322,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Attach form and click listeners
     bindEvent(profileForm, "submit", saveProfile);
+    bindEvent(pInterfaceLanguage, "change", () => setInterfaceLanguage(pInterfaceLanguage.value));
     bindEvent(pAiProvider, "change", handleAIProviderChange);
     bindEvent(pAiModel, "input", markAIProviderSettingsDirty);
     bindEvent(pApiKey, "input", markAIProviderSettingsDirty);
@@ -722,6 +731,35 @@ function setupTabSwitching() {
     });
 }
 
+function translatedTabTitles() {
+    return {
+        dashboard: { title: t("page.dashboard.title"), sub: t("page.dashboard.subtitle") },
+        profile: { title: t("page.profile.title"), sub: t("page.profile.subtitle") },
+        search: { title: t("page.search.title"), sub: t("page.search.subtitle") },
+        logs: { title: t("page.logs.title"), sub: t("page.logs.subtitle") }
+    };
+}
+
+function updateCurrentTabHeading(announceSelection = false) {
+    const tab = translatedTabTitles()[currentTab] || translatedTabTitles().dashboard;
+    pageTitle.innerText = tab.title;
+    pageSubtitle.innerText = tab.sub;
+    if (announceSelection) announce(t("page.selected", { title: tab.title }));
+}
+
+function setInterfaceLanguage(language) {
+    const normalized = i18n.setLanguage(language);
+    if (pInterfaceLanguage) pInterfaceLanguage.value = normalized;
+    updateCurrentTabHeading();
+    updateStartupActivity(loadedProfile);
+    updateProfessionalEvidenceSummary();
+    if (!pName?.value.trim()) userDisplayName.innerText = t("common.candidate");
+    if (savedSearchSelect?.options[0] && !savedSearchSelect.options[0].value) {
+        savedSearchSelect.options[0].textContent = t("search.saved.select");
+    }
+    if (loadedJobs.length) renderFilteredJobs();
+}
+
 function switchTab(tabId) {
     currentTab = tabId;
     
@@ -751,17 +789,7 @@ function switchTab(tabId) {
         }
     });
     
-    // Update headers text
-    const tabTitles = {
-        dashboard: { title: "Dashboard Overview", sub: "Track tailored materials and confirmed application progress." },
-        profile: { title: "Profile & Resume", sub: "Setup your contact information and base resume." },
-        search: { title: "Search & Match Jobs", sub: "Find Greenhouse, Lever, Ashby, and SmartRecruiters openings matching your skill set." },
-        logs: { title: "Application Logs", sub: "View history and download tailored resumes and cover letters." }
-    };
-    
-    pageTitle.innerText = tabTitles[tabId].title;
-    pageSubtitle.innerText = tabTitles[tabId].sub;
-    announce(`${tabTitles[tabId].title} selected.`);
+    updateCurrentTabHeading(true);
     
     // Reload data contextually
     if (tabId === "dashboard") {
@@ -844,7 +872,7 @@ function showLoading(title, subtitle = "Please wait while CareerTrellis prepares
     stopLoadingBtn.disabled = false;
     stopLoadingBtn.replaceChildren(
         createElement("i", "fa-solid fa-stop"),
-        document.createTextNode(" Stop")
+        document.createTextNode(` ${t("common.stop")}`)
     );
     openAccessibleModal(loadingModal, operation ? stopLoadingBtn : loadingTitle);
 }
@@ -875,10 +903,10 @@ async function stopActiveLoadingOperation() {
     stopLoadingBtn.disabled = true;
     stopLoadingBtn.replaceChildren(
         createElement("i", "fa-solid fa-spinner fa-spin"),
-        document.createTextNode(" Stopping...")
+        document.createTextNode(` ${t("common.stopping")}`)
     );
-    loadingTitle.innerText = "Stopping...";
-    loadingSubtitle.innerText = "Finishing the current step, then stopping without discarding completed work.";
+    loadingTitle.innerText = t("common.stopping");
+    loadingSubtitle.innerText = t("common.stopping.subtitle");
     try {
         const response = await fetch(`${API_URL}/api/operations/${operation.id}/cancel`, { method: "POST" });
         const result = await response.json();
@@ -891,9 +919,9 @@ async function stopActiveLoadingOperation() {
         stopLoadingBtn.disabled = false;
         stopLoadingBtn.replaceChildren(
             createElement("i", "fa-solid fa-stop"),
-            document.createTextNode(" Stop")
+            document.createTextNode(` ${t("common.stop")}`)
         );
-        loadingTitle.innerText = "Still working...";
+        loadingTitle.innerText = t("common.working");
         loadingSubtitle.innerText = error.message || "The stop request could not be sent.";
     }
 }
@@ -1479,13 +1507,13 @@ function updateStartupActivity(profile) {
     const profileReady = !!(profile?.name && profile?.email && profile?.base_resume_text);
     const provider = selectedAIProviderMeta();
     if (profileReady) {
-        title.textContent = "Profile Loaded";
+        title.textContent = t("profile.loaded");
         description.textContent = selectedAIKeyConfigured()
-            ? "Your saved profile is ready to search, tailor materials, and track applications."
-            : `Your saved profile is loaded. Add a ${provider.label} API key when you are ready to match and tailor jobs.`;
+            ? t("profile.loaded.ready")
+            : t("profile.loaded.key", { provider: provider.label });
     } else {
-        title.textContent = "Profile Setup Needed";
-        description.textContent = "Add your name, email, and base resume in Profile & Resume to get started.";
+        title.textContent = t("profile.setup");
+        description.textContent = t("profile.setup.help");
     }
 }
 
@@ -1501,6 +1529,8 @@ async function loadProfile() {
         const profile = await res.json();
         
         if (profile) {
+            loadedProfile = profile;
+            setInterfaceLanguage(profile.interface_language || "en");
             pName.value = profile.name || "";
             pEmail.value = profile.email || "";
             pPhone.value = profile.phone || "";
@@ -1526,7 +1556,7 @@ async function loadProfile() {
             pPreferUsHeadquarters.checked = profile.prefer_us_headquarters !== 0;
             await loadBaseResumeLibrary(profile.active_base_resume_id);
             
-            userDisplayName.innerText = profile.name || "Candidate";
+            userDisplayName.innerText = profile.name || t("common.candidate");
             // Sync dashboard statistics
             updateDashboardStats();
         }
@@ -1535,7 +1565,7 @@ async function loadProfile() {
         const indicator = apiStatusBadge?.querySelector(".status-indicator");
         const statusText = apiStatusBadge?.querySelector(".status-text");
         if (indicator) indicator.className = "status-indicator red";
-        if (statusText) statusText.innerText = "Profile API Unavailable";
+        if (statusText) statusText.innerText = t("profile.api_unavailable");
         markSecretStatusesUnavailable();
         logActivity("Error Loading Profile", "Could not fetch profile settings from database.", "error");
     }
@@ -1561,8 +1591,9 @@ function updateProfessionalEvidenceSummary() {
         professionalEvidenceCount.textContent = `${count} section${count === 1 ? "" : "s"}`;
     }
     if (evidenceModeGuidance) {
-        evidenceModeGuidance.textContent = RESUME_EVIDENCE_GUIDANCE[pResumeMode?.value]
-            || RESUME_EVIDENCE_GUIDANCE.general_professional;
+        evidenceModeGuidance.textContent = i18n.getLanguage() === "en"
+            ? (RESUME_EVIDENCE_GUIDANCE[pResumeMode?.value] || RESUME_EVIDENCE_GUIDANCE.general_professional)
+            : t("profile.evidence.help");
     }
     professionalEvidenceEditor?.classList.toggle("has-evidence", count > 0);
     updateBaseResumeActions();
@@ -1584,11 +1615,11 @@ function professionalEvidencePreview(evidence = {}) {
 async function saveProfile(e) {
     e.preventDefault();
     if (pResume.value.trim() && !pResumeName.value.trim()) {
-        alert("Enter a name for this base resume before saving.");
+        alert(t("profile.resume_name.required"));
         pResumeName.focus();
         return;
     }
-    showLoading("Saving Profile...", "Storing settings into your local database.");
+    showLoading(t("profile.saving.title"), t("profile.saving.subtitle"));
     
     const payload = {
         name: pName.value.trim(),
@@ -1605,7 +1636,8 @@ async function saveProfile(e) {
         ai_provider: selectedAIProvider(),
         ai_model: pAiModel.value.trim(),
         maps_provider: selectedMapsProvider(),
-        prefer_us_headquarters: pPreferUsHeadquarters.checked
+        prefer_us_headquarters: pPreferUsHeadquarters.checked,
+        interface_language: i18n.getLanguage()
     };
     
     try {
@@ -1615,7 +1647,7 @@ async function saveProfile(e) {
             body: JSON.stringify(payload)
         });
         const result = await res.json();
-        if (!res.ok) throw new Error(result.detail || "Could not save profile.");
+        if (!res.ok) throw new Error(result.detail || t("profile.save.failed"));
 
         const secretPayload = {};
         if (pApiKey.value.trim()) secretPayload.gemini_api_key = pApiKey.value.trim();
@@ -1640,7 +1672,8 @@ async function saveProfile(e) {
         if (result.success) {
             currentBaseResumeId = result.base_resume_id || currentBaseResumeId;
             await loadBaseResumeLibrary(currentBaseResumeId);
-            userDisplayName.innerText = payload.name || "Candidate";
+            loadedProfile = { ...loadedProfile, ...payload };
+            userDisplayName.innerText = payload.name || t("common.candidate");
             aiProviderSettingsSaved = true;
             mapsProviderSettingsSaved = true;
             updateSecretStatuses();
@@ -1650,12 +1683,12 @@ async function saveProfile(e) {
                 : " Resume content was unchanged; no duplicate version was created.";
             logActivity("Profile Saved", `Contact details and ${selectedAIProviderMeta().label} settings saved.${versionNote}`, "success");
             hideLoading();
-            alert("Profile settings saved successfully!");
+            alert(t("profile.save.success"));
         }
     } catch (err) {
         hideLoading();
         console.error(err);
-        alert(err.message || "Could not save profile settings.");
+        alert(err.message || t("profile.save.failed"));
         logActivity("Profile Save Failed", "Error storing profile adjustments.", "error");
     }
 }
@@ -2193,14 +2226,14 @@ function renderFilteredJobs(revealJobId = null) {
     const resultCount = document.getElementById("job-result-count");
     if (resultCount) {
         const filterSummary = activeAdvancedFilters ? ` · ${activeAdvancedFilters} advanced` : "";
-        resultCount.textContent = `${jobs.length} of ${loadedJobs.length} jobs${filterSummary}`;
+        resultCount.textContent = `${t("search.count", { shown: jobs.length, total: loadedJobs.length })}${filterSummary}`;
     }
     if (jobResultsStatus) {
-        jobResultsStatus.textContent = `${jobs.length} of ${loadedJobs.length} job postings shown.`;
+        jobResultsStatus.textContent = t("search.shown", { shown: jobs.length, total: loadedJobs.length });
     }
 
     if (jobs.length === 0) {
-        renderEmptyTableState(jobsTableBody, 7, "fa-solid fa-briefcase", "No jobs match the current filters.");
+        renderEmptyTableState(jobsTableBody, 7, "fa-solid fa-briefcase", t("search.no_match"));
         return viewChanges.join(" ");
     }
     jobs.forEach(job => jobsTableBody.appendChild(buildJobRow(job)));
@@ -2266,9 +2299,11 @@ function buildJobRow(job) {
     tr.appendChild(linkCell);
 
     const statusLabels = {
-        matched: "Matched", tailored: "Tailored", form_filled: "Form Filled",
-        submitted: "Submitted — Unverified", applied: "Applied", interview: "Interview",
-        offer: "Offer", rejected: "Rejected", withdrawn: "Withdrawn", closed: "Closed"
+        matched: t("job.status.matched"), tailored: t("job.status.tailored"),
+        form_filled: t("job.status.form_filled"), submitted: t("job.status.submitted"),
+        applied: t("job.status.applied"), interview: t("job.status.interview"),
+        offer: t("job.status.offer"), rejected: t("job.status.rejected"),
+        withdrawn: t("job.status.withdrawn"), closed: t("job.status.closed")
     };
     const statusClass = job.status === "matched" ? "badge-matched"
         : ["tailored", "form_filled", "submitted"].includes(job.status) ? "badge-tailored" : "badge-applied";
@@ -2279,17 +2314,17 @@ function buildJobRow(job) {
     const actionsCell = createElement("td", "actions-col");
     const actions = createElement("div", "table-actions");
     if (job.status === "matched") {
-        actions.appendChild(createActionButton("Tailor Materials", "fa-solid fa-wand-magic-sparkles", "btn btn-secondary btn-sm", () => tailorResumeForJob(jobId)));
-        actions.appendChild(createActionButton("Mark Applied", "fa-solid fa-circle-check", "btn btn-secondary btn-sm", () => openLifecycleEditor(jobId)));
+        actions.appendChild(createActionButton(t("job.action.tailor"), "fa-solid fa-wand-magic-sparkles", "btn btn-secondary btn-sm", () => tailorResumeForJob(jobId)));
+        actions.appendChild(createActionButton(t("job.action.mark_applied"), "fa-solid fa-circle-check", "btn btn-secondary btn-sm", () => openLifecycleEditor(jobId)));
     } else if (["tailored", "form_filled", "submitted"].includes(job.status)) {
-        actions.appendChild(createActionButton("View Materials", "fa-solid fa-eye", "btn btn-secondary btn-sm", () => viewTailoredMaterials(jobId)));
-        actions.appendChild(createActionButton("Apply Manually", "fa-solid fa-arrow-up-right-from-square", "btn btn-primary btn-sm", () => viewTailoredMaterials(jobId)));
-        actions.appendChild(createActionButton("Mark Applied", "fa-solid fa-circle-check", "btn btn-secondary btn-sm", () => openLifecycleEditor(jobId)));
+        actions.appendChild(createActionButton(t("job.action.view"), "fa-solid fa-eye", "btn btn-secondary btn-sm", () => viewTailoredMaterials(jobId)));
+        actions.appendChild(createActionButton(t("job.action.apply"), "fa-solid fa-arrow-up-right-from-square", "btn btn-primary btn-sm", () => viewTailoredMaterials(jobId)));
+        actions.appendChild(createActionButton(t("job.action.mark_applied"), "fa-solid fa-circle-check", "btn btn-secondary btn-sm", () => openLifecycleEditor(jobId)));
     } else {
         if (job.has_materials) {
-            actions.appendChild(createActionButton("View Materials", "fa-solid fa-eye", "btn btn-secondary btn-sm", () => viewTailoredMaterials(jobId)));
+            actions.appendChild(createActionButton(t("job.action.view"), "fa-solid fa-eye", "btn btn-secondary btn-sm", () => viewTailoredMaterials(jobId)));
         }
-        actions.appendChild(createActionButton("Update Status", "fa-solid fa-pen", "btn btn-secondary btn-sm", () => openLifecycleEditor(jobId)));
+        actions.appendChild(createActionButton(t("job.action.update"), "fa-solid fa-pen", "btn btn-secondary btn-sm", () => openLifecycleEditor(jobId)));
     }
     actions.appendChild(createActionButton("", "fa-solid fa-rotate", "btn btn-secondary btn-sm btn-icon-only", () => verifyJobPosting(jobId), "Verify listing is active"));
     actions.appendChild(createActionButton("", "fa-solid fa-trash", "btn btn-danger btn-sm btn-icon-only", () => deleteJobRecord(jobId), "Delete Job"));
@@ -2327,7 +2362,7 @@ async function loadSavedSearches() {
     const response = await fetch(`${API_URL}/api/saved-searches`);
     if (!response.ok) return;
     const searches = await response.json();
-    savedSearchSelect.replaceChildren(new Option("Select a saved search", ""));
+    savedSearchSelect.replaceChildren(new Option(t("search.saved.select"), ""));
     searches.forEach(search => {
         const option = new Option(search.name, String(search.id));
         option.dataset.keywords = search.keywords;
@@ -2419,7 +2454,7 @@ async function searchJobs(e) {
         ? `Searching for '${keywords}' ${location ? 'in ' + location : ''}...`
         : `Analyzing resume to suggest keywords and searching jobs...`;
     
-    const operation = showCancellableLoading("Searching & Analyzing Jobs...", "AI is extracting keywords from your resume, crawling Yahoo, and scoring postings.");
+    const operation = showCancellableLoading(t("search.loading.title"), t("search.loading.subtitle"));
     logActivity("Job Search Started", logMsg, "info");
     
     try {
@@ -2457,7 +2492,7 @@ async function searchJobs(e) {
                             logActivity("Job Search Stopped", status.last_result.message, "warning");
                         } else if (status.last_result?.success === false) {
                             logActivity("Search Failed", status.last_result.error || "Search did not complete.", "error");
-                            alert(status.last_result.error || "Search did not complete.");
+                            alert(status.last_result.error || t("search.failed"));
                         } else {
                             logActivity("Job Search Complete", "Found and analyzed new job openings.", "success");
                             renderProviderAlerts(status.last_result);
@@ -2470,7 +2505,7 @@ async function searchJobs(e) {
             }, 3000);
         } else {
             hideLoading();
-            alert(result.message || result.error || "Search failed.");
+            alert(result.message || result.error || t("search.failed"));
         }
     } catch (err) {
         hideLoading();
@@ -2676,7 +2711,7 @@ async function clearSourceDiagnostics() {
 
 // Trigger AI Resume Tailoring
 async function tailorResumeForJob(jobId) {
-    const operation = showCancellableLoading("Tailoring Application...", "AI is rewriting experience highlights and crafting a cover letter. Generating PDF resume...");
+    const operation = showCancellableLoading(t("materials.tailoring.title"), t("materials.tailoring.subtitle"));
     logActivity("Tailoring Started", `Generating custom resume for Job ID #${jobId}...`, "magic");
     
     try {
@@ -2717,7 +2752,7 @@ async function tailorResumeForJob(jobId) {
 
 // View tailored resume & cover letter details
 async function viewTailoredMaterials(jobId) {
-    showLoading("Fetching Materials...", "Loading customized files.");
+    showLoading(t("materials.fetching.title"), t("materials.fetching.subtitle"));
     
     try {
         const res = await fetch(`${API_URL}/api/jobs/${jobId}/tailored`);
@@ -2731,7 +2766,7 @@ async function viewTailoredMaterials(jobId) {
             showTailorModal(resumeText, result.cover_letter, jobId);
         } else {
             hideLoading();
-            alert(result.message || "Failed to load materials.");
+            alert(result.message || t("materials.load.failed"));
         }
     } catch (e) {
         hideLoading();
@@ -2744,10 +2779,10 @@ async function saveTailoredMaterials() {
     const tailoredResume = tailoredResumeDisplay.value.trim();
     const coverLetter = coverLetterDisplay.value.trim();
     if (!tailoredResume || !coverLetter) {
-        alert("Both the tailored resume and cover letter must contain text.");
+        alert(t("materials.required"));
         return;
     }
-    const operation = showCancellableLoading("Saving Reviewed Materials...", "Regenerating the attached PDF from your edits.");
+    const operation = showCancellableLoading(t("materials.saving.title"), t("materials.saving.subtitle"));
     try {
         const response = await fetch(`${API_URL}/api/jobs/${selectedMaterialsJobId}/tailored`, {
             method: "PATCH",
@@ -2755,7 +2790,7 @@ async function saveTailoredMaterials() {
             body: JSON.stringify({ tailored_resume: tailoredResume, cover_letter: coverLetter })
         });
         const result = await response.json();
-        if (!response.ok) throw new Error(result.detail || "Could not save reviewed materials.");
+        if (!response.ok) throw new Error(result.detail || t("materials.save.failed"));
         hideLoading();
         if (result.cancelled) {
             logActivity("PDF Regeneration Stopped", result.message, "warning");
@@ -2763,7 +2798,7 @@ async function saveTailoredMaterials() {
             return;
         }
         logActivity("Materials Saved", `Resume PDF regenerated at ${result.pdf_page_count} page(s).`, "success");
-        alert("Your edits were saved and the resume PDF was regenerated.");
+        alert(t("materials.save.success"));
     } catch (error) {
         hideLoading();
         alert(error.message);

@@ -4,14 +4,15 @@ from typing import Any
 
 
 EXPORT_FORMAT = "career-trellis-user-data"
-EXPORT_SCHEMA_VERSION = 2
+EXPORT_SCHEMA_VERSION = 3
 
 
 EXPORT_FIELDS = {
     "profile": (
         "id", "name", "email", "phone", "github", "linkedin", "website",
         "base_resume_text", "suggested_keywords", "ai_provider", "ai_model",
-        "maps_provider", "prefer_us_headquarters", "resume_mode", "active_base_resume_id",
+        "maps_provider", "prefer_us_headquarters", "interface_language", "resume_mode",
+        "active_base_resume_id",
     ),
     "base_resumes": (
         "id", "name", "resume_mode", "content", "evidence_json", "created_at", "updated_at",

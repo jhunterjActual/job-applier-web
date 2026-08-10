@@ -821,6 +821,24 @@ select:focus {
     color: var(--text-muted);
 }
 
+.language-content-boundary {
+    align-items: flex-start;
+    background: rgba(var(--color-primary-rgb), 0.08);
+    border: 1px solid rgba(var(--color-primary-rgb), 0.28);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    display: flex;
+    gap: 8px;
+    line-height: 1.45;
+    margin: 8px 0 0;
+    padding: 10px 12px;
+}
+
+.language-content-boundary > i {
+    color: var(--color-primary);
+    margin-top: 2px;
+}
+
 .secret-key-meta {
     display: flex;
     align-items: center;

@@ -99,7 +99,7 @@ echo Launching FastAPI Backend...
 echo Access the Dashboard at http://127.0.0.1:%PORT%/
 echo Press Ctrl+C to stop CareerTrellis.
 
-start "" /b powershell -NoProfile -WindowStyle Hidden -Command "$ready=$false; 1..30 | ForEach-Object { if (-not $ready) { Start-Sleep 1; try { $v=Invoke-RestMethod 'http://127.0.0.1:%PORT%/api/version' -TimeoutSec 1; if ($v.build -eq '20260808.22') { $ready=$true; Start-Process 'http://127.0.0.1:%PORT%/?build=20260808.22' } } catch {} } }"
+start "" /b powershell -NoProfile -WindowStyle Hidden -Command "$ready=$false; 1..30 | ForEach-Object { if (-not $ready) { Start-Sleep 1; try { $v=Invoke-RestMethod 'http://127.0.0.1:%PORT%/api/version' -TimeoutSec 1; if ($v.build -eq '20260808.23') { $ready=$true; Start-Process 'http://127.0.0.1:%PORT%/?build=20260808.23' } } catch {} } }"
 "%VENV_PYTHON%" -m uvicorn app:app --host 127.0.0.1 --port %PORT% --reload
 set "SERVER_EXIT=%ERRORLEVEL%"
 pause
