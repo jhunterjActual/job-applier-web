@@ -1462,6 +1462,13 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn(browser_export, script)
         self.assertLess(script.index(browser_export), script.index(test_command))
 
+    def test_provisioning_keeps_the_caddy_access_log_service_writable(self) -> None:
+        script = (self.project_dir() / "deploy" / "scripts" / "provision-staging-host.sh").read_text(encoding="utf-8")
+        self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access.log", script)
+        self.assertIn('chown caddy:caddy "${caddy_access_log}"', script)
+        self.assertIn('chmod 0600 "${caddy_access_log}"', script)
+        self.assertIn('install -o caddy -g caddy -m 0600 /dev/null "${caddy_access_log}"', script)
+
 
 class ProfileSecretPresenceTests(unittest.TestCase):
     def setUp(self) -> None:
