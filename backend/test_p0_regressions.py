@@ -1455,6 +1455,13 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("test_analytics.py", workflow)
         self.assertIn("test_observability.py", workflow)
 
+    def test_release_tests_use_the_shared_playwright_browser_path(self) -> None:
+        script = (self.project_dir() / "deploy" / "scripts" / "deploy-release.sh").read_text(encoding="utf-8")
+        browser_export = 'export PLAYWRIGHT_BROWSERS_PATH="${browser_path}"'
+        test_command = "./venv/bin/python -m unittest test_p0_regressions.py"
+        self.assertIn(browser_export, script)
+        self.assertLess(script.index(browser_export), script.index(test_command))
+
 
 class ProfileSecretPresenceTests(unittest.TestCase):
     def setUp(self) -> None:
