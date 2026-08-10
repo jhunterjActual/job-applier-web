@@ -1,0 +1,5 @@
+# Root-owned systemd EnvironmentFile for Caddy.
+# Install as /etc/caddy/careertrellis-staging.env with mode 0600.
+CAREERTRELLIS_TRUSTED_PROXY_TOKEN=replace-with-the-same-64-character-random-value-used-by-the-app
+STAGING_BASIC_AUTH_USER=hunter
+STAGING_BASIC_AUTH_HASH=replace-with-caddy-argon2id-password-hash

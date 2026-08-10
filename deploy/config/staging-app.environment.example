@@ -1,0 +1,15 @@
+# Root-owned systemd EnvironmentFile for the application services.
+# Install as /etc/careertrellis/staging.env with mode 0600.
+CAREERTRELLIS_ENVIRONMENT=staging
+CAREERTRELLIS_ALLOWED_HOSTS=staging-app.jhunterj.com
+CAREERTRELLIS_DATA_DIR=/var/lib/careertrellis/staging
+CAREERTRELLIS_TRUSTED_PROXY_TOKEN=replace-with-the-same-64-character-random-value-used-by-caddy
+CAREERTRELLIS_WORKER_HEARTBEAT_SECONDS=15
+PLAYWRIGHT_BROWSERS_PATH=/var/lib/careertrellis/staging/ms-playwright
+
+# Optional privacy-minimized monitoring; leave blank to disable.
+POSTHOG_PROJECT_TOKEN=
+POSTHOG_HOST=
+SENTRY_DSN=
+SENTRY_ENVIRONMENT=staging
+SENTRY_TRACES_SAMPLE_RATE=0
