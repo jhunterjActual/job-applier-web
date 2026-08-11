@@ -12,6 +12,9 @@ posthog~=7.38.0
 psycopg[binary]~=3.3.4
 sentry-sdk~=2.55.0
 sqlalchemy~=2.0.51
+# Alembic needs this TOML backport on Python 3.10. Keeping it unconditional
+# lets the reviewed hash lock install unchanged on every supported version.
+tomli~=2.4.1
 pydantic~=2.13.0
 pymupdf~=1.26.0
 python-docx~=1.2.0

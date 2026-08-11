@@ -1316,7 +1316,7 @@ class DependencyLockTests(unittest.TestCase):
             {
                 "alembic", "cryptography", "exceptiongroup", "fastapi", "google-genai",
                 "playwright", "posthog", "psycopg", "pydantic", "pymupdf", "python-docx",
-                "python-multipart", "sentry-sdk", "sqlalchemy", "uvicorn", "workos",
+                "python-multipart", "sentry-sdk", "sqlalchemy", "tomli", "uvicorn", "workos",
             },
             direct_names,
         )
