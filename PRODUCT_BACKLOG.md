@@ -44,12 +44,14 @@ This backlog consolidates the code-review, job-seeker persona, product-owner, mo
 - [x] Add editable resume and cover-letter preview with PDF regeneration before applying.
 - [x] Add deterministic section templates before PDF generation.
 - [x] Add IT, technical-executive, general-professional, federal, healthcare, education, sales, trades/operations, academic-CV, and cover-letter modes.
+- [ ] Prevent browsers and password managers from misclassifying profile fields and provider API keys as login credentials. Separate personal/profile inputs from secret-entry forms, apply accurate standardized `autocomplete` semantics plus narrowly scoped password-manager opt-out hints where needed, avoid login-like email-and-secret form structures, and verify the behavior in current Edge, Chrome, Firefox, and Safari without weakening secure secret entry or accessibility.
 
 ## P2 - Broader job-seeker value
 
 - [x] Replace the inherited GCD site icon with product-specific branding, including appropriate favicon, pinned-tab, application-manifest, and mobile home-screen assets.
 - [x] Rename the product to CareerTrellis so its market identity reflects a privacy-first, user-controlled search, tailoring, tracking, and preparation workspace rather than automatic application submission.
 - [ ] Before public launch, complete professional trademark, corporate-name, app-store, domain, and social-handle clearance for CareerTrellis; secure the selected properties and then decide whether to rename the GitHub repository and legacy compatibility identifiers.
+- [ ] Treat CareerTrellis as a working name and make public-facing branding replaceable before launch. Centralize the product name, title, tagline, support identity, domains, analytics labels, document metadata, user-agent string, manifest metadata, and brand assets instead of adding new hard-coded references. Provide and test a rename/migration path that can change repository, package, service, environment-variable, filesystem, database/export, and backup identifiers while preserving backward compatibility for existing installations and backups.
 - [x] Show a privacy-safe "Maps API key saved" state and replacement guidance in Profile & Resume, matching the existing Gemini-key experience without revealing either stored key.
 - [x] Add an AI-provider abstraction with securely stored bring-your-own keys, model selection, capability validation, and clear provider-specific errors; support providers beyond Gemini without exposing secrets to the browser.
 - [x] Add a geocoding/maps-provider abstraction with provider selection, securely stored credentials, validation, rate-limit handling, and support for alternatives to Google Maps.
@@ -72,6 +74,7 @@ This backlog consolidates the code-review, job-seeker persona, product-owner, mo
 - [x] Replace broad mutable dependency ranges with a reproducible, reviewed lock or constraints file and an intentional dependency-update workflow.
 - [x] Add recruiter, hiring-manager, referral, assessment, and networking tracking.
 - [x] Add PDF metadata, accessible document semantics, clickable contact links, and recruiter-friendly filenames.
+- [ ] Add a per-user confirmation preference for routine action-result and confirmation modals, including profile saves and recoverable job deletion/archive actions. Keep confirmations enabled by default; let users choose which categories to suppress; replace suppressed dialogs with accessible inline or toast feedback and an Undo path where available; and never allow the preference to bypass authentication, consent, secret replacement, permanent account/data deletion, restore-overwrite, or other irreversible/high-risk confirmations.
 
 ## P3 - Integrations, growth, and monetization enablement
 
