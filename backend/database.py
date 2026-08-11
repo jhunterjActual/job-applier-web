@@ -50,6 +50,24 @@ def init_db() -> None:
     )
     """)
 
+    # Stage 2 establishes an immutable external identity boundary while the
+    # existing workspace remains intentionally limited to one staging owner.
+    # Per-table ownership keys arrive with the PostgreSQL/RLS stage; this table
+    # must never be interpreted as general multi-user data isolation.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS app_users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workos_user_id TEXT NOT NULL UNIQUE,
+        role TEXT NOT NULL CHECK (role = 'owner'),
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        disabled_at TEXT
+    )
+    """)
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_app_users_single_owner ON app_users(role)"
+    )
+
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS base_resumes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

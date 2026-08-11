@@ -8,6 +8,7 @@ import unittest
 import zipfile
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -18,11 +19,13 @@ import backup_restore as backup_restore_module
 import config as config_module
 import maps_providers as maps_providers_module
 import database as database_module
+import local_users as local_users_module
 import materials as materials_module
 import operations as operations_module
 import searcher as searcher_module
 import source_diagnostics as source_diagnostics_module
 import worker as worker_module
+import web_auth as web_auth_module
 from application_insights import build_application_insights
 from application_engagements import (
     EngagementNotFound,
@@ -966,9 +969,9 @@ class FrontendStartupTests(unittest.TestCase):
             with self.subTest(element_id=element_id):
                 self.assertIn(f'id="{element_id}"', html_source)
         self.assertIn("Checking AI Provider", html_source)
-        self.assertIn("i18n.js?v=20260808-23", html_source)
-        self.assertIn("app.js?v=20260808-23", html_source)
-        self.assertIn("index.css?v=20260808-23", html_source)
+        self.assertIn("i18n.js?v=20260811-24", html_source)
+        self.assertIn("app.js?v=20260811-24", html_source)
+        self.assertIn("index.css?v=20260811-24", html_source)
 
     def test_launchers_require_the_current_backend_build(self) -> None:
         project_dir = Path(__file__).parent.parent
@@ -1313,6 +1316,7 @@ class DependencyLockTests(unittest.TestCase):
             {
                 "cryptography", "exceptiongroup", "fastapi", "google-genai", "playwright", "posthog",
                 "pydantic", "pymupdf", "python-docx", "python-multipart", "sentry-sdk", "uvicorn",
+                "workos",
             },
             direct_names,
         )
@@ -1469,6 +1473,18 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn('chmod 0600 "${caddy_access_log}"', script)
         self.assertIn('install -o caddy -g caddy -m 0600 /dev/null "${caddy_access_log}"', script)
 
+    def test_auth_callback_material_is_excluded_from_host_access_logs(self) -> None:
+        project_dir = self.project_dir()
+        caddy_source = (project_dir / "deploy" / "caddy" / "Caddyfile.staging").read_text(
+            encoding="utf-8"
+        )
+        service_source = (
+            project_dir / "deploy" / "systemd" / "careertrellis-web.service"
+        ).read_text(encoding="utf-8")
+        self.assertIn("log_skip /auth/callback", caddy_source)
+        self.assertIn('Referrer-Policy "no-referrer"', caddy_source)
+        self.assertIn("--no-access-log", service_source)
+
 
 class ProfileSecretPresenceTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1580,6 +1596,234 @@ class ProfileSecretPresenceTests(unittest.TestCase):
         self.assertEqual(provider_result, result)
 
 
+class WebAuthenticationTests(unittest.TestCase):
+    ORIGIN_TOKEN = "staging-origin-token-with-at-least-32-characters"
+    COOKIE_PASSWORD = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    OWNER_ID = "user_01STAGINGOWNER"
+
+    def staging_environment(self) -> dict[str, str]:
+        return {
+            "CAREERTRELLIS_ENVIRONMENT": "staging",
+            "CAREERTRELLIS_ALLOWED_HOSTS": "staging-app.jhunterj.com",
+            "CAREERTRELLIS_TRUSTED_PROXY_TOKEN": self.ORIGIN_TOKEN,
+            "CAREERTRELLIS_AUTH_MODE": "workos",
+            "WORKOS_API_KEY": "sk_test_ci_000000000000000000000000",
+            "WORKOS_CLIENT_ID": "client_01STAGINGCLIENT",
+            "WORKOS_COOKIE_PASSWORD": self.COOKIE_PASSWORD,
+            "WORKOS_REDIRECT_URI": "https://staging-app.jhunterj.com/auth/callback",
+            "WORKOS_LOGOUT_RETURN_TO": "https://staging-app.jhunterj.com/",
+            "CAREERTRELLIS_STAGING_OWNER_WORKOS_USER_ID": self.OWNER_ID,
+        }
+
+    def test_shared_host_auth_configuration_is_required_and_exact(self) -> None:
+        environment = self.staging_environment()
+        with patch.dict(os.environ, environment, clear=False):
+            settings = web_auth_module.get_auth_configuration()
+        self.assertEqual(self.OWNER_ID, settings.owner_workos_user_id)
+        self.assertEqual("https://staging-app.jhunterj.com/auth/callback", settings.redirect_uri)
+
+        invalid = dict(environment)
+        invalid["WORKOS_REDIRECT_URI"] = "https://attacker.example/auth/callback"
+        with patch.dict(os.environ, invalid, clear=False):
+            with self.assertRaises(web_auth_module.AuthenticationConfigurationError):
+                web_auth_module.get_auth_configuration()
+
+        missing_mode = dict(environment)
+        missing_mode["CAREERTRELLIS_AUTH_MODE"] = ""
+        with patch.dict(os.environ, missing_mode, clear=False):
+            with self.assertRaises(web_auth_module.AuthenticationConfigurationError):
+                web_auth_module.get_auth_configuration()
+
+        production = dict(environment)
+        production["CAREERTRELLIS_ENVIRONMENT"] = "production"
+        with patch.dict(os.environ, production, clear=False):
+            with self.assertRaises(web_auth_module.AuthenticationConfigurationError):
+                web_auth_module.get_auth_configuration()
+
+    def test_pkce_login_flow_is_encrypted_state_bound_and_owner_only(self) -> None:
+        class FakeUser:
+            id = self.OWNER_ID
+            email_verified = True
+
+            def to_dict(self) -> dict[str, object]:
+                return {"id": self.id, "email_verified": self.email_verified}
+
+        class FakeUserManagement:
+            def get_authorization_url_with_pkce(self, **kwargs):
+                self.authorization_arguments = kwargs
+                return {
+                    "url": "https://api.workos.com/user_management/authorize?test=1",
+                    "state": "sdk-generated-state",
+                    "code_verifier": "sdk-generated-code-verifier",
+                }
+
+            def authenticate_with_code_pkce(self, **kwargs):
+                self.authentication_arguments = kwargs
+                return SimpleNamespace(
+                    user=FakeUser(),
+                    access_token="private-access-token",
+                    refresh_token="private-refresh-token",
+                    impersonator=None,
+                )
+
+        management = FakeUserManagement()
+        client = SimpleNamespace(user_management=management)
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            settings = web_auth_module.get_auth_configuration()
+            pending = web_auth_module.begin_login(settings, client=client)
+            self.assertNotIn("sdk-generated-code-verifier", pending.sealed_flow)
+            completed = web_auth_module.complete_login(
+                settings,
+                code="one-time-code",
+                state="sdk-generated-state",
+                sealed_flow=pending.sealed_flow,
+                client=client,
+            )
+            with self.assertRaises(web_auth_module.LoginFlowError):
+                web_auth_module.complete_login(
+                    settings,
+                    code="one-time-code",
+                    state="wrong-state",
+                    sealed_flow=pending.sealed_flow,
+                    client=client,
+                )
+
+        self.assertEqual(self.OWNER_ID, completed.workos_user_id)
+        self.assertNotIn("private-access-token", completed.sealed_session)
+        self.assertEqual("authkit", management.authorization_arguments["provider"])
+        self.assertEqual("login", management.authorization_arguments["prompt"])
+        self.assertEqual("sdk-generated-code-verifier", management.authentication_arguments["code_verifier"])
+
+    def test_session_refresh_preserves_cookie_on_network_failure(self) -> None:
+        invalid_jwt = SimpleNamespace(
+            authenticated=False,
+            reason=SimpleNamespace(value="invalid_jwt"),
+        )
+        network_failure = SimpleNamespace(
+            authenticated=False,
+            reason=SimpleNamespace(value="refresh_network_error"),
+        )
+        session = SimpleNamespace(
+            authenticate=lambda: invalid_jwt,
+            refresh=lambda: network_failure,
+        )
+        client = SimpleNamespace(
+            user_management=SimpleNamespace(load_sealed_session=lambda **kwargs: session)
+        )
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            settings = web_auth_module.get_auth_configuration()
+            result = web_auth_module.authenticate_session(settings, "sealed", client=client)
+        self.assertEqual("unavailable", result.status)
+        self.assertFalse(result.clear_cookie)
+
+        session.refresh = lambda: SimpleNamespace(
+            authenticated=False,
+            reason="unexpected JWKS transport failure",
+        )
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            unknown_result = web_auth_module.authenticate_session(
+                settings,
+                "sealed",
+                client=client,
+            )
+        self.assertEqual("unavailable", unknown_result.status)
+        self.assertFalse(unknown_result.clear_cookie)
+
+    def test_owner_mapping_is_idempotent_and_never_reassigned(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "identity.db"
+            with (
+                patch.object(database_module, "DB_PATH", database_path),
+                patch.object(
+                    local_users_module,
+                    "get_db_connection",
+                    side_effect=database_module.get_db_connection,
+                ),
+            ):
+                database_module.init_db()
+                first_id = local_users_module.provision_staging_owner(self.OWNER_ID)
+                second_id = local_users_module.provision_staging_owner(self.OWNER_ID)
+                with self.assertRaises(local_users_module.LocalUserAuthorizationError):
+                    local_users_module.provision_staging_owner("user_01DIFFERENTOWNER")
+                self.assertEqual(first_id, second_id)
+                self.assertEqual(
+                    first_id,
+                    local_users_module.authorized_local_owner(self.OWNER_ID),
+                )
+
+    def test_shared_routes_fail_closed_and_callback_sets_secure_cookie(self) -> None:
+        headers = {app_module.TRUSTED_PROXY_TOKEN_HEADER: self.ORIGIN_TOKEN}
+        authenticated = web_auth_module.SessionAuthentication(
+            status="authenticated",
+            workos_user_id=self.OWNER_ID,
+            session_id="session_01TEST",
+        )
+        completed = web_auth_module.CompletedLogin(
+            workos_user_id=self.OWNER_ID,
+            sealed_session="encrypted-session-value",
+        )
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            client = TestClient(app_module.app, base_url="https://staging-app.jhunterj.com")
+            try:
+                api_response = client.get("/api/version", headers=headers)
+                browser_response = client.get(
+                    "/",
+                    headers={**headers, "Accept": "text/html"},
+                    follow_redirects=False,
+                )
+                with (
+                    patch.object(app_module, "authenticate_session", return_value=authenticated),
+                    patch.object(app_module, "authorized_local_owner", return_value=1),
+                ):
+                    session_response = client.get("/api/session", headers=headers)
+                with (
+                    patch.object(app_module, "complete_login", return_value=completed),
+                    patch.object(app_module, "provision_staging_owner", return_value=1),
+                ):
+                    callback_response = client.get(
+                        "/auth/callback?code=one-time-code&state=state-value",
+                        headers={**headers, "Cookie": f"{web_auth_module.LOGIN_FLOW_COOKIE_NAME}=sealed-flow"},
+                        follow_redirects=False,
+                    )
+            finally:
+                client.close()
+
+        self.assertEqual(401, api_response.status_code)
+        self.assertEqual(303, browser_response.status_code)
+        self.assertEqual("/auth/login", browser_response.headers["location"])
+        self.assertEqual(
+            {"authentication": "workos", "authenticated": True},
+            session_response.json(),
+        )
+        self.assertEqual(303, callback_response.status_code)
+        session_cookie = next(
+            value
+            for value in callback_response.headers.get_list("set-cookie")
+            if value.startswith(web_auth_module.SESSION_COOKIE_NAME)
+        )
+        self.assertIn("HttpOnly", session_cookie)
+        self.assertIn("Secure", session_cookie)
+        self.assertIn("SameSite=lax", session_cookie)
+
+    def test_liveness_survives_missing_auth_config_but_readiness_fails(self) -> None:
+        incomplete_environment = {
+            "CAREERTRELLIS_ENVIRONMENT": "staging",
+            "CAREERTRELLIS_ALLOWED_HOSTS": "staging-app.jhunterj.com",
+            "CAREERTRELLIS_TRUSTED_PROXY_TOKEN": self.ORIGIN_TOKEN,
+            "CAREERTRELLIS_AUTH_MODE": "",
+        }
+        headers = {app_module.TRUSTED_PROXY_TOKEN_HEADER: self.ORIGIN_TOKEN}
+        with patch.dict(os.environ, incomplete_environment, clear=False):
+            client = TestClient(app_module.app, base_url="https://staging-app.jhunterj.com")
+            try:
+                liveness = client.get("/health/live", headers=headers)
+                readiness = client.get("/health/ready", headers=headers)
+            finally:
+                client.close()
+        self.assertEqual(200, liveness.status_code)
+        self.assertEqual(503, readiness.status_code)
+
+
 class LocalBrowserBoundaryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app_module.app, base_url="http://127.0.0.1:8001")
@@ -1598,6 +1842,13 @@ class LocalBrowserBoundaryTests(unittest.TestCase):
             "CAREERTRELLIS_ENVIRONMENT": "staging",
             "CAREERTRELLIS_ALLOWED_HOSTS": "staging-app.jhunterj.com",
             "CAREERTRELLIS_TRUSTED_PROXY_TOKEN": token,
+            "CAREERTRELLIS_AUTH_MODE": "workos",
+            "WORKOS_API_KEY": "sk_test_ci_000000000000000000000000",
+            "WORKOS_CLIENT_ID": "client_01STAGINGCLIENT",
+            "WORKOS_COOKIE_PASSWORD": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "WORKOS_REDIRECT_URI": "https://staging-app.jhunterj.com/auth/callback",
+            "WORKOS_LOGOUT_RETURN_TO": "https://staging-app.jhunterj.com/",
+            "CAREERTRELLIS_STAGING_OWNER_WORKOS_USER_ID": "user_01STAGINGOWNER",
         }
         with patch.dict(os.environ, environment, clear=False):
             client = TestClient(app_module.app, base_url="https://staging-app.jhunterj.com")
@@ -1623,7 +1874,7 @@ class LocalBrowserBoundaryTests(unittest.TestCase):
         self.assertEqual(200, trusted.status_code)
         self.assertEqual("DENY", trusted.headers["x-frame-options"])
         self.assertEqual("max-age=31536000", trusted.headers["strict-transport-security"])
-        self.assertEqual(404, same_origin.status_code)
+        self.assertEqual(401, same_origin.status_code)
 
     def test_shared_host_runtime_configuration_fails_closed(self) -> None:
         with patch.dict(

@@ -7,6 +7,16 @@ CAREERTRELLIS_TRUSTED_PROXY_TOKEN=replace-with-the-same-64-character-random-valu
 CAREERTRELLIS_WORKER_HEARTBEAT_SECONDS=15
 PLAYWRIGHT_BROWSERS_PATH=/var/lib/careertrellis/staging/ms-playwright
 
+# Required by the Stage 2 web release. Keep every value in this root-owned
+# mode-0600 file; never commit real WorkOS values.
+CAREERTRELLIS_AUTH_MODE=workos
+WORKOS_API_KEY=replace-with-the-staging-workos-api-key
+WORKOS_CLIENT_ID=replace-with-the-staging-workos-client-id
+WORKOS_COOKIE_PASSWORD=replace-with-a-url-safe-base64-key-from-32-random-bytes
+WORKOS_REDIRECT_URI=https://staging-app.jhunterj.com/auth/callback
+WORKOS_LOGOUT_RETURN_TO=https://staging-app.jhunterj.com/
+CAREERTRELLIS_STAGING_OWNER_WORKOS_USER_ID=replace-with-the-approved-immutable-workos-user-id
+
 # Optional privacy-minimized monitoring; leave blank to disable.
 POSTHOG_PROJECT_TOKEN=
 POSTHOG_HOST=
