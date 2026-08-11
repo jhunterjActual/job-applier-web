@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekday differential encrypted PostgreSQL backup to R2
+
+[Timer]
+OnCalendar=Mon..Sat *-*-* 03:15:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=careertrellis-pgbackrest-differential.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,23 @@
+[Unit]
+Description=Copy encrypted PostgreSQL repository from R2 to OneDrive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/sbin/careertrellis-mirror-pgbackrest-onedrive
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+# rclone refreshes OAuth tokens with an atomic file replacement, so its
+# root-only configuration directory (not merely the file) must be writable.
+ReadWritePaths=/etc/careertrellis
+
+[Install]
+WantedBy=multi-user.target

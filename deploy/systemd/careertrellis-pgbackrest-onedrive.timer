@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily copy of encrypted PostgreSQL repository to OneDrive
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=careertrellis-pgbackrest-onedrive.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,21 @@
+[Unit]
+Description=Full encrypted PostgreSQL backup to R2
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+ExecStartPre=/usr/bin/pgbackrest --stanza=careertrellis check
+ExecStart=/usr/bin/pgbackrest --stanza=careertrellis --type=full backup
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
