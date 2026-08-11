@@ -5,6 +5,7 @@
     const SUPPORTED_LANGUAGES = new Set(["en", "es"]);
     const messages = {
         en: {
+            "auth.sign_out": "Sign out",
             "nav.dashboard": "Dashboard",
             "nav.profile": "Profile & Resume",
             "nav.search": "Search & Match",
@@ -122,6 +123,7 @@
             "common.stopping.subtitle": "Finishing the current step, then stopping without discarding completed work."
         },
         es: {
+            "auth.sign_out": "Cerrar sesión",
             "nav.dashboard": "Panel",
             "nav.profile": "Perfil y currículum",
             "nav.search": "Buscar y comparar",

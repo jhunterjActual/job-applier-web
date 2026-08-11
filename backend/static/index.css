@@ -290,6 +290,14 @@ summary:focus-visible,
     font-size: 14px;
 }
 
+.session-signout {
+    margin-left: 2px;
+}
+
+.session-signout .btn {
+    min-height: 32px;
+}
+
 .avatar {
     width: 32px;
     height: 32px;

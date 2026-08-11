@@ -48,6 +48,25 @@ from application_engagements import (
 )
 from data_export import build_user_data_export
 from database import get_db_connection, init_db
+from local_users import (
+    LocalUserAuthorizationError,
+    authorized_local_owner,
+    provision_staging_owner,
+)
+from web_auth import (
+    LOGIN_FLOW_COOKIE_NAME,
+    LOGIN_FLOW_MAX_AGE_SECONDS,
+    SESSION_COOKIE_MAX_AGE_SECONDS,
+    SESSION_COOKIE_NAME,
+    AuthenticationConfigurationError,
+    IdentityNotAuthorizedError,
+    LoginFlowError,
+    authenticate_session,
+    begin_login,
+    complete_login,
+    get_auth_configuration,
+    logout_url,
+)
 from backup_restore import (
     MAXIMUM_BACKUP_BYTES,
     BackupAuthenticationError,
@@ -124,6 +143,9 @@ MAX_RESUME_DOCUMENT_UPLOAD_BYTES = 10 * 1024 * 1024
 SAFE_HTTP_METHODS = {"GET", "HEAD", "OPTIONS"}
 BACKUP_RESTORE_LOCK = Lock()
 TRUSTED_PROXY_TOKEN_HEADER = "x-careertrellis-proxy-token"
+PUBLIC_SHARED_HOST_PATHS = frozenset(
+    {"/health/live", "/health/ready", "/auth/login", "/auth/callback"}
+)
 
 initialize_sentry(APP_BUILD)
 
@@ -206,6 +228,7 @@ def _cache_headquarters(cache_key: str, result: HeadquartersResult, selected_pro
 async def lifespan(app: FastAPI):
     """Validate the runtime, start optional analytics, and stop within a bounded budget."""
     config.validate_runtime_configuration()
+    get_auth_configuration()
     initialize_analytics(APP_BUILD)
     try:
         yield
@@ -251,6 +274,47 @@ def _same_origin(value: str, request_authority: tuple[str, int], scheme: str) ->
     )
 
 
+def _secured_response(request: Request, response: Response) -> Response:
+    """Apply browser security headers consistently to normal and auth-boundary responses."""
+    if (
+        request.url.path == "/"
+        or request.url.path.startswith("/static/")
+        or request.url.path.startswith("/auth/")
+        or request.url.path == "/api/session"
+    ):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+    if request.url.path.startswith("/auth/"):
+        response.headers["Referrer-Policy"] = "no-referrer"
+    else:
+        response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    if config.get_runtime_environment() != "local":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
+    return response
+
+
+def _delete_auth_cookie(response: Response, cookie_name: str) -> None:
+    response.delete_cookie(
+        cookie_name,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _unauthenticated_response(request: Request, clear_cookie: bool = False) -> Response:
+    accepts_html = "text/html" in request.headers.get("accept", "").lower()
+    if request.method.upper() == "GET" and (request.url.path == "/" or accepts_html):
+        response: Response = RedirectResponse("/auth/login", status_code=303)
+    else:
+        response = JSONResponse({"detail": "Authentication required."}, status_code=401)
+    if clear_cookie:
+        _delete_auth_cookie(response, SESSION_COOKIE_NAME)
+    return _secured_response(request, response)
+
+
 @app.middleware("http")
 async def protect_local_browser_boundary(request: Request, call_next):
     """Enforce the configured browser boundary and prevent direct origin access."""
@@ -275,15 +339,57 @@ async def protect_local_browser_boundary(request: Request, call_next):
         if source and not _same_origin(source, request_authority, request.url.scheme):
             return JSONResponse({"detail": "Request origin does not match this app."}, status_code=403)
 
+    auth_settings = None
+    if request.url.path != "/health/live":
+        try:
+            auth_settings = get_auth_configuration()
+        except AuthenticationConfigurationError:
+            return _secured_response(
+                request,
+                JSONResponse({"detail": "Authentication is not configured."}, status_code=503),
+            )
+    if auth_settings is not None and request.url.path not in PUBLIC_SHARED_HOST_PATHS:
+        sealed_session = request.cookies.get(SESSION_COOKIE_NAME, "")
+        if len(sealed_session) > 8192:
+            return _unauthenticated_response(request, clear_cookie=True)
+        authentication = await run_in_threadpool(
+            authenticate_session,
+            auth_settings,
+            sealed_session,
+        )
+        if authentication.status == "unavailable":
+            return _secured_response(
+                request,
+                JSONResponse(
+                    {"detail": "Authentication is temporarily unavailable."},
+                    status_code=503,
+                ),
+            )
+        if authentication.status != "authenticated" or not authentication.workos_user_id:
+            return _unauthenticated_response(request, authentication.clear_cookie)
+        local_user_id = await run_in_threadpool(
+            authorized_local_owner,
+            authentication.workos_user_id,
+        )
+        if local_user_id is None:
+            return _unauthenticated_response(request, clear_cookie=True)
+        request.state.local_user_id = local_user_id
+        request.state.workos_session_id = authentication.session_id
+        request.state.refreshed_session = authentication.refreshed_session
+
     response = await call_next(request)
-    if request.url.path == "/" or request.url.path.startswith("/static/"):
-        response.headers["Cache-Control"] = "no-store, max-age=0"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = "same-origin"
-    response.headers["X-Frame-Options"] = "DENY"
-    if config.get_runtime_environment() != "local":
-        response.headers["Strict-Transport-Security"] = "max-age=31536000"
-    return response
+    refreshed_session = getattr(request.state, "refreshed_session", None)
+    if refreshed_session:
+        response.set_cookie(
+            SESSION_COOKIE_NAME,
+            refreshed_session,
+            max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
+            path="/",
+            secure=True,
+            httponly=True,
+            samesite="lax",
+        )
+    return _secured_response(request, response)
 
 class ProfessionalEvidenceUpdate(BaseModel):
     skills: str = Field(default="", max_length=MAX_EVIDENCE_FIELD_CHARS)
@@ -378,6 +484,114 @@ class FullBackupRequest(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+@app.get("/auth/login", include_in_schema=False)
+async def auth_login() -> Response:
+    """Redirect a shared-host browser to the hosted WorkOS AuthKit UI."""
+    settings = get_auth_configuration()
+    if settings is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        pending_login = await run_in_threadpool(begin_login, settings)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Authentication is temporarily unavailable.") from exc
+    response = RedirectResponse(pending_login.authorization_url, status_code=303)
+    response.set_cookie(
+        LOGIN_FLOW_COOKIE_NAME,
+        pending_login.sealed_flow,
+        max_age=LOGIN_FLOW_MAX_AGE_SECONDS,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+    return response
+
+
+@app.get("/auth/callback", include_in_schema=False)
+async def auth_callback(request: Request) -> Response:
+    """Complete a one-time PKCE login and establish the encrypted session cookie."""
+    settings = get_auth_configuration()
+    if settings is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    code = request.query_params.get("code", "")
+    state = request.query_params.get("state", "")
+    sealed_flow = request.cookies.get(LOGIN_FLOW_COOKIE_NAME, "")
+    if not (
+        1 <= len(code) <= 2048
+        and 1 <= len(state) <= 512
+        and 1 <= len(sealed_flow) <= 4096
+    ):
+        response = JSONResponse({"detail": "The login callback is invalid."}, status_code=400)
+        _delete_auth_cookie(response, LOGIN_FLOW_COOKIE_NAME)
+        return response
+    try:
+        completed_login = await run_in_threadpool(
+            complete_login,
+            settings,
+            code=code,
+            state=state,
+            sealed_flow=sealed_flow,
+        )
+        await run_in_threadpool(provision_staging_owner, completed_login.workos_user_id)
+    except LoginFlowError as exc:
+        response = JSONResponse({"detail": "The login attempt expired or is invalid."}, status_code=400)
+        _delete_auth_cookie(response, LOGIN_FLOW_COOKIE_NAME)
+        return response
+    except (IdentityNotAuthorizedError, LocalUserAuthorizationError) as exc:
+        response = JSONResponse({"detail": "This identity is not authorized."}, status_code=403)
+        _delete_auth_cookie(response, LOGIN_FLOW_COOKIE_NAME)
+        return response
+    except Exception as exc:
+        response = JSONResponse(
+            {"detail": "Authentication is temporarily unavailable."},
+            status_code=503,
+        )
+        _delete_auth_cookie(response, LOGIN_FLOW_COOKIE_NAME)
+        return response
+
+    response = RedirectResponse("/", status_code=303)
+    _delete_auth_cookie(response, LOGIN_FLOW_COOKIE_NAME)
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        completed_login.sealed_session,
+        max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+    return response
+
+
+@app.post("/auth/logout", include_in_schema=False)
+def auth_logout(request: Request) -> Response:
+    """Clear the local session and terminate its WorkOS session."""
+    settings = get_auth_configuration()
+    if settings is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    session_id = getattr(request.state, "workos_session_id", None)
+    destination = settings.logout_return_to
+    if session_id:
+        try:
+            destination = logout_url(settings, session_id)
+        except Exception:
+            destination = settings.logout_return_to
+    response = RedirectResponse(destination, status_code=303)
+    _delete_auth_cookie(response, SESSION_COOKIE_NAME)
+    return response
+
+
+@app.get("/api/session")
+def get_session_summary(request: Request) -> dict[str, object]:
+    """Expose only the authentication mode needed to render session controls."""
+    if get_auth_configuration() is None:
+        return {"authentication": "local", "authenticated": True}
+    return {
+        "authentication": "workos",
+        "authenticated": bool(getattr(request.state, "local_user_id", None)),
+    }
+
+
 @app.get("/api/version")
 def get_app_version() -> dict:
     """Identify the running backend so launchers never open a stale instance."""
@@ -395,6 +609,7 @@ def get_readiness() -> dict:
     """Report readiness only when configuration, storage, and the database are usable."""
     try:
         config.validate_runtime_configuration()
+        get_auth_configuration()
         if not all(
             directory.is_dir() and os.access(directory, os.R_OK | os.W_OK)
             for directory in (config.DATA_DIR, config.UPLOAD_DIR, config.OUTPUT_DIR)

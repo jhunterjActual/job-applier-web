@@ -47,6 +47,7 @@ const apiStatusBadge = document.getElementById("api-status");
 const appContainer = document.querySelector(".app-container");
 const appAnnouncer = document.getElementById("app-announcer");
 const navMenu = document.querySelector(".nav-menu");
+const sessionSignout = document.getElementById("session-signout");
 
 // Profile Form Elements
 const profileForm = document.getElementById("profile-form");
@@ -408,6 +409,7 @@ document.addEventListener("DOMContentLoaded", () => {
     bindEvent(resetAdvancedJobFiltersBtn, "click", resetAdvancedJobFilters);
     bindEvent(stopLoadingBtn, "click", stopActiveLoadingOperation);
 
+    configureSessionControls();
     loadProfile();
     loadSavedSearches();
     checkDueSavedSearches();
@@ -416,6 +418,18 @@ document.addEventListener("DOMContentLoaded", () => {
     loadApplicationInsights();
     refreshSourceDiagnosticCount();
 });
+
+async function configureSessionControls() {
+    if (!sessionSignout) return;
+    try {
+        const response = await fetch(`${API_URL}/api/session`, { cache: "no-store" });
+        if (!response.ok) return;
+        const session = await response.json();
+        sessionSignout.hidden = session.authentication !== "workos" || !session.authenticated;
+    } catch (error) {
+        console.warn("Session controls are unavailable.");
+    }
+}
 
 function bindEvent(element, eventName, handler) {
     if (element) element.addEventListener(eventName, handler);

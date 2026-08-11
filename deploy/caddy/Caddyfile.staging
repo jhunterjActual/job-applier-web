@@ -1,7 +1,8 @@
 staging-app.jhunterj.com {
 	encode zstd gzip
 
-	# Temporary Stage 1 access gate. WorkOS authentication replaces this before beta.
+	# Keep this temporary outer gate while the Stage 2 WorkOS flow is validated.
+	# Remove it only in a separate reviewed release after the acceptance checks pass.
 	basic_auth argon2id {
 		{$STAGING_BASIC_AUTH_USER} {$STAGING_BASIC_AUTH_HASH}
 	}
@@ -11,7 +12,7 @@ staging-app.jhunterj.com {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
-		Referrer-Policy "same-origin"
+		Referrer-Policy "no-referrer"
 	}
 
 	reverse_proxy 127.0.0.1:8001 {
@@ -34,4 +35,8 @@ staging-app.jhunterj.com {
 		}
 		format json
 	}
+
+	# Authorization codes and state arrive in the callback query string.
+	# Do not persist that one-time authentication material in access logs.
+	log_skip /auth/callback
 }

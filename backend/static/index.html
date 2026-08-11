@@ -19,7 +19,7 @@
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/index.css?v=20260808-23">
+    <link rel="stylesheet" href="/static/index.css?v=20260811-24">
 </head>
 <body>
     <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -70,6 +70,12 @@
                 <div class="user-greeting">
                     <span id="user-display-name">Candidate</span>
                     <div class="avatar"><i class="fa-solid fa-user"></i></div>
+                    <form class="session-signout" id="session-signout" action="/auth/logout" method="post" hidden>
+                        <button type="submit" class="btn btn-secondary btn-sm">
+                            <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
+                            <span data-i18n="auth.sign_out">Sign out</span>
+                        </button>
+                    </form>
                 </div>
             </header>
 
@@ -1313,7 +1319,7 @@
     </div>
     
     <!-- Custom JS -->
-    <script src="/static/i18n.js?v=20260808-23"></script>
-    <script src="/static/app.js?v=20260808-23"></script>
+    <script src="/static/i18n.js?v=20260811-24"></script>
+    <script src="/static/app.js?v=20260811-24"></script>
 </body>
 </html>
