@@ -24,6 +24,7 @@ import materials as materials_module
 import operations as operations_module
 import searcher as searcher_module
 import source_diagnostics as source_diagnostics_module
+import sqlite_postgres_import as sqlite_postgres_import_module
 import worker as worker_module
 import web_auth as web_auth_module
 from application_insights import build_application_insights
@@ -1466,6 +1467,29 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn(browser_export, script)
         self.assertLess(script.index(browser_export), script.index(test_command))
 
+    def test_release_can_be_prepared_without_activating_it(self) -> None:
+        script = (self.project_dir() / "deploy" / "scripts" / "deploy-release.sh").read_text(
+            encoding="utf-8"
+        )
+        prepare_check = 'if [[ ${prepare_only} == true ]]'
+        activation = 'old_release=""'
+        self.assertIn('--prepare-only', script)
+        self.assertIn(prepare_check, script)
+        self.assertLess(script.index(prepare_check), script.index(activation))
+
+    def test_shared_web_service_loads_only_the_runtime_database_credential(self) -> None:
+        project_dir = self.project_dir()
+        web_service = (project_dir / "deploy" / "systemd" / "careertrellis-web.service").read_text(
+            encoding="utf-8"
+        )
+        worker_service = (
+            project_dir / "deploy" / "systemd" / "careertrellis-worker.service"
+        ).read_text(encoding="utf-8")
+        self.assertIn("EnvironmentFile=/etc/careertrellis/postgres-runtime.env", web_service)
+        self.assertNotIn("postgres-migration.env", web_service)
+        self.assertNotIn("postgres-worker.env", web_service)
+        self.assertNotIn("postgres-runtime.env", worker_service)
+
     def test_provisioning_keeps_the_caddy_access_log_service_writable(self) -> None:
         script = (self.project_dir() / "deploy" / "scripts" / "provision-staging-host.sh").read_text(encoding="utf-8")
         self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access.log", script)
@@ -1607,6 +1631,8 @@ class WebAuthenticationTests(unittest.TestCase):
             "CAREERTRELLIS_ALLOWED_HOSTS": "staging-app.jhunterj.com",
             "CAREERTRELLIS_TRUSTED_PROXY_TOKEN": self.ORIGIN_TOKEN,
             "CAREERTRELLIS_AUTH_MODE": "workos",
+            "CAREERTRELLIS_IDENTITY_STORE": "postgres",
+            "CAREERTRELLIS_DATABASE_URL": "postgresql+psycopg://runtime:test@database.test/careertrellis",
             "WORKOS_API_KEY": "sk_test_ci_000000000000000000000000",
             "WORKOS_CLIENT_ID": "client_01STAGINGCLIENT",
             "WORKOS_COOKIE_PASSWORD": self.COOKIE_PASSWORD,
@@ -1751,6 +1777,92 @@ class WebAuthenticationTests(unittest.TestCase):
                     local_users_module.authorized_local_owner(self.OWNER_ID),
                 )
 
+    def test_shared_identity_store_requires_explicit_postgres_configuration(self) -> None:
+        environment = self.staging_environment()
+        environment["CAREERTRELLIS_IDENTITY_STORE"] = ""
+        with patch.dict(os.environ, environment, clear=False):
+            with self.assertRaises(config_module.RuntimeConfigurationError):
+                local_users_module.validate_identity_store_configuration()
+
+        environment["CAREERTRELLIS_IDENTITY_STORE"] = "postgres"
+        environment["CAREERTRELLIS_DATABASE_URL"] = "sqlite:///unsafe.db"
+        with patch.dict(os.environ, environment, clear=False):
+            with self.assertRaises(config_module.RuntimeConfigurationError):
+                local_users_module.validate_identity_store_configuration()
+
+    def test_postgres_owner_resolution_never_creates_or_elevates_identity(self) -> None:
+        mapping_result = SimpleNamespace(one_or_none=lambda: None)
+        execution_result = SimpleNamespace(mappings=lambda: mapping_result)
+        connection = SimpleNamespace(execute=lambda *args, **kwargs: execution_result)
+
+        class IdentityScope:
+            def __enter__(self):
+                return connection
+
+            def __exit__(self, *_args):
+                return False
+
+        with (
+            patch.object(local_users_module, "identity_store_kind", return_value="postgres"),
+            patch.object(local_users_module, "runtime_postgres_engine", return_value=object()),
+            patch.object(local_users_module, "identity_transaction", return_value=IdentityScope()),
+        ):
+            self.assertIsNone(local_users_module.authorized_local_owner(self.OWNER_ID))
+            with self.assertRaises(local_users_module.LocalUserAuthorizationError):
+                local_users_module.provision_staging_owner(self.OWNER_ID)
+
+    def test_sqlite_import_preflight_counts_but_never_returns_secret_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "workspace.db"
+            with patch.object(database_module, "DB_PATH", database_path):
+                database_module.init_db()
+                connection = database_module.get_db_connection()
+                try:
+                    now = "2026-08-11T12:00:00"
+                    connection.execute(
+                        "INSERT INTO app_users (workos_user_id, role, created_at, last_seen_at) "
+                        "VALUES (?, 'owner', ?, ?)",
+                        (self.OWNER_ID, now, now),
+                    )
+                    connection.execute(
+                        "UPDATE profile SET gemini_api_key = ?, google_maps_api_key = ?",
+                        ("secret-gemini-value", "secret-maps-value"),
+                    )
+                    job_id = connection.execute(
+                        "INSERT INTO jobs (title, company, url, status) VALUES (?, ?, ?, ?)",
+                        ("Synthetic Role", "Example", "https://example.test/job", "matched"),
+                    ).lastrowid
+                    connection.execute(
+                        """
+                        INSERT INTO applications
+                            (job_id, company, position, tailored_resume_path, status, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (job_id, "Example", "Synthetic Role", "private/resume.pdf", "tailored", now),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+
+            manifest = sqlite_postgres_import_module.inspect_sqlite_workspace(
+                database_path, self.OWNER_ID
+            )
+            summary = json.dumps(manifest.sanitized_summary(), sort_keys=True)
+            self.assertEqual(1, manifest.counts["jobs"])
+            self.assertEqual(2, manifest.provider_secret_fields)
+            self.assertEqual(1, manifest.generated_file_paths)
+            self.assertNotIn("secret-gemini-value", summary)
+            self.assertNotIn("secret-maps-value", summary)
+            self.assertNotIn("private/resume.pdf", summary)
+            with self.assertRaises(sqlite_postgres_import_module.SQLiteImportError):
+                sqlite_postgres_import_module.import_sqlite_workspace(
+                    database_path, self.OWNER_ID
+                )
+            with self.assertRaises(sqlite_postgres_import_module.SQLiteImportError):
+                sqlite_postgres_import_module.inspect_sqlite_workspace(
+                    database_path, "user_01DIFFERENTOWNER"
+                )
+
     def test_shared_routes_fail_closed_and_callback_sets_secure_cookie(self) -> None:
         headers = {app_module.TRUSTED_PROXY_TOKEN_HEADER: self.ORIGIN_TOKEN}
         authenticated = web_auth_module.SessionAuthentication(
@@ -1843,6 +1955,8 @@ class LocalBrowserBoundaryTests(unittest.TestCase):
             "CAREERTRELLIS_ALLOWED_HOSTS": "staging-app.jhunterj.com",
             "CAREERTRELLIS_TRUSTED_PROXY_TOKEN": token,
             "CAREERTRELLIS_AUTH_MODE": "workos",
+            "CAREERTRELLIS_IDENTITY_STORE": "postgres",
+            "CAREERTRELLIS_DATABASE_URL": "postgresql+psycopg://runtime:test@database.test/careertrellis",
             "WORKOS_API_KEY": "sk_test_ci_000000000000000000000000",
             "WORKOS_CLIENT_ID": "client_01STAGINGCLIENT",
             "WORKOS_COOKIE_PASSWORD": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -1903,12 +2017,16 @@ class LocalBrowserBoundaryTests(unittest.TestCase):
 
     def test_health_endpoints_are_minimal_and_readiness_checks_the_database(self) -> None:
         connection = sqlite3.connect(":memory:", check_same_thread=False)
-        with patch.object(app_module, "get_db_connection", return_value=connection):
+        with (
+            patch.object(app_module, "get_db_connection", return_value=connection),
+            patch.object(app_module, "check_identity_store_ready") as identity_ready,
+        ):
             live = self.client.get("/health/live")
             ready = self.client.get("/health/ready")
 
         self.assertEqual({"status": "ok", "build": app_module.APP_BUILD}, live.json())
         self.assertEqual({"status": "ready", "build": app_module.APP_BUILD}, ready.json())
+        identity_ready.assert_called_once_with()
 
     def test_worker_entrypoint_validates_and_writes_a_privacy_safe_heartbeat(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

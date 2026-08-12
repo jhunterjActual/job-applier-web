@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from threading import Lock
 from typing import Iterator
 
 from sqlalchemy import Engine, create_engine, text
@@ -61,6 +62,30 @@ def create_postgres_engine(value: str | URL | None = None) -> Engine:
     )
 
 
+def runtime_postgres_engine() -> Engine:
+    """Return the shared-host runtime pool configured for the current process."""
+    url = database_url_from_environment()
+    with _ENGINE_REGISTRY_LOCK:
+        engine = _ENGINE_REGISTRY.get(url)
+        if engine is None:
+            engine = create_postgres_engine(url)
+            _ENGINE_REGISTRY[url] = engine
+        return engine
+
+
+def dispose_postgres_engines() -> None:
+    """Dispose cached pools during a clean process shutdown."""
+    with _ENGINE_REGISTRY_LOCK:
+        engines = tuple(_ENGINE_REGISTRY.values())
+        _ENGINE_REGISTRY.clear()
+    for engine in engines:
+        engine.dispose()
+
+
+_ENGINE_REGISTRY: dict[URL, Engine] = {}
+_ENGINE_REGISTRY_LOCK = Lock()
+
+
 def _positive_user_id(value: object) -> int:
     if isinstance(value, bool):
         raise ValueError("The authenticated user ID must be a positive integer.")
@@ -84,6 +109,11 @@ def _workos_user_id(value: object) -> str:
     ):
         raise ValueError("The authenticated WorkOS user ID is invalid.")
     return workos_user_id
+
+
+def validated_workos_user_id(value: object) -> str:
+    """Return one bounded immutable WorkOS identity string."""
+    return _workos_user_id(value)
 
 
 def set_identity_context(connection: Connection, workos_user_id: object) -> None:
