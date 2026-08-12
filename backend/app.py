@@ -74,6 +74,7 @@ from object_store import (
     validate_object_store_configuration,
 )
 from stored_objects import StoredObjectNotFound, download_stored_object
+from discovery_repository import runtime_discovery_repository
 from profile_repository import runtime_profile_repository
 from web_auth import (
     LOGIN_FLOW_COOKIE_NAME,
@@ -121,8 +122,6 @@ from interview_prep import (
 from source_diagnostics import (
     build_maintainer_report,
     format_maintainer_report,
-    list_source_diagnostics,
-    persist_source_diagnostics,
 )
 from materials import cover_letter_output_path, material_download_name, persist_cover_letter, resolve_output_file
 from resume_documents import ResumeDocumentError, build_accessible_resume_docx, import_resume_document
@@ -997,29 +996,13 @@ LAST_SEARCH_RESULT = None
 
 
 def _save_source_diagnostic_history(search_result: dict) -> None:
-    """Best-effort local history must never change the outcome of a search."""
-    conn = None
+    """Best-effort minimized history must never change a search outcome."""
     try:
-        conn = get_db_connection()
-        persist_source_diagnostics(
-            conn,
-            search_result,
-            datetime.now().isoformat(timespec="seconds"),
-        )
-        conn.commit()
+        runtime_discovery_repository(
+            sqlite_connection_factory=get_db_connection
+        ).persist_source_diagnostics(search_result, datetime.now())
     except Exception:
-        if conn is not None:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
         print("Source diagnostic history could not be saved; search results remain available.")
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 
 def run_search_wrapper(
@@ -1085,19 +1068,9 @@ def get_jobs(include_archived: bool = False) -> list[dict]:
     Returns:
         list[dict]: A list of job listing records.
     """
-    conn = get_db_connection()
-    where_clause = "" if include_archived else "WHERE j.status != 'archived'"
-    rows = conn.execute(f"""
-        SELECT j.*, a.date_applied, a.application_method, a.notes, a.follow_up_date,
-               CASE WHEN a.tailored_resume_path IS NOT NULL OR a.cover_letter IS NOT NULL
-                    THEN 1 ELSE 0 END AS has_materials
-        FROM jobs j
-        LEFT JOIN applications a ON a.job_id = j.id
-        {where_clause}
-        ORDER BY j.match_score DESC
-    """).fetchall()
-    conn.close()
-    jobs = [dict(row) for row in rows]
+    jobs = runtime_discovery_repository(
+        sqlite_connection_factory=get_db_connection
+    ).list_jobs(include_archived)
     for job in jobs:
         job["filter_facets"] = derive_job_filter_facets(job)
     return jobs
@@ -1127,14 +1100,10 @@ def _preview_manual_job(req: ManualJobPreviewRequest, operation: OperationToken)
     if not is_public:
         raise HTTPException(status_code=422, detail=reason)
 
-    conn = get_db_connection()
-    suppressed = is_job_suppressed(conn, canonical_url)
-    existing = conn.execute(
-        "SELECT id, title, company, status FROM jobs WHERE url = ?",
-        (canonical_url,),
-    ).fetchone()
-    conn.close()
-    if suppressed:
+    identity = runtime_discovery_repository(
+        sqlite_connection_factory=get_db_connection
+    ).job_identity(canonical_url)
+    if identity["suppressed"]:
         return {
             "success": True,
             "duplicate": False,
@@ -1142,11 +1111,11 @@ def _preview_manual_job(req: ManualJobPreviewRequest, operation: OperationToken)
             "message": "This posting was previously deleted. Clear its suppression in Clean Up before importing it again.",
             "job": {"url": canonical_url},
         }
-    if existing:
+    if identity["existing"]:
         return {
             "success": True,
             "duplicate": True,
-            "existing_job": dict(existing),
+            "existing_job": identity["existing"],
             "job": {"url": canonical_url},
         }
 
@@ -1159,14 +1128,10 @@ def _preview_manual_job(req: ManualJobPreviewRequest, operation: OperationToken)
     details = outcome["details"]
     resolved_url = canonicalize_job_url(details.get("url") or canonical_url)
     if resolved_url != canonical_url:
-        conn = get_db_connection()
-        suppressed = is_job_suppressed(conn, resolved_url)
-        existing = conn.execute(
-            "SELECT id, title, company, status FROM jobs WHERE url = ?",
-            (resolved_url,),
-        ).fetchone()
-        conn.close()
-        if suppressed:
+        identity = runtime_discovery_repository(
+            sqlite_connection_factory=get_db_connection
+        ).job_identity(resolved_url)
+        if identity["suppressed"]:
             return {
                 "success": True,
                 "duplicate": False,
@@ -1174,11 +1139,11 @@ def _preview_manual_job(req: ManualJobPreviewRequest, operation: OperationToken)
                 "message": "This posting was previously deleted. Clear its suppression in Clean Up before importing it again.",
                 "job": {"url": resolved_url},
             }
-        if existing:
+        if identity["existing"]:
             return {
                 "success": True,
                 "duplicate": True,
-                "existing_job": dict(existing),
+                "existing_job": identity["existing"],
                 "job": {"url": resolved_url},
             }
 
@@ -1470,46 +1435,29 @@ def cleanup_jobs(req: CleanupRequest) -> dict:
 @app.get("/api/job-suppressions")
 def get_job_suppressions() -> dict:
     """List privacy-minimized deleted-posting records for local review."""
-    conn = get_db_connection()
-    try:
-        count = conn.execute("SELECT COUNT(*) FROM job_suppressions").fetchone()[0]
-        rows = conn.execute(
-            """
-            SELECT id, hostname, company, title, deleted_at, deletion_source
-            FROM job_suppressions
-            ORDER BY deleted_at DESC, id DESC
-            LIMIT 100
-            """
-        ).fetchall()
-        return {"count": count, "items": [dict(row) for row in rows]}
-    finally:
-        conn.close()
+    return runtime_discovery_repository(
+        sqlite_connection_factory=get_db_connection
+    ).list_job_suppressions()
 
 
 @app.delete("/api/job-suppressions/{suppression_id}")
 def clear_job_suppression(suppression_id: int) -> dict:
     """Allow one intentionally deleted posting to be discovered again."""
-    conn = get_db_connection()
-    try:
-        cursor = conn.execute("DELETE FROM job_suppressions WHERE id = ?", (suppression_id,))
-        conn.commit()
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Suppressed posting not found.")
-        return {"success": True, "cleared": 1}
-    finally:
-        conn.close()
+    cleared = runtime_discovery_repository(
+        sqlite_connection_factory=get_db_connection
+    ).clear_job_suppression(suppression_id)
+    if not cleared:
+        raise HTTPException(status_code=404, detail="Suppressed posting not found.")
+    return {"success": True, "cleared": 1}
 
 
 @app.delete("/api/job-suppressions")
 def clear_all_job_suppressions() -> dict:
     """Allow all intentionally deleted postings to be discovered again."""
-    conn = get_db_connection()
-    try:
-        cursor = conn.execute("DELETE FROM job_suppressions")
-        conn.commit()
-        return {"success": True, "cleared": cursor.rowcount}
-    finally:
-        conn.close()
+    cleared = runtime_discovery_repository(
+        sqlite_connection_factory=get_db_connection
+    ).clear_all_job_suppressions()
+    return {"success": True, "cleared": cleared}
 
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: int) -> dict:
@@ -1569,12 +1517,10 @@ def get_search_status() -> dict:
 @app.get("/api/source-diagnostics")
 def get_source_diagnostic_history(limit: int = 100) -> JSONResponse:
     """Retrieve recent privacy-minimized source notices for troubleshooting."""
-    conn = get_db_connection()
-    try:
-        history = list_source_diagnostics(conn, limit)
-        return JSONResponse(history, headers={"Cache-Control": "no-store"})
-    finally:
-        conn.close()
+    history = runtime_discovery_repository(
+        sqlite_connection_factory=get_db_connection
+    ).list_source_diagnostics(limit)
+    return JSONResponse(history, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/data-export")
@@ -1755,11 +1701,9 @@ async def restore_full_backup(
 @app.get("/api/source-diagnostics/export")
 def export_source_diagnostic_history() -> JSONResponse:
     """Download the bounded local history without searches, URLs, or job data."""
-    conn = get_db_connection()
-    try:
-        history = list_source_diagnostics(conn, 500)
-    finally:
-        conn.close()
+    history = runtime_discovery_repository(
+        sqlite_connection_factory=get_db_connection
+    ).list_source_diagnostics(500)
     payload = {
         "schema_version": 1,
         "exported_at": datetime.now().isoformat(timespec="seconds"),
@@ -1779,11 +1723,9 @@ def export_source_diagnostic_history() -> JSONResponse:
 @app.get("/api/source-diagnostics/maintainer-report")
 def preview_source_diagnostic_maintainer_report() -> JSONResponse:
     """Prepare a minimized report for explicit review; never transmit it."""
-    conn = get_db_connection()
-    try:
-        history = list_source_diagnostics(conn, 500)
-    finally:
-        conn.close()
+    history = runtime_discovery_repository(
+        sqlite_connection_factory=get_db_connection
+    ).list_source_diagnostics(500)
     report = build_maintainer_report(
         history,
         application_build=APP_BUILD,
@@ -1811,47 +1753,32 @@ def preview_source_diagnostic_maintainer_report() -> JSONResponse:
 @app.delete("/api/source-diagnostics")
 def clear_source_diagnostic_history() -> dict:
     """Clear local troubleshooting history without affecting jobs or searches."""
-    conn = get_db_connection()
-    try:
-        cursor = conn.execute("DELETE FROM source_diagnostics")
-        conn.commit()
-        return {"success": True, "cleared": cursor.rowcount}
-    finally:
-        conn.close()
+    cleared = runtime_discovery_repository(
+        sqlite_connection_factory=get_db_connection
+    ).clear_source_diagnostics()
+    return {"success": True, "cleared": cleared}
 
 
 @app.get("/api/saved-searches")
 def get_saved_searches() -> list[dict]:
-    conn = get_db_connection()
-    rows = conn.execute(
-        "SELECT * FROM saved_searches WHERE enabled = 1 ORDER BY name COLLATE NOCASE"
-    ).fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    return runtime_discovery_repository(
+        sqlite_connection_factory=get_db_connection
+    ).list_saved_searches()
 
 
 @app.get("/api/saved-searches/due")
 def get_due_saved_searches() -> list[dict]:
-    now = datetime.now().isoformat(timespec="seconds")
-    conn = get_db_connection()
-    rows = conn.execute("""
-        SELECT id, name, keywords, location, schedule_frequency, next_alert_at
-        FROM saved_searches
-        WHERE enabled = 1 AND schedule_frequency != 'none'
-          AND next_alert_at IS NOT NULL AND next_alert_at <= ?
-        ORDER BY next_alert_at
-    """, (now,)).fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    return runtime_discovery_repository(
+        sqlite_connection_factory=get_db_connection
+    ).list_due_saved_searches(datetime.now())
 
 
 @app.delete("/api/saved-searches/{search_id}")
 def delete_saved_search(search_id: int) -> dict:
-    conn = get_db_connection()
-    cursor = conn.execute("DELETE FROM saved_searches WHERE id = ?", (search_id,))
-    conn.commit()
-    conn.close()
-    if not cursor.rowcount:
+    deleted = runtime_discovery_repository(
+        sqlite_connection_factory=get_db_connection
+    ).delete_saved_search(search_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Saved search not found.")
     return {"success": True}
 

@@ -56,13 +56,19 @@ use synthetic temporary workspaces and disposable PostgreSQL targets.
 
 ## Domains still blocking repository cutover
 
-The following hosted operations remain outside this foundation and must be
+The next discovery slice converts job-list reads, duplicate/suppression checks,
+suppression review/clearing, saved-search reads/deletion, and minimized source-
+diagnostic history. Its exact scope and no-activation gate are documented in
+`STAGE_3_POSTGRES_DISCOVERY_REPOSITORIES.md`.
+
+The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
-- jobs and job-status transitions;
-- saved searches and their job links;
+- job/search-result creation, saved-search creation/update/scheduling, and job-
+  status transitions, verification, cleanup, and permanent deletion;
+- suppression creation coupled to permanent job deletion;
 - applications, engagements, interview preparation, and follow-up data;
-- job suppressions, source diagnostics, and headquarters cache entries;
+- headquarters cache entries and any unconverted job-domain reads;
 - all user export and account-deletion reads and writes;
 - generated-material creation, replacement, and deletion through encrypted
   private object storage rather than authoritative local filesystem paths;
@@ -107,9 +113,12 @@ not waive the exact-release checks:
 
 1. Review and merge the complete repository-transition PR and fetch its exact
    40-character merge commit into the root-owned deployment checkout.
-2. Prepare the immutable release with `careertrellis-deploy --prepare-only` and
-   retain its automated, syntax, PostgreSQL 18, RLS, object-integrity, and
-   negative-authorization receipts.
+2. Confirm the exact revision's required `Web foundation` GitHub Actions checks
+   passed, retaining its PostgreSQL 18/RLS and negative-authorization receipt.
+   Then prepare the same 40-character revision with
+   `careertrellis-deploy --prepare-only`; this supplies the immutable-release,
+   local automated-test, object-integrity, and syntax receipts but does not
+   substitute for the configured PostgreSQL CI job.
 3. Confirm `/etc/careertrellis/staging.env`, `postgres-runtime.env`,
    `provider-secrets.env`, and `object-storage.env` are `root:root` mode `0600`;
    confirm both complete keyrings can be retrieved independently.
