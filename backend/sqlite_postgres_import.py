@@ -1,19 +1,20 @@
 """Atomically import one standalone SQLite workspace into one PostgreSQL owner.
 
-Provider credentials are encrypted before insertion when the server keyring is
-available. Generated-file paths remain excluded until private object storage is
-implemented; local paths are never copied into the shared schema.
+Provider credentials and generated application files are encrypted before they
+leave the standalone host. Local filesystem paths are never copied into the
+shared schema.
 """
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 import json
 import os
 from pathlib import Path
 import sqlite3
+import stat
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -28,6 +29,7 @@ from postgres_database import (
     validated_workos_user_id,
 )
 from provider_secrets import encrypt_provider_secret
+from object_store import discard_staged_object, runtime_object_backend, stage_object
 
 
 OWNER_ID_ENVIRONMENT_VARIABLE = "CAREERTRELLIS_IMPORT_OWNER_WORKOS_USER_ID"
@@ -48,6 +50,7 @@ SOURCE_TABLES = (
 )
 TARGET_TABLES = (
     "provider_secrets",
+    "stored_objects",
     "profiles",
     "base_resumes",
     "base_resume_versions",
@@ -60,12 +63,44 @@ TARGET_TABLES = (
     "source_diagnostics",
     "headquarters_cache",
 )
+SOURCE_TO_TARGET = {
+    "profile": "profiles",
+    "base_resumes": "base_resumes",
+    "base_resume_versions": "base_resume_versions",
+    "jobs": "jobs",
+    "saved_searches": "saved_searches",
+    "applications": "applications",
+    "application_status_history": "application_status_history",
+    "application_engagements": "application_engagements",
+    "job_suppressions": "job_suppressions",
+    "source_diagnostics": "source_diagnostics",
+    "headquarters_cache": "headquarters_cache",
+}
 SECRET_COLUMNS = ("gemini_api_key", "openai_api_key", "google_maps_api_key")
 FILE_PATH_COLUMNS = ("tailored_resume_path", "cover_letter_path")
+GENERATED_FILE_LIMIT_BYTES = 10 * 1024 * 1024
+GENERATED_FILE_TYPES = {
+    "tailored_resume_path": (".pdf", "application/pdf"),
+    "cover_letter_path": (".txt", "text/plain; charset=utf-8"),
+}
 
 
 class SQLiteImportError(RuntimeError):
     """The source or target failed a safe import precondition."""
+
+
+class SQLiteImportReconciliationRequired(SQLiteImportError):
+    """The database/object outcome requires operator reconciliation."""
+
+
+@dataclass(frozen=True)
+class GeneratedFileSnapshot:
+    path: Path
+    device: int
+    inode: int
+    size: int
+    modified_ns: int
+    changed_ns: int
 
 
 @dataclass(frozen=True)
@@ -73,13 +108,22 @@ class ImportManifest:
     counts: dict[str, int]
     provider_secret_fields: int
     generated_file_paths: int
+    generated_file_snapshots: dict[tuple[int, str], GeneratedFileSnapshot] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+    verified_target_counts: dict[str, int] = field(default_factory=dict)
 
     def sanitized_summary(self) -> dict[str, Any]:
-        return {
+        summary = {
             "counts": dict(self.counts),
             "provider_secret_fields": self.provider_secret_fields,
             "generated_file_paths": self.generated_file_paths,
         }
+        if self.verified_target_counts:
+            summary["verified_target_counts"] = dict(self.verified_target_counts)
+        return summary
 
 
 def _open_source(path: Path) -> sqlite3.Connection:
@@ -97,10 +141,137 @@ def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')}
 
 
+def _generated_output_root(source_path: Path) -> Path:
+    source = source_path.expanduser().resolve(strict=True)
+    candidate = source.parent / "output"
+    if candidate.is_symlink():
+        raise SQLiteImportError("The generated-file output directory must not be a symlink.")
+    try:
+        root = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise SQLiteImportError("The generated-file output directory does not exist.") from exc
+    if not root.is_dir():
+        raise SQLiteImportError("The generated-file output location must be a directory.")
+    return root
+
+
+def _validated_generated_file(
+    source_path: Path,
+    raw_path: Any,
+    column: str,
+) -> Path:
+    """Resolve one legacy material without allowing traversal or link following."""
+    value = str(raw_path or "").strip()
+    if not value:
+        raise SQLiteImportError("A generated-file path was unexpectedly blank.")
+    expected_suffix, _content_type = GENERATED_FILE_TYPES[column]
+    output_root = _generated_output_root(source_path)
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = source_path.expanduser().resolve(strict=True).parent / candidate
+    if candidate.is_symlink():
+        raise SQLiteImportError("Generated-file paths must not be symlinks.")
+    try:
+        resolved = candidate.resolve(strict=True)
+        metadata = resolved.stat()
+    except OSError as exc:
+        raise SQLiteImportError("A referenced generated file is unavailable.") from exc
+    if resolved.parent != output_root:
+        raise SQLiteImportError(
+            "Every generated file must be a direct child of the workspace output directory."
+        )
+    if resolved.suffix != expected_suffix:
+        raise SQLiteImportError(
+            f"{column} must reference a file with the exact {expected_suffix} extension."
+        )
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SQLiteImportError("Every generated-file path must reference a regular file.")
+    if not 1 <= metadata.st_size <= GENERATED_FILE_LIMIT_BYTES:
+        raise SQLiteImportError("A generated file is empty or exceeds the 10 MiB import limit.")
+    return resolved
+
+
+def _file_snapshot(path: Path, metadata: os.stat_result) -> GeneratedFileSnapshot:
+    return GeneratedFileSnapshot(
+        path=path,
+        device=int(metadata.st_dev),
+        inode=int(metadata.st_ino),
+        size=int(metadata.st_size),
+        modified_ns=int(metadata.st_mtime_ns),
+        # Windows reports creation/change timestamps inconsistently between
+        # stat(path) and fstat(fd). Device/inode/size/mtime plus both before- and
+        # after-read path checks retain the stable snapshot boundary there.
+        changed_ns=0 if os.name == "nt" else int(metadata.st_ctime_ns),
+    )
+
+
+def _read_generated_file(
+    source_path: Path,
+    raw_path: Any,
+    column: str,
+    expected: GeneratedFileSnapshot,
+) -> bytes:
+    """Read exactly the file inode captured during the SQLite snapshot preflight."""
+    path = _validated_generated_file(source_path, raw_path, column)
+    if path != expected.path:
+        raise SQLiteImportError("A generated file changed after import preflight.")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise SQLiteImportError("A generated file could not be opened safely.") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        opened_snapshot = _file_snapshot(path, metadata)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or opened_snapshot != expected
+        ):
+            raise SQLiteImportError("Every generated-file path must reference a regular file.")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            content = stream.read(GENERATED_FILE_LIMIT_BYTES + 1)
+        if _file_snapshot(path, os.fstat(descriptor)) != expected:
+            raise SQLiteImportError("A generated file changed while it was being read.")
+        try:
+            if _file_snapshot(path, path.stat()) != expected:
+                raise SQLiteImportError("A generated file changed while it was being read.")
+        except OSError as exc:
+            raise SQLiteImportError("A generated file changed while it was being read.") from exc
+    finally:
+        os.close(descriptor)
+    if not 1 <= len(content) <= GENERATED_FILE_LIMIT_BYTES:
+        raise SQLiteImportError("A generated file is empty or exceeds the 10 MiB import limit.")
+    return content
+
+
+def _validate_generated_files(
+    source_path: Path,
+    connection: sqlite3.Connection,
+) -> dict[tuple[int, str], GeneratedFileSnapshot]:
+    snapshots: dict[tuple[int, str], GeneratedFileSnapshot] = {}
+    for row in connection.execute(
+        "SELECT id, tailored_resume_path, cover_letter_path FROM applications ORDER BY rowid"
+    ):
+        for column in FILE_PATH_COLUMNS:
+            if str(row[column] or "").strip():
+                path = _validated_generated_file(source_path, row[column], column)
+                metadata = path.stat()
+                if metadata.st_nlink != 1:
+                    raise SQLiteImportError("Generated files must not have hard links.")
+                snapshots[(int(row["id"]), column)] = _file_snapshot(path, metadata)
+    return snapshots
+
+
 def inspect_sqlite_workspace(
     path: Path,
     owner_workos_user_id: str,
     *,
+    validate_generated_files: bool = False,
     _connection: sqlite3.Connection | None = None,
 ) -> ImportManifest:
     """Return bounded counts after validating the current SQLite schema and links."""
@@ -192,7 +363,17 @@ def inspect_sqlite_workspace(
                 f"SELECT COALESCE(SUM({path_expression}), 0) FROM applications"
             ).fetchone()[0]
         )
-        return ImportManifest(counts, provider_secret_fields, generated_file_paths)
+        snapshots = (
+            _validate_generated_files(path, connection)
+            if generated_file_paths and validate_generated_files
+            else {}
+        )
+        return ImportManifest(
+            counts,
+            provider_secret_fields,
+            generated_file_paths,
+            generated_file_snapshots=snapshots,
+        )
     finally:
         if owns_connection:
             connection.close()
@@ -284,6 +465,91 @@ def _rows(source: sqlite3.Connection, table: str) -> list[sqlite3.Row]:
     return source.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
 
 
+def _insert_stored_object(target: Connection, staged: Any) -> None:
+    metadata = staged.metadata
+    target.execute(
+        text(
+            """
+            INSERT INTO careertrellis.stored_objects
+                (id, owner_user_id, object_key, content_type, plaintext_size,
+                 sha256, wrapped_data_key)
+            VALUES
+                (:id, :owner, :object_key, :content_type, :plaintext_size,
+                 :sha256, :wrapped_data_key)
+            """
+        ),
+        {
+            "id": metadata.id,
+            "owner": metadata.owner_user_id,
+            "object_key": metadata.object_key,
+            "content_type": metadata.content_type,
+            "plaintext_size": metadata.size_bytes,
+            "sha256": bytes.fromhex(metadata.sha256),
+            "wrapped_data_key": metadata.wrapped_data_key,
+        },
+    )
+
+
+def _stage_application_objects(
+    source_path: Path,
+    row: sqlite3.Row,
+    target: Connection,
+    owner_id: int,
+    *,
+    object_backend: Any,
+    object_keyring: Any | None,
+    staged_objects: list[Any],
+    generated_file_snapshots: dict[tuple[int, str], GeneratedFileSnapshot],
+) -> dict[str, Any | None]:
+    references: dict[str, Any | None] = {
+        "tailored_resume_object_id": None,
+        "cover_letter_object_id": None,
+    }
+    for column, reference_column in (
+        ("tailored_resume_path", "tailored_resume_object_id"),
+        ("cover_letter_path", "cover_letter_object_id"),
+    ):
+        if not str(row[column] or "").strip():
+            continue
+        _suffix, content_type = GENERATED_FILE_TYPES[column]
+        snapshot = generated_file_snapshots.get((int(row["id"]), column))
+        if snapshot is None:
+            raise SQLiteImportError("A generated file was not captured during import preflight.")
+        plaintext = _read_generated_file(
+            source_path,
+            row[column],
+            column,
+            snapshot,
+        )
+        staged = stage_object(
+            object_backend,
+            owner_id,
+            plaintext,
+            content_type,
+            keyring=object_keyring,
+        )
+        staged_objects.append(staged)
+        _insert_stored_object(target, staged)
+        references[reference_column] = staged.metadata.id
+    return references
+
+
+def _discard_staged_objects(object_backend: Any, staged_objects: list[Any]) -> int:
+    failures = 0
+    for staged in reversed(staged_objects):
+        deleted = False
+        for _attempt in range(3):
+            try:
+                discard_staged_object(object_backend, staged)
+                deleted = True
+                break
+            except Exception:
+                continue
+        if not deleted:
+            failures += 1
+    return failures
+
+
 def _import_rows(
     source: sqlite3.Connection,
     target: Connection,
@@ -291,6 +557,12 @@ def _import_rows(
     source_zone: ZoneInfo,
     *,
     omit_provider_secrets: bool,
+    omit_generated_files: bool,
+    source_path: Path,
+    object_backend: Any | None,
+    object_keyring: Any | None,
+    staged_objects: list[Any],
+    generated_file_snapshots: dict[tuple[int, str], GeneratedFileSnapshot],
 ) -> dict[str, int]:
     resume_ids: dict[int, int] = {}
     job_ids: dict[int, int] = {}
@@ -448,29 +720,51 @@ def _import_rows(
 
     for row in _rows(source, "applications"):
         base_resume = row["base_resume_id"]
+        object_references = {
+            "tailored_resume_object_id": None,
+            "cover_letter_object_id": None,
+        }
+        has_generated_files = any(str(row[column] or "").strip() for column in FILE_PATH_COLUMNS)
+        if not omit_generated_files and has_generated_files:
+            if object_backend is None:
+                raise SQLiteImportError("Private object storage is required for generated files.")
+            object_references = _stage_application_objects(
+                source_path,
+                row,
+                target,
+                owner_id,
+                object_backend=object_backend,
+                object_keyring=object_keyring,
+                staged_objects=staged_objects,
+                generated_file_snapshots=generated_file_snapshots,
+            )
         target.execute(
             text(
                 """
                 INSERT INTO careertrellis.applications
                     (owner_user_id, job_id, company, position, date_applied, us_hq,
-                     tailored_resume_text, cover_letter, status, created_at, tailored_at,
-                     form_filled_at, submitted_at, confirmed_at, application_method,
-                     submission_evidence, notes, follow_up_date, headquarters_source,
-                     headquarters_attribution, base_resume_id, base_resume_name,
-                     base_resume_version, interview_prep, interview_prep_updated_at)
+                     tailored_resume_object_id, cover_letter_object_id,
+                     tailored_resume_text, cover_letter, status, created_at,
+                     tailored_at, form_filled_at, submitted_at, confirmed_at,
+                     application_method, submission_evidence, notes, follow_up_date,
+                     headquarters_source, headquarters_attribution, base_resume_id,
+                     base_resume_name, base_resume_version, interview_prep,
+                     interview_prep_updated_at)
                 VALUES
                     (:owner, :job, :company, :position, :date_applied, :us_hq,
-                     :resume_text, :cover_letter, :status, :created, :tailored,
-                     :form_filled, :submitted, :confirmed, :method, :evidence,
-                     :notes, :follow_up, :hq_source, :hq_attribution, :base_resume,
-                     :base_resume_name, :base_resume_version, :interview_prep,
-                     :interview_prep_updated)
+                     :resume_object, :letter_object, :resume_text, :cover_letter,
+                     :status, :created, :tailored, :form_filled, :submitted,
+                     :confirmed, :method, :evidence, :notes, :follow_up,
+                     :hq_source, :hq_attribution, :base_resume, :base_resume_name,
+                     :base_resume_version, :interview_prep, :interview_prep_updated)
                 """
             ),
             {
                 "owner": owner_id, "job": job_ids[int(row["job_id"])],
                 "company": row["company"], "position": row["position"],
                 "date_applied": _date(row["date_applied"]), "us_hq": row["us_hq"],
+                "resume_object": object_references["tailored_resume_object_id"],
+                "letter_object": object_references["cover_letter_object_id"],
                 "resume_text": row["tailored_resume_text"], "cover_letter": row["cover_letter"],
                 "status": row["status"] or "tailored",
                 "created": _timestamp(row["created_at"], source_zone),
@@ -584,6 +878,25 @@ def _import_rows(
     }
 
 
+def _expected_target_counts(
+    manifest: ImportManifest,
+    *,
+    omit_provider_secrets: bool,
+    omit_generated_files: bool,
+) -> dict[str, int]:
+    expected = {
+        target_table: manifest.counts[source_table]
+        for source_table, target_table in SOURCE_TO_TARGET.items()
+    }
+    expected["provider_secrets"] = (
+        0 if omit_provider_secrets else manifest.provider_secret_fields
+    )
+    expected["stored_objects"] = (
+        0 if omit_generated_files else manifest.generated_file_paths
+    )
+    return {table: expected[table] for table in TARGET_TABLES}
+
+
 def import_sqlite_workspace(
     source_path: Path,
     owner_workos_user_id: str,
@@ -591,22 +904,25 @@ def import_sqlite_workspace(
     omit_provider_secrets: bool = False,
     omit_generated_files: bool = False,
     engine: Engine | None = None,
+    object_backend: Any | None = None,
+    object_keyring: Any | None = None,
 ) -> ImportManifest:
     """Import into an empty owner scope and commit only after exact count checks."""
     owned_engine = False
     target_engine: Engine | None = None
+    staged_objects: list[Any] = []
+    resolved_object_backend = object_backend
     source = _open_source(source_path)
     try:
         source.execute("BEGIN")
         manifest = inspect_sqlite_workspace(
             source_path,
             owner_workos_user_id,
+            validate_generated_files=not omit_generated_files,
             _connection=source,
         )
         if manifest.generated_file_paths and not omit_generated_files:
-            raise SQLiteImportError(
-                "Generated-file paths are present; rerun only with explicit path omission."
-            )
+            resolved_object_backend = resolved_object_backend or runtime_object_backend()
 
         owned_engine = engine is None
         target_engine = engine or create_postgres_engine(
@@ -614,6 +930,7 @@ def import_sqlite_workspace(
         )
         with target_engine.connect() as target:
             transaction = target.begin()
+            commit_started = False
             try:
                 target.exec_driver_sql("SET ROLE careertrellis_schema_owner")
                 target.execute(
@@ -629,27 +946,75 @@ def import_sqlite_workspace(
                     owner_id,
                     _source_zone(),
                     omit_provider_secrets=omit_provider_secrets,
+                    omit_generated_files=omit_generated_files,
+                    source_path=source_path,
+                    object_backend=resolved_object_backend,
+                    object_keyring=object_keyring,
+                    staged_objects=staged_objects,
+                    generated_file_snapshots=manifest.generated_file_snapshots,
                 )
-                expected_counts = {
-                    target_name: manifest.counts[source_name]
-                    for source_name, target_name in zip(SOURCE_TABLES, TARGET_TABLES[1:])
-                }
-                expected_counts["provider_secrets"] = (
-                    0 if omit_provider_secrets else manifest.provider_secret_fields
+                expected_counts = _expected_target_counts(
+                    manifest,
+                    omit_provider_secrets=omit_provider_secrets,
+                    omit_generated_files=omit_generated_files,
                 )
                 if imported_counts != expected_counts:
                     raise SQLiteImportError(
                         "PostgreSQL row counts did not match the SQLite source."
                     )
                 target.exec_driver_sql("RESET ROLE")
+                commit_started = True
                 transaction.commit()
-            except BaseException:
-                if transaction.is_active:
-                    transaction.rollback()
-                target.exec_driver_sql("RESET ROLE")
-                target.commit()
+            except BaseException as exc:
+                if commit_started:
+                    try:
+                        target.invalidate()
+                    except Exception:
+                        pass
+                    raise SQLiteImportReconciliationRequired(
+                        "The PostgreSQL commit outcome is indeterminate; encrypted objects "
+                        f"were retained and {len(staged_objects)} staged object(s) require "
+                        "database/object reconciliation before retrying."
+                    ) from exc
+                rollback_error: BaseException | None = None
+                try:
+                    if transaction.is_active:
+                        transaction.rollback()
+                except BaseException as rollback_exc:
+                    rollback_error = rollback_exc
+                cleanup_failures = (
+                    _discard_staged_objects(resolved_object_backend, staged_objects)
+                    if resolved_object_backend is not None
+                    else 0
+                )
+                if rollback_error is not None:
+                    try:
+                        target.invalidate()
+                    except Exception:
+                        pass
+                    if cleanup_failures:
+                        raise SQLiteImportReconciliationRequired(
+                            f"The failed import could not confirm PostgreSQL rollback and "
+                            f"{cleanup_failures} encrypted object(s) could not be removed; "
+                            "database/object reconciliation is required."
+                        ) from rollback_error
+                    raise SQLiteImportReconciliationRequired(
+                        "The failed import could not confirm PostgreSQL rollback; no encrypted "
+                        "objects remain staged, but database reconciliation is required."
+                    ) from rollback_error
+                try:
+                    target.exec_driver_sql("RESET ROLE")
+                    target.commit()
+                except Exception:
+                    target.invalidate()
+                if cleanup_failures:
+                    raise SQLiteImportReconciliationRequired(
+                        f"The import failed and {cleanup_failures} encrypted object(s) could "
+                        "not be removed after three attempts; database/object reconciliation "
+                        "is required."
+                    ) from exc
                 raise
-        return manifest
+        return replace(manifest, verified_target_counts=imported_counts)
     finally:
         source.rollback()
         source.close()
@@ -667,7 +1032,11 @@ def main() -> int:
     owner_workos_user_id = os.environ.get(OWNER_ID_ENVIRONMENT_VARIABLE, "").strip()
     if not owner_workos_user_id:
         raise SQLiteImportError(f"{OWNER_ID_ENVIRONMENT_VARIABLE} is required.")
-    manifest = inspect_sqlite_workspace(arguments.source, owner_workos_user_id)
+    manifest = inspect_sqlite_workspace(
+        arguments.source,
+        owner_workos_user_id,
+        validate_generated_files=not arguments.omit_generated_files,
+    )
     if not arguments.preflight_only:
         manifest = import_sqlite_workspace(
             arguments.source,

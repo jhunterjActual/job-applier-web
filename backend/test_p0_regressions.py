@@ -1318,7 +1318,7 @@ class DependencyLockTests(unittest.TestCase):
 
         self.assertEqual(
             {
-                "alembic", "cryptography", "exceptiongroup", "fastapi", "google-genai",
+                "alembic", "boto3", "cryptography", "exceptiongroup", "fastapi", "google-genai",
                 "playwright", "posthog", "psycopg", "pydantic", "pymupdf", "python-docx",
                 "python-multipart", "sentry-sdk", "sqlalchemy", "tomli", "uvicorn", "workos",
             },
@@ -1480,7 +1480,7 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn(prepare_check, script)
         self.assertLess(script.index(prepare_check), script.index(activation))
 
-    def test_shared_web_service_loads_only_runtime_and_provider_credentials(self) -> None:
+    def test_shared_web_service_loads_only_runtime_web_credentials(self) -> None:
         project_dir = self.project_dir()
         web_service = (project_dir / "deploy" / "systemd" / "careertrellis-web.service").read_text(
             encoding="utf-8"
@@ -1490,10 +1490,12 @@ class DependencyLockTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("EnvironmentFile=/etc/careertrellis/postgres-runtime.env", web_service)
         self.assertIn("EnvironmentFile=/etc/careertrellis/provider-secrets.env", web_service)
+        self.assertIn("EnvironmentFile=/etc/careertrellis/object-storage.env", web_service)
         self.assertNotIn("postgres-migration.env", web_service)
         self.assertNotIn("postgres-worker.env", web_service)
         self.assertNotIn("postgres-runtime.env", worker_service)
         self.assertNotIn("provider-secrets.env", worker_service)
+        self.assertNotIn("object-storage.env", worker_service)
 
     def test_import_and_rotation_wrappers_require_reviewed_release_and_root_owned_envs(self) -> None:
         scripts = self.project_dir() / "deploy" / "scripts"
@@ -1505,7 +1507,34 @@ class DependencyLockTests(unittest.TestCase):
             self.assertIn("flock -n", source)
         self.assertIn("CAREERTRELLIS_MIGRATION_DATABASE_URL", import_source)
         self.assertIn("CAREERTRELLIS_DATA_DIR", import_source)
+        self.assertIn("target-object-storage.env", import_source)
+        self.assertIn("systemctl is-active", import_source)
         self.assertIn("CAREERTRELLIS_ROTATE_OWNER_USER_ID", rotation_source)
+
+    def test_release_activation_requires_root_only_runtime_secret_files(self) -> None:
+        script = (self.project_dir() / "deploy" / "scripts" / "deploy-release.sh").read_text(
+            encoding="utf-8"
+        )
+        for path in (
+            "/etc/careertrellis/staging.env",
+            "/etc/careertrellis/postgres-runtime.env",
+            "/etc/careertrellis/provider-secrets.env",
+            "/etc/careertrellis/object-storage.env",
+        ):
+            self.assertIn(path, script)
+        self.assertIn("root:root 600", script)
+        self.assertLess(script.index("root:root 600"), script.index("mv -Tf"))
+
+    def test_deploy_rollback_and_import_share_the_maintenance_lock(self) -> None:
+        scripts = self.project_dir() / "deploy" / "scripts"
+        for name in (
+            "deploy-release.sh",
+            "rollback-release.sh",
+            "import-sqlite-postgres.sh",
+        ):
+            source = (scripts / name).read_text(encoding="utf-8")
+            self.assertIn("/run/lock/careertrellis-maintenance.lock", source)
+            self.assertIn("flock -n 8", source)
 
     def test_provisioning_keeps_the_caddy_access_log_service_writable(self) -> None:
         script = (self.project_dir() / "deploy" / "scripts" / "provision-staging-host.sh").read_text(encoding="utf-8")
@@ -2040,6 +2069,8 @@ class LocalBrowserBoundaryTests(unittest.TestCase):
         with (
             patch.object(app_module, "get_db_connection", return_value=connection),
             patch.object(app_module, "check_identity_store_ready") as identity_ready,
+            patch.object(app_module, "check_provider_secret_store_ready") as secrets_ready,
+            patch.object(app_module, "check_object_store_ready") as objects_ready,
         ):
             live = self.client.get("/health/live")
             ready = self.client.get("/health/ready")
@@ -2047,6 +2078,8 @@ class LocalBrowserBoundaryTests(unittest.TestCase):
         self.assertEqual({"status": "ok", "build": app_module.APP_BUILD}, live.json())
         self.assertEqual({"status": "ready", "build": app_module.APP_BUILD}, ready.json())
         identity_ready.assert_called_once_with()
+        secrets_ready.assert_called_once_with()
+        objects_ready.assert_called_once_with()
 
     def test_worker_entrypoint_validates_and_writes_a_privacy_safe_heartbeat(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

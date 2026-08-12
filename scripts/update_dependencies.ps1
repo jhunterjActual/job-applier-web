@@ -83,6 +83,8 @@ try {
     try {
         & $ValidationPython -m unittest test_p0_regressions.py
         if ($LASTEXITCODE -ne 0) { throw "P0 regression tests failed with the generated lock." }
+        & $ValidationPython -m unittest test_object_store.py test_object_import.py test_stored_objects.py
+        if ($LASTEXITCODE -ne 0) { throw "Private object-storage tests failed with the generated lock." }
         & $ValidationPython -m unittest test_analytics.py
         if ($LASTEXITCODE -ne 0) { throw "Analytics tests failed with the generated lock." }
         & $ValidationPython -m unittest test_observability.py

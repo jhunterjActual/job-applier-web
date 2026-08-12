@@ -1,0 +1,19 @@
+# Root-owned systemd EnvironmentFile for private encrypted generated objects.
+# Install as /etc/careertrellis/object-storage.env with root:root mode 0600.
+# Never commit real bucket credentials, key IDs, or keyring values.
+CAREERTRELLIS_OBJECT_STORE=r2_encrypted
+
+# Use a private, bucket-scoped Cloudflare R2 S3 endpoint and credentials that
+# are distinct from the pgBackRest repository. Do not enable r2.dev, a custom
+# public domain, or browser access to this bucket.
+CAREERTRELLIS_OBJECT_STORE_ENDPOINT=https://replace-with-account-id.r2.cloudflarestorage.com
+CAREERTRELLIS_OBJECT_STORE_BUCKET=replace-with-private-object-bucket
+CAREERTRELLIS_OBJECT_STORE_ACCESS_KEY_ID=replace-with-bucket-scoped-access-key-id
+CAREERTRELLIS_OBJECT_STORE_SECRET_ACCESS_KEY=replace-with-bucket-scoped-secret-access-key
+
+# This object-wrapping keyring is independent from both the R2 credentials and
+# CAREERTRELLIS_PROVIDER_SECRET_KEYRING_B64. The value is URL-safe base64 of
+# compact JSON whose values are URL-safe base64-encoded 32-byte AES keys. Keep
+# old keys during rotation until every object DEK has been rewrapped.
+CAREERTRELLIS_OBJECT_STORE_ACTIVE_KEY_ID=object-kek-2026-08-12-a
+CAREERTRELLIS_OBJECT_STORE_KEYRING_B64=replace-with-base64url-encoded-object-keyring-json

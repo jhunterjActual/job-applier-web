@@ -22,7 +22,9 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError
 
 from sqlite_postgres_import import import_sqlite_workspace
+import object_store as object_store_module
 import provider_secrets as provider_secrets_module
+import stored_objects as stored_objects_module
 
 from postgres_database import (
     PostgreSQLConfigurationError,
@@ -514,6 +516,12 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             source_path = Path(temp_dir) / "workspace.db"
+            output_path = Path(temp_dir) / "output"
+            output_path.mkdir()
+            resume_path = output_path / "tailored_resume_1.pdf"
+            letter_path = output_path / "cover_letter_1.txt"
+            resume_path.write_bytes(b"%PDF-1.7\nSynthetic private resume")
+            letter_path.write_text("Synthetic private cover letter\n", encoding="utf-8")
             source = sqlite3.connect(source_path)
             try:
                 source.executescript(
@@ -617,18 +625,36 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                          'full_time', NULL, 'manual')
                     """
                 )
+                source.execute(
+                    """
+                    INSERT INTO applications (
+                        id, job_id, company, position, tailored_resume_path,
+                        cover_letter_path, tailored_resume_text, cover_letter,
+                        status, created_at, tailored_at
+                    ) VALUES (1, 1, 'Example', 'Synthetic Role', ?, ?,
+                              'Synthetic resume source', 'Synthetic letter source',
+                              'tailored', ?, ?)
+                    """,
+                    (str(resume_path), str(letter_path), timestamp, timestamp),
+                )
                 source.commit()
             finally:
                 source.close()
 
             migration_engine = create_engine(self.migration_url)
+            object_backend = object_store_module.InMemoryObjectBackend()
+            object_keyring = object_store_module.ObjectKeyring(
+                "object-kek-test",
+                {"object-kek-test": b"o" * 32},
+            )
             try:
                 with patch.dict(os.environ, _provider_secret_environment(), clear=False):
                     manifest = import_sqlite_workspace(
                         source_path,
                         "user_import_owner",
-                        omit_generated_files=True,
                         engine=migration_engine,
+                        object_backend=object_backend,
+                        object_keyring=object_keyring,
                     )
                 with migration_engine.connect() as connection:
                     self.assertEqual(
@@ -639,8 +665,9 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                     import_sqlite_workspace(
                         source_path,
                         "user_import_owner",
-                        omit_generated_files=True,
                         engine=migration_engine,
+                        object_backend=object_backend,
+                        object_keyring=object_keyring,
                     )
                 with migration_engine.connect() as connection:
                     self.assertEqual(
@@ -652,6 +679,8 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
 
         self.assertEqual(1, manifest.counts["profile"])
         self.assertEqual(1, manifest.counts["jobs"])
+        self.assertEqual(1, manifest.counts["applications"])
+        self.assertEqual(2, manifest.generated_file_paths)
         with identity_transaction(self.runtime_engine, "user_import_owner") as connection:
             owner_id = connection.scalar(
                 text("SELECT id FROM careertrellis.app_users WHERE workos_user_id = 'user_import_owner'")
@@ -663,6 +692,33 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 [("Synthetic Role",)],
                 connection.execute(text("SELECT title FROM careertrellis.jobs")).all(),
             )
+            object_ids = connection.execute(
+                text(
+                    "SELECT tailored_resume_object_id, cover_letter_object_id "
+                    "FROM careertrellis.applications"
+                )
+            ).one()
+            self.assertTrue(all(object_ids))
+            self.assertEqual(
+                2,
+                connection.scalar(text("SELECT count(*) FROM careertrellis.stored_objects")),
+            )
+        resume_download = stored_objects_module.download_stored_object(
+            owner_id,
+            object_ids.tailored_resume_object_id,
+            engine=self.runtime_engine,
+            backend=object_backend,
+            keyring=object_keyring,
+        )
+        self.assertEqual(b"%PDF-1.7\nSynthetic private resume", resume_download.content)
+        letter_download = stored_objects_module.download_stored_object(
+            owner_id,
+            object_ids.cover_letter_object_id,
+            engine=self.runtime_engine,
+            backend=object_backend,
+            keyring=object_keyring,
+        )
+        self.assertEqual(b"Synthetic private cover letter\n", letter_download.content)
         with (
             patch.dict(os.environ, _provider_secret_environment(), clear=False),
             patch.object(
@@ -677,3 +733,46 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             )
         with identity_transaction(self.runtime_engine, "user_other_identity") as connection:
             self.assertEqual(0, connection.scalar(text("SELECT count(*) FROM careertrellis.app_users")))
+        with self.runtime_engine.begin() as connection:
+            self.assertEqual(
+                0,
+                connection.scalar(text("SELECT count(*) FROM careertrellis.stored_objects")),
+            )
+        with tenant_transaction(self.runtime_engine, self.user_two) as connection:
+            self.assertEqual(
+                0,
+                connection.execute(
+                    text("UPDATE careertrellis.stored_objects SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id"),
+                    {"id": object_ids.tailored_resume_object_id},
+                ).rowcount,
+            )
+            self.assertEqual(
+                0,
+                connection.execute(
+                    text("DELETE FROM careertrellis.stored_objects WHERE id = :id"),
+                    {"id": object_ids.tailored_resume_object_id},
+                ).rowcount,
+            )
+        with self.assertRaises(DBAPIError):
+            with tenant_transaction(self.runtime_engine, self.user_two) as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO careertrellis.stored_objects "
+                        "(owner_user_id, object_key, content_type, plaintext_size, sha256, wrapped_data_key) "
+                        "VALUES (:owner, 'v1/00000000000000000000000000000000', "
+                        "'application/pdf', 1, :digest, :wrapped)"
+                    ),
+                    {"owner": owner_id, "digest": b"d" * 32, "wrapped": b"wrapped"},
+                )
+        with (
+            patch.object(object_backend, "get", wraps=object_backend.get) as backend_get,
+            self.assertRaises(stored_objects_module.StoredObjectNotFound),
+        ):
+            stored_objects_module.download_stored_object(
+                self.user_two,
+                object_ids.tailored_resume_object_id,
+                engine=self.runtime_engine,
+                backend=object_backend,
+                keyring=object_keyring,
+            )
+        backend_get.assert_not_called()

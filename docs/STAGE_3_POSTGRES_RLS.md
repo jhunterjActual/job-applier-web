@@ -115,7 +115,8 @@ The first application-transition slice is documented in
 `STAGE_3_POSTGRES_IDENTITY_IMPORT.md`. It moves shared-host identity lookup to
 PostgreSQL, removes implicit account creation from login, and adds an atomic
 SQLite import rehearsal. The encrypted provider-secret transition is documented
-in `STAGE_3_ENCRYPTED_PROVIDER_SECRETS.md`. Later slices still need to convert
-application repositories and worker transactions and authorize private object
-storage. No beta invitations are permitted until those stages and their
-negative isolation tests pass.
+in `STAGE_3_ENCRYPTED_PROVIDER_SECRETS.md`; private generated-object encryption
+and its no-cutover migration rehearsal are documented in
+`STAGE_3_PRIVATE_OBJECT_STORAGE.md`. Later slices still need to convert
+application repositories and worker transactions. No beta invitations are
+permitted until those stages and their negative isolation tests pass.

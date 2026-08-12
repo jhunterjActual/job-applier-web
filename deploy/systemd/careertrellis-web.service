@@ -12,6 +12,7 @@ WorkingDirectory=/opt/careertrellis/staging/current/backend
 EnvironmentFile=/etc/careertrellis/staging.env
 EnvironmentFile=/etc/careertrellis/postgres-runtime.env
 EnvironmentFile=/etc/careertrellis/provider-secrets.env
+EnvironmentFile=/etc/careertrellis/object-storage.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/careertrellis/staging/current/backend/venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8001 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-server-header --no-access-log --limit-concurrency 32 --backlog 64 --timeout-graceful-shutdown 30
 Restart=on-failure
