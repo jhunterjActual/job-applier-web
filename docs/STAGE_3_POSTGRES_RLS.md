@@ -114,8 +114,8 @@ The integration suite creates one disposable database and four fixed test roles 
 The first application-transition slice is documented in
 `STAGE_3_POSTGRES_IDENTITY_IMPORT.md`. It moves shared-host identity lookup to
 PostgreSQL, removes implicit account creation from login, and adds an atomic
-SQLite import rehearsal that deliberately excludes legacy plaintext secrets
-and generated-file paths. Later slices still need to convert application
-repositories and worker transactions, encrypt provider secrets, and authorize
-private object storage. No beta invitations are permitted until those stages
-and their negative isolation tests pass.
+SQLite import rehearsal. The encrypted provider-secret transition is documented
+in `STAGE_3_ENCRYPTED_PROVIDER_SECRETS.md`. Later slices still need to convert
+application repositories and worker transactions and authorize private object
+storage. No beta invitations are permitted until those stages and their
+negative isolation tests pass.

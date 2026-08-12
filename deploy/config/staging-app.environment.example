@@ -20,6 +20,8 @@ CAREERTRELLIS_STAGING_OWNER_WORKOS_USER_ID=replace-with-the-approved-immutable-w
 
 # CAREERTRELLIS_DATABASE_URL is loaded separately from the root-owned
 # /etc/careertrellis/postgres-runtime.env credential bundle.
+# Encrypted provider-secret settings and keys are loaded separately from
+# /etc/careertrellis/provider-secrets.env. Never put those keys in this file.
 
 # Optional privacy-minimized monitoring; leave blank to disable.
 POSTHOG_PROJECT_TOKEN=

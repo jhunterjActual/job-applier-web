@@ -1480,8 +1480,8 @@ function updateSecretStatuses() {
         pGeminiKeyHelp,
         geminiKeyConfigured,
         "Gemini",
-        "Saved locally. Leave this field blank to keep the current key, or enter a new key to replace it.",
-        "Required when Google Gemini is selected. The key is stored only on this machine.",
+        "Saved securely. The key is never returned to your browser; leave this field blank to keep it or enter a replacement.",
+        "Required when Google Gemini is selected. A saved key is never returned to your browser.",
     );
     updateSecretFieldStatus(
         pOpenAIApiKey,
@@ -1489,8 +1489,8 @@ function updateSecretStatuses() {
         pOpenAIKeyHelp,
         openAIKeyConfigured,
         "OpenAI",
-        "Saved locally. Leave this field blank to keep the current key, or enter a new key to replace it.",
-        "Required when OpenAI is selected. The key is stored only on this machine.",
+        "Saved securely. The key is never returned to your browser; leave this field blank to keep it or enter a replacement.",
+        "Required when OpenAI is selected. A saved key is never returned to your browser.",
     );
     updateSecretFieldStatus(
         pGoogleApiKey,
@@ -1498,8 +1498,8 @@ function updateSecretStatuses() {
         pGoogleKeyHelp,
         googleMapsKeyConfigured,
         "Google Places",
-        "Saved locally. Leave this field blank to keep the current key, or enter a new key to replace it.",
-        "Required when Google Places is selected. The key is stored only on this machine.",
+        "Saved securely. The key is never returned to your browser; leave this field blank to keep it or enter a replacement.",
+        "Required when Google Places is selected. A saved key is never returned to your browser.",
     );
     updateApiKeyStatus();
     updateProviderTestAvailability();

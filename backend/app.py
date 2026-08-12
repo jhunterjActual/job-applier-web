@@ -56,6 +56,16 @@ from local_users import (
     validate_identity_store_configuration,
 )
 from postgres_database import dispose_postgres_engines
+from provider_secrets import (
+    SHARED_SECRET_STORE,
+    check_provider_secret_store_ready,
+    current_provider_secret_configured,
+    provider_secret_store_kind,
+    reset_current_owner_user_id,
+    set_current_owner_user_id,
+    update_provider_secrets,
+    validate_provider_secret_store_configuration,
+)
 from web_auth import (
     LOGIN_FLOW_COOKIE_NAME,
     LOGIN_FLOW_MAX_AGE_SECONDS,
@@ -233,6 +243,7 @@ async def lifespan(app: FastAPI):
     config.validate_runtime_configuration()
     get_auth_configuration()
     validate_identity_store_configuration()
+    validate_provider_secret_store_configuration()
     initialize_analytics(APP_BUILD)
     try:
         yield
@@ -353,6 +364,7 @@ async def protect_local_browser_boundary(request: Request, call_next):
                 request,
                 JSONResponse({"detail": "Authentication is not configured."}, status_code=503),
             )
+    owner_context_token = None
     if auth_settings is not None and request.url.path not in PUBLIC_SHARED_HOST_PATHS:
         sealed_session = request.cookies.get(SESSION_COOKIE_NAME, "")
         if len(sealed_session) > 8192:
@@ -381,8 +393,13 @@ async def protect_local_browser_boundary(request: Request, call_next):
         request.state.local_user_id = local_user_id
         request.state.workos_session_id = authentication.session_id
         request.state.refreshed_session = authentication.refreshed_session
+        owner_context_token = set_current_owner_user_id(local_user_id)
 
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    finally:
+        if owner_context_token is not None:
+            reset_current_owner_user_id(owner_context_token)
     refreshed_session = getattr(request.state, "refreshed_session", None)
     if refreshed_session:
         response.set_cookie(
@@ -626,6 +643,7 @@ def get_readiness() -> dict:
         finally:
             connection.close()
         check_identity_store_ready()
+        check_provider_secret_store_ready()
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Service is not ready.") from exc
     return {"status": "ready", "build": APP_BUILD}
@@ -656,8 +674,11 @@ def get_profile() -> dict:
         result["openai_api_key_configured"] = provider_key_configured(row, "openai")
         result.pop("gemini_api_key", None)
         result.pop("openai_api_key", None)
-        result["google_maps_api_key_configured"] = bool(
-            result.pop("google_maps_api_key", "") or config.get_google_maps_api_key()
+        local_google_key = result.pop("google_maps_api_key", "")
+        result["google_maps_api_key_configured"] = (
+            current_provider_secret_configured("google_maps")
+            if provider_secret_store_kind() == SHARED_SECRET_STORE
+            else bool(local_google_key or config.get_google_maps_api_key())
         )
         result["ai_provider"] = normalize_provider(result.get("ai_provider"))
         result["ai_model"] = str(result.get("ai_model") or default_model(result["ai_provider"]))
@@ -787,8 +808,28 @@ def delete_base_resume_endpoint(resume_id: int) -> dict:
 
 
 @app.put("/api/profile/secrets")
-def update_profile_secrets(secrets: ProfileSecretsUpdate) -> dict:
-    """Update only explicitly supplied local API secrets without returning them."""
+def update_profile_secrets(secrets: ProfileSecretsUpdate, request: Request = None) -> dict:
+    """Update explicitly supplied secrets without ever returning their values."""
+    supplied = {
+        "gemini": secrets.gemini_api_key,
+        "openai": secrets.openai_api_key,
+        "google_maps": secrets.google_maps_api_key,
+    }
+    if provider_secret_store_kind() == SHARED_SECRET_STORE:
+        owner_user_id = getattr(request.state, "local_user_id", None) if request else None
+        if not owner_user_id:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        update_provider_secrets(
+            owner_user_id,
+            {provider: value for provider, value in supplied.items() if value is not None},
+        )
+        return {
+            "success": True,
+            "gemini_api_key_configured": current_provider_secret_configured("gemini"),
+            "openai_api_key_configured": current_provider_secret_configured("openai"),
+            "google_maps_api_key_configured": current_provider_secret_configured("google_maps"),
+        }
+
     updates = []
     values = []
     if secrets.gemini_api_key is not None:
@@ -978,6 +1019,7 @@ def run_search_wrapper(
     keywords: str,
     location: str,
     operation: Optional[OperationToken] = None,
+    owner_user_id: Optional[int] = None,
 ) -> None:
     """
     A background helper task that triggers the crawling and matching of jobs,
@@ -988,6 +1030,9 @@ def run_search_wrapper(
         location (str): Semicolon-separated target locations.
     """
     operation = operation or start_operation()
+    owner_context_token = (
+        set_current_owner_user_id(owner_user_id) if owner_user_id is not None else None
+    )
     global IS_SEARCHING, LAST_SEARCH_RESULT
     try:
         LAST_SEARCH_RESULT = run_job_search_and_matching(keywords, location, operation.checkpoint)
@@ -1004,6 +1049,8 @@ def run_search_wrapper(
     except Exception as exc:
         LAST_SEARCH_RESULT = {"success": False, "error": str(exc), "provider_alerts": []}
     finally:
+        if owner_context_token is not None:
+            reset_current_owner_user_id(owner_context_token)
         finish_operation(operation)
         IS_SEARCHING = False
 
@@ -1867,6 +1914,7 @@ def _verify_job_posting(job_id: int, operation: OperationToken) -> dict:
 def search_jobs(
     req: SearchRequest,
     background_tasks: BackgroundTasks,
+    request: Request,
     operation_id: Optional[str] = Header(default=None, alias="X-CareerTrellis-Operation"),
 ) -> dict:
     """
@@ -1924,7 +1972,13 @@ def search_jobs(
             conn.commit()
         conn.close()
     IS_SEARCHING = True
-    background_tasks.add_task(run_search_wrapper, req.keywords, req.location, operation)
+    background_tasks.add_task(
+        run_search_wrapper,
+        req.keywords,
+        req.location,
+        operation,
+        getattr(request.state, "local_user_id", None),
+    )
     capture_event(
         "job_search_started",
         {
