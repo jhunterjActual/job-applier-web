@@ -12,6 +12,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -27,6 +28,8 @@ import provider_secrets as provider_secrets_module
 import stored_objects as stored_objects_module
 from base_resumes import BaseResumeNotFound, LastBaseResumeError
 from profile_repository import PostgreSQLProfileRepository
+from discovery_repository import PostgreSQLDiscoveryRepository
+from job_suppressions import job_url_fingerprint
 
 from postgres_database import (
     PostgreSQLConfigurationError,
@@ -522,6 +525,142 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 )
             )
 
+    def test_discovery_repository_is_owner_scoped_and_privacy_minimized(self) -> None:
+        owner_one = PostgreSQLDiscoveryRepository(self.user_one, engine=self.runtime_engine)
+        owner_two = PostgreSQLDiscoveryRepository(self.user_two, engine=self.runtime_engine)
+        now = datetime.now(timezone.utc)
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            search_one = connection.scalar(
+                text(
+                    """
+                    INSERT INTO careertrellis.saved_searches
+                        (owner_user_id, name, keywords, location, schedule_frequency, next_alert_at)
+                    VALUES
+                        (:owner, 'Due Search', 'data', 'remote', 'daily', :next_alert)
+                    RETURNING id
+                    """
+                ),
+                {"owner": self.user_one, "next_alert": now - timedelta(minutes=1)},
+            )
+            suppression_one = connection.scalar(
+                text(
+                    """
+                    INSERT INTO careertrellis.job_suppressions
+                        (owner_user_id, url_fingerprint, hostname, company, title, deletion_source)
+                    VALUES
+                        (:owner, :fingerprint, 'example.test', 'Tenant One', 'Hidden', 'manual')
+                    RETURNING id
+                    """
+                ),
+                {
+                    "owner": self.user_one,
+                    "fingerprint": job_url_fingerprint("https://example.test/hidden-one"),
+                },
+            )
+        with tenant_transaction(self.runtime_engine, self.user_two) as connection:
+            search_two = connection.scalar(
+                text(
+                    """
+                    INSERT INTO careertrellis.saved_searches
+                        (owner_user_id, name, keywords, location, schedule_frequency, next_alert_at)
+                    VALUES
+                        (:owner, 'Other Search', 'private', 'elsewhere', 'daily', :next_alert)
+                    RETURNING id
+                    """
+                ),
+                {"owner": self.user_two, "next_alert": now - timedelta(minutes=1)},
+            )
+            suppression_two = connection.scalar(
+                text(
+                    """
+                    INSERT INTO careertrellis.job_suppressions
+                        (owner_user_id, url_fingerprint, hostname, company, title, deletion_source)
+                    VALUES
+                        (:owner, :fingerprint, 'other.test', 'Tenant Two', 'Other', 'manual')
+                    RETURNING id
+                    """
+                ),
+                {
+                    "owner": self.user_two,
+                    "fingerprint": job_url_fingerprint("https://other.test/hidden-two"),
+                },
+            )
+
+        jobs = owner_one.list_jobs()
+        self.assertEqual([self.job_one], [row["id"] for row in jobs])
+        self.assertNotIn("owner_user_id", jobs[0])
+        self.assertEqual(
+            {"suppressed": False, "existing": None},
+            owner_one.job_identity("https://example.test/two"),
+        )
+        self.assertTrue(
+            owner_one.job_identity("https://example.test/hidden-one")["suppressed"]
+        )
+        suppressions = owner_one.list_job_suppressions()
+        self.assertEqual(1, suppressions["count"])
+        self.assertNotIn("url_fingerprint", suppressions["items"][0])
+        self.assertNotIn("owner_user_id", suppressions["items"][0])
+        self.assertEqual(0, owner_one.clear_job_suppression(suppression_two))
+        self.assertEqual(1, owner_one.clear_job_suppression(suppression_one))
+
+        self.assertEqual([search_one], [row["id"] for row in owner_one.list_saved_searches()])
+        self.assertEqual([search_one], [row["id"] for row in owner_one.list_due_saved_searches(now)])
+        self.assertFalse(owner_one.delete_saved_search(search_two))
+        self.assertTrue(owner_one.delete_saved_search(search_one))
+        self.assertEqual([search_two], [row["id"] for row in owner_two.list_saved_searches()])
+        self.assertEqual([suppression_two], [row["id"] for row in owner_two.list_job_suppressions()["items"]])
+
+        diagnostic_result = {
+            "provider_alerts": [
+                {"provider": "greenhouse", "code": "content_format_drift"},
+                {"provider": "unknown", "code": "private-error"},
+            ],
+            "provider_health": {
+                "greenhouse": {
+                    "raw_candidates": 4,
+                    "errors": ["must not be stored"],
+                }
+            },
+        }
+        self.assertEqual(1, owner_one.persist_source_diagnostics(diagnostic_result, now))
+        self.assertEqual(1, owner_two.persist_source_diagnostics(diagnostic_result, now))
+        history_one = owner_one.list_source_diagnostics()
+        self.assertEqual(1, history_one["count"])
+        self.assertEqual("greenhouse", history_one["items"][0]["provider"])
+        serialized = json.dumps(history_one, sort_keys=True)
+        self.assertNotIn("must not be stored", serialized)
+        self.assertNotIn("private-error", serialized)
+        self.assertEqual(1, owner_one.clear_source_diagnostics())
+        self.assertEqual(1, owner_two.list_source_diagnostics()["count"])
+
+    def test_discovery_repository_indexes_are_owner_first(self) -> None:
+        expected = {
+            "idx_jobs_owner_score_active": ("jobs", "owner_user_id"),
+            "idx_saved_searches_owner_due": ("saved_searches", "owner_user_id"),
+            "idx_job_suppressions_owner_deleted": ("job_suppressions", "owner_user_id"),
+            "idx_source_diagnostics_owner_recorded": ("source_diagnostics", "owner_user_id"),
+        }
+        with self.admin_engine.begin() as connection:
+            definitions = dict(
+                connection.execute(
+                    text(
+                        "SELECT indexname, indexdef FROM pg_indexes "
+                        "WHERE schemaname = 'careertrellis' "
+                        "AND indexname = ANY(:index_names)"
+                    ),
+                    {"index_names": list(expected)},
+                ).all()
+            )
+        self.assertEqual(set(expected), set(definitions))
+        for index_name, (table_name, first_column) in expected.items():
+            definition = definitions[index_name]
+            self.assertIn(f"ON careertrellis.{table_name}", definition)
+            self.assertRegex(definition, rf"\({first_column}(?: ASC| DESC)?[,)]")
+        jobs_definition = definitions["idx_jobs_owner_score_active"]
+        self.assertIn("match_score DESC NULLS LAST", jobs_definition)
+        self.assertIn("id DESC", jobs_definition)
+        self.assertIn("WHERE (status <> 'archived'::text)", jobs_definition)
+
     def test_composite_foreign_keys_prevent_cross_tenant_relationships(self) -> None:
         with self.assertRaises(DBAPIError):
             with tenant_transaction(self.runtime_engine, self.user_one) as connection:
@@ -667,7 +806,7 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             resume_path = output_path / "tailored_resume_1.pdf"
             letter_path = output_path / "cover_letter_1.txt"
             resume_path.write_bytes(b"%PDF-1.7\nSynthetic private resume")
-            letter_path.write_text("Synthetic private cover letter\n", encoding="utf-8")
+            letter_path.write_bytes(b"Synthetic private cover letter\n")
             source = sqlite3.connect(source_path)
             try:
                 source.executescript(

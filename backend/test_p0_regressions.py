@@ -1817,6 +1817,40 @@ class DataStoreConfigurationTests(unittest.TestCase):
         repository.list_base_resumes.assert_called_once_with()
         repository.get_version.assert_called_once_with(7, 3)
 
+    def test_discovery_routes_dispatch_through_the_configured_repository(self) -> None:
+        repository = Mock()
+        repository.list_jobs.return_value = [{"id": 7, "title": "Synthetic"}]
+        repository.list_job_suppressions.return_value = {"count": 0, "items": []}
+        repository.clear_job_suppression.return_value = 1
+        repository.clear_all_job_suppressions.return_value = 2
+        repository.list_saved_searches.return_value = [{"id": 8, "name": "Synthetic"}]
+        repository.list_due_saved_searches.return_value = [{"id": 8, "name": "Synthetic"}]
+        repository.delete_saved_search.return_value = True
+        repository.list_source_diagnostics.return_value = {"count": 0, "items": []}
+        repository.clear_source_diagnostics.return_value = 3
+        with (
+            patch.object(app_module, "runtime_discovery_repository", return_value=repository),
+            patch.object(app_module, "derive_job_filter_facets", return_value={"remote": True}),
+        ):
+            self.assertEqual(
+                [{"id": 7, "title": "Synthetic", "filter_facets": {"remote": True}}],
+                app_module.get_jobs(),
+            )
+            self.assertEqual({"count": 0, "items": []}, app_module.get_job_suppressions())
+            self.assertEqual(1, app_module.clear_job_suppression(9)["cleared"])
+            self.assertEqual(2, app_module.clear_all_job_suppressions()["cleared"])
+            self.assertEqual([{"id": 8, "name": "Synthetic"}], app_module.get_saved_searches())
+            self.assertEqual([{"id": 8, "name": "Synthetic"}], app_module.get_due_saved_searches())
+            self.assertTrue(app_module.delete_saved_search(8)["success"])
+            history = json.loads(app_module.get_source_diagnostic_history().body)
+            self.assertEqual({"count": 0, "items": []}, history)
+            self.assertEqual(3, app_module.clear_source_diagnostic_history()["cleared"])
+
+        repository.list_jobs.assert_called_once_with(False)
+        repository.clear_job_suppression.assert_called_once_with(9)
+        repository.delete_saved_search.assert_called_once_with(8)
+        repository.list_source_diagnostics.assert_called_once_with(100)
+
 
 class WebAuthenticationTests(unittest.TestCase):
     ORIGIN_TOKEN = "staging-origin-token-with-at-least-32-characters"
@@ -4003,26 +4037,29 @@ class SourceDiagnosticHistoryTests(unittest.TestCase):
     def test_history_failure_does_not_replace_successful_search_result(self) -> None:
         result = self.search_result()
         result["success"] = True
-        connection = unittest.mock.Mock()
+        repository = Mock()
+        repository.persist_source_diagnostics.side_effect = sqlite3.OperationalError("disk full")
         with (
             patch.object(app_module, "run_job_search_and_matching", return_value=result),
-            patch.object(app_module, "get_db_connection", return_value=connection),
-            patch.object(app_module, "persist_source_diagnostics", side_effect=sqlite3.OperationalError("disk full")),
+            patch.object(app_module, "runtime_discovery_repository", return_value=repository),
         ):
             app_module.IS_SEARCHING = True
             app_module.run_search_wrapper("private keywords", "private location")
 
         self.assertIs(result, app_module.LAST_SEARCH_RESULT)
         self.assertFalse(app_module.IS_SEARCHING)
-        connection.rollback.assert_called_once()
-        connection.close.assert_called_once()
+        repository.persist_source_diagnostics.assert_called_once()
 
     def test_history_connection_failure_does_not_replace_successful_search_result(self) -> None:
         result = self.search_result()
         result["success"] = True
         with (
             patch.object(app_module, "run_job_search_and_matching", return_value=result),
-            patch.object(app_module, "get_db_connection", side_effect=sqlite3.OperationalError("unavailable")),
+            patch.object(
+                app_module,
+                "runtime_discovery_repository",
+                side_effect=sqlite3.OperationalError("unavailable"),
+            ),
         ):
             app_module.IS_SEARCHING = True
             app_module.run_search_wrapper("private keywords", "private location")
