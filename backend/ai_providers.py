@@ -12,6 +12,12 @@ from google.genai import types
 from pydantic import BaseModel
 
 import config
+from provider_secrets import (
+    SHARED_SECRET_STORE,
+    current_provider_secret,
+    current_provider_secret_configured,
+    provider_secret_store_kind,
+)
 
 
 AI_PROVIDERS = {
@@ -84,6 +90,12 @@ def settings_from_profile(profile: Any) -> AIProviderSettings:
     """Resolve the selected provider without ever serializing its credential."""
     provider = normalize_provider(_profile_value(profile, "ai_provider", DEFAULT_AI_PROVIDER))
     model = str(_profile_value(profile, "ai_model", "") or "").strip() or default_model(provider)
+    if provider_secret_store_kind() == SHARED_SECRET_STORE:
+        return AIProviderSettings(
+            provider=provider,
+            model=model,
+            api_key=current_provider_secret(provider),
+        )
     if provider == "openai":
         saved_key = str(_profile_value(profile, "openai_api_key", "") or "").strip()
         api_key = saved_key or config.get_openai_api_key()
@@ -95,6 +107,8 @@ def settings_from_profile(profile: Any) -> AIProviderSettings:
 
 def provider_key_configured(profile: Any, provider: str) -> bool:
     normalized = normalize_provider(provider)
+    if provider_secret_store_kind() == SHARED_SECRET_STORE:
+        return current_provider_secret_configured(normalized)
     if normalized == "openai":
         return bool(
             str(_profile_value(profile, "openai_api_key", "") or "").strip()

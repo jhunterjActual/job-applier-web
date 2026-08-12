@@ -13,6 +13,12 @@ from pydantic import BaseModel, Field
 
 import config
 from ai_providers import AIProviderError, AIProviderSettings, generate_structured
+from provider_secrets import (
+    SHARED_SECRET_STORE,
+    current_provider_secret,
+    current_provider_secret_configured,
+    provider_secret_store_kind,
+)
 
 
 MAPS_PROVIDERS = {
@@ -88,6 +94,9 @@ def maps_provider_label(provider: str) -> str:
 
 def maps_settings_from_profile(profile: Any) -> MapsProviderSettings:
     provider = normalize_maps_provider(_profile_value(profile, "maps_provider", DEFAULT_MAPS_PROVIDER))
+    if provider_secret_store_kind() == SHARED_SECRET_STORE:
+        saved_key = current_provider_secret("google_maps") if provider == "google" else ""
+        return MapsProviderSettings(provider, saved_key)
     saved_key = str(_profile_value(profile, "google_maps_api_key", "") or "").strip()
     return MapsProviderSettings(provider, saved_key or config.get_google_maps_api_key())
 
@@ -96,6 +105,8 @@ def maps_provider_ready(profile: Any, provider: str | None = None) -> bool:
     selected = normalize_maps_provider(provider or _profile_value(profile, "maps_provider", DEFAULT_MAPS_PROVIDER))
     if selected == "openstreetmap":
         return True
+    if provider_secret_store_kind() == SHARED_SECRET_STORE:
+        return current_provider_secret_configured("google_maps")
     return bool(
         str(_profile_value(profile, "google_maps_api_key", "") or "").strip()
         or config.get_google_maps_api_key()

@@ -6,6 +6,8 @@ The test creates and removes one dedicated database and four fixed test roles.
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import sqlite3
 import tempfile
@@ -20,6 +22,7 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError
 
 from sqlite_postgres_import import import_sqlite_workspace
+import provider_secrets as provider_secrets_module
 
 from postgres_database import (
     PostgreSQLConfigurationError,
@@ -42,6 +45,20 @@ WORKER_ROLE = "careertrellis_worker"
 MIGRATION_PASSWORD = "migration-test-only"
 RUNTIME_PASSWORD = "runtime-test-only"
 WORKER_PASSWORD = "worker-test-only"
+
+
+def _provider_secret_environment(active_key_id: str = "kek-test-a") -> dict[str, str]:
+    keys = {
+        "kek-test-a": base64.urlsafe_b64encode(bytes(range(32))).decode("ascii"),
+        "kek-test-b": base64.urlsafe_b64encode(bytes(reversed(range(32)))).decode("ascii"),
+    }
+    return {
+        "CAREERTRELLIS_PROVIDER_SECRET_STORE": "postgres_encrypted",
+        "CAREERTRELLIS_PROVIDER_SECRET_ACTIVE_KEY_ID": active_key_id,
+        "CAREERTRELLIS_PROVIDER_SECRET_KEYRING_B64": base64.urlsafe_b64encode(
+            json.dumps(keys, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii"),
+    }
 
 
 class PostgreSQLConfigurationTests(unittest.TestCase):
@@ -386,6 +403,70 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             )
             self.assertEqual(0, connection.scalar(text("SELECT count(*) FROM careertrellis.jobs")))
 
+    def test_provider_secrets_are_encrypted_isolated_revocable_and_rotatable(self) -> None:
+        with (
+            patch.dict(os.environ, _provider_secret_environment(), clear=False),
+            patch.object(
+                provider_secrets_module,
+                "runtime_postgres_engine",
+                return_value=self.runtime_engine,
+            ),
+        ):
+            provider_secrets_module.save_provider_secret(
+                self.user_one,
+                "gemini",
+                "synthetic-provider-secret",
+            )
+            self.assertEqual(
+                "synthetic-provider-secret",
+                provider_secrets_module.load_provider_secret(self.user_one, "gemini"),
+            )
+            self.assertEqual(
+                "",
+                provider_secrets_module.load_provider_secret(self.user_two, "gemini"),
+            )
+            with self.admin_engine.begin() as connection:
+                stored = connection.execute(
+                    text(
+                        "SELECT key_id, ciphertext FROM careertrellis.provider_secrets "
+                        "WHERE owner_user_id = :owner"
+                    ),
+                    {"owner": self.user_one},
+                ).one()
+            self.assertEqual("kek-test-a", stored.key_id)
+            self.assertNotIn(b"synthetic-provider-secret", bytes(stored.ciphertext))
+
+            with patch.dict(
+                os.environ,
+                _provider_secret_environment(active_key_id="kek-test-b"),
+                clear=False,
+            ):
+                self.assertEqual(
+                    1,
+                    provider_secrets_module.rotate_provider_secrets(self.user_one),
+                )
+                self.assertEqual(
+                    "synthetic-provider-secret",
+                    provider_secrets_module.load_provider_secret(self.user_one, "gemini"),
+                )
+                with self.admin_engine.begin() as connection:
+                    self.assertEqual(
+                        "kek-test-b",
+                        connection.scalar(
+                            text(
+                                "SELECT key_id FROM careertrellis.provider_secrets "
+                                "WHERE owner_user_id = :owner"
+                            ),
+                            {"owner": self.user_one},
+                        ),
+                    )
+
+            provider_secrets_module.revoke_provider_secret(self.user_one, "gemini")
+            self.assertEqual(
+                "",
+                provider_secrets_module.load_provider_secret(self.user_one, "gemini"),
+            )
+
     def test_all_protected_tables_force_rls_and_runtime_roles_cannot_bypass_it(self) -> None:
         with self.admin_engine.begin() as connection:
             table_rows = connection.execute(
@@ -521,7 +602,8 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                          ai_model, maps_provider, prefer_us_headquarters,
                          interface_language, active_base_resume_id)
                     VALUES
-                        (1, 'Synthetic Owner', 'owner@example.test', '', '', '',
+                        (1, 'Synthetic Owner', 'owner@example.test',
+                         'synthetic-import-secret', '', '',
                          'python', 'gemini', 'gemini-2.5-flash',
                          'openstreetmap', 1, 'en', NULL)
                     """
@@ -541,13 +623,13 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
 
             migration_engine = create_engine(self.migration_url)
             try:
-                manifest = import_sqlite_workspace(
-                    source_path,
-                    "user_import_owner",
-                    omit_provider_secrets=True,
-                    omit_generated_files=True,
-                    engine=migration_engine,
-                )
+                with patch.dict(os.environ, _provider_secret_environment(), clear=False):
+                    manifest = import_sqlite_workspace(
+                        source_path,
+                        "user_import_owner",
+                        omit_generated_files=True,
+                        engine=migration_engine,
+                    )
                 with migration_engine.connect() as connection:
                     self.assertEqual(
                         MIGRATION_ROLE,
@@ -557,7 +639,6 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                     import_sqlite_workspace(
                         source_path,
                         "user_import_owner",
-                        omit_provider_secrets=True,
                         omit_generated_files=True,
                         engine=migration_engine,
                     )
@@ -581,6 +662,18 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             self.assertEqual(
                 [("Synthetic Role",)],
                 connection.execute(text("SELECT title FROM careertrellis.jobs")).all(),
+            )
+        with (
+            patch.dict(os.environ, _provider_secret_environment(), clear=False),
+            patch.object(
+                provider_secrets_module,
+                "runtime_postgres_engine",
+                return_value=self.runtime_engine,
+            ),
+        ):
+            self.assertEqual(
+                "synthetic-import-secret",
+                provider_secrets_module.load_provider_secret(owner_id, "gemini"),
             )
         with identity_transaction(self.runtime_engine, "user_other_identity") as connection:
             self.assertEqual(0, connection.scalar(text("SELECT count(*) FROM careertrellis.app_users")))

@@ -1,3 +1,4 @@
+import base64
 import json
 import io
 import os
@@ -22,6 +23,7 @@ import database as database_module
 import local_users as local_users_module
 import materials as materials_module
 import operations as operations_module
+import provider_secrets as provider_secrets_module
 import searcher as searcher_module
 import source_diagnostics as source_diagnostics_module
 import sqlite_postgres_import as sqlite_postgres_import_module
@@ -970,9 +972,9 @@ class FrontendStartupTests(unittest.TestCase):
             with self.subTest(element_id=element_id):
                 self.assertIn(f'id="{element_id}"', html_source)
         self.assertIn("Checking AI Provider", html_source)
-        self.assertIn("i18n.js?v=20260811-24", html_source)
-        self.assertIn("app.js?v=20260811-24", html_source)
-        self.assertIn("index.css?v=20260811-24", html_source)
+        self.assertIn("i18n.js?v=20260812-1", html_source)
+        self.assertIn("app.js?v=20260812-1", html_source)
+        self.assertIn("index.css?v=20260812-1", html_source)
 
     def test_launchers_require_the_current_backend_build(self) -> None:
         project_dir = Path(__file__).parent.parent
@@ -1219,7 +1221,8 @@ class FrontendStartupTests(unittest.TestCase):
         self.assertIn('role="status" aria-live="polite"', html_source)
         self.assertIn("updateSecretStatuses", script_source)
         self.assertIn('status.textContent = configured ? "Saved" : "Not saved"', script_source)
-        self.assertIn("Leave this field blank to keep the current key", script_source)
+        self.assertIn("never returned to your browser", script_source)
+        self.assertIn("leave this field blank to keep it", script_source)
         self.assertNotRegex(script_source, r"profile\.google_maps_api_key(?!_configured)")
         self.assertNotRegex(script_source, r"profile\.gemini_api_key(?!_configured)")
         self.assertNotRegex(script_source, r"profile\.openai_api_key(?!_configured)")
@@ -1477,7 +1480,7 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn(prepare_check, script)
         self.assertLess(script.index(prepare_check), script.index(activation))
 
-    def test_shared_web_service_loads_only_the_runtime_database_credential(self) -> None:
+    def test_shared_web_service_loads_only_runtime_and_provider_credentials(self) -> None:
         project_dir = self.project_dir()
         web_service = (project_dir / "deploy" / "systemd" / "careertrellis-web.service").read_text(
             encoding="utf-8"
@@ -1486,9 +1489,23 @@ class DependencyLockTests(unittest.TestCase):
             project_dir / "deploy" / "systemd" / "careertrellis-worker.service"
         ).read_text(encoding="utf-8")
         self.assertIn("EnvironmentFile=/etc/careertrellis/postgres-runtime.env", web_service)
+        self.assertIn("EnvironmentFile=/etc/careertrellis/provider-secrets.env", web_service)
         self.assertNotIn("postgres-migration.env", web_service)
         self.assertNotIn("postgres-worker.env", web_service)
         self.assertNotIn("postgres-runtime.env", worker_service)
+        self.assertNotIn("provider-secrets.env", worker_service)
+
+    def test_import_and_rotation_wrappers_require_reviewed_release_and_root_owned_envs(self) -> None:
+        scripts = self.project_dir() / "deploy" / "scripts"
+        import_source = (scripts / "import-sqlite-postgres.sh").read_text(encoding="utf-8")
+        rotation_source = (scripts / "rotate-provider-secrets.sh").read_text(encoding="utf-8")
+        for source in (import_source, rotation_source):
+            self.assertIn("/opt/careertrellis/staging/releases/*", source)
+            self.assertIn("root:root 600", source)
+            self.assertIn("flock -n", source)
+        self.assertIn("CAREERTRELLIS_MIGRATION_DATABASE_URL", import_source)
+        self.assertIn("CAREERTRELLIS_DATA_DIR", import_source)
+        self.assertIn("CAREERTRELLIS_ROTATE_OWNER_USER_ID", rotation_source)
 
     def test_provisioning_keeps_the_caddy_access_log_service_writable(self) -> None:
         script = (self.project_dir() / "deploy" / "scripts" / "provision-staging-host.sh").read_text(encoding="utf-8")
@@ -4543,6 +4560,160 @@ class BulkCleanupTests(unittest.TestCase):
             [("jobs.example.test", "bulk_cleanup"), ("jobs.example.test", "bulk_cleanup")],
             [tuple(row) for row in suppressions],
         )
+
+
+class ProviderSecretEncryptionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.keyring = provider_secrets_module.ProviderSecretKeyring(
+            active_key_id="kek-test-a",
+            keys={
+                "kek-test-a": bytes(range(32)),
+                "kek-test-old": bytes(reversed(range(32))),
+            },
+        )
+
+    def test_ciphertext_is_randomized_and_bound_to_owner_provider_and_key(self) -> None:
+        first_key_id, first = provider_secrets_module.encrypt_provider_secret(
+            7,
+            "gemini",
+            "synthetic-secret-value",
+            keyring=self.keyring,
+        )
+        second_key_id, second = provider_secrets_module.encrypt_provider_secret(
+            7,
+            "gemini",
+            "synthetic-secret-value",
+            keyring=self.keyring,
+        )
+        self.assertEqual("kek-test-a", first_key_id)
+        self.assertEqual(first_key_id, second_key_id)
+        self.assertNotEqual(first, second)
+        self.assertNotIn(b"synthetic-secret-value", first)
+        self.assertEqual(
+            "synthetic-secret-value",
+            provider_secrets_module.decrypt_provider_secret(
+                7,
+                "gemini",
+                first_key_id,
+                first,
+                keyring=self.keyring,
+            ),
+        )
+        for owner, provider, key_id, ciphertext in (
+            (8, "gemini", first_key_id, first),
+            (7, "openai", first_key_id, first),
+            (7, "gemini", "kek-test-old", first),
+            (7, "gemini", first_key_id, first[:-1] + bytes((first[-1] ^ 1,))),
+        ):
+            with self.subTest(owner=owner, provider=provider, key_id=key_id):
+                with self.assertRaises(provider_secrets_module.ProviderSecretIntegrityError):
+                    provider_secrets_module.decrypt_provider_secret(
+                        owner,
+                        provider,
+                        key_id,
+                        ciphertext,
+                        keyring=self.keyring,
+                    )
+
+    def test_shared_store_requires_a_valid_explicit_keyring(self) -> None:
+        encoded_key = base64.urlsafe_b64encode(bytes(range(32))).decode("ascii")
+        encoded_keyring = base64.urlsafe_b64encode(
+            json.dumps({"kek-test-a": encoded_key}, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
+        environment = {
+            "CAREERTRELLIS_PROVIDER_SECRET_STORE": "postgres_encrypted",
+            "CAREERTRELLIS_PROVIDER_SECRET_ACTIVE_KEY_ID": "kek-test-a",
+            "CAREERTRELLIS_PROVIDER_SECRET_KEYRING_B64": encoded_keyring,
+        }
+        with (
+            patch.object(config_module, "get_runtime_environment", return_value="staging"),
+            patch.object(provider_secrets_module, "database_url_from_environment"),
+            patch.dict(os.environ, environment, clear=False),
+        ):
+            self.assertEqual(
+                "postgres_encrypted",
+                provider_secrets_module.validate_provider_secret_store_configuration(),
+            )
+            os.environ["CAREERTRELLIS_PROVIDER_SECRET_ACTIVE_KEY_ID"] = "missing"
+            with self.assertRaises(provider_secrets_module.ProviderSecretConfigurationError):
+                provider_secrets_module.validate_provider_secret_store_configuration()
+
+    def test_owner_context_is_required_and_reset(self) -> None:
+        with self.assertRaises(provider_secrets_module.ProviderSecretAuthorizationError):
+            provider_secrets_module.current_owner_user_id()
+        with provider_secrets_module.owner_user_scope(42):
+            self.assertEqual(42, provider_secrets_module.current_owner_user_id())
+        with self.assertRaises(provider_secrets_module.ProviderSecretAuthorizationError):
+            provider_secrets_module.current_owner_user_id()
+
+    def test_shared_profile_update_uses_one_owner_scoped_atomic_write(self) -> None:
+        request = SimpleNamespace(state=SimpleNamespace(local_user_id=17))
+        with (
+            patch.object(
+                app_module,
+                "provider_secret_store_kind",
+                return_value=provider_secrets_module.SHARED_SECRET_STORE,
+            ),
+            patch.object(app_module, "update_provider_secrets") as update,
+            patch.object(
+                app_module,
+                "current_provider_secret_configured",
+                side_effect=lambda provider: provider != "google_maps",
+            ),
+        ):
+            result = app_module.update_profile_secrets(
+                app_module.ProfileSecretsUpdate(
+                    gemini_api_key="new-gemini-key",
+                    openai_api_key="",
+                ),
+                request,
+            )
+        update.assert_called_once_with(
+            17,
+            {"gemini": "new-gemini-key", "openai": ""},
+        )
+        self.assertTrue(result["gemini_api_key_configured"])
+        self.assertTrue(result["openai_api_key_configured"])
+        self.assertFalse(result["google_maps_api_key_configured"])
+
+    def test_shared_provider_resolution_never_uses_profile_or_global_keys(self) -> None:
+        profile = {
+            "ai_provider": "openai",
+            "ai_model": "gpt-5-mini",
+            "openai_api_key": "legacy-plaintext",
+            "maps_provider": "google",
+            "google_maps_api_key": "legacy-maps-plaintext",
+        }
+        with (
+            patch.object(
+                ai_providers_module,
+                "provider_secret_store_kind",
+                return_value=provider_secrets_module.SHARED_SECRET_STORE,
+            ),
+            patch.object(
+                ai_providers_module,
+                "current_provider_secret",
+                return_value="encrypted-store-openai",
+            ),
+            patch.object(
+                maps_providers_module,
+                "provider_secret_store_kind",
+                return_value=provider_secrets_module.SHARED_SECRET_STORE,
+            ),
+            patch.object(
+                maps_providers_module,
+                "current_provider_secret",
+                return_value="encrypted-store-maps",
+            ),
+        ):
+            self.assertEqual(
+                "encrypted-store-openai",
+                ai_providers_module.settings_from_profile(profile).api_key,
+            )
+            self.assertEqual(
+                "encrypted-store-maps",
+                maps_providers_module.maps_settings_from_profile(profile).api_key,
+            )
 
 
 if __name__ == "__main__":

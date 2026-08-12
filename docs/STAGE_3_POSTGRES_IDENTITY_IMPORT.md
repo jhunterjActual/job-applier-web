@@ -45,7 +45,9 @@ The preflight validates the current SQLite schema, owner identity, relationships
 job URLs, and JSON values. Its output contains table counts plus the number of
 legacy credential fields and generated-file paths that require separate
 migration. It never prints their values, profile content, job data, URLs, or
-filesystem paths.
+filesystem paths. Provider-secret counts identify values that the encrypted
+import stage must protect; generated-file counts remain a separate object-store
+migration gate.
 
 ## Rehearsal importer
 
@@ -56,20 +58,21 @@ owner mapping, sets transaction-local tenant context, requires that owner's
 target tables to be empty, remaps all SQLite identifiers, and commits only when
 every target row count exactly matches the source.
 
-The importer refuses a source containing provider credentials or generated-file
-paths unless both omissions are explicitly acknowledged. The omission switches
-exist for isolated rehearsals only:
+With the encrypted-provider-secret stage present, the importer encrypts legacy
+provider fields before insertion. The omission switches exist for isolated,
+deliberately incomplete rehearsals only:
 
 ```text
 --omit-provider-secrets
 --omit-generated-files
 ```
 
-Do not use an omission rehearsal as the final cutover. Provider credentials must
-first move into server-side encrypted storage, and generated files must first
-move into authorized private object storage. The SQLite database and data
-directories remain the authoritative copy until those migrations, repository
-conversion, negative cross-user tests, and rollback rehearsal are reviewed.
+Do not use an omission rehearsal as the final cutover. Provider credentials
+must be encrypted under an independently escrowed server key, and generated
+files must first move into authorized private object storage. The SQLite
+database and data directories remain the authoritative copy until those
+migrations, repository conversion, negative cross-user tests, and rollback
+rehearsal are reviewed.
 
 ## Deployment sequence after review
 

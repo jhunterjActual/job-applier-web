@@ -9,6 +9,7 @@ See [docs/STAGE_1_DEPLOYMENT.md](docs/STAGE_1_DEPLOYMENT.md) for the access-rest
 See [docs/STAGE_2_AUTHENTICATION.md](docs/STAGE_2_AUTHENTICATION.md) for the owner-only WorkOS authentication boundary and its activation checklist.
 See [docs/STAGE_3_POSTGRES_RLS.md](docs/STAGE_3_POSTGRES_RLS.md) for the non-live PostgreSQL tenant schema, forced-RLS contract, and migration runbook.
 See [docs/STAGE_3_POSTGRES_IDENTITY_IMPORT.md](docs/STAGE_3_POSTGRES_IDENTITY_IMPORT.md) for the PostgreSQL-backed shared-host identity boundary and atomic SQLite import rehearsal.
+See [docs/STAGE_3_ENCRYPTED_PROVIDER_SECRETS.md](docs/STAGE_3_ENCRYPTED_PROVIDER_SECRETS.md) for RLS-protected, server-side encrypted provider credentials, key rotation, and encrypted SQLite import.
 
 A self-contained, privacy-first workspace designed to streamline job discovery, resume tailoring, guided-manual applications, progress tracking, and interview preparation.
 

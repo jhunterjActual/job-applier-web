@@ -1,8 +1,8 @@
 """Atomically import one standalone SQLite workspace into one PostgreSQL owner.
 
-The importer intentionally excludes provider credentials and generated-file
-paths. Those values must move through the encrypted secret and private object
-storage stages instead of being copied into relational plaintext columns.
+Provider credentials are encrypted before insertion when the server keyring is
+available. Generated-file paths remain excluded until private object storage is
+implemented; local paths are never copied into the shared schema.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from postgres_database import (
     set_tenant_context,
     validated_workos_user_id,
 )
+from provider_secrets import encrypt_provider_secret
 
 
 OWNER_ID_ENVIRONMENT_VARIABLE = "CAREERTRELLIS_IMPORT_OWNER_WORKOS_USER_ID"
@@ -46,6 +47,7 @@ SOURCE_TABLES = (
     "headquarters_cache",
 )
 TARGET_TABLES = (
+    "provider_secrets",
     "profiles",
     "base_resumes",
     "base_resume_versions",
@@ -75,8 +77,8 @@ class ImportManifest:
     def sanitized_summary(self) -> dict[str, Any]:
         return {
             "counts": dict(self.counts),
-            "provider_secret_fields_omitted": self.provider_secret_fields,
-            "generated_file_paths_omitted": self.generated_file_paths,
+            "provider_secret_fields": self.provider_secret_fields,
+            "generated_file_paths": self.generated_file_paths,
         }
 
 
@@ -287,9 +289,38 @@ def _import_rows(
     target: Connection,
     owner_id: int,
     source_zone: ZoneInfo,
+    *,
+    omit_provider_secrets: bool,
 ) -> dict[str, int]:
     resume_ids: dict[int, int] = {}
     job_ids: dict[int, int] = {}
+
+    if not omit_provider_secrets:
+        for row in _rows(source, "profile"):
+            for column, provider in (
+                ("gemini_api_key", "gemini"),
+                ("openai_api_key", "openai"),
+                ("google_maps_api_key", "google_maps"),
+            ):
+                plaintext = str(row[column] or "").strip()
+                if not plaintext:
+                    continue
+                key_id, ciphertext = encrypt_provider_secret(owner_id, provider, plaintext)
+                target.execute(
+                    text(
+                        """
+                        INSERT INTO careertrellis.provider_secrets
+                            (owner_user_id, provider, key_id, ciphertext)
+                        VALUES (:owner, :provider, :key_id, :ciphertext)
+                        """
+                    ),
+                    {
+                        "owner": owner_id,
+                        "provider": provider,
+                        "key_id": key_id,
+                        "ciphertext": ciphertext,
+                    },
+                )
 
     for row in _rows(source, "base_resumes"):
         resume_ids[int(row["id"])] = _returning_id(
@@ -572,10 +603,6 @@ def import_sqlite_workspace(
             owner_workos_user_id,
             _connection=source,
         )
-        if manifest.provider_secret_fields and not omit_provider_secrets:
-            raise SQLiteImportError(
-                "Provider credentials are present; rerun only with explicit secret omission."
-            )
         if manifest.generated_file_paths and not omit_generated_files:
             raise SQLiteImportError(
                 "Generated-file paths are present; rerun only with explicit path omission."
@@ -596,11 +623,20 @@ def import_sqlite_workspace(
                 owner_id = _seed_owner(target, owner_workos_user_id)
                 set_tenant_context(target, owner_id, owner_workos_user_id)
                 _target_must_be_empty(target)
-                imported_counts = _import_rows(source, target, owner_id, _source_zone())
+                imported_counts = _import_rows(
+                    source,
+                    target,
+                    owner_id,
+                    _source_zone(),
+                    omit_provider_secrets=omit_provider_secrets,
+                )
                 expected_counts = {
                     target_name: manifest.counts[source_name]
-                    for source_name, target_name in zip(SOURCE_TABLES, TARGET_TABLES)
+                    for source_name, target_name in zip(SOURCE_TABLES, TARGET_TABLES[1:])
                 }
+                expected_counts["provider_secrets"] = (
+                    0 if omit_provider_secrets else manifest.provider_secret_fields
+                )
                 if imported_counts != expected_counts:
                     raise SQLiteImportError(
                         "PostgreSQL row counts did not match the SQLite source."
