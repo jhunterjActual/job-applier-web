@@ -75,7 +75,11 @@ class GeneratedObjectImportTests(unittest.TestCase):
             )
             staged: list[object] = []
             snapshots = {
-                (1, column): importer._file_snapshot(path, path.stat())
+                # Production preflight snapshots the canonical path returned by
+                # _validated_generated_file(). Windows runners can expand the
+                # temporary-directory path while resolving it, so the fixture
+                # must preserve that same boundary.
+                (1, column): importer._file_snapshot(path.resolve(), path.stat())
                 for column, path in (
                     ("tailored_resume_path", resume_path),
                     ("cover_letter_path", letter_path),
