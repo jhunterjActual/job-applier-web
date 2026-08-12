@@ -387,6 +387,3 @@ def init_db() -> None:
     
     conn.commit()
     conn.close()
-
-# Initialize DB on import
-init_db()

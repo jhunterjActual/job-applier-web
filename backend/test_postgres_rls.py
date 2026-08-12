@@ -25,6 +25,8 @@ from sqlite_postgres_import import import_sqlite_workspace
 import object_store as object_store_module
 import provider_secrets as provider_secrets_module
 import stored_objects as stored_objects_module
+from base_resumes import BaseResumeNotFound, LastBaseResumeError
+from profile_repository import PostgreSQLProfileRepository
 
 from postgres_database import (
     PostgreSQLConfigurationError,
@@ -375,6 +377,150 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                     ),
                     {"other": self.user_two},
                 )
+
+    def test_base_resume_soft_delete_is_available_and_tenant_isolated(self) -> None:
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            resume_id = connection.scalar(
+                text(
+                    "INSERT INTO careertrellis.base_resumes "
+                    "(owner_user_id, name, content) "
+                    "VALUES (:owner, 'Primary Resume', 'Synthetic content') RETURNING id"
+                ),
+                {"owner": self.user_one},
+            )
+            updated = connection.execute(
+                text(
+                    "UPDATE careertrellis.base_resumes "
+                    "SET deleted_at = CURRENT_TIMESTAMP WHERE id = :resume_id"
+                ),
+                {"resume_id": resume_id},
+            )
+            self.assertEqual(1, updated.rowcount)
+            self.assertIsNotNone(
+                connection.scalar(
+                    text(
+                        "SELECT deleted_at FROM careertrellis.base_resumes "
+                        "WHERE id = :resume_id"
+                    ),
+                    {"resume_id": resume_id},
+                )
+            )
+
+        with tenant_transaction(self.runtime_engine, self.user_two) as connection:
+            self.assertIsNone(
+                connection.scalar(
+                    text(
+                        "SELECT deleted_at FROM careertrellis.base_resumes "
+                        "WHERE id = :resume_id"
+                    ),
+                    {"resume_id": resume_id},
+                )
+            )
+            self.assertEqual(
+                0,
+                connection.execute(
+                    text(
+                        "UPDATE careertrellis.base_resumes "
+                        "SET deleted_at = NULL WHERE id = :resume_id"
+                    ),
+                    {"resume_id": resume_id},
+                ).rowcount,
+            )
+
+        with self.admin_engine.begin() as connection:
+            index_definition = connection.scalar(
+                text(
+                    "SELECT indexdef FROM pg_indexes "
+                    "WHERE schemaname = 'careertrellis' "
+                    "AND indexname = 'idx_base_resumes_owner_deleted_updated'"
+                )
+            )
+        self.assertIsNotNone(index_definition)
+        self.assertIn("owner_user_id", index_definition)
+        self.assertIn("deleted_at", index_definition)
+        self.assertIn("updated_at DESC", index_definition)
+
+    def test_profile_repository_is_owner_scoped_atomic_and_soft_deletes_resumes(self) -> None:
+        owner_one = PostgreSQLProfileRepository(self.user_one, engine=self.runtime_engine)
+        owner_two = PostgreSQLProfileRepository(self.user_two, engine=self.runtime_engine)
+
+        self.assertEqual("Tenant One", owner_one.get_profile()["name"])
+        self.assertEqual("Tenant Two", owner_two.get_profile()["name"])
+        self.assertNotIn("owner_user_id", owner_one.get_profile())
+        created = owner_one.update_profile(
+            {
+                "name": "Updated Tenant One",
+                "email": "updated@example.test",
+                "phone": "",
+                "github": "",
+                "linkedin": "",
+                "website": "",
+                "base_resume_id": None,
+                "base_resume_id_provided": False,
+                "base_resume_name": "Primary Resume",
+                "base_resume_text": "Synthetic primary resume",
+                "professional_evidence": {"skills": "PostgreSQL"},
+                "resume_mode": "it",
+                "ai_provider": "gemini",
+                "ai_model": "gemini-2.5-flash",
+                "maps_provider": "openstreetmap",
+                "prefer_us_headquarters": True,
+                "interface_language": "en",
+            }
+        )
+        first_resume_id = created["base_resume_id"]
+        self.assertEqual(1, created["base_resume_version"])
+        self.assertTrue(created["base_resume_version_created"])
+        synthesized = owner_one.get_profile()
+        self.assertEqual("Updated Tenant One", synthesized["name"])
+        self.assertEqual("Synthetic primary resume", synthesized["base_resume_text"])
+        self.assertEqual("it", synthesized["resume_mode"])
+        self.assertEqual(first_resume_id, synthesized["active_base_resume_id"])
+        stored_resume = owner_one.get_base_resume(first_resume_id)
+        self.assertNotIn("owner_user_id", stored_resume)
+        self.assertEqual("PostgreSQL", stored_resume["professional_evidence"]["skills"])
+        with self.assertRaises(BaseResumeNotFound):
+            owner_two.get_base_resume(first_resume_id)
+
+        second = owner_one.update_profile(
+            {
+                "name": "Updated Tenant One",
+                "email": "updated@example.test",
+                "phone": "",
+                "github": "",
+                "linkedin": "",
+                "website": "",
+                "base_resume_id": None,
+                "base_resume_id_provided": True,
+                "base_resume_name": "Executive Resume",
+                "base_resume_text": "Synthetic executive resume",
+                "professional_evidence": {},
+                "resume_mode": "technical_executive",
+                "ai_provider": "gemini",
+                "ai_model": "gemini-2.5-flash",
+                "maps_provider": "openstreetmap",
+                "prefer_us_headquarters": True,
+                "interface_language": "en",
+            }
+        )
+        second_resume_id = second["base_resume_id"]
+        self.assertNotEqual(first_resume_id, second_resume_id)
+        replacement = owner_one.delete_base_resume(second_resume_id)
+        self.assertEqual(first_resume_id, replacement["id"])
+        with self.assertRaises(BaseResumeNotFound):
+            owner_one.get_base_resume(second_resume_id)
+        with self.assertRaises(LastBaseResumeError):
+            owner_one.delete_base_resume(first_resume_id)
+        with self.admin_engine.begin() as connection:
+            self.assertIsNotNone(
+                connection.scalar(
+                    text(
+                        "SELECT deleted_at FROM careertrellis.base_resumes "
+                        "WHERE id = :resume_id"
+                    ),
+                    {"resume_id": second_resume_id},
+                )
+            )
 
     def test_composite_foreign_keys_prevent_cross_tenant_relationships(self) -> None:
         with self.assertRaises(DBAPIError):

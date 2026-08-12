@@ -48,6 +48,7 @@ from application_engagements import (
 )
 from data_export import build_user_data_export
 from database import get_db_connection, init_db
+from data_store import LOCAL_DATA_STORE, validate_data_store_configuration
 from local_users import (
     LocalUserAuthorizationError,
     authorized_local_owner,
@@ -73,6 +74,7 @@ from object_store import (
     validate_object_store_configuration,
 )
 from stored_objects import StoredObjectNotFound, download_stored_object
+from profile_repository import runtime_profile_repository
 from web_auth import (
     LOGIN_FLOW_COOKIE_NAME,
     LOGIN_FLOW_MAX_AGE_SECONDS,
@@ -248,6 +250,9 @@ def _cache_headquarters(cache_key: str, result: HeadquartersResult, selected_pro
 async def lifespan(app: FastAPI):
     """Validate the runtime, start optional analytics, and stop within a bounded budget."""
     config.validate_runtime_configuration()
+    data_store = validate_data_store_configuration()
+    if data_store == LOCAL_DATA_STORE:
+        init_db()
     get_auth_configuration()
     validate_identity_store_configuration()
     validate_provider_secret_store_configuration()
@@ -699,9 +704,9 @@ def get_profile() -> dict:
     Returns:
         dict: Profile details plus secret-presence flags; never plaintext keys.
     """
-    conn = get_db_connection()
-    row = conn.execute("SELECT * FROM profile LIMIT 1").fetchone()
-    conn.close()
+    row = runtime_profile_repository(
+        sqlite_connection_factory=get_db_connection
+    ).get_profile()
     if row:
         result = dict(row)
         result["gemini_api_key_configured"] = provider_key_configured(row, "gemini")
@@ -735,109 +740,77 @@ def update_profile(profile: ProfileUpdate) -> dict:
     Returns:
         dict: Success status and feedback message.
     """
-    conn = get_db_connection()
     try:
-        resume = None
-        resume_id = profile.base_resume_id
-        if resume_id is None and "base_resume_id" not in profile.model_fields_set:
-            active = conn.execute(
-                "SELECT active_base_resume_id FROM profile WHERE id = 1"
-            ).fetchone()
-            resume_id = active["active_base_resume_id"] if active else None
-        if resume_id is not None or profile.base_resume_text.strip():
-            resume = save_base_resume(
-                conn,
-                resume_id,
-                profile.base_resume_name,
-                profile.resume_mode,
-                profile.base_resume_text,
-                profile.professional_evidence.model_dump() if profile.professional_evidence else None,
-            )
-            activate_base_resume(conn, resume["id"])
-        conn.execute("""
-        UPDATE profile
-        SET name = ?, email = ?, phone = ?, github = ?, linkedin = ?, website = ?,
-            base_resume_text = ?, resume_mode = ?, ai_provider = ?, ai_model = ?,
-            maps_provider = ?, prefer_us_headquarters = ?, interface_language = ?,
-            suggested_keywords = ''
-        WHERE id = 1
-        """, (
-            profile.name, profile.email, profile.phone, profile.github, profile.linkedin,
-            profile.website, profile.base_resume_text.strip(), profile.resume_mode,
-            profile.ai_provider, profile.ai_model, profile.maps_provider,
-            int(profile.prefer_us_headquarters), profile.interface_language,
-        ))
-        conn.commit()
+        result = runtime_profile_repository(
+            sqlite_connection_factory=get_db_connection
+        ).update_profile(
+            {
+                **profile.model_dump(exclude={"professional_evidence"}),
+                "professional_evidence": (
+                    profile.professional_evidence.model_dump()
+                    if profile.professional_evidence is not None
+                    else None
+                ),
+                "base_resume_id_provided": "base_resume_id" in profile.model_fields_set,
+            }
+        )
     except BaseResumeNotFound as exc:
-        conn.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        conn.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    finally:
-        conn.close()
 
     return {
         "success": True,
         "message": "Profile updated successfully.",
-        "base_resume_id": resume["id"] if resume else None,
-        "base_resume_version": resume["version_number"] if resume else None,
-        "base_resume_version_created": resume["version_created"] if resume else False,
+        **result,
     }
 
 
-def _resume_api_action(action):
-    conn = get_db_connection()
+def _resume_api_action(method: str, *arguments):
     try:
-        result = action(conn)
-        conn.commit()
-        return result
+        repository = runtime_profile_repository(sqlite_connection_factory=get_db_connection)
+        return getattr(repository, method)(*arguments)
     except BaseResumeNotFound as exc:
-        conn.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except LastBaseResumeError as exc:
-        conn.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
-        conn.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    finally:
-        conn.close()
 
 
 @app.get("/api/base-resumes")
 def get_base_resumes() -> list[dict]:
-    return _resume_api_action(list_base_resumes)
+    return _resume_api_action("list_base_resumes")
 
 
 @app.get("/api/base-resumes/{resume_id}")
 def get_base_resume_details(resume_id: int) -> dict:
-    return _resume_api_action(lambda conn: get_base_resume(conn, resume_id))
+    return _resume_api_action("get_base_resume", resume_id)
 
 
 @app.post("/api/base-resumes/{resume_id}/activate")
 def activate_base_resume_endpoint(resume_id: int) -> dict:
-    return _resume_api_action(lambda conn: activate_base_resume(conn, resume_id))
+    return _resume_api_action("activate_base_resume", resume_id)
 
 
 @app.get("/api/base-resumes/{resume_id}/versions")
 def get_base_resume_versions(resume_id: int) -> list[dict]:
-    return _resume_api_action(lambda conn: list_versions(conn, resume_id))
+    return _resume_api_action("list_versions", resume_id)
 
 
 @app.get("/api/base-resumes/{resume_id}/versions/{version_number}")
 def get_base_resume_version(resume_id: int, version_number: int) -> dict:
-    return _resume_api_action(lambda conn: get_version(conn, resume_id, version_number))
+    return _resume_api_action("get_version", resume_id, version_number)
 
 
 @app.post("/api/base-resumes/{resume_id}/versions/{version_number}/restore")
 def restore_base_resume_version(resume_id: int, version_number: int) -> dict:
-    return _resume_api_action(lambda conn: restore_version(conn, resume_id, version_number))
+    return _resume_api_action("restore_version", resume_id, version_number)
 
 
 @app.delete("/api/base-resumes/{resume_id}")
 def delete_base_resume_endpoint(resume_id: int) -> dict:
-    replacement = _resume_api_action(lambda conn: delete_base_resume(conn, resume_id))
+    replacement = _resume_api_action("delete_base_resume", resume_id)
     return {"success": True, "active_resume": replacement}
 
 

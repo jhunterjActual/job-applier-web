@@ -69,6 +69,7 @@ if [[ ! -d ${release_dir} ]]; then
         cd "${temporary_release}/backend"
         export PLAYWRIGHT_BROWSERS_PATH="${browser_path}"
         CAREERTRELLIS_ENVIRONMENT=local \
+        CAREERTRELLIS_DATA_STORE=sqlite \
         CAREERTRELLIS_ALLOWED_HOSTS= \
         CAREERTRELLIS_TRUSTED_PROXY_TOKEN= \
         CAREERTRELLIS_DATA_DIR="${test_data}" \
