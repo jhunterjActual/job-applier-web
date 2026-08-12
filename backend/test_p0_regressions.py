@@ -1502,11 +1502,14 @@ class DependencyLockTests(unittest.TestCase):
         caddy_source = (project_dir / "deploy" / "caddy" / "Caddyfile.staging").read_text(
             encoding="utf-8"
         )
+        app_source = (project_dir / "backend" / "app.py").read_text(encoding="utf-8")
         service_source = (
             project_dir / "deploy" / "systemd" / "careertrellis-web.service"
         ).read_text(encoding="utf-8")
         self.assertIn("log_skip /auth/callback", caddy_source)
-        self.assertIn('Referrer-Policy "no-referrer"', caddy_source)
+        self.assertIn('Referrer-Policy "same-origin"', caddy_source)
+        self.assertNotIn('Referrer-Policy "no-referrer"', caddy_source)
+        self.assertIn('response.headers["Referrer-Policy"] = "no-referrer"', app_source)
         self.assertIn("--no-access-log", service_source)
 
 

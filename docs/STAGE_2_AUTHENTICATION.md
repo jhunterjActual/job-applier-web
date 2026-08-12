@@ -13,7 +13,10 @@ The Caddy Basic Authentication gate remains enabled during this stage as a tempo
 - Requires a verified email, rejects impersonated sessions, and compares the immutable WorkOS user ID with the one configured staging owner.
 - Creates a privacy-minimized SQLite mapping containing the WorkOS user ID, local role, timestamps, and disablement state. It does not copy the WorkOS email or profile.
 - Returns `401` to unauthenticated API clients and redirects unauthenticated browser navigations to AuthKit. Health endpoints remain available to Caddy and deployment checks.
-- Excludes the OAuth callback from Caddy access logs, disables the duplicate Uvicorn access log, and uses a no-referrer policy so callback codes and state are not persisted or forwarded.
+- Excludes the OAuth callback from Caddy access logs, disables the duplicate
+  Uvicorn access log, uses `same-origin` on application pages so authenticated
+  form posts retain a verifiable origin, and applies `no-referrer` to auth
+  responses so callback codes and state are not persisted or forwarded.
 
 This is not general multi-user support. Do not invite beta users or store real private data on the VPS yet. PostgreSQL ownership keys/RLS, private object storage, encrypted provider-secret storage, authorization of every data operation, abuse protection, deletion/export completion, and expand/backfill/contract migrations remain later gates.
 
