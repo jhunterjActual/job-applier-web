@@ -51,8 +51,11 @@ from database import get_db_connection, init_db
 from local_users import (
     LocalUserAuthorizationError,
     authorized_local_owner,
+    check_identity_store_ready,
     provision_staging_owner,
+    validate_identity_store_configuration,
 )
+from postgres_database import dispose_postgres_engines
 from web_auth import (
     LOGIN_FLOW_COOKIE_NAME,
     LOGIN_FLOW_MAX_AGE_SECONDS,
@@ -229,11 +232,13 @@ async def lifespan(app: FastAPI):
     """Validate the runtime, start optional analytics, and stop within a bounded budget."""
     config.validate_runtime_configuration()
     get_auth_configuration()
+    validate_identity_store_configuration()
     initialize_analytics(APP_BUILD)
     try:
         yield
     finally:
         shutdown_analytics(timeout_seconds=0.5)
+        dispose_postgres_engines()
 
 
 app = FastAPI(title="CareerTrellis API", lifespan=lifespan)
@@ -620,6 +625,7 @@ def get_readiness() -> dict:
             connection.execute("SELECT 1").fetchone()
         finally:
             connection.close()
+        check_identity_store_ready()
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Service is not ready.") from exc
     return {"status": "ready", "build": APP_BUILD}

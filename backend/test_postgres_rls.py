@@ -7,9 +7,11 @@ The test creates and removes one dedicated database and four fixed test roles.
 from __future__ import annotations
 
 import os
+import sqlite3
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from alembic import command
 from alembic.config import Config
@@ -17,10 +19,14 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError
 
+from sqlite_postgres_import import import_sqlite_workspace
+
 from postgres_database import (
     PostgreSQLConfigurationError,
+    dispose_postgres_engines,
     identity_transaction,
     postgres_url,
+    runtime_postgres_engine,
     set_identity_context,
     set_tenant_context,
     tenant_transaction,
@@ -77,6 +83,23 @@ class PostgreSQLConfigurationTests(unittest.TestCase):
 
         set_identity_context(connection, "user_valid123")
         connection.execute.assert_called_once()
+
+    def test_runtime_pool_is_reused_and_disposed_without_logging_its_url(self) -> None:
+        engine = Mock()
+        dispose_postgres_engines()
+        with (
+            patch.dict(
+                os.environ,
+                {"CAREERTRELLIS_DATABASE_URL": "postgresql+psycopg://runtime:secret@database.test/app"},
+                clear=False,
+            ),
+            patch("postgres_database.create_postgres_engine", return_value=engine) as create,
+        ):
+            self.assertIs(engine, runtime_postgres_engine())
+            self.assertIs(engine, runtime_postgres_engine())
+        create.assert_called_once()
+        dispose_postgres_engines()
+        engine.dispose.assert_called_once_with()
 
 
 class PostgreSQLTenantIsolationTests(unittest.TestCase):
@@ -401,3 +424,163 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 {"database_name": DATABASE_NAME},
             ).scalars().all()
             self.assertEqual([], public_database_privileges)
+
+    def test_atomic_sqlite_import_is_visible_only_to_the_mapped_owner(self) -> None:
+        with self.admin_engine.begin() as connection:
+            connection.exec_driver_sql(
+                "TRUNCATE TABLE careertrellis.app_users RESTART IDENTITY CASCADE"
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "workspace.db"
+            source = sqlite3.connect(source_path)
+            try:
+                source.executescript(
+                    """
+                    CREATE TABLE app_users (
+                        id INTEGER PRIMARY KEY, workos_user_id TEXT, role TEXT,
+                        created_at TEXT, last_seen_at TEXT, disabled_at TEXT
+                    );
+                    CREATE TABLE profile (
+                        id INTEGER PRIMARY KEY, name TEXT, email TEXT, phone TEXT,
+                        github TEXT, linkedin TEXT, website TEXT, base_resume_text TEXT,
+                        gemini_api_key TEXT, openai_api_key TEXT, google_maps_api_key TEXT,
+                        suggested_keywords TEXT, ai_provider TEXT, ai_model TEXT,
+                        maps_provider TEXT, prefer_us_headquarters INTEGER,
+                        interface_language TEXT, active_base_resume_id INTEGER
+                    );
+                    CREATE TABLE base_resumes (
+                        id INTEGER PRIMARY KEY, name TEXT, resume_mode TEXT, content TEXT,
+                        evidence_json TEXT, created_at TEXT, updated_at TEXT
+                    );
+                    CREATE TABLE base_resume_versions (
+                        id INTEGER PRIMARY KEY, base_resume_id INTEGER, version_number INTEGER,
+                        name TEXT, resume_mode TEXT, content TEXT, evidence_json TEXT,
+                        created_at TEXT
+                    );
+                    CREATE TABLE jobs (
+                        id INTEGER PRIMARY KEY, title TEXT, company TEXT, description TEXT,
+                        url TEXT, match_score INTEGER, match_analysis TEXT, date_found TEXT,
+                        status TEXT, archived_at TEXT, archived_from_status TEXT,
+                        last_checked_at TEXT, is_expired INTEGER, expiration_reason TEXT,
+                        location TEXT, work_arrangement TEXT, employment_type TEXT,
+                        compensation TEXT, source TEXT
+                    );
+                    CREATE TABLE saved_searches (
+                        id INTEGER PRIMARY KEY, name TEXT, keywords TEXT, location TEXT,
+                        created_at TEXT, last_run_at TEXT, schedule_frequency TEXT,
+                        next_alert_at TEXT, enabled INTEGER
+                    );
+                    CREATE TABLE applications (
+                        id INTEGER PRIMARY KEY, job_id INTEGER, company TEXT, position TEXT,
+                        date_applied TEXT, us_hq TEXT, tailored_resume_path TEXT,
+                        cover_letter_path TEXT, tailored_resume_text TEXT, cover_letter TEXT,
+                        status TEXT, created_at TEXT, tailored_at TEXT, form_filled_at TEXT,
+                        submitted_at TEXT, confirmed_at TEXT, application_method TEXT,
+                        submission_evidence TEXT, notes TEXT, follow_up_date TEXT,
+                        headquarters_source TEXT, headquarters_attribution TEXT,
+                        base_resume_id INTEGER, base_resume_name TEXT,
+                        base_resume_version INTEGER, interview_prep TEXT,
+                        interview_prep_updated_at TEXT
+                    );
+                    CREATE TABLE application_status_history (
+                        id INTEGER PRIMARY KEY, job_id INTEGER, from_status TEXT,
+                        to_status TEXT, changed_at TEXT, source TEXT, notes TEXT,
+                        undone_at TEXT
+                    );
+                    CREATE TABLE application_engagements (
+                        id INTEGER PRIMARY KEY, job_id INTEGER, engagement_type TEXT,
+                        name TEXT, organization TEXT, contact_details TEXT, status TEXT,
+                        activity_on TEXT, next_action_on TEXT, notes TEXT,
+                        created_at TEXT, updated_at TEXT
+                    );
+                    CREATE TABLE job_suppressions (
+                        id INTEGER PRIMARY KEY, url_fingerprint TEXT, hostname TEXT,
+                        company TEXT, title TEXT, deleted_at TEXT, deletion_source TEXT
+                    );
+                    CREATE TABLE source_diagnostics (
+                        id INTEGER PRIMARY KEY, recorded_at TEXT, provider TEXT,
+                        diagnostic_code TEXT, counters_json TEXT
+                    );
+                    CREATE TABLE headquarters_cache (
+                        cache_key TEXT PRIMARY KEY, provider TEXT, address TEXT,
+                        country_code TEXT, attribution TEXT, resolved_at TEXT
+                    );
+                    """
+                )
+                timestamp = "2026-08-11T12:00:00"
+                source.execute(
+                    "INSERT INTO app_users VALUES (1, ?, 'owner', ?, ?, NULL)",
+                    ("user_import_owner", timestamp, timestamp),
+                )
+                source.execute(
+                    """
+                    INSERT INTO profile
+                        (id, name, email, gemini_api_key, openai_api_key,
+                         google_maps_api_key, suggested_keywords, ai_provider,
+                         ai_model, maps_provider, prefer_us_headquarters,
+                         interface_language, active_base_resume_id)
+                    VALUES
+                        (1, 'Synthetic Owner', 'owner@example.test', '', '', '',
+                         'python', 'gemini', 'gemini-2.5-flash',
+                         'openstreetmap', 1, 'en', NULL)
+                    """
+                )
+                source.execute(
+                    """
+                    INSERT INTO jobs VALUES
+                        (1, 'Synthetic Role', 'Example', 'Description',
+                         'https://example.test/job', 80, 'Good fit', '2026-08-11',
+                         'matched', NULL, NULL, NULL, 0, NULL, 'Remote', 'remote',
+                         'full_time', NULL, 'manual')
+                    """
+                )
+                source.commit()
+            finally:
+                source.close()
+
+            migration_engine = create_engine(self.migration_url)
+            try:
+                manifest = import_sqlite_workspace(
+                    source_path,
+                    "user_import_owner",
+                    omit_provider_secrets=True,
+                    omit_generated_files=True,
+                    engine=migration_engine,
+                )
+                with migration_engine.connect() as connection:
+                    self.assertEqual(
+                        MIGRATION_ROLE,
+                        connection.scalar(text("SELECT current_user")),
+                    )
+                with self.assertRaises(RuntimeError):
+                    import_sqlite_workspace(
+                        source_path,
+                        "user_import_owner",
+                        omit_provider_secrets=True,
+                        omit_generated_files=True,
+                        engine=migration_engine,
+                    )
+                with migration_engine.connect() as connection:
+                    self.assertEqual(
+                        MIGRATION_ROLE,
+                        connection.scalar(text("SELECT current_user")),
+                    )
+            finally:
+                migration_engine.dispose()
+
+        self.assertEqual(1, manifest.counts["profile"])
+        self.assertEqual(1, manifest.counts["jobs"])
+        with identity_transaction(self.runtime_engine, "user_import_owner") as connection:
+            owner_id = connection.scalar(
+                text("SELECT id FROM careertrellis.app_users WHERE workos_user_id = 'user_import_owner'")
+            )
+        with tenant_transaction(
+            self.runtime_engine, owner_id, "user_import_owner"
+        ) as connection:
+            self.assertEqual(
+                [("Synthetic Role",)],
+                connection.execute(text("SELECT title FROM careertrellis.jobs")).all(),
+            )
+        with identity_transaction(self.runtime_engine, "user_other_identity") as connection:
+            self.assertEqual(0, connection.scalar(text("SELECT count(*) FROM careertrellis.app_users")))

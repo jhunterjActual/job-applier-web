@@ -6,9 +6,14 @@ if [[ ${EUID} -ne 0 ]]; then
     exit 1
 fi
 
+prepare_only=false
+if [[ ${1:-} == "--prepare-only" ]]; then
+    prepare_only=true
+    shift
+fi
 revision=${1:-}
 if [[ ! ${revision} =~ ^[0-9a-f]{40}$ ]]; then
-    echo "Usage: $0 <exact-40-character-git-commit>" >&2
+    echo "Usage: $0 [--prepare-only] <exact-40-character-git-commit>" >&2
     exit 1
 fi
 
@@ -69,6 +74,11 @@ if [[ ! -d ${release_dir} ]]; then
     chmod -R u=rwX,g=rX,o= "${temporary_release}"
     mv "${temporary_release}" "${release_dir}"
     temporary_release=""
+fi
+
+if [[ ${prepare_only} == true ]]; then
+    echo "CareerTrellis staging release prepared at ${revision}; it was not activated."
+    exit 0
 fi
 
 old_release=""
