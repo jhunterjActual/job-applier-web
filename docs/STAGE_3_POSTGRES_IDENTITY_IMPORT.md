@@ -93,3 +93,8 @@ must stop web and worker writes, take fresh SQLite and PostgreSQL backups,
 migrate encrypted secrets and private objects, import in one transaction,
 verify per-owner counts and object hashes, switch repository traffic, and
 preserve a tested code-and-data rollback point.
+
+The profile and base-resume repository foundation, remaining repository domains,
+and the split-brain-safe final cutover contract are documented in
+`STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md`. That foundation is not approval to
+activate a shared-host PostgreSQL data store.

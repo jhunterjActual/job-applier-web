@@ -120,3 +120,7 @@ and its no-cutover migration rehearsal are documented in
 `STAGE_3_PRIVATE_OBJECT_STORAGE.md`. Later slices still need to convert
 application repositories and worker transactions. No beta invitations are
 permitted until those stages and their negative isolation tests pass.
+
+The first application repository slice and its hard no-activation/data-
+authority boundary are documented in
+`STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md`.

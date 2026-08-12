@@ -230,3 +230,7 @@ authoritative data directory.
 - [ ] Provider capability, owner readiness, login, authorized download, logout, and code rollback checks pass without secret or document leakage.
 - [ ] SQLite and local generated files remain authoritative; no live cutover or additional user invitation occurred in this PR.
 - [ ] The final activation decision is deferred until repository conversion, rollback compatibility, and all remaining multi-user gates are reviewed.
+
+The next profile/base-resume repository slice and its explicit no-activation,
+data-authority, and split-brain rollback boundary are documented in
+`STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md`.

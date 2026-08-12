@@ -1,4 +1,5 @@
 import base64
+import importlib
 import json
 import io
 import os
@@ -7,10 +8,11 @@ import sqlite3
 import tempfile
 import unittest
 import zipfile
+import asyncio
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 import app as app_module
@@ -20,6 +22,7 @@ import backup_restore as backup_restore_module
 import config as config_module
 import maps_providers as maps_providers_module
 import database as database_module
+import data_store as data_store_module
 import local_users as local_users_module
 import materials as materials_module
 import operations as operations_module
@@ -1667,6 +1670,152 @@ class ProfileSecretPresenceTests(unittest.TestCase):
         self.assertEqual("openstreetmap", settings.provider)
         self.assertEqual("", settings.api_key)
         self.assertEqual(provider_result, result)
+
+
+class DataStoreConfigurationTests(unittest.TestCase):
+    POSTGRES_URL = "postgresql+psycopg://runtime:test@database.test/careertrellis"
+
+    def test_local_data_store_defaults_to_sqlite_and_accepts_explicit_sqlite(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"CAREERTRELLIS_ENVIRONMENT": "local"},
+            clear=True,
+        ):
+            self.assertEqual(
+                data_store_module.LOCAL_DATA_STORE,
+                data_store_module.validate_data_store_configuration(),
+            )
+
+        with patch.dict(
+            os.environ,
+            {
+                "CAREERTRELLIS_ENVIRONMENT": "local",
+                data_store_module.DATA_STORE_ENVIRONMENT_VARIABLE: "sqlite",
+            },
+            clear=True,
+        ):
+            self.assertEqual("sqlite", data_store_module.data_store_kind())
+
+    def test_local_data_store_rejects_postgres(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "CAREERTRELLIS_ENVIRONMENT": "local",
+                data_store_module.DATA_STORE_ENVIRONMENT_VARIABLE: "postgres",
+            },
+            clear=True,
+        ):
+            with self.assertRaises(config_module.RuntimeConfigurationError):
+                data_store_module.validate_data_store_configuration()
+
+    def test_shared_data_store_requires_postgres_and_a_valid_runtime_url(self) -> None:
+        for selected, database_url in (
+            ("", self.POSTGRES_URL),
+            ("sqlite", self.POSTGRES_URL),
+            ("postgres", ""),
+            ("postgres", "sqlite:///unsafe.db"),
+        ):
+            with self.subTest(selected=selected, database_url=database_url):
+                with patch.dict(
+                    os.environ,
+                    {
+                        "CAREERTRELLIS_ENVIRONMENT": "staging",
+                        data_store_module.DATA_STORE_ENVIRONMENT_VARIABLE: selected,
+                        "CAREERTRELLIS_DATABASE_URL": database_url,
+                    },
+                    clear=True,
+                ):
+                    with self.assertRaises(config_module.RuntimeConfigurationError):
+                        data_store_module.validate_data_store_configuration(
+                            fail_on_incomplete=False
+                        )
+
+    def test_shared_data_store_fails_closed_until_repository_cutover(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "CAREERTRELLIS_ENVIRONMENT": "production",
+                data_store_module.DATA_STORE_ENVIRONMENT_VARIABLE: "postgres",
+                "CAREERTRELLIS_DATABASE_URL": self.POSTGRES_URL,
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                data_store_module.SHARED_DATA_STORE,
+                data_store_module.validate_data_store_configuration(
+                    fail_on_incomplete=False
+                ),
+            )
+            with self.assertRaisesRegex(
+                config_module.RuntimeConfigurationError,
+                "not fully converted",
+            ):
+                data_store_module.validate_data_store_configuration()
+
+    def test_database_import_does_not_initialize_sqlite(self) -> None:
+        with patch.object(
+            database_module.sqlite3,
+            "connect",
+            side_effect=AssertionError("database import initialized SQLite"),
+        ):
+            reloaded = importlib.reload(database_module)
+        self.assertTrue(callable(reloaded.init_db))
+
+    def test_lifespan_initializes_only_the_selected_local_sqlite_store(self) -> None:
+        async def exercise_lifespan() -> None:
+            async with app_module.lifespan(app_module.app):
+                pass
+
+        with (
+            patch.object(app_module.config, "validate_runtime_configuration"),
+            patch.object(app_module, "get_auth_configuration"),
+            patch.object(app_module, "validate_identity_store_configuration"),
+            patch.object(app_module, "validate_provider_secret_store_configuration"),
+            patch.object(app_module, "validate_object_store_configuration"),
+            patch.object(app_module, "initialize_analytics"),
+            patch.object(app_module, "shutdown_analytics"),
+            patch.object(app_module, "dispose_postgres_engines"),
+            patch.object(
+                app_module,
+                "validate_data_store_configuration",
+                return_value=data_store_module.LOCAL_DATA_STORE,
+            ),
+            patch.object(app_module, "init_db") as init_db,
+        ):
+            asyncio.run(exercise_lifespan())
+        init_db.assert_called_once_with()
+
+        with (
+            patch.object(app_module.config, "validate_runtime_configuration"),
+            patch.object(app_module, "get_auth_configuration"),
+            patch.object(app_module, "validate_identity_store_configuration"),
+            patch.object(app_module, "validate_provider_secret_store_configuration"),
+            patch.object(app_module, "validate_object_store_configuration"),
+            patch.object(app_module, "initialize_analytics"),
+            patch.object(app_module, "shutdown_analytics"),
+            patch.object(app_module, "dispose_postgres_engines"),
+            patch.object(
+                app_module,
+                "validate_data_store_configuration",
+                return_value=data_store_module.SHARED_DATA_STORE,
+            ),
+            patch.object(app_module, "init_db") as init_db,
+        ):
+            asyncio.run(exercise_lifespan())
+        init_db.assert_not_called()
+
+    def test_resume_routes_dispatch_through_the_configured_repository(self) -> None:
+        repository = Mock()
+        repository.list_base_resumes.return_value = [{"id": 7}]
+        repository.get_version.return_value = {"version_number": 3}
+        with patch.object(app_module, "runtime_profile_repository", return_value=repository):
+            self.assertEqual([{"id": 7}], app_module.get_base_resumes())
+            self.assertEqual(
+                {"version_number": 3},
+                app_module.get_base_resume_version(7, 3),
+            )
+        repository.list_base_resumes.assert_called_once_with()
+        repository.get_version.assert_called_once_with(7, 3)
 
 
 class WebAuthenticationTests(unittest.TestCase):
@@ -3988,34 +4137,38 @@ class SourceDiagnosticHistoryTests(unittest.TestCase):
 
 class LifecycleSchemaTests(unittest.TestCase):
     def test_lifecycle_columns_and_foreign_keys_are_enabled(self) -> None:
-        connection = get_db_connection()
-        lifecycle_columns = {
-            "created_at", "tailored_at", "form_filled_at", "submitted_at",
-            "confirmed_at", "application_method", "submission_evidence", "notes", "follow_up_date", "tailored_resume_text",
-            "cover_letter_path", "headquarters_source", "headquarters_attribution",
-            "base_resume_id", "base_resume_name", "base_resume_version",
-            "interview_prep", "interview_prep_updated_at",
-        }
-        actual = {row[1] for row in connection.execute("PRAGMA table_info(applications)")}
-        self.assertTrue(lifecycle_columns.issubset(actual))
-        job_columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
-        self.assertTrue({"last_checked_at", "is_expired", "expiration_reason", "location", "work_arrangement", "employment_type", "compensation", "source"}.issubset(job_columns))
-        profile_columns = {row[1] for row in connection.execute("PRAGMA table_info(profile)")}
-        self.assertIn("resume_mode", profile_columns)
-        self.assertIn("prefer_us_headquarters", profile_columns)
-        self.assertIn("interface_language", profile_columns)
-        self.assertIn("active_base_resume_id", profile_columns)
-        self.assertTrue({"ai_provider", "ai_model", "openai_api_key", "maps_provider"}.issubset(profile_columns))
-        self.assertEqual(1, connection.execute("PRAGMA foreign_keys").fetchone()[0])
-        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertTrue({
-            "application_status_history", "saved_searches", "job_suppressions",
-            "source_diagnostics", "headquarters_cache", "base_resumes",
-            "base_resume_versions", "application_engagements",
-        }.issubset(tables))
-        saved_search_columns = {row[1] for row in connection.execute("PRAGMA table_info(saved_searches)")}
-        self.assertTrue({"schedule_frequency", "next_alert_at"}.issubset(saved_search_columns))
-        connection.close()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "schema.db"
+            with patch.object(database_module, "DB_PATH", database_path):
+                database_module.init_db()
+                connection = database_module.get_db_connection()
+            lifecycle_columns = {
+                "created_at", "tailored_at", "form_filled_at", "submitted_at",
+                "confirmed_at", "application_method", "submission_evidence", "notes", "follow_up_date", "tailored_resume_text",
+                "cover_letter_path", "headquarters_source", "headquarters_attribution",
+                "base_resume_id", "base_resume_name", "base_resume_version",
+                "interview_prep", "interview_prep_updated_at",
+            }
+            actual = {row[1] for row in connection.execute("PRAGMA table_info(applications)")}
+            self.assertTrue(lifecycle_columns.issubset(actual))
+            job_columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+            self.assertTrue({"last_checked_at", "is_expired", "expiration_reason", "location", "work_arrangement", "employment_type", "compensation", "source"}.issubset(job_columns))
+            profile_columns = {row[1] for row in connection.execute("PRAGMA table_info(profile)")}
+            self.assertIn("resume_mode", profile_columns)
+            self.assertIn("prefer_us_headquarters", profile_columns)
+            self.assertIn("interface_language", profile_columns)
+            self.assertIn("active_base_resume_id", profile_columns)
+            self.assertTrue({"ai_provider", "ai_model", "openai_api_key", "maps_provider"}.issubset(profile_columns))
+            self.assertEqual(1, connection.execute("PRAGMA foreign_keys").fetchone()[0])
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertTrue({
+                "application_status_history", "saved_searches", "job_suppressions",
+                "source_diagnostics", "headquarters_cache", "base_resumes",
+                "base_resume_versions", "application_engagements",
+            }.issubset(tables))
+            saved_search_columns = {row[1] for row in connection.execute("PRAGMA table_info(saved_searches)")}
+            self.assertTrue({"schedule_frequency", "next_alert_at"}.issubset(saved_search_columns))
+            connection.close()
 
 
 class InterviewPreparationTests(unittest.TestCase):
