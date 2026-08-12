@@ -100,3 +100,8 @@ object-storage stage is complete.
   match, cross-user RLS tests pass, and provider capability tests succeed.
 - Owner login, logout, readiness, and code rollback are verified while Caddy's
   access restriction remains enabled.
+
+Generated files remain a separate activation gate. Complete the private,
+per-user encrypted object-storage rehearsal in
+`STAGE_3_PRIVATE_OBJECT_STORAGE.md` before any final import or repository
+cutover, and do not reuse this provider-secret keyring as an object keyring.

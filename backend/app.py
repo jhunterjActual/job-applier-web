@@ -66,6 +66,13 @@ from provider_secrets import (
     update_provider_secrets,
     validate_provider_secret_store_configuration,
 )
+from object_store import (
+    ObjectStoreBackendError,
+    ObjectStoreIntegrityError,
+    check_object_store_ready,
+    validate_object_store_configuration,
+)
+from stored_objects import StoredObjectNotFound, download_stored_object
 from web_auth import (
     LOGIN_FLOW_COOKIE_NAME,
     LOGIN_FLOW_MAX_AGE_SECONDS,
@@ -244,6 +251,7 @@ async def lifespan(app: FastAPI):
     get_auth_configuration()
     validate_identity_store_configuration()
     validate_provider_secret_store_configuration()
+    validate_object_store_configuration()
     initialize_analytics(APP_BUILD)
     try:
         yield
@@ -614,6 +622,31 @@ def get_session_summary(request: Request) -> dict[str, object]:
     }
 
 
+@app.get("/api/private-objects/{object_id}")
+def download_private_object(object_id: str, request: Request) -> Response:
+    """Stream one owner-authorized object without exposing an R2 URL or key."""
+    owner_user_id = getattr(request.state, "local_user_id", None)
+    if not owner_user_id:
+        raise HTTPException(status_code=404, detail="The generated object is unavailable.")
+    try:
+        download = download_stored_object(owner_user_id, object_id)
+    except StoredObjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ObjectStoreBackendError, ObjectStoreIntegrityError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The generated object is temporarily unavailable.",
+        ) from exc
+    return Response(
+        content=download.content,
+        media_type=download.content_type,
+        headers={
+            "Cache-Control": "private, no-store, max-age=0",
+            "Content-Disposition": f'attachment; filename="{download.filename}"',
+        },
+    )
+
+
 @app.get("/api/version")
 def get_app_version() -> dict:
     """Identify the running backend so launchers never open a stale instance."""
@@ -644,6 +677,7 @@ def get_readiness() -> dict:
             connection.close()
         check_identity_store_ready()
         check_provider_secret_store_ready()
+        check_object_store_ready()
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Service is not ready.") from exc
     return {"status": "ready", "build": APP_BUILD}

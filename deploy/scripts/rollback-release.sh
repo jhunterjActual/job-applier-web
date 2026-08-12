@@ -6,6 +6,12 @@ if [[ ${EUID} -ne 0 ]]; then
     exit 1
 fi
 
+exec 8>/run/lock/careertrellis-maintenance.lock
+if ! flock -n 8; then
+    echo "Another deployment, rollback, or import operation is running." >&2
+    exit 1
+fi
+
 release_root=${CAREERTRELLIS_RELEASE_ROOT:-/opt/careertrellis/staging}
 current_link=${release_root}/current
 previous_link=${release_root}/previous
@@ -44,8 +50,19 @@ target_revision=$(basename "${target_release}")
 
 activate_release() {
     local release=$1
-    local revision activation_link
+    local revision activation_link environment_file
     revision=$(basename "${release}")
+
+    for environment_file in \
+        /etc/careertrellis/staging.env \
+        /etc/careertrellis/postgres-runtime.env \
+        /etc/careertrellis/provider-secrets.env \
+        /etc/careertrellis/object-storage.env; do
+        if [[ ! -f ${environment_file} || $(stat -c '%U:%G %a' "${environment_file}") != "root:root 600" ]]; then
+            echo "Every web runtime environment file must be root:root mode 0600." >&2
+            return 1
+        fi
+    done
 
     caddy validate \
         --config "${release}/deploy/caddy/Caddyfile.staging" \

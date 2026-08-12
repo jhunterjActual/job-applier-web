@@ -6,6 +6,12 @@ if [[ ${EUID} -ne 0 ]]; then
     exit 1
 fi
 
+exec 8>/run/lock/careertrellis-maintenance.lock
+if ! flock -n 8; then
+    echo "Another deployment, rollback, or import operation is running." >&2
+    exit 1
+fi
+
 prepare_only=false
 if [[ ${1:-} == "--prepare-only" ]]; then
     prepare_only=true
@@ -67,7 +73,7 @@ if [[ ! -d ${release_dir} ]]; then
         CAREERTRELLIS_TRUSTED_PROXY_TOKEN= \
         CAREERTRELLIS_DATA_DIR="${test_data}" \
         PYTHONDONTWRITEBYTECODE=1 \
-        ./venv/bin/python -m unittest test_p0_regressions.py test_analytics.py test_observability.py
+        ./venv/bin/python -m unittest test_p0_regressions.py test_object_store.py test_object_import.py test_stored_objects.py test_analytics.py test_observability.py
         ./venv/bin/python -m compileall -q .
     )
     chown -R root:careertrellis "${temporary_release}"
@@ -88,8 +94,19 @@ fi
 
 activate_release() {
     local target_release=$1
-    local target_revision activation_link
+    local target_revision activation_link environment_file
     target_revision=$(basename "${target_release}")
+
+    for environment_file in \
+        /etc/careertrellis/staging.env \
+        /etc/careertrellis/postgres-runtime.env \
+        /etc/careertrellis/provider-secrets.env \
+        /etc/careertrellis/object-storage.env; do
+        if [[ ! -f ${environment_file} || $(stat -c '%U:%G %a' "${environment_file}") != "root:root 600" ]]; then
+            echo "Every web runtime environment file must be root:root mode 0600." >&2
+            return 1
+        fi
+    done
 
     caddy validate \
         --config "${target_release}/deploy/caddy/Caddyfile.staging" \

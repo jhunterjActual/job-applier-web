@@ -40,6 +40,8 @@ jobs:
         run: python -m pip check
       - name: Run P0 regressions
         run: python -m unittest test_p0_regressions.py
+      - name: Run private object-storage regressions
+        run: python -m unittest test_object_store.py test_object_import.py test_stored_objects.py
       - name: Run analytics regressions
         run: python -m unittest test_analytics.py
       - name: Run observability regressions

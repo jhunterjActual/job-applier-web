@@ -87,7 +87,9 @@ rehearsal are reviewed.
 7. Activate the identity transition only after PostgreSQL owner authorization,
    readiness, login, logout, and rollback checks pass.
 
-The later final data cutover must stop web and worker writes, take fresh SQLite
-and PostgreSQL backups, migrate encrypted secrets and private objects, import in
-one transaction, verify per-owner counts and object hashes, switch repository
-traffic, and preserve a tested code-and-data rollback point.
+The private generated-object transition and its disposable full-import gate are
+documented in `STAGE_3_PRIVATE_OBJECT_STORAGE.md`. The later final data cutover
+must stop web and worker writes, take fresh SQLite and PostgreSQL backups,
+migrate encrypted secrets and private objects, import in one transaction,
+verify per-owner counts and object hashes, switch repository traffic, and
+preserve a tested code-and-data rollback point.
