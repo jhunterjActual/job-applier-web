@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly full encrypted PostgreSQL backup to R2
+
+[Timer]
+OnCalendar=Sun *-*-* 03:15:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=careertrellis-pgbackrest-full.service
+
+[Install]
+WantedBy=timers.target

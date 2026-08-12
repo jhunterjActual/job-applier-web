@@ -1314,9 +1314,9 @@ class DependencyLockTests(unittest.TestCase):
 
         self.assertEqual(
             {
-                "cryptography", "exceptiongroup", "fastapi", "google-genai", "playwright", "posthog",
-                "pydantic", "pymupdf", "python-docx", "python-multipart", "sentry-sdk", "uvicorn",
-                "workos",
+                "alembic", "cryptography", "exceptiongroup", "fastapi", "google-genai",
+                "playwright", "posthog", "psycopg", "pydantic", "pymupdf", "python-docx",
+                "python-multipart", "sentry-sdk", "sqlalchemy", "tomli", "uvicorn", "workos",
             },
             direct_names,
         )

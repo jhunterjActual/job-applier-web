@@ -1,0 +1,4 @@
+# Root-owned migration configuration. Install outside the checkout with mode 0600.
+# Use the migration role over the private WireGuard address; never expose port
+# 5432 publicly and never use the runtime or PostgreSQL administrator password.
+CAREERTRELLIS_MIGRATION_DATABASE_URL=postgresql+psycopg://careertrellis_migration:replace-with-url-encoded-password@10.70.0.2:5432/careertrellis

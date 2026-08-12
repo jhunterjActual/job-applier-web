@@ -46,6 +46,7 @@ This backlog consolidates the code-review, job-seeker persona, product-owner, mo
 - [x] Add deterministic section templates before PDF generation.
 - [x] Add IT, technical-executive, general-professional, federal, healthcare, education, sales, trades/operations, academic-CV, and cover-letter modes.
 - [ ] Prevent browsers and password managers from misclassifying profile fields and provider API keys as login credentials. Separate personal/profile inputs from secret-entry forms, apply accurate standardized `autocomplete` semantics plus narrowly scoped password-manager opt-out hints where needed, avoid login-like email-and-secret form structures, and verify the behavior in current Edge, Chrome, Firefox, and Safari without weakening secure secret entry or accessibility.
+- [ ] Add operator-visible backup health monitoring before beta: alert on failed or missed PostgreSQL full/differential, WAL archive, R2, OneDrive-copy, and provider-snapshot jobs; detect stale destinations and unexpected inventory divergence without exposing object names or credentials; retain bounded success/failure metadata; and schedule recurring isolated restore, promotion, and checksum rehearsals with documented recovery-time and recovery-point results.
 
 ## P2 - Broader job-seeker value
 
