@@ -2407,6 +2407,8 @@ def get_interview_prep(job_id: int) -> dict:
         ).get_interview_workspace(job_id)
     except ApplicationWorkspaceNotFound as exc:
         raise HTTPException(status_code=404, detail="Application record not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -2507,6 +2509,8 @@ def get_job_engagements(job_id: int) -> dict:
         ).list_engagements(job_id)
     except ApplicationWorkspaceNotFound as exc:
         raise HTTPException(status_code=404, detail="Application workspace not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -2564,6 +2568,8 @@ def remove_job_engagement(job_id: int, engagement_id: int) -> dict:
         return {"success": True, "deleted": engagement_id}
     except ApplicationWorkspaceNotFound as exc:
         raise HTTPException(status_code=404, detail="Application workspace not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=500,

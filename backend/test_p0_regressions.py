@@ -5017,6 +5017,15 @@ class InterviewPreparationEndpointTests(unittest.TestCase):
         connection.close()
         self.assertEqual("# My notes\n\n- Verified fact.", saved)
 
+    def test_get_rejects_non_positive_job_identifier(self) -> None:
+        with self.assertRaises(app_module.HTTPException) as raised:
+            app_module.get_interview_prep(0)
+
+        self.assertEqual(422, raised.exception.status_code)
+        self.assertEqual(
+            "Job identifier must be a positive integer.", raised.exception.detail
+        )
+
     def test_generated_plan_commits_only_after_provider_success(self) -> None:
         with (
             patch.object(app_module, "get_db_connection", side_effect=self.connection_factory),
@@ -5428,6 +5437,23 @@ class ApplicationEngagementTests(unittest.TestCase):
         self.assertEqual("completed", updated.json()["status"])
         self.assertEqual({"success": True, "deleted": record_id}, deleted.json())
         self.assertEqual(404, missing.status_code)
+
+    def test_read_and_delete_reject_non_positive_identifiers(self) -> None:
+        with self.assertRaises(app_module.HTTPException) as list_error:
+            app_module.get_job_engagements(0)
+        with self.assertRaises(app_module.HTTPException) as delete_error:
+            app_module.remove_job_engagement(7, 0)
+
+        self.assertEqual(422, list_error.exception.status_code)
+        self.assertEqual(422, delete_error.exception.status_code)
+        self.assertEqual(
+            "Job identifier must be a positive integer.",
+            list_error.exception.detail,
+        )
+        self.assertEqual(
+            "Engagement identifier must be a positive integer.",
+            delete_error.exception.detail,
+        )
 
 
 class ApplicationInsightsTests(unittest.TestCase):
