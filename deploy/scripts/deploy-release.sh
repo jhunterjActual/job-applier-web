@@ -75,7 +75,7 @@ if [[ ! -d ${release_dir} ]]; then
         CAREERTRELLIS_TRUSTED_PROXY_TOKEN= \
         CAREERTRELLIS_DATA_DIR="${test_data}" \
         PYTHONDONTWRITEBYTECODE=1 \
-        ./venv/bin/python -m unittest test_p0_regressions.py test_object_store.py test_object_import.py test_stored_objects.py test_analytics.py test_observability.py
+        ./venv/bin/python -m unittest test_p0_regressions.py test_search_runs.py test_scheduled_search_dispatch.py test_object_store.py test_object_import.py test_stored_objects.py test_analytics.py test_observability.py
         ./venv/bin/python -m compileall -q .
     )
     chown -R root:careertrellis "${temporary_release}"

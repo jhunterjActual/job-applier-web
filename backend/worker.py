@@ -12,6 +12,10 @@ from uuid import uuid4
 import config
 from data_store import SHARED_DATA_STORE, validate_data_store_configuration
 from provider_secrets import validate_provider_secret_store_configuration
+from scheduled_search_dispatch import (
+    ScheduledSearchDispatchUnavailable,
+    dispatch_due_postgres_saved_searches,
+)
 from search_run_execution import execute_search_claim
 from search_run_repository import (
     PostgreSQLSearchRunRepository,
@@ -75,6 +79,30 @@ def run(once: bool = False) -> int:
         engine = runtime_postgres_engine()
         worker_id = str(uuid4())
         while not STOP_EVENT.is_set():
+            try:
+                dispatched = dispatch_due_postgres_saved_searches(engine=engine)
+                if dispatched:
+                    print(
+                        json.dumps(
+                            {
+                                "event": "scheduled_searches_dispatched",
+                                "count": len(dispatched),
+                            },
+                            separators=(",", ":"),
+                        ),
+                        flush=True,
+                    )
+            except ScheduledSearchDispatchUnavailable:
+                print(
+                    json.dumps(
+                        {
+                            "event": "scheduled_search_dispatch_failed",
+                            "code": "persistence_unavailable",
+                        },
+                        separators=(",", ":"),
+                    ),
+                    flush=True,
+                )
             claim = claim_next_postgres_search_run(worker_id, engine=engine)
             if claim is None:
                 _write_heartbeat(heartbeat_path, "idle")

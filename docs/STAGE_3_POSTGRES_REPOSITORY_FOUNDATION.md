@@ -118,8 +118,11 @@ is in `STAGE_3_POSTGRES_HEADQUARTERS_CACHE.md`.
 
 The durable search-run slice replaces process memory with owner-scoped status,
 cancellation, leases, retry/crash recovery, and a worker-only least-privilege
-claim broker. Its no-activation and rollback contract is in
-`STAGE_3_POSTGRES_SEARCH_RUNS.md`.
+claim broker. The bounded scheduled-dispatch follow-up atomically publishes due
+saved searches through that run path and advances their reminders only after
+publication succeeds. Their no-activation and rollback contracts are in
+`STAGE_3_POSTGRES_SEARCH_RUNS.md` and
+`STAGE_3_POSTGRES_SCHEDULED_SEARCH_DISPATCH.md`.
 
 The shared backup/restore policy now fails both encrypted-workspace endpoints
 closed when PostgreSQL is the selected data store. The HTTP boundary rejects a
@@ -142,7 +145,8 @@ converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
 - deletion of jobs with applications, lifecycle history, generated materials,
   stored objects, or other protected dependent records;
-- scheduled saved-search dispatch and any general-purpose background queue;
+- any general-purpose background queue beyond the bounded search-run and
+  scheduled saved-search dispatch brokers;
 - any application operation outside the converted lifecycle, engagement,
   interview-preparation, record-list, and insight repository boundaries;
 - any unconverted job-domain reads;

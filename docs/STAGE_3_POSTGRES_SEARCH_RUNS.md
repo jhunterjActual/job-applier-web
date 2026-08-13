@@ -127,8 +127,10 @@ PostgreSQL authoritative and use a reviewed forward correction.
 
 ## Explicit exclusions
 
-This slice does not add scheduled saved-search dispatch, prioritization,
-multiple queue types, per-provider rate-limit coordination, durable source
+The follow-up documented in `STAGE_3_POSTGRES_SCHEDULED_SEARCH_DISPATCH.md`
+adds only bounded due saved-search publication into this existing run path.
+The combined boundary still does not add prioritization, multiple general
+queue types, per-provider rate-limit coordination, durable source
 diagnostic retries, distributed cancellation during a single blocking network
 call, job-write transactions spanning a search, object-storage access, web or
 R2 credentials in workers, account deletion/export conversion, backup/restore
@@ -154,8 +156,8 @@ or additional users.
       web runtime, migration, object-storage, or R2 credential is added.
 - [ ] P0, focused search-run, syntax, dependency-lock, migration, launcher,
       protected-file, and exact-diff security checks pass.
-- [ ] Build strings agree at `20260813.13`, Alembic has one head at
-      `20260813_0007`, and `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains false.
+- [ ] Build strings agree at `20260813.15`, Alembic has one head at
+      `20260813_0008`, and `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains false.
 
 Final authority transition and remaining repository gates stay in
 `STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md`.

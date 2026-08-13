@@ -132,7 +132,8 @@ This slice does not convert or authorize:
 
 - the then-process-global search state and worker execution, which are now
   owned by the bounded follow-up `STAGE_3_POSTGRES_SEARCH_RUNS.md`;
-- scheduled saved-search dispatch and general-purpose worker queues;
+- the then-unconverted scheduled dispatch, now owned by the bounded follow-up
+  `STAGE_3_POSTGRES_SCHEDULED_SEARCH_DISPATCH.md`, and general-purpose queues;
 - any web runtime database, migration, object-storage, or R2 credential for
   the worker;
 - provider crawling, browser automation, scraping, keyword-selection,
@@ -175,7 +176,7 @@ search-execution inputs.
 - [ ] The standalone P0 suite, syntax compilation, dependency lock check, and
       PowerShell and batch-launcher parser checks pass.
 - [ ] The historical slice reported head `20260813_0006`; the current durable
-      follow-up reports `20260813_0007`, and the disposable PostgreSQL 18 RLS
+      follow-ups report `20260813_0008`, and the disposable PostgreSQL 18 RLS
       suite and shared-mode search smoke test pass.
 - [ ] The exact diff receives a clean security review and dependency scan.
 - [ ] `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains false and no live staging

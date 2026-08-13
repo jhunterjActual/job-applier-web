@@ -27,6 +27,18 @@ REVOKE ALL ON FUNCTION careertrellis.claim_next_search_run(uuid, integer)
 GRANT EXECUTE ON FUNCTION careertrellis.claim_next_search_run(uuid, integer)
     TO careertrellis_worker;
 
+-- Scheduled searches expose only opaque IDs and due time through a second
+-- private broker. The worker can invoke the bounded atomic dispatcher but
+-- neither login role can inspect or mutate the broker directly.
+REVOKE ALL ON careertrellis.scheduled_search_dispatch_queue
+    FROM careertrellis_runtime, careertrellis_worker;
+REVOKE ALL ON FUNCTION careertrellis.sync_scheduled_search_dispatch_queue()
+    FROM careertrellis_runtime, careertrellis_worker;
+REVOKE ALL ON FUNCTION careertrellis.dispatch_due_saved_searches(integer)
+    FROM careertrellis_runtime;
+GRANT EXECUTE ON FUNCTION careertrellis.dispatch_due_saved_searches(integer)
+    TO careertrellis_worker;
+
 -- Authentication-controlled fields cannot be supplied or changed by a user.
 -- A verified identity may create its default-role mapping and refresh last_seen_at.
 REVOKE INSERT, UPDATE ON careertrellis.app_users
