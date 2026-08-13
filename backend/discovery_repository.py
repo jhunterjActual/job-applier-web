@@ -52,8 +52,28 @@ class JobCreateResult(TypedDict, total=False):
     job: dict[str, Any]
 
 
+class SearchCatalogContext(TypedDict):
+    known_status_by_url: dict[str, str]
+    suppressed_fingerprints: set[str]
+
+
+def _search_catalog_context(
+    job_rows: list[Any], suppression_rows: list[Any]
+) -> SearchCatalogContext:
+    known_status_by_url: dict[str, str] = {}
+    for row in job_rows:
+        canonical_url = canonicalize_job_url(row[0])
+        if canonical_url:
+            known_status_by_url[canonical_url] = str(row[1])
+    return {
+        "known_status_by_url": known_status_by_url,
+        "suppressed_fingerprints": {str(row[0]) for row in suppression_rows},
+    }
+
+
 class DiscoveryRepository(Protocol):
     def list_jobs(self, include_archived: bool = False) -> list[dict[str, Any]]: ...
+    def search_catalog_context(self) -> SearchCatalogContext: ...
     def job_identity(self, canonical_url: str) -> dict[str, Any]: ...
     def create_job_if_available(
         self,
@@ -403,6 +423,16 @@ class SQLiteDiscoveryRepository:
         )
         return [_api_row(dict(row)) for row in rows]
 
+    def search_catalog_context(self) -> SearchCatalogContext:
+        def load(connection: Any) -> SearchCatalogContext:
+            jobs = connection.execute("SELECT url, status FROM jobs").fetchall()
+            suppressions = connection.execute(
+                "SELECT url_fingerprint FROM job_suppressions"
+            ).fetchall()
+            return _search_catalog_context(jobs, suppressions)
+
+        return self._run(load)
+
     def job_identity(self, canonical_url: str) -> dict[str, Any]:
         def load(connection: Any) -> dict[str, Any]:
             suppressed = connection.execute(
@@ -738,6 +768,32 @@ class PostgreSQLDiscoveryRepository:
                 },
             ).mappings().all()
             return [_api_row(row) for row in rows]
+
+        return self._run(load)
+
+    def search_catalog_context(self) -> SearchCatalogContext:
+        def load(connection: Any) -> SearchCatalogContext:
+            jobs = connection.execute(
+                text(
+                    """
+                    SELECT url, status
+                    FROM careertrellis.jobs
+                    WHERE owner_user_id = :owner_user_id
+                    """
+                ),
+                {"owner_user_id": self._owner_user_id},
+            ).all()
+            suppressions = connection.execute(
+                text(
+                    """
+                    SELECT url_fingerprint
+                    FROM careertrellis.job_suppressions
+                    WHERE owner_user_id = :owner_user_id
+                    """
+                ),
+                {"owner_user_id": self._owner_user_id},
+            ).all()
+            return _search_catalog_context(jobs, suppressions)
 
         return self._run(load)
 

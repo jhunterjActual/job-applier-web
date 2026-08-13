@@ -1040,8 +1040,12 @@ def run_search_wrapper(
             "message": "Search stopped. Any jobs committed before the stop request were kept.",
             "provider_alerts": [],
         }
-    except Exception as exc:
-        LAST_SEARCH_RESULT = {"success": False, "error": str(exc), "provider_alerts": []}
+    except Exception:
+        LAST_SEARCH_RESULT = {
+            "success": False,
+            "error": "The job search could not be completed.",
+            "provider_alerts": [],
+        }
     finally:
         if owner_context_token is not None:
             reset_current_owner_user_id(owner_context_token)

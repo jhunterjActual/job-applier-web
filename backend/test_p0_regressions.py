@@ -27,6 +27,7 @@ import config as config_module
 import maps_providers as maps_providers_module
 import database as database_module
 import data_store as data_store_module
+import discovery_repository as discovery_repository_module
 import local_users as local_users_module
 import materials as materials_module
 import operations as operations_module
@@ -95,6 +96,7 @@ from dependency_lock import (
     write_stamp,
 )
 from discovery_repository import SQLiteDiscoveryRepository
+from profile_repository import SQLiteProfileRepository
 from job_cleanup import apply_cleanup, cleanup_preview
 from job_retention_repository import (
     CleanupBatchTooLarge,
@@ -4502,6 +4504,474 @@ class SearchQualityTests(unittest.TestCase):
             }
         }
 
+    @staticmethod
+    def synthetic_search_profile(suggested_keywords: str = "Synthetic search") -> dict:
+        return {
+            "base_resume_text": "Synthetic resume content for an isolated search test.",
+            "suggested_keywords": suggested_keywords,
+            "ai_provider": "gemini",
+            "ai_model": "gemini-2.5-flash",
+            "gemini_api_key": "synthetic-test-key",
+        }
+
+    def test_sqlite_search_persistence_preserves_cache_and_catalog_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "search-persistence.db"
+            connection = sqlite3.connect(database_path)
+            connection.executescript(
+                """
+                CREATE TABLE profile (
+                    id INTEGER PRIMARY KEY,
+                    base_resume_text TEXT,
+                    suggested_keywords TEXT
+                );
+                CREATE TABLE jobs (
+                    id INTEGER PRIMARY KEY,
+                    url TEXT,
+                    status TEXT
+                );
+                CREATE TABLE job_suppressions (
+                    id INTEGER PRIMARY KEY,
+                    url_fingerprint TEXT UNIQUE,
+                    hostname TEXT,
+                    company TEXT,
+                    title TEXT,
+                    deleted_at TEXT,
+                    deletion_source TEXT
+                );
+                INSERT INTO profile VALUES (1, 'Synthetic resume', '');
+                INSERT INTO jobs VALUES
+                    (1, 'https://jobs.lever.co/example/active?utm_source=test', 'matched'),
+                    (2, 'https://jobs.lever.co/example/archived/', 'archived');
+                """
+            )
+            suppressed_url = "https://jobs.lever.co/example/suppressed?source=test"
+            record_job_suppression(
+                connection,
+                url=suppressed_url,
+                company="Synthetic Employer",
+                title="Suppressed role",
+                deleted_at="2026-08-13T10:00:00",
+                deletion_source="manual",
+            )
+            connection.commit()
+            connection.close()
+
+            def connection_factory() -> sqlite3.Connection:
+                test_connection = sqlite3.connect(database_path)
+                test_connection.row_factory = sqlite3.Row
+                return test_connection
+
+            profile_repository = SQLiteProfileRepository(connection_factory)
+            discovery_repository = SQLiteDiscoveryRepository(connection_factory)
+            self.assertTrue(
+                profile_repository.cache_suggested_keywords_if_empty(
+                    "Data Director,Analytics Leader"
+                )
+            )
+            self.assertFalse(
+                profile_repository.cache_suggested_keywords_if_empty("Must not replace cache")
+            )
+            self.assertFalse(profile_repository.cache_suggested_keywords_if_empty("   "))
+            self.assertEqual(
+                "Data Director,Analytics Leader",
+                profile_repository.get_profile()["suggested_keywords"],
+            )
+            self.assertEqual(
+                {
+                    "known_status_by_url": {
+                        "https://jobs.lever.co/example/active": "matched",
+                        "https://jobs.lever.co/example/archived": "archived",
+                    },
+                    "suppressed_fingerprints": {job_url_fingerprint(suppressed_url)},
+                },
+                discovery_repository.search_catalog_context(),
+            )
+
+    def test_runtime_repositories_supply_cached_or_generated_keywords_without_sqlite(self) -> None:
+        self.assertFalse(hasattr(searcher_module, "get_db_connection"))
+        cases = (
+            ("Cached Director, Cached Analyst", None, ["Cached Director", "Cached Analyst"]),
+            ("", ["Generated Director", "Generated Analyst"], ["Generated Director", "Generated Analyst"]),
+        )
+        for cached, generated, expected in cases:
+            with self.subTest(cached=bool(cached)):
+                events = []
+                profile_repository = Mock()
+                profile_repository.get_profile.side_effect = lambda: (
+                    events.append("profile_read")
+                    or self.synthetic_search_profile(cached)
+                )
+                discovery_repository = Mock()
+                discovery_repository.search_catalog_context.side_effect = lambda: (
+                    events.append("catalog_read")
+                    or {
+                        "known_status_by_url": {},
+                        "suppressed_fingerprints": set(),
+                    }
+                )
+                keyword_extractor = Mock(return_value=generated or [])
+                sqlite_connection = Mock(side_effect=AssertionError("SQLite is forbidden"))
+
+                def profile_factory():
+                    events.append("profile_factory")
+                    return profile_repository
+
+                def discovery_factory():
+                    events.append("discovery_factory")
+                    return discovery_repository
+
+                def yahoo(keyword, location, provider_health):
+                    events.append(f"yahoo:{keyword}")
+                    return []
+
+                with (
+                    patch.object(
+                        profile_repository_module,
+                        "runtime_profile_repository",
+                        side_effect=profile_factory,
+                    ),
+                    patch.object(
+                        discovery_repository_module,
+                        "runtime_discovery_repository",
+                        side_effect=discovery_factory,
+                    ),
+                    patch.object(database_module, "get_db_connection", sqlite_connection),
+                    patch.object(
+                        searcher_module,
+                        "settings_from_profile",
+                        return_value=AIProviderSettings("gemini", "gemini-2.5-flash", "test-key"),
+                    ),
+                    patch.object(searcher_module, "extract_search_keywords_from_resume", keyword_extractor),
+                    patch.object(searcher_module, "search_yahoo_jobs", side_effect=yahoo),
+                ):
+                    result = searcher_module.run_job_search_and_matching("")
+
+                self.assertTrue(result["success"])
+                self.assertEqual(["profile_factory", "discovery_factory", "profile_read"], events[:3])
+                self.assertEqual(
+                    [f"yahoo:{keyword}" for keyword in expected],
+                    [event for event in events if event.startswith("yahoo:")],
+                )
+                self.assertEqual("catalog_read", events[-1])
+                sqlite_connection.assert_not_called()
+                if generated is None:
+                    keyword_extractor.assert_not_called()
+                    profile_repository.cache_suggested_keywords_if_empty.assert_not_called()
+                else:
+                    keyword_extractor.assert_called_once()
+                    profile_repository.cache_suggested_keywords_if_empty.assert_called_once_with(
+                        "Generated Director,Generated Analyst"
+                    )
+
+    def test_search_closes_repository_scopes_before_provider_work(self) -> None:
+        events = []
+        active_scopes = []
+        url = "https://jobs.lever.co/synthetic/scope-role"
+
+        class ProfileRepository:
+            def _operation(self, name, result):
+                active_scopes.append(name)
+                events.append(f"{name}:open")
+                try:
+                    return result
+                finally:
+                    active_scopes.pop()
+                    events.append(f"{name}:closed")
+
+            def get_profile(self):
+                return self._operation(
+                    "profile",
+                    SearchQualityTests.synthetic_search_profile(""),
+                )
+
+            def cache_suggested_keywords_if_empty(self, keywords):
+                self.asserted_keywords = keywords
+                return self._operation("keyword_cache", True)
+
+        class DiscoveryRepository:
+            def search_catalog_context(self):
+                return self._operation(
+                    "catalog",
+                    {"known_status_by_url": {}, "suppressed_fingerprints": set()},
+                )
+
+            def create_job_if_available(self, **_values):
+                return self._operation("create", {"outcome": "created", "job": {"id": 91}})
+
+            @staticmethod
+            def _operation(name, result):
+                active_scopes.append(name)
+                events.append(f"{name}:open")
+                try:
+                    return result
+                finally:
+                    active_scopes.pop()
+                    events.append(f"{name}:closed")
+
+        profile_repository = ProfileRepository()
+        discovery_repository = DiscoveryRepository()
+
+        def provider_step(name, result):
+            self.assertEqual([], active_scopes, f"{name} ran inside a repository scope")
+            events.append(name)
+            return result
+
+        with (
+            patch.object(
+                searcher_module,
+                "settings_from_profile",
+                return_value=AIProviderSettings("gemini", "gemini-2.5-flash", "test-key"),
+            ),
+            patch.object(
+                searcher_module,
+                "extract_search_keywords_from_resume",
+                side_effect=lambda *_args, **_kwargs: provider_step("keywords", ["Data Director"]),
+            ),
+            patch.object(
+                searcher_module,
+                "search_yahoo_jobs",
+                side_effect=lambda *_args, **_kwargs: provider_step("yahoo", [{"url": url}]),
+            ),
+            patch.object(
+                searcher_module,
+                "inspect_job_posting",
+                side_effect=lambda *_args, **_kwargs: provider_step(
+                    "inspect",
+                    {
+                        "status": "ok",
+                        "details": {
+                            "url": url,
+                            "title": "Data Director",
+                            "company": "Synthetic Employer",
+                            "description": "Synthetic description",
+                            "source": "lever",
+                        },
+                    },
+                ),
+            ),
+            patch.object(
+                searcher_module,
+                "analyze_job_matches_batch",
+                side_effect=lambda *_args, **_kwargs: provider_step(
+                    "batch",
+                    {
+                        "success": True,
+                        "matches": [{"index": 0, "match_score": 85, "match_analysis": "Match"}],
+                    },
+                ),
+            ),
+        ):
+            result = searcher_module.run_job_search_and_matching(
+                "",
+                job_repository=discovery_repository,
+                profile_repository=profile_repository,
+            )
+
+        self.assertEqual(1, result["jobs_added"])
+        self.assertEqual("Data Director", profile_repository.asserted_keywords)
+        self.assertEqual(
+            [
+                "profile:open", "profile:closed", "keywords",
+                "keyword_cache:open", "keyword_cache:closed", "yahoo",
+                "catalog:open", "catalog:closed", "inspect", "batch",
+                "create:open", "create:closed",
+            ],
+            events,
+        )
+
+    def test_search_catalog_skips_known_and_suppressed_candidates_before_create(self) -> None:
+        active_url = "https://jobs.lever.co/synthetic/active"
+        archived_url = "https://jobs.lever.co/synthetic/archived"
+        suppressed_url = "https://jobs.lever.co/synthetic/suppressed"
+        new_url = "https://jobs.lever.co/synthetic/new"
+        repository = Mock()
+        repository.search_catalog_context.return_value = {
+            "known_status_by_url": {active_url: "matched", archived_url: "archived"},
+            "suppressed_fingerprints": {job_url_fingerprint(suppressed_url)},
+        }
+        repository.create_job_if_available.return_value = {
+            "outcome": "created",
+            "job": {"id": 92},
+        }
+        inspector = Mock(return_value={
+            "status": "ok",
+            "details": {
+                "url": new_url,
+                "title": "Data Director",
+                "company": "Synthetic Employer",
+                "description": "Synthetic job details for isolated matching.",
+                "source": "lever",
+            },
+        })
+        with (
+            patch.object(
+                searcher_module,
+                "settings_from_profile",
+                return_value=AIProviderSettings("gemini", "gemini-2.5-flash", "test-key"),
+            ),
+            patch.object(
+                searcher_module,
+                "search_yahoo_jobs",
+                return_value=[
+                    {"url": active_url}, {"url": archived_url},
+                    {"url": suppressed_url}, {"url": new_url},
+                ],
+            ),
+            patch.object(searcher_module, "inspect_job_posting", inspector),
+            patch.object(
+                searcher_module,
+                "analyze_job_matches_batch",
+                return_value={
+                    "success": True,
+                    "matches": [{"index": 0, "match_score": 88, "match_analysis": "Strong match"}],
+                },
+            ),
+        ):
+            result = searcher_module.run_job_search_and_matching(
+                "data",
+                job_repository=repository,
+                profile_repository=Mock(
+                    get_profile=Mock(return_value=self.synthetic_search_profile())
+                ),
+            )
+
+        self.assertEqual(1, result["jobs_added"])
+        self.assertEqual(1, result["provider_health"]["lever"]["skipped_active"])
+        self.assertEqual(1, result["provider_health"]["lever"]["skipped_archived"])
+        self.assertEqual(1, result["provider_health"]["lever"]["skipped_suppressed"])
+        inspector.assert_called_once_with(new_url, cancel_check=unittest.mock.ANY)
+        repository.create_job_if_available.assert_called_once()
+
+    def test_search_propagates_cancellation_after_a_committed_create(self) -> None:
+        url = "https://jobs.lever.co/synthetic/cancel-after-create"
+        cancellation_requested = False
+        repository = Mock()
+        repository.search_catalog_context.return_value = {
+            "known_status_by_url": {},
+            "suppressed_fingerprints": set(),
+        }
+
+        def create(**_values):
+            nonlocal cancellation_requested
+            cancellation_requested = True
+            return {"outcome": "created", "job": {"id": 93}}
+
+        def checkpoint():
+            if cancellation_requested:
+                raise operations_module.OperationCancelled("synthetic cancellation")
+
+        repository.create_job_if_available.side_effect = create
+        with (
+            patch.object(
+                searcher_module,
+                "settings_from_profile",
+                return_value=AIProviderSettings("gemini", "gemini-2.5-flash", "test-key"),
+            ),
+            patch.object(searcher_module, "search_yahoo_jobs", return_value=[{"url": url}]),
+            patch.object(searcher_module, "inspect_job_posting", return_value={
+                "status": "ok",
+                "details": {
+                    "url": url,
+                    "title": "Data Director",
+                    "company": "Synthetic Employer",
+                    "description": "Synthetic description",
+                    "source": "lever",
+                },
+            }),
+            patch.object(searcher_module, "analyze_job_matches_batch", return_value={
+                "success": True,
+                "matches": [{"index": 0, "match_score": 90, "match_analysis": "Match"}],
+            }),
+        ):
+            with self.assertRaises(operations_module.OperationCancelled):
+                searcher_module.run_job_search_and_matching(
+                    "data",
+                    cancel_check=checkpoint,
+                    job_repository=repository,
+                    profile_repository=Mock(
+                        get_profile=Mock(return_value=self.synthetic_search_profile())
+                    ),
+                )
+        repository.create_job_if_available.assert_called_once()
+
+    def test_search_insert_failure_log_and_wrapper_error_are_privacy_safe(self) -> None:
+        secret = "postgresql://private-user:private-password@database.test/private"
+        url = "https://jobs.lever.co/synthetic/private-insert"
+        repository = Mock()
+        repository.search_catalog_context.return_value = {
+            "known_status_by_url": {},
+            "suppressed_fingerprints": set(),
+        }
+        repository.create_job_if_available.side_effect = RuntimeError(secret)
+        with (
+            patch.object(
+                searcher_module,
+                "settings_from_profile",
+                return_value=AIProviderSettings("gemini", "gemini-2.5-flash", "test-key"),
+            ),
+            patch.object(searcher_module, "search_yahoo_jobs", return_value=[{"url": url}]),
+            patch.object(searcher_module, "inspect_job_posting", return_value={
+                "status": "ok",
+                "details": {
+                    "url": url,
+                    "title": "Data Director",
+                    "company": "Synthetic Employer",
+                    "description": "Synthetic description",
+                    "source": "lever",
+                },
+            }),
+            patch.object(searcher_module, "analyze_job_matches_batch", return_value={
+                "success": True,
+                "matches": [{"index": 0, "match_score": 90, "match_analysis": "Match"}],
+            }),
+            patch("builtins.print") as print_message,
+        ):
+            result = searcher_module.run_job_search_and_matching(
+                "data",
+                job_repository=repository,
+                profile_repository=Mock(
+                    get_profile=Mock(return_value=self.synthetic_search_profile())
+                ),
+            )
+        self.assertEqual(0, result["jobs_added"])
+        print_message.assert_any_call(
+            "A discovered job could not be saved; the search remains available."
+        )
+        log_text = " ".join(str(call) for call in print_message.call_args_list)
+        self.assertNotIn(secret, log_text)
+        self.assertNotIn(url, log_text)
+
+        observed_owners = []
+
+        def fail_search(*_args, **_kwargs):
+            observed_owners.append(provider_secrets_module.current_owner_user_id())
+            raise RuntimeError(secret)
+
+        operation = Mock()
+        with (
+            patch.object(app_module, "run_job_search_and_matching", side_effect=fail_search),
+            patch.object(app_module, "finish_operation") as finish_operation,
+        ):
+            app_module.IS_SEARCHING = True
+            app_module.run_search_wrapper(
+                "synthetic keywords", "synthetic location", operation, owner_user_id=94
+            )
+        self.assertEqual([94], observed_owners)
+        self.assertEqual(
+            {
+                "success": False,
+                "error": "The job search could not be completed.",
+                "provider_alerts": [],
+            },
+            app_module.LAST_SEARCH_RESULT,
+        )
+        self.assertNotIn(secret, json.dumps(app_module.LAST_SEARCH_RESULT))
+        with self.assertRaises(provider_secrets_module.ProviderSecretAuthorizationError):
+            provider_secrets_module.current_owner_user_id()
+        finish_operation.assert_called_once_with(operation)
+        self.assertFalse(app_module.IS_SEARCHING)
+
     def test_generic_smartrecruiters_career_pages_are_not_job_postings(self) -> None:
         self.assertFalse(is_specific_job_url("https://careers.smartrecruiters.com/QADInc/corporate-careers"))
         self.assertTrue(is_specific_job_url("https://jobs.smartrecruiters.com/Example/12345-data-analyst"))
@@ -4546,14 +5016,17 @@ class SearchQualityTests(unittest.TestCase):
             scraper = unittest.mock.Mock()
             matcher = unittest.mock.Mock()
             with (
-                patch.object(searcher_module, "get_db_connection", side_effect=connection_factory),
                 patch.object(searcher_module, "search_yahoo_jobs", return_value=[{
                     "url": "https://jobs.lever.co/example/abc-123?utm_source=new"
                 }]),
                 patch.object(searcher_module, "inspect_job_posting", scraper),
                 patch.object(searcher_module, "analyze_job_matches_batch", matcher),
             ):
-                result = searcher_module.run_job_search_and_matching("data leader")
+                result = searcher_module.run_job_search_and_matching(
+                    "data leader",
+                    job_repository=SQLiteDiscoveryRepository(connection_factory),
+                    profile_repository=SQLiteProfileRepository(connection_factory),
+                )
 
         self.assertEqual(0, result["jobs_added"])
         self.assertEqual(1, result["provider_health"]["lever"]["skipped_suppressed"])
@@ -4585,13 +5058,16 @@ class SearchQualityTests(unittest.TestCase):
                 return test_connection
 
             repository = Mock()
+            repository.search_catalog_context.return_value = {
+                "known_status_by_url": {},
+                "suppressed_fingerprints": set(),
+            }
             repository.create_job_if_available.return_value = {
                 "outcome": "created",
                 "job": {"id": 72},
             }
             url = "https://jobs.lever.co/example/repository-role"
             with (
-                patch.object(searcher_module, "get_db_connection", side_effect=connection_factory),
                 patch.object(searcher_module, "search_yahoo_jobs", return_value=[{"url": url}]),
                 patch.object(searcher_module, "inspect_job_posting", return_value={
                     "status": "ok",
@@ -4615,6 +5091,7 @@ class SearchQualityTests(unittest.TestCase):
                 result = searcher_module.run_job_search_and_matching(
                     "data leader",
                     job_repository=repository,
+                    profile_repository=SQLiteProfileRepository(connection_factory),
                 )
 
                 repository.create_job_if_available.return_value = {
@@ -4624,6 +5101,7 @@ class SearchQualityTests(unittest.TestCase):
                 duplicate_result = searcher_module.run_job_search_and_matching(
                     "data leader",
                     job_repository=repository,
+                    profile_repository=SQLiteProfileRepository(connection_factory),
                 )
 
         self.assertEqual(1, result["jobs_added"])

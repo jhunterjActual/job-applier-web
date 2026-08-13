@@ -605,6 +605,99 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 )
             )
 
+    def test_search_keyword_cache_and_catalog_context_are_owner_isolated(self) -> None:
+        profile_one = PostgreSQLProfileRepository(self.user_one, engine=self.runtime_engine)
+        profile_two = PostgreSQLProfileRepository(self.user_two, engine=self.runtime_engine)
+        discovery_one = PostgreSQLDiscoveryRepository(self.user_one, engine=self.runtime_engine)
+        discovery_two = PostgreSQLDiscoveryRepository(self.user_two, engine=self.runtime_engine)
+
+        self.assertTrue(
+            profile_one.cache_suggested_keywords_if_empty(
+                "Owner One Director,Owner One Analyst"
+            )
+        )
+        self.assertFalse(
+            profile_one.cache_suggested_keywords_if_empty("Must not replace owner one")
+        )
+        self.assertEqual(
+            "Owner One Director,Owner One Analyst",
+            profile_one.get_profile()["suggested_keywords"],
+        )
+        self.assertEqual("", profile_two.get_profile()["suggested_keywords"])
+        self.assertTrue(
+            profile_two.cache_suggested_keywords_if_empty("Owner Two Engineer")
+        )
+        self.assertEqual(
+            "Owner Two Engineer", profile_two.get_profile()["suggested_keywords"]
+        )
+
+        archived_url = "https://jobs.lever.co/tenant-one/archived"
+        self._insert_job(
+            self.user_one,
+            archived_url,
+            title="Owner one archived role",
+            status="archived",
+            archived_from_status="matched",
+        )
+        suppressed_one = "https://jobs.lever.co/tenant-one/suppressed"
+        suppressed_two = "https://jobs.lever.co/tenant-two/suppressed"
+        for owner_user_id, suppressed_url in (
+            (self.user_one, suppressed_one),
+            (self.user_two, suppressed_two),
+        ):
+            with tenant_transaction(self.runtime_engine, owner_user_id) as connection:
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO careertrellis.job_suppressions
+                            (owner_user_id, url_fingerprint, hostname, deletion_source)
+                        VALUES (:owner, :fingerprint, 'jobs.lever.co', 'manual')
+                        """
+                    ),
+                    {
+                        "owner": owner_user_id,
+                        "fingerprint": job_url_fingerprint(suppressed_url),
+                    },
+                )
+
+        self.assertEqual(
+            {
+                "known_status_by_url": {
+                    "https://example.test/one": "matched",
+                    archived_url: "archived",
+                },
+                "suppressed_fingerprints": {job_url_fingerprint(suppressed_one)},
+            },
+            discovery_one.search_catalog_context(),
+        )
+        self.assertEqual(
+            {
+                "known_status_by_url": {"https://example.test/two": "matched"},
+                "suppressed_fingerprints": {job_url_fingerprint(suppressed_two)},
+            },
+            discovery_two.search_catalog_context(),
+        )
+
+        with self.runtime_engine.begin() as connection:
+            self.assertEqual(
+                [],
+                connection.execute(
+                    text("SELECT url, status FROM careertrellis.jobs")
+                ).all(),
+            )
+            self.assertEqual(
+                [],
+                connection.execute(
+                    text("SELECT url_fingerprint FROM careertrellis.job_suppressions")
+                ).all(),
+            )
+            self.assertEqual(
+                [],
+                connection.execute(
+                    text("SELECT suggested_keywords FROM careertrellis.profiles")
+                ).all(),
+            )
+
     def test_provider_context_profiles_are_owner_isolated_for_validation_ocr_and_import(self) -> None:
         owner_one = PostgreSQLProfileRepository(self.user_one, engine=self.runtime_engine)
         owner_two = PostgreSQLProfileRepository(self.user_two, engine=self.runtime_engine)

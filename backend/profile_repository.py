@@ -36,6 +36,7 @@ from provider_secrets import current_owner_user_id
 class ProfileRepository(Protocol):
     def get_profile(self) -> dict[str, Any]: ...
     def update_profile(self, values: Mapping[str, Any]) -> dict[str, Any]: ...
+    def cache_suggested_keywords_if_empty(self, keywords: str) -> bool: ...
     def list_base_resumes(self) -> list[dict[str, Any]]: ...
     def get_base_resume(self, resume_id: int) -> dict[str, Any]: ...
     def activate_base_resume(self, resume_id: int) -> dict[str, Any]: ...
@@ -43,6 +44,18 @@ class ProfileRepository(Protocol):
     def get_version(self, resume_id: int, version_number: int) -> dict[str, Any]: ...
     def restore_version(self, resume_id: int, version_number: int) -> dict[str, Any]: ...
     def delete_base_resume(self, resume_id: int) -> dict[str, Any] | None: ...
+
+
+MAX_SUGGESTED_KEYWORDS_CHARS = 500
+
+
+def _suggested_keywords(value: str) -> str:
+    normalized = str(value or "").strip()
+    if len(normalized) > MAX_SUGGESTED_KEYWORDS_CHARS:
+        raise ValueError(
+            f"Suggested search keywords must be {MAX_SUGGESTED_KEYWORDS_CHARS} characters or fewer."
+        )
+    return normalized
 
 
 def _iso_timestamp(value: Any) -> Any:
@@ -109,6 +122,24 @@ class SQLiteProfileRepository:
     def get_profile(self) -> dict[str, Any]:
         row = self._run(lambda connection: connection.execute("SELECT * FROM profile LIMIT 1").fetchone())
         return dict(row) if row else {}
+
+    def cache_suggested_keywords_if_empty(self, keywords: str) -> bool:
+        normalized = _suggested_keywords(keywords)
+        if not normalized:
+            return False
+
+        def cache(connection: Any) -> bool:
+            updated = connection.execute(
+                """
+                UPDATE profile
+                SET suggested_keywords = ?
+                WHERE id = 1 AND COALESCE(TRIM(suggested_keywords), '') = ''
+                """,
+                (normalized,),
+            )
+            return updated.rowcount == 1
+
+        return self._run(cache, write=True)
 
     def update_profile(self, values: Mapping[str, Any]) -> dict[str, Any]:
         def update(connection: Any) -> dict[str, Any]:
@@ -387,6 +418,27 @@ class PostgreSQLProfileRepository:
     def get_profile(self) -> dict[str, Any]:
         row = self._run(self._profile_row)
         return {key: _iso_timestamp(value) for key, value in row.items()} if row else {}
+
+    def cache_suggested_keywords_if_empty(self, keywords: str) -> bool:
+        normalized = _suggested_keywords(keywords)
+        if not normalized:
+            return False
+
+        def cache(connection: Any) -> bool:
+            updated = connection.execute(
+                text(
+                    """
+                    UPDATE careertrellis.profiles
+                    SET suggested_keywords = :keywords, updated_at = CURRENT_TIMESTAMP
+                    WHERE owner_user_id = :owner_user_id
+                      AND COALESCE(BTRIM(suggested_keywords), '') = ''
+                    """
+                ),
+                {"keywords": normalized, "owner_user_id": self._owner_user_id},
+            )
+            return updated.rowcount == 1
+
+        return self._run(cache)
 
     def update_profile(self, values: Mapping[str, Any]) -> dict[str, Any]:
         def update(connection: Any) -> dict[str, Any]:
