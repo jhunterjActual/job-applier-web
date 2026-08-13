@@ -239,6 +239,40 @@ def init_db() -> None:
     )
 
     cursor.execute("""
+    CREATE TABLE IF NOT EXISTS search_runs (
+        id TEXT PRIMARY KEY,
+        owner_user_id INTEGER NOT NULL DEFAULT 1,
+        operation_id TEXT NOT NULL,
+        keywords TEXT NOT NULL,
+        location TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'queued'
+            CHECK (status IN ('queued', 'running', 'cancel_requested', 'succeeded', 'failed', 'cancelled')),
+        result_json TEXT,
+        error_code TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        max_attempts INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts BETWEEN 1 AND 10),
+        available_at TEXT NOT NULL,
+        started_at TEXT,
+        lease_expires_at TEXT,
+        lease_token TEXT,
+        worker_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        UNIQUE(owner_user_id, operation_id)
+    )
+    """)
+    cursor.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_search_runs_owner_active
+        ON search_runs(owner_user_id)
+        WHERE status IN ('queued', 'running', 'cancel_requested')"""
+    )
+    cursor.execute(
+        """CREATE INDEX IF NOT EXISTS idx_search_runs_owner_recent
+        ON search_runs(owner_user_id, created_at DESC)"""
+    )
+
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS headquarters_cache (
         cache_key TEXT PRIMARY KEY,
         provider TEXT NOT NULL,

@@ -10,6 +10,8 @@ User=careertrellis
 Group=careertrellis
 WorkingDirectory=/opt/careertrellis/staging/current/backend
 EnvironmentFile=/etc/careertrellis/staging.env
+EnvironmentFile=/etc/careertrellis/postgres-worker.env
+EnvironmentFile=/etc/careertrellis/provider-secrets.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/careertrellis/staging/current/backend/venv/bin/python worker.py
 Restart=on-failure
@@ -29,10 +31,10 @@ ProtectControlGroups=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/var/lib/careertrellis/staging
-TasksMax=64
-MemoryHigh=192M
-MemoryMax=256M
-CPUQuota=50%
+TasksMax=256
+MemoryHigh=1100M
+MemoryMax=1400M
+CPUQuota=100%
 
 [Install]
 WantedBy=multi-user.target

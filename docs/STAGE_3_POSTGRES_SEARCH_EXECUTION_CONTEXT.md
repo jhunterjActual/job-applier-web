@@ -34,11 +34,11 @@ This slice is limited to the persistence used by `POST /api/jobs/search` and
 - accepted matches continue to use the owner-scoped
   `create_job_if_available` job-catalog write.
 
-The authenticated local `app_users.id` is captured from request state before
-the FastAPI background task starts. `run_search_wrapper` installs that ID in
-the trusted server-side owner context for the entire search and resets the
-context in `finally`. Request bodies, query parameters, job-board responses,
-and AI output cannot choose an owner ID.
+At completion of this historical slice, the authenticated local
+`app_users.id` was captured before the FastAPI background task and installed
+in trusted server-side owner context. The follow-up durable execution design
+is documented in `STAGE_3_POSTGRES_SEARCH_RUNS.md`; request bodies, query
+parameters, job-board responses, and AI output still cannot choose an owner ID.
 
 If the request creates or advances a saved search, that separately converted
 owner-scoped repository operation completes before the background task is
@@ -116,7 +116,9 @@ history, or browser-visible repository responses.
 This slice adds no migration. It reuses the existing `profiles`,
 `base_resumes`, `jobs`, and `job_suppressions` tables, their owner
 relationships, forced-RLS policies, and repository transaction helpers.
-Alembic must continue to report exactly one head at `20260813_0006`.
+This slice itself added no migration and originally retained head
+`20260813_0006`. The later durable search-run slice advances the current head
+to `20260813_0007`.
 
 No data is copied and authority does not change. After the eventual first
 authoritative PostgreSQL/R2 write, a code-only rollback to writable SQLite is
@@ -128,12 +130,11 @@ a staging rollback mechanism.
 
 This slice does not convert or authorize:
 
-- the process-global `IS_SEARCHING` or `LAST_SEARCH_RESULT` state, multi-process
-  search coordination, or durable search status/results;
-- durable saved-search claiming, worker queues, retry policy, leases,
-  scheduling, crash recovery, or background-worker execution;
-- any database credential, provider credential, web keyring, or R2 credential
-  for the current idle worker scaffold;
+- the then-process-global search state and worker execution, which are now
+  owned by the bounded follow-up `STAGE_3_POSTGRES_SEARCH_RUNS.md`;
+- scheduled saved-search dispatch and general-purpose worker queues;
+- any web runtime database, migration, object-storage, or R2 credential for
+  the worker;
 - provider crawling, browser automation, scraping, keyword-selection,
   headquarters-resolution, scoring, or prompt changes;
 - application operations beyond their separately converted repository
@@ -173,8 +174,9 @@ search-execution inputs.
       IDs, database URLs, SQL, or suppression fingerprints.
 - [ ] The standalone P0 suite, syntax compilation, dependency lock check, and
       PowerShell and batch-launcher parser checks pass.
-- [ ] Alembic reports exactly one head at `20260813_0006`, and the disposable
-      PostgreSQL 18 RLS suite and shared-mode search smoke test pass.
+- [ ] The historical slice reported head `20260813_0006`; the current durable
+      follow-up reports `20260813_0007`, and the disposable PostgreSQL 18 RLS
+      suite and shared-mode search smoke test pass.
 - [ ] The exact diff receives a clean security review and dependency scan.
 - [ ] `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains false and no live staging
       state changes.

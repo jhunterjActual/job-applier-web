@@ -33,6 +33,13 @@ from base_resumes import BaseResumeNotFound, LastBaseResumeError
 from profile_repository import PostgreSQLProfileRepository
 from discovery_repository import PostgreSQLDiscoveryRepository
 from headquarters_cache_repository import PostgreSQLHeadquartersCacheRepository
+from search_run_repository import (
+    PostgreSQLSearchRunRepository,
+    SearchRunAlreadyActive,
+    SearchRunLeaseLost,
+    SearchRunUnavailable,
+    claim_next_postgres_search_run,
+)
 from lifecycle_repository import PostgreSQLLifecycleRepository
 from verification_repository import (
     PostgreSQLVerificationRepository,
@@ -196,7 +203,7 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         )
         cls.worker_engine = create_engine(
             cls._role_url(WORKER_ROLE, WORKER_PASSWORD),
-            pool_size=1,
+            pool_size=2,
             max_overflow=0,
             pool_reset_on_return="rollback",
         )
@@ -266,6 +273,18 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             connection.exec_driver_sql(
                 "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA careertrellis "
                 f"TO {RUNTIME_ROLE}, {WORKER_ROLE}"
+            )
+            connection.exec_driver_sql(
+                "REVOKE ALL ON careertrellis.search_run_claim_queue "
+                f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}"
+            )
+            connection.exec_driver_sql(
+                "REVOKE ALL ON FUNCTION careertrellis.sync_search_run_claim_queue() "
+                f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}"
+            )
+            connection.exec_driver_sql(
+                "REVOKE ALL ON FUNCTION careertrellis.claim_next_search_run(uuid, integer) "
+                f"FROM {RUNTIME_ROLE}"
             )
             connection.exec_driver_sql(
                 "REVOKE INSERT, UPDATE ON careertrellis.app_users "
@@ -2308,7 +2327,7 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                     "SELECT relname, relrowsecurity, relforcerowsecurity "
                     "FROM pg_class JOIN pg_namespace ON pg_namespace.oid = pg_class.relnamespace "
                     "WHERE nspname = 'careertrellis' AND relkind = 'r' "
-                    "AND relname <> 'alembic_version'"
+                    "AND relname NOT IN ('alembic_version', 'search_run_claim_queue')"
                 )
             ).all()
             self.assertGreaterEqual(len(table_rows), 14)
@@ -2339,6 +2358,143 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 {"database_name": DATABASE_NAME},
             ).scalars().all()
             self.assertEqual([], public_database_privileges)
+
+        with self.assertRaises(DBAPIError):
+            with self.worker_engine.begin() as connection:
+                connection.execute(text("SELECT * FROM careertrellis.search_run_claim_queue"))
+
+    def test_search_runs_are_owner_isolated_and_claim_broker_is_worker_only(self) -> None:
+        owner_one = PostgreSQLSearchRunRepository(self.user_one, engine=self.runtime_engine)
+        owner_two = PostgreSQLSearchRunRepository(self.user_two, engine=self.runtime_engine)
+        run_one = owner_one.enqueue(
+            "00000000-0000-4000-8000-000000000001", "security", "Remote"
+        )
+        run_two = owner_two.enqueue(
+            "00000000-0000-4000-8000-000000000002", "platform", "Ohio"
+        )
+        self.assertTrue(owner_one.status()["searching"])
+        self.assertTrue(owner_two.status()["searching"])
+        with self.assertRaises(SearchRunAlreadyActive):
+            owner_one.enqueue(
+                "00000000-0000-4000-8000-000000000003", "other", ""
+            )
+        with self.assertRaises(SearchRunUnavailable):
+            claim_next_postgres_search_run(
+                "10000000-0000-4000-8000-000000000001",
+                engine=self.runtime_engine,
+            )
+
+        barrier = Barrier(2)
+
+        def claim(worker_id: str):
+            barrier.wait()
+            return claim_next_postgres_search_run(worker_id, engine=self.worker_engine)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            claims = list(
+                executor.map(
+                    claim,
+                    (
+                        "10000000-0000-4000-8000-000000000001",
+                        "10000000-0000-4000-8000-000000000002",
+                    ),
+                )
+            )
+        self.assertEqual({run_one, run_two}, {item.run_id for item in claims})
+        self.assertEqual({self.user_one, self.user_two}, {item.owner_user_id for item in claims})
+        for item in claims:
+            repository = owner_one if item.owner_user_id == self.user_one else owner_two
+            repository.succeed(item, {"success": True, "jobs_added": 1, "secret": "omitted"})
+            self.assertEqual(1, repository.status()["last_result"]["jobs_added"])
+            self.assertNotIn("secret", repository.status()["last_result"])
+
+    def test_search_run_expiry_retries_and_rejects_the_stale_lease(self) -> None:
+        repository = PostgreSQLSearchRunRepository(self.user_one, engine=self.runtime_engine)
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000011", "recovery", ""
+        )
+        first = claim_next_postgres_search_run(
+            "10000000-0000-4000-8000-000000000011", engine=self.worker_engine
+        )
+        self.assertEqual(run_id, first.run_id)
+        with self.admin_engine.begin() as connection:
+            connection.execute(
+                text("""UPDATE careertrellis.search_runs
+                    SET lease_expires_at=CURRENT_TIMESTAMP - interval '1 second'
+                    WHERE id=CAST(:run_id AS uuid)"""),
+                {"run_id": run_id},
+            )
+        second = claim_next_postgres_search_run(
+            "10000000-0000-4000-8000-000000000012", engine=self.worker_engine
+        )
+        self.assertEqual(run_id, second.run_id)
+        self.assertEqual(2, second.attempt)
+        with self.assertRaises(SearchRunLeaseLost):
+            repository.succeed(first, {"success": True, "jobs_added": 99})
+        repository.succeed(second, {"success": True, "jobs_added": 2})
+        self.assertEqual(2, repository.status()["last_result"]["jobs_added"])
+
+    def test_search_run_cancel_and_attempt_exhaustion_are_terminal(self) -> None:
+        repository = PostgreSQLSearchRunRepository(self.user_one, engine=self.runtime_engine)
+        operation = "00000000-0000-4000-8000-000000000021"
+        run_id = repository.enqueue(operation, "cancel", "")
+        claim = claim_next_postgres_search_run(
+            "10000000-0000-4000-8000-000000000021", engine=self.worker_engine
+        )
+        self.assertTrue(repository.request_cancel(operation))
+        with self.admin_engine.begin() as connection:
+            connection.execute(
+                text("""UPDATE careertrellis.search_runs
+                    SET lease_expires_at=CURRENT_TIMESTAMP - interval '1 second'
+                    WHERE id=CAST(:run_id AS uuid)"""),
+                {"run_id": run_id},
+            )
+        self.assertIsNone(
+            claim_next_postgres_search_run(
+                "10000000-0000-4000-8000-000000000022", engine=self.worker_engine
+            )
+        )
+        self.assertFalse(repository.status()["searching"])
+        self.assertTrue(repository.status()["last_result"]["cancelled"])
+
+        exhausted = repository.enqueue(
+            "00000000-0000-4000-8000-000000000022", "retry", ""
+        )
+        with self.admin_engine.begin() as connection:
+            connection.execute(
+                text("""UPDATE careertrellis.search_runs SET attempts=max_attempts
+                    WHERE id=CAST(:run_id AS uuid)"""),
+                {"run_id": exhausted},
+            )
+        self.assertIsNone(
+            claim_next_postgres_search_run(
+                "10000000-0000-4000-8000-000000000023", engine=self.worker_engine
+            )
+        )
+        self.assertFalse(repository.status()["searching"])
+        self.assertFalse(repository.status()["last_result"]["success"])
+
+    def test_search_run_migration_downgrade_and_upgrade_restore_one_head(self) -> None:
+        variable = "CAREERTRELLIS_MIGRATION_DATABASE_URL"
+        previous = os.environ.get(variable)
+        os.environ[variable] = self.migration_url.render_as_string(hide_password=False)
+        alembic_config = Config(str(Path(__file__).with_name("alembic.ini")))
+        try:
+            command.downgrade(alembic_config, "20260813_0006")
+            with self.admin_engine.begin() as connection:
+                self.assertIsNone(
+                    connection.scalar(
+                        text("SELECT to_regclass('careertrellis.search_runs')")
+                    )
+                )
+            command.upgrade(alembic_config, "head")
+            command.current(alembic_config, check_heads=True)
+        finally:
+            if previous is None:
+                os.environ.pop(variable, None)
+            else:
+                os.environ[variable] = previous
+        self._grant_runtime_privileges()
 
     def test_atomic_sqlite_import_is_visible_only_to_the_mapped_owner(self) -> None:
         with self.admin_engine.begin() as connection:

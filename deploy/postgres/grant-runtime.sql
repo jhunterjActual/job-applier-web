@@ -15,6 +15,18 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA careertrellis
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA careertrellis
     TO careertrellis_runtime, careertrellis_worker;
 
+-- Cross-owner scheduling is limited to the worker-only, reviewed broker.
+-- Neither login role can inspect the broker table, and the web runtime cannot
+-- invoke the SECURITY DEFINER claim function.
+REVOKE ALL ON careertrellis.search_run_claim_queue
+    FROM careertrellis_runtime, careertrellis_worker;
+REVOKE ALL ON FUNCTION careertrellis.sync_search_run_claim_queue()
+    FROM careertrellis_runtime, careertrellis_worker;
+REVOKE ALL ON FUNCTION careertrellis.claim_next_search_run(uuid, integer)
+    FROM careertrellis_runtime;
+GRANT EXECUTE ON FUNCTION careertrellis.claim_next_search_run(uuid, integer)
+    TO careertrellis_worker;
+
 -- Authentication-controlled fields cannot be supplied or changed by a user.
 -- A verified identity may create its default-role mapping and refresh last_seen_at.
 REVOKE INSERT, UPDATE ON careertrellis.app_users

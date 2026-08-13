@@ -56,10 +56,11 @@ activate_release() {
     for environment_file in \
         /etc/careertrellis/staging.env \
         /etc/careertrellis/postgres-runtime.env \
+        /etc/careertrellis/postgres-worker.env \
         /etc/careertrellis/provider-secrets.env \
         /etc/careertrellis/object-storage.env; do
         if [[ ! -f ${environment_file} || $(stat -c '%U:%G %a' "${environment_file}") != "root:root 600" ]]; then
-            echo "Every web runtime environment file must be root:root mode 0600." >&2
+            echo "Every service runtime environment file must be root:root mode 0600." >&2
             return 1
         fi
     done

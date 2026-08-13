@@ -12,7 +12,10 @@ The staging path has three independent boundaries:
 
 Local launchers retain their loopback-only behavior. Shared-host mode fails startup when its hostname or proxy token is missing. Do not store real profile, resume, credential, or application data in staging before WorkOS authentication, tenant isolation, encrypted secret storage, and private object storage are complete.
 
-The worker service is intentionally a lifecycle scaffold. It publishes a privacy-safe heartbeat but does not consume jobs; existing expensive actions remain in the web process until the durable-queue stage.
+The worker service remains disabled by default. The later bounded search-run
+slice can consume only durable owner-scoped searches after both its explicit
+worker flag and the separately reviewed repository cutover permit activation;
+see `STAGE_3_POSTGRES_SEARCH_RUNS.md`.
 
 ## Host prerequisites
 

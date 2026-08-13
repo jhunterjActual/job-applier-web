@@ -76,12 +76,23 @@ def get_worker_heartbeat_seconds() -> int:
     return interval
 
 
+def search_worker_enabled() -> bool:
+    """Require an explicit reviewed switch before the durable worker consumes runs."""
+    raw_value = os.environ.get("CAREERTRELLIS_SEARCH_WORKER_ENABLED", "false").strip().lower()
+    if raw_value not in {"true", "false"}:
+        raise RuntimeConfigurationError(
+            "CAREERTRELLIS_SEARCH_WORKER_ENABLED must be true or false."
+        )
+    return raw_value == "true"
+
+
 def validate_runtime_configuration() -> dict[str, object]:
     """Fail closed when a shared-host deployment omits its origin protections."""
     environment = get_runtime_environment()
     public_hosts = get_allowed_public_hosts()
     proxy_token = get_trusted_proxy_token()
     get_worker_heartbeat_seconds()
+    search_worker_enabled()
 
     if environment == "local":
         if public_hosts:

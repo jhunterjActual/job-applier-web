@@ -5,6 +5,8 @@ CAREERTRELLIS_ALLOWED_HOSTS=staging-app.jhunterj.com
 CAREERTRELLIS_DATA_DIR=/var/lib/careertrellis/staging
 CAREERTRELLIS_TRUSTED_PROXY_TOKEN=replace-with-the-same-64-character-random-value-used-by-caddy
 CAREERTRELLIS_WORKER_HEARTBEAT_SECONDS=15
+# This remains false until the final repository cutover is separately reviewed.
+CAREERTRELLIS_SEARCH_WORKER_ENABLED=false
 PLAYWRIGHT_BROWSERS_PATH=/var/lib/careertrellis/staging/ms-playwright
 
 # Required by the Stage 2 web release. Keep every value in this root-owned
