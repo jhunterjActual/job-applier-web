@@ -44,6 +44,12 @@ from job_retention_repository import (
     JobRetentionProtected,
     PostgreSQLJobRetentionRepository,
 )
+from application_workspace_repository import (
+    ApplicationWorkspaceChanged,
+    ApplicationWorkspaceNotFound,
+    PostgreSQLApplicationWorkspaceRepository,
+)
+from application_engagements import EngagementLimitError, MAX_ENGAGEMENTS_PER_JOB
 from job_suppressions import job_url_fingerprint
 
 from postgres_database import (
@@ -1104,6 +1110,311 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 connection.scalar(text(
                     "SELECT COUNT(*) FROM careertrellis.jobs WHERE status = 'matched'"
                 )),
+            )
+
+    @staticmethod
+    def _engagement_values(name: str = "Synthetic recruiter") -> dict[str, object]:
+        return {
+            "engagement_type": "recruiter",
+            "name": name,
+            "organization": "Synthetic Employer",
+            "contact_details": "synthetic@example.test",
+            "status": "planned",
+            "activity_on": "2026-08-13",
+            "next_action_on": "2026-08-20",
+            "notes": "Synthetic engagement notes.",
+        }
+
+    def test_application_workspace_engagement_crud_is_owner_scoped(self) -> None:
+        owner_one = PostgreSQLApplicationWorkspaceRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        owner_two = PostgreSQLApplicationWorkspaceRepository(
+            self.user_two, engine=self.runtime_engine
+        )
+        with self.assertRaises(ApplicationWorkspaceNotFound):
+            owner_two.list_engagements(self.job_one)
+        with self.assertRaises(ApplicationWorkspaceNotFound):
+            owner_two.create_engagement(
+                self.job_one, self._engagement_values("Cross-tenant create")
+            )
+
+        created = owner_one.create_engagement(
+            self.job_one, self._engagement_values()
+        )
+        self.assertNotIn("owner_user_id", created)
+        self.assertEqual("Synthetic recruiter", created["name"])
+        listed = owner_one.list_engagements(self.job_one)
+        self.assertEqual(1, listed["count"])
+        self.assertEqual(created["id"], listed["engagements"][0]["id"])
+        self.assertNotIn("owner_user_id", json.dumps(listed, sort_keys=True))
+
+        other_owned_job = self._insert_job(
+            self.user_one, "https://workspace.example.test/other"
+        )
+        with self.assertRaises(ApplicationWorkspaceNotFound):
+            owner_one.update_engagement(
+                other_owned_job,
+                created["id"],
+                self._engagement_values("Wrong job"),
+            )
+        with self.assertRaises(ApplicationWorkspaceNotFound):
+            owner_two.update_engagement(
+                self.job_two,
+                created["id"],
+                self._engagement_values("Wrong owner"),
+            )
+        updated = owner_one.update_engagement(
+            self.job_one,
+            created["id"],
+            {**self._engagement_values("Updated recruiter"), "status": "contacted"},
+        )
+        self.assertEqual("Updated recruiter", updated["name"])
+        self.assertEqual("contacted", updated["status"])
+        owner_one.delete_engagement(self.job_one, created["id"])
+        with self.assertRaises(ApplicationWorkspaceNotFound):
+            owner_one.delete_engagement(self.job_one, created["id"])
+        with self.runtime_engine.begin() as connection:
+            self.assertEqual(
+                0,
+                connection.scalar(
+                    text("SELECT COUNT(*) FROM careertrellis.application_engagements")
+                ),
+            )
+
+    def test_application_workspace_serializes_limit_update_delete_and_retention(self) -> None:
+        workspace = PostgreSQLApplicationWorkspaceRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        with self.admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO careertrellis.application_engagements (
+                        owner_user_id, job_id, engagement_type, name
+                    )
+                    SELECT :owner, :job_id, 'recruiter', 'Synthetic ' || value
+                    FROM generate_series(1, :count) AS value
+                    """
+                ),
+                {
+                    "owner": self.user_one,
+                    "job_id": self.job_one,
+                    "count": MAX_ENGAGEMENTS_PER_JOB - 1,
+                },
+            )
+        barrier = Barrier(2)
+
+        def create(name: str) -> dict:
+            barrier.wait(timeout=5)
+            return workspace.create_engagement(
+                self.job_one, self._engagement_values(name)
+            )
+
+        outcomes: list[object] = []
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(create, name) for name in ("Limit A", "Limit B")]
+            for future in futures:
+                try:
+                    outcomes.append(future.result(timeout=10))
+                except Exception as exc:
+                    outcomes.append(exc)
+        self.assertEqual(1, sum(isinstance(item, dict) for item in outcomes))
+        self.assertEqual(1, sum(isinstance(item, EngagementLimitError) for item in outcomes))
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            self.assertEqual(
+                MAX_ENGAGEMENTS_PER_JOB,
+                connection.scalar(text(
+                    "SELECT COUNT(*) FROM careertrellis.application_engagements "
+                    "WHERE job_id = :job_id"
+                ), {"job_id": self.job_one}),
+            )
+
+        race_job = self._insert_job(
+            self.user_one, "https://workspace.example.test/update-delete"
+        )
+        engagement = workspace.create_engagement(
+            race_job, self._engagement_values("Race")
+        )
+        barrier = Barrier(2)
+
+        def update() -> None:
+            barrier.wait(timeout=5)
+            workspace.update_engagement(
+                race_job, engagement["id"], self._engagement_values("Updated")
+            )
+
+        def delete() -> None:
+            barrier.wait(timeout=5)
+            workspace.delete_engagement(race_job, engagement["id"])
+
+        race_outcomes: list[object] = []
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(update), executor.submit(delete)]
+            for future in futures:
+                try:
+                    future.result(timeout=10)
+                    race_outcomes.append("ok")
+                except Exception as exc:
+                    race_outcomes.append(exc)
+        self.assertIn("ok", race_outcomes)
+        self.assertTrue(all(
+            item == "ok" or isinstance(item, ApplicationWorkspaceNotFound)
+            for item in race_outcomes
+        ))
+        self.assertEqual(0, workspace.list_engagements(race_job)["count"])
+
+        retention_job = self._insert_job(
+            self.user_one, "https://workspace.example.test/retention-race"
+        )
+        retention = PostgreSQLJobRetentionRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        barrier = Barrier(2)
+
+        def retain() -> None:
+            barrier.wait(timeout=5)
+            retention.delete_job(retention_job)
+
+        def engage() -> None:
+            barrier.wait(timeout=5)
+            workspace.create_engagement(
+                retention_job, self._engagement_values("Retention race")
+            )
+
+        retention_outcomes: list[object] = []
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(retain), executor.submit(engage)]
+            for future in futures:
+                try:
+                    future.result(timeout=10)
+                    retention_outcomes.append("ok")
+                except Exception as exc:
+                    retention_outcomes.append(exc)
+        self.assertEqual(1, sum(item == "ok" for item in retention_outcomes))
+        self.assertTrue(any(isinstance(
+            item, (JobRetentionProtected, ApplicationWorkspaceNotFound)
+        ) for item in retention_outcomes))
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            job_count = connection.scalar(text(
+                "SELECT COUNT(*) FROM careertrellis.jobs WHERE id = :job_id"
+            ), {"job_id": retention_job})
+            engagement_count = connection.scalar(text(
+                "SELECT COUNT(*) FROM careertrellis.application_engagements "
+                "WHERE job_id = :job_id"
+            ), {"job_id": retention_job})
+            suppression_count = connection.scalar(text(
+                "SELECT COUNT(*) FROM careertrellis.job_suppressions "
+                "WHERE url_fingerprint = :fingerprint"
+            ), {"fingerprint": job_url_fingerprint(
+                "https://workspace.example.test/retention-race"
+            )})
+        self.assertIn(
+            (job_count, engagement_count, suppression_count),
+            {(1, 1, 0), (0, 0, 1)},
+        )
+
+    def test_application_workspace_context_token_is_owner_bound_and_complete(self) -> None:
+        owner_one = PostgreSQLApplicationWorkspaceRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        owner_two = PostgreSQLApplicationWorkspaceRepository(
+            self.user_two, engine=self.runtime_engine
+        )
+        PostgreSQLLifecycleRepository(
+            self.user_one, engine=self.runtime_engine
+        ).update_lifecycle(self.job_one, "tailored", notes="Initial notes")
+        PostgreSQLLifecycleRepository(
+            self.user_two, engine=self.runtime_engine
+        ).update_lifecycle(self.job_two, "tailored", notes="Other notes")
+
+        first = owner_one.get_interview_workspace(
+            self.job_one, for_generation=True
+        )
+        other = owner_two.get_interview_workspace(
+            self.job_two, for_generation=True
+        )
+        self.assertNotEqual(first["context_token"], other["context_token"])
+        self.assertNotIn("owner_user_id", json.dumps(first, sort_keys=True))
+        with self.assertRaises(ApplicationWorkspaceNotFound):
+            owner_two.get_interview_workspace(self.job_one, for_generation=True)
+        with self.assertRaises(ApplicationWorkspaceChanged):
+            owner_one.save_interview_prep(
+                self.job_one,
+                "Wrong token content",
+                expected_context_token=other["context_token"],
+            )
+
+        changes = (
+            ("jobs", "title", "Changed title"),
+            ("jobs", "description", "Changed description"),
+            ("jobs", "match_analysis", "Changed analysis"),
+            ("applications", "company", "Changed company"),
+            ("applications", "position", "Changed position"),
+            ("applications", "status", "interview"),
+            ("applications", "notes", "Changed notes"),
+            ("applications", "tailored_resume_text", "Changed resume"),
+        )
+        for table, column, value in changes:
+            with self.subTest(table=table, column=column):
+                context = owner_one.get_interview_workspace(
+                    self.job_one, for_generation=True
+                )
+                with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+                    connection.execute(
+                        text(
+                            f"UPDATE careertrellis.{table} SET {column} = :value "
+                            "WHERE job_id = :job_id AND owner_user_id = :owner"
+                            if table == "applications" else
+                            f"UPDATE careertrellis.{table} SET {column} = :value "
+                            "WHERE id = :job_id AND owner_user_id = :owner"
+                        ),
+                        {"value": value, "job_id": self.job_one, "owner": self.user_one},
+                    )
+                with self.assertRaises(ApplicationWorkspaceChanged):
+                    owner_one.save_interview_prep(
+                        self.job_one,
+                        f"Stale after {column}",
+                        expected_context_token=context["context_token"],
+                    )
+
+        context = owner_one.get_interview_workspace(self.job_one, for_generation=True)
+        owner_one.save_interview_prep(self.job_one, "Manual newer preparation")
+        with self.assertRaises(ApplicationWorkspaceChanged):
+            owner_one.save_interview_prep(
+                self.job_one,
+                "Generated stale preparation",
+                expected_context_token=context["context_token"],
+            )
+        current = owner_one.get_interview_workspace(
+            self.job_one, for_generation=True
+        )
+        saved = owner_one.save_interview_prep(
+            self.job_one,
+            "Generated current preparation",
+            expected_context_token=current["context_token"],
+        )
+        self.assertEqual("Generated current preparation", saved["content"])
+
+    def test_application_workspace_create_rolls_back_after_return_failure(self) -> None:
+        repository = PostgreSQLApplicationWorkspaceRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        with patch(
+            "application_workspace_repository._api_row",
+            side_effect=RuntimeError("synthetic result failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "synthetic result failure"):
+                repository.create_engagement(
+                    self.job_one, self._engagement_values("Rollback")
+                )
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            self.assertEqual(
+                0,
+                connection.scalar(text(
+                    "SELECT COUNT(*) FROM careertrellis.application_engagements "
+                    "WHERE job_id = :job_id"
+                ), {"job_id": self.job_one}),
             )
 
     def test_saved_search_writes_are_owner_scoped_monotonic_and_constrained(self) -> None:

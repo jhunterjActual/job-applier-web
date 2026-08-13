@@ -38,13 +38,11 @@ from maps_providers import (
     validate_maps_provider,
 )
 from application_insights import build_application_insights
-from application_engagements import (
-    EngagementLimitError,
-    EngagementNotFound,
-    create_engagement,
-    delete_engagement,
-    list_engagements,
-    update_engagement,
+from application_engagements import EngagementLimitError
+from application_workspace_repository import (
+    ApplicationWorkspaceChanged,
+    ApplicationWorkspaceNotFound,
+    runtime_application_workspace_repository,
 )
 from data_export import build_user_data_export
 from database import get_db_connection, init_db
@@ -125,7 +123,6 @@ from job_filters import derive_job_filter_facets
 from interview_prep import (
     MAX_INTERVIEW_PREP_CHARS,
     generate_interview_prep,
-    save_interview_prep,
     starter_interview_prep,
 )
 from source_diagnostics import (
@@ -2401,27 +2398,22 @@ def open_manual_application(job_id: int) -> RedirectResponse:
     return RedirectResponse(material["job_url"], status_code=302)
 
 
-def _interview_prep_record(connection: sqlite3.Connection, job_id: int):
-    return connection.execute("""
-        SELECT a.job_id, a.company, a.position, a.status, a.notes,
-               a.tailored_resume_text, a.interview_prep, a.interview_prep_updated_at,
-               j.title, j.description, j.match_analysis
-        FROM applications a
-        LEFT JOIN jobs j ON j.id = a.job_id
-        WHERE a.job_id = ?
-    """, (job_id,)).fetchone()
-
-
 @app.get("/api/jobs/{job_id}/interview-prep")
 def get_interview_prep(job_id: int) -> dict:
     """Load saved interview notes or a local starter without calling an AI provider."""
-    conn = get_db_connection()
     try:
-        record = _interview_prep_record(conn, job_id)
-    finally:
-        conn.close()
-    if not record:
-        raise HTTPException(status_code=404, detail="Application record not found.")
+        record = runtime_application_workspace_repository(
+            sqlite_connection_factory=get_db_connection
+        ).get_interview_workspace(job_id)
+    except ApplicationWorkspaceNotFound as exc:
+        raise HTTPException(status_code=404, detail="Application record not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="CareerTrellis could not load the interview workspace.",
+        ) from exc
     saved_content = (record["interview_prep"] or "").strip()
     return {
         "job_id": job_id,
@@ -2437,18 +2429,19 @@ def get_interview_prep(job_id: int) -> dict:
 @app.put("/api/jobs/{job_id}/interview-prep")
 def update_interview_prep(job_id: int, req: InterviewPrepUpdateRequest) -> dict:
     """Persist user-reviewed interview preparation as an atomic local edit."""
-    conn = get_db_connection()
     try:
-        result = save_interview_prep(conn, job_id, req.content)
-        conn.commit()
-    except LookupError as exc:
-        conn.rollback()
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        result = runtime_application_workspace_repository(
+            sqlite_connection_factory=get_db_connection
+        ).save_interview_prep(job_id, req.content)
+    except ApplicationWorkspaceNotFound as exc:
+        raise HTTPException(status_code=404, detail="Application record not found.") from exc
     except ValueError as exc:
-        conn.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    finally:
-        conn.close()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="CareerTrellis could not save the interview workspace.",
+        ) from exc
     return {"success": True, **result}
 
 
@@ -2461,24 +2454,25 @@ def generate_job_interview_prep(
     with operation_scope(operation_id) as operation:
         try:
             operation.checkpoint()
-            conn = get_db_connection()
-            try:
-                record = _interview_prep_record(conn, job_id)
-                profile = conn.execute("SELECT * FROM profile WHERE id = 1").fetchone()
-            finally:
-                conn.close()
-            if not record:
-                raise HTTPException(status_code=404, detail="Application record not found.")
+            repository = runtime_application_workspace_repository(
+                sqlite_connection_factory=get_db_connection
+            )
+            record = repository.get_interview_workspace(
+                job_id, for_generation=True
+            )
+            context_token = record.pop("context_token")
+            profile = runtime_profile_repository(
+                sqlite_connection_factory=get_db_connection
+            ).get_profile()
             if not profile:
                 raise HTTPException(status_code=400, detail="Profile settings were not found.")
             content = generate_interview_prep(settings_from_profile(profile), record)
             operation.checkpoint()
-            conn = get_db_connection()
-            try:
-                result = save_interview_prep(conn, job_id, content)
-                conn.commit()
-            finally:
-                conn.close()
+            result = repository.save_interview_prep(
+                job_id,
+                content,
+                expected_context_token=context_token,
+            )
             return {"success": True, **result}
         except OperationCancelled:
             return {
@@ -2486,36 +2480,60 @@ def generate_job_interview_prep(
                 "cancelled": True,
                 "message": "Interview preparation stopped. Previously saved notes were preserved.",
             }
+        except ApplicationWorkspaceNotFound as exc:
+            raise HTTPException(status_code=404, detail="Application record not found.") from exc
+        except ApplicationWorkspaceChanged as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="The interview workspace changed while the draft was generated. Review it and generate again.",
+            ) from exc
         except AIProviderError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="CareerTrellis could not generate the interview workspace.",
+            ) from exc
 
 # Applications logs endpoint
 @app.get("/api/jobs/{job_id}/engagements")
 def get_job_engagements(job_id: int) -> dict:
     """Load locally tracked people, relationship activity, and assessment steps."""
-    conn = get_db_connection()
     try:
-        return list_engagements(conn, job_id)
-    except EngagementNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    finally:
-        conn.close()
+        return runtime_application_workspace_repository(
+            sqlite_connection_factory=get_db_connection
+        ).list_engagements(job_id)
+    except ApplicationWorkspaceNotFound as exc:
+        raise HTTPException(status_code=404, detail="Application workspace not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="CareerTrellis could not load the application workspace.",
+        ) from exc
 
 
 @app.post("/api/jobs/{job_id}/engagements", status_code=201)
 def add_job_engagement(job_id: int, req: ApplicationEngagementRequest) -> dict:
     """Create one bounded, local relationship or assessment record."""
-    conn = get_db_connection()
     try:
-        return create_engagement(conn, job_id, req.model_dump())
-    except EngagementNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return runtime_application_workspace_repository(
+            sqlite_connection_factory=get_db_connection
+        ).create_engagement(job_id, req.model_dump())
+    except ApplicationWorkspaceNotFound as exc:
+        raise HTTPException(status_code=404, detail="Application workspace not found.") from exc
     except (EngagementLimitError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    finally:
-        conn.close()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="CareerTrellis could not save the application workspace.",
+        ) from exc
 
 
 @app.put("/api/jobs/{job_id}/engagements/{engagement_id}")
@@ -2525,28 +2543,38 @@ def edit_job_engagement(
     req: ApplicationEngagementRequest,
 ) -> dict:
     """Edit a selected local relationship or assessment record."""
-    conn = get_db_connection()
     try:
-        return update_engagement(conn, job_id, engagement_id, req.model_dump())
-    except EngagementNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return runtime_application_workspace_repository(
+            sqlite_connection_factory=get_db_connection
+        ).update_engagement(job_id, engagement_id, req.model_dump())
+    except ApplicationWorkspaceNotFound as exc:
+        raise HTTPException(status_code=404, detail="Application workspace not found.") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    finally:
-        conn.close()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="CareerTrellis could not save the application workspace.",
+        ) from exc
 
 
 @app.delete("/api/jobs/{job_id}/engagements/{engagement_id}")
 def remove_job_engagement(job_id: int, engagement_id: int) -> dict:
     """Delete one explicitly selected local tracking record."""
-    conn = get_db_connection()
     try:
-        delete_engagement(conn, job_id, engagement_id)
+        runtime_application_workspace_repository(
+            sqlite_connection_factory=get_db_connection
+        ).delete_engagement(job_id, engagement_id)
         return {"success": True, "deleted": engagement_id}
-    except EngagementNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    finally:
-        conn.close()
+    except ApplicationWorkspaceNotFound as exc:
+        raise HTTPException(status_code=404, detail="Application workspace not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="CareerTrellis could not update the application workspace.",
+        ) from exc
 
 
 @app.get("/api/applications")

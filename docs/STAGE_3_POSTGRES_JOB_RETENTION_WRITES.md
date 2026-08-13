@@ -81,8 +81,10 @@ This slice does not convert or authorize:
   generated materials, stored-object metadata, or other protected dependents;
 - stored-object tombstoning, encrypted R2 deletion, cross-store retry or
   reconciliation, or orphan-object cleanup;
-- application operations, engagements, interview preparation, follow-up data,
-  tailoring, or generated-material creation, replacement, download, or deletion;
+- the application record list and application-insight aggregation, plus
+  application operations outside the converted lifecycle, engagement, and
+  interview-preparation repository boundaries;
+- tailoring or generated-material creation, replacement, download, or deletion;
 - saved-search claims, retries, leases, durable work, or worker execution;
 - headquarters cache, export/account deletion, or hosted backup/restore; or
 - deployment activation, permanent import, authority transition, R2 changes,
@@ -117,3 +119,6 @@ considered. Account deletion remains a separate privacy workflow.
 
 The final authority and rollback contract remains in
 `STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md`.
+
+Owner-scoped engagement tracking and interview-preparation workspace
+operations are documented in `STAGE_3_POSTGRES_APPLICATION_OPERATIONS.md`.

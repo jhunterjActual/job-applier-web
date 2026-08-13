@@ -82,14 +82,20 @@ permanent deletion for untouched jobs, with atomic privacy-minimized
 suppression. Its protected transaction contract is in
 `STAGE_3_POSTGRES_JOB_RETENTION_WRITES.md`.
 
+The application-operations slice adds owner-scoped engagement tracking and the
+interview-preparation workspace, including conflict-safe persistence around an
+explicit AI-provider call. Its two-phase transaction contract is in
+`STAGE_3_POSTGRES_APPLICATION_OPERATIONS.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
 - deletion of jobs with applications, lifecycle history, generated materials,
   stored objects, or other protected dependent records;
 - durable saved-search claiming, retry, and background-worker execution;
-- application operations outside the converted lifecycle transition, plus
-  engagements, interview preparation, and follow-up management;
+- the application record list, application-insight aggregation, and any
+  application operation outside the converted lifecycle, engagement, and
+  interview-preparation repository boundaries;
 - headquarters cache entries and any unconverted job-domain reads;
 - all user export and account-deletion reads and writes;
 - generated-material creation, replacement, and deletion through encrypted

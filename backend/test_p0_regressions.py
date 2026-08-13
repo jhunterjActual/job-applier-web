@@ -17,6 +17,7 @@ from uuid import uuid4
 
 import app as app_module
 import application_engagements as application_engagements_module
+import application_workspace_repository as application_workspace_repository_module
 import ai_providers as ai_providers_module
 import backup_restore as backup_restore_module
 import config as config_module
@@ -40,6 +41,11 @@ from application_engagements import (
     delete_engagement,
     list_engagements,
     update_engagement,
+)
+from application_workspace_repository import (
+    ApplicationWorkspaceChanged,
+    ApplicationWorkspaceNotFound,
+    SQLiteApplicationWorkspaceRepository,
 )
 from data_export import EXPORT_FORMAT, EXPORT_SCHEMA_VERSION, build_user_data_export
 from backup_restore import (
@@ -5011,6 +5017,15 @@ class InterviewPreparationEndpointTests(unittest.TestCase):
         connection.close()
         self.assertEqual("# My notes\n\n- Verified fact.", saved)
 
+    def test_get_rejects_non_positive_job_identifier(self) -> None:
+        with self.assertRaises(app_module.HTTPException) as raised:
+            app_module.get_interview_prep(0)
+
+        self.assertEqual(422, raised.exception.status_code)
+        self.assertEqual(
+            "Job identifier must be a positive integer.", raised.exception.detail
+        )
+
     def test_generated_plan_commits_only_after_provider_success(self) -> None:
         with (
             patch.object(app_module, "get_db_connection", side_effect=self.connection_factory),
@@ -5023,6 +5038,148 @@ class InterviewPreparationEndpointTests(unittest.TestCase):
         settings, record = generate.call_args.args
         self.assertEqual("gemini", settings.provider)
         self.assertEqual("Example Co", record["company"])
+
+    def test_generation_loads_context_before_provider_and_saves_with_token(self) -> None:
+        events = []
+        repository = Mock()
+        repository.get_interview_workspace.side_effect = lambda *args, **kwargs: (
+            events.append("load") or {
+                "job_id": 7,
+                "company": "Example Co",
+                "position": "Data Leader",
+                "context_token": "opaque-context-token",
+            }
+        )
+        repository.save_interview_prep.side_effect = lambda *args, **kwargs: (
+            events.append("save") or {
+                "content": "# Generated plan",
+                "updated_at": "2026-08-13T12:00:00+00:00",
+            }
+        )
+        profile_repository = Mock()
+        profile_repository.get_profile.side_effect = lambda: (
+            events.append("profile") or {
+                "ai_provider": "gemini",
+                "ai_model": "gemini-2.5-flash",
+                "gemini_api_key": "test-key",
+            }
+        )
+
+        def generate(_settings, record):
+            events.append("provider")
+            self.assertNotIn("context_token", record)
+            return "# Generated plan"
+
+        with (
+            patch.object(
+                app_module,
+                "runtime_application_workspace_repository",
+                return_value=repository,
+            ),
+            patch.object(
+                app_module,
+                "runtime_profile_repository",
+                return_value=profile_repository,
+            ),
+            patch.object(app_module, "generate_interview_prep", side_effect=generate),
+        ):
+            result = app_module.generate_job_interview_prep(7)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(["load", "profile", "provider", "save"], events)
+        repository.get_interview_workspace.assert_called_once_with(
+            7, for_generation=True
+        )
+        repository.save_interview_prep.assert_called_once_with(
+            7,
+            "# Generated plan",
+            expected_context_token="opaque-context-token",
+        )
+
+    def test_repository_token_conflict_does_not_overwrite_reviewed_notes(self) -> None:
+        repository = SQLiteApplicationWorkspaceRepository(self.connection_factory)
+        workspace = repository.get_interview_workspace(7, for_generation=True)
+        self.assertIn("context_token", workspace)
+        self.assertNotIn(
+            "context_token", repository.get_interview_workspace(7)
+        )
+        self.assertNotIn("owner_user_id", workspace)
+
+        connection = self.connection_factory()
+        connection.execute(
+            "UPDATE applications SET interview_prep = ? WHERE job_id = 7",
+            ("# Reviewed while provider was running",),
+        )
+        connection.commit()
+        connection.close()
+
+        with self.assertRaises(ApplicationWorkspaceChanged):
+            repository.save_interview_prep(
+                7,
+                "# Obsolete generated plan",
+                expected_context_token=workspace["context_token"],
+            )
+
+        connection = self.connection_factory()
+        saved = connection.execute(
+            "SELECT interview_prep FROM applications WHERE job_id = 7"
+        ).fetchone()[0]
+        connection.close()
+        self.assertEqual("# Reviewed while provider was running", saved)
+
+    def test_generation_conflict_and_unexpected_error_are_privacy_safe(self) -> None:
+        repository = Mock()
+        repository.get_interview_workspace.return_value = {
+            "job_id": 7,
+            "company": "Example Co",
+            "position": "Data Leader",
+            "context_token": "opaque-context-token",
+        }
+        repository.save_interview_prep.side_effect = ApplicationWorkspaceChanged(
+            "internal context and tenant details"
+        )
+        profile_repository = Mock()
+        profile_repository.get_profile.return_value = {
+            "ai_provider": "gemini",
+            "ai_model": "gemini-2.5-flash",
+            "gemini_api_key": "test-key",
+        }
+        with (
+            patch.object(
+                app_module,
+                "runtime_application_workspace_repository",
+                return_value=repository,
+            ),
+            patch.object(
+                app_module,
+                "runtime_profile_repository",
+                return_value=profile_repository,
+            ),
+            patch.object(
+                app_module, "generate_interview_prep", return_value="# Draft"
+            ),
+            self.assertRaises(app_module.HTTPException) as changed,
+        ):
+            app_module.generate_job_interview_prep(7)
+
+        self.assertEqual(409, changed.exception.status_code)
+        self.assertNotIn("tenant", changed.exception.detail)
+
+        with (
+            patch.object(
+                app_module,
+                "runtime_application_workspace_repository",
+                side_effect=RuntimeError("database password and tenant identity"),
+            ),
+            self.assertRaises(app_module.HTTPException) as unexpected,
+        ):
+            app_module.get_interview_prep(7)
+
+        self.assertEqual(500, unexpected.exception.status_code)
+        self.assertEqual(
+            "CareerTrellis could not load the interview workspace.",
+            unexpected.exception.detail,
+        )
 
     def test_cancellation_preserves_previously_saved_notes(self) -> None:
         connection = self.connection_factory()
@@ -5039,6 +5196,34 @@ class InterviewPreparationEndpointTests(unittest.TestCase):
         saved = connection.execute("SELECT interview_prep FROM applications WHERE job_id = 7").fetchone()[0]
         connection.close()
         self.assertTrue(result["cancelled"])
+        self.assertEqual("# Existing notes", saved)
+
+    def test_provider_failure_preserves_previously_saved_notes(self) -> None:
+        connection = self.connection_factory()
+        connection.execute(
+            "UPDATE applications SET interview_prep = '# Existing notes' WHERE job_id = 7"
+        )
+        connection.commit()
+        connection.close()
+        with (
+            patch.object(app_module, "get_db_connection", side_effect=self.connection_factory),
+            patch.object(
+                app_module,
+                "generate_interview_prep",
+                side_effect=AIProviderError(
+                    "gemini", "provider_unavailable", "Provider unavailable."
+                ),
+            ),
+            self.assertRaises(app_module.HTTPException) as raised,
+        ):
+            app_module.generate_job_interview_prep(7)
+
+        connection = self.connection_factory()
+        saved = connection.execute(
+            "SELECT interview_prep FROM applications WHERE job_id = 7"
+        ).fetchone()[0]
+        connection.close()
+        self.assertEqual(422, raised.exception.status_code)
         self.assertEqual("# Existing notes", saved)
 
 
@@ -5143,6 +5328,86 @@ class ApplicationEngagementTests(unittest.TestCase):
             list_engagements(connection, 999)
         connection.close()
 
+    def test_repository_crud_matches_local_shape_and_omits_owner_fields(self) -> None:
+        repository = SQLiteApplicationWorkspaceRepository(self.connection_factory)
+        created = repository.create_engagement(7, self.payload())
+        listed = repository.list_engagements(7)
+
+        self.assertEqual(1, listed["count"])
+        self.assertEqual(created["id"], listed["engagements"][0]["id"])
+        self.assertNotIn("owner_user_id", created)
+        self.assertNotIn("owner_user_id", listed["engagements"][0])
+
+        updated = repository.update_engagement(
+            7,
+            created["id"],
+            self.payload(status="completed", notes="Portfolio sent."),
+        )
+        self.assertEqual("completed", updated["status"])
+        self.assertEqual("Portfolio sent.", updated["notes"])
+        repository.delete_engagement(7, created["id"])
+        self.assertEqual(0, repository.list_engagements(7)["count"])
+        with self.assertRaises(ApplicationWorkspaceNotFound):
+            repository.delete_engagement(7, created["id"])
+
+    def test_repository_cap_and_failed_create_roll_back(self) -> None:
+        repository = SQLiteApplicationWorkspaceRepository(self.connection_factory)
+        with patch.object(
+            application_workspace_repository_module,
+            "MAX_ENGAGEMENTS_PER_JOB",
+            1,
+        ):
+            repository.create_engagement(7, self.payload())
+            with self.assertRaises(application_engagements_module.EngagementLimitError):
+                repository.create_engagement(
+                    7, self.payload(name="Second record")
+                )
+        connection = self.connection_factory()
+        self.assertEqual(
+            1,
+            connection.execute(
+                "SELECT COUNT(*) FROM application_engagements WHERE job_id = 7"
+            ).fetchone()[0],
+        )
+        connection.execute("DELETE FROM application_engagements WHERE job_id = 7")
+        connection.commit()
+        connection.close()
+
+        with (
+            patch.object(
+                SQLiteApplicationWorkspaceRepository,
+                "_engagement",
+                side_effect=RuntimeError("injected post-insert failure"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "injected"),
+        ):
+            repository.create_engagement(7, self.payload())
+
+        connection = self.connection_factory()
+        count = connection.execute(
+            "SELECT COUNT(*) FROM application_engagements WHERE job_id = 7"
+        ).fetchone()[0]
+        connection.close()
+        self.assertEqual(0, count)
+
+    def test_workspace_route_unexpected_error_is_privacy_safe(self) -> None:
+        with (
+            patch.object(
+                app_module,
+                "runtime_application_workspace_repository",
+                side_effect=RuntimeError("postgres password and tenant identity"),
+            ),
+            self.assertRaises(app_module.HTTPException) as raised,
+        ):
+            app_module.get_job_engagements(7)
+
+        self.assertEqual(500, raised.exception.status_code)
+        self.assertEqual(
+            "CareerTrellis could not load the application workspace.",
+            raised.exception.detail,
+        )
+        self.assertNotIn("password", raised.exception.detail)
+
     def test_api_crud_and_application_count(self) -> None:
         client = TestClient(app_module.app, base_url="http://127.0.0.1:8001")
         headers = {"Origin": "http://127.0.0.1:8001"}
@@ -5172,6 +5437,23 @@ class ApplicationEngagementTests(unittest.TestCase):
         self.assertEqual("completed", updated.json()["status"])
         self.assertEqual({"success": True, "deleted": record_id}, deleted.json())
         self.assertEqual(404, missing.status_code)
+
+    def test_read_and_delete_reject_non_positive_identifiers(self) -> None:
+        with self.assertRaises(app_module.HTTPException) as list_error:
+            app_module.get_job_engagements(0)
+        with self.assertRaises(app_module.HTTPException) as delete_error:
+            app_module.remove_job_engagement(7, 0)
+
+        self.assertEqual(422, list_error.exception.status_code)
+        self.assertEqual(422, delete_error.exception.status_code)
+        self.assertEqual(
+            "Job identifier must be a positive integer.",
+            list_error.exception.detail,
+        )
+        self.assertEqual(
+            "Engagement identifier must be a positive integer.",
+            delete_error.exception.detail,
+        )
 
 
 class ApplicationInsightsTests(unittest.TestCase):
