@@ -28,6 +28,13 @@ credentials; that host must decrypt a key briefly to call the selected
 provider. Application-host hardening, log minimization, and process isolation
 remain required.
 
+The bounded consumer routing in
+`STAGE_3_POSTGRES_PROVIDER_CONTEXT_READS.md` uses this authenticated secret
+boundary for AI/maps capability validation, explicitly consented resume OCR,
+and manual-import scoring. Each owner-scoped profile and credential transaction
+closes before the external provider call begins; those consumers never fall
+back to a global credential in shared-host mode.
+
 ## Root-owned keyring
 
 Before activating this release, create

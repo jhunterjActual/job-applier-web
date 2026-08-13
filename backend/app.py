@@ -891,11 +891,9 @@ def validate_ai_provider(
     with operation_scope(operation_id) as operation:
         try:
             operation.checkpoint()
-            conn = get_db_connection()
-            try:
-                profile = conn.execute("SELECT * FROM profile WHERE id = 1").fetchone()
-            finally:
-                conn.close()
+            profile = runtime_profile_repository(
+                sqlite_connection_factory=get_db_connection
+            ).get_profile()
             settings = settings_from_profile(profile)
             result = validate_provider_capability(settings)
             operation.checkpoint()
@@ -914,11 +912,9 @@ def validate_selected_maps_provider(
     with operation_scope(operation_id) as operation:
         try:
             operation.checkpoint()
-            conn = get_db_connection()
-            try:
-                profile = conn.execute("SELECT * FROM profile WHERE id = 1").fetchone()
-            finally:
-                conn.close()
+            profile = runtime_profile_repository(
+                sqlite_connection_factory=get_db_connection
+            ).get_profile()
             result = validate_maps_provider(maps_settings_from_profile(profile), operation.checkpoint)
             operation.checkpoint()
             return result
@@ -964,11 +960,9 @@ async def upload_resume(
                 )
 
         def ocr_pages(images: list[bytes], checkpoint) -> list[str]:
-            conn = get_db_connection()
-            try:
-                profile = conn.execute("SELECT * FROM profile WHERE id = 1").fetchone()
-            finally:
-                conn.close()
+            profile = runtime_profile_repository(
+                sqlite_connection_factory=get_db_connection
+            ).get_profile()
             return extract_text_from_images(settings_from_profile(profile), images, checkpoint)
 
         imported = import_resume_document(
@@ -1229,12 +1223,10 @@ def _save_manual_job(req: ManualJobSaveRequest, operation: OperationToken) -> di
             detail="Company and title are required, and the description must contain at least 20 characters.",
         )
 
-    conn = get_db_connection()
-    try:
-        profile = conn.execute("SELECT * FROM profile LIMIT 1").fetchone()
-        operation.checkpoint()
-    finally:
-        conn.close()
+    profile = runtime_profile_repository(
+        sqlite_connection_factory=get_db_connection
+    ).get_profile()
+    operation.checkpoint()
 
     # Save the reviewed posting first so a later Stop request can preserve it
     # as explicitly unscored. The repository owns the atomic suppression,

@@ -5,6 +5,8 @@ import io
 import os
 import re
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -29,6 +31,7 @@ import local_users as local_users_module
 import materials as materials_module
 import operations as operations_module
 import job_retention_repository as job_retention_repository_module
+import profile_repository as profile_repository_module
 import provider_secrets as provider_secrets_module
 import searcher as searcher_module
 import source_diagnostics as source_diagnostics_module
@@ -1449,6 +1452,42 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("[int]::TryParse", batch_source)
         self.assertIn("SERVER_EXIT", batch_source)
 
+    @unittest.skipUnless(os.name == "nt", "Windows cmd.exe launcher regression")
+    def test_batch_launcher_discovers_bootstrap_python_with_quoted_paths(self) -> None:
+        batch_source = (self.project_dir() / "run.bat").read_text(encoding="utf-8")
+        discovery = batch_source.split(
+            "rem BEGIN_BOOTSTRAP_PYTHON_DISCOVERY", 1
+        )[1].split("rem END_BOOTSTRAP_PYTHON_DISCOVERY", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="careertrellis launcher ") as temp_dir:
+            probe = Path(temp_dir) / "bootstrap discovery.bat"
+            probe.write_text(
+                "@echo off\n"
+                "setlocal\n"
+                f'set "VENV_PYTHON={sys.executable}"\n'
+                "set \"BOOTSTRAP_PYTHON=\"\n"
+                f"{discovery.strip()}\n"
+                "if not defined BOOTSTRAP_PYTHON exit /b 1\n"
+                'if /i not "%BOOTSTRAP_PYTHON%"=="%EXPECTED_BASE_PYTHON%" exit /b 2\n'
+                "exit /b 0\n",
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["TEMP"] = temp_dir
+            environment["EXPECTED_BASE_PYTHON"] = sys._base_executable
+            completed = subprocess.run(
+                ["cmd.exe", "/d", "/q", "/c", str(probe)],
+                capture_output=True,
+                text=True,
+                env=environment,
+                check=False,
+            )
+
+        self.assertEqual(
+            0,
+            completed.returncode,
+            f"stdout={completed.stdout!r} stderr={completed.stderr!r}",
+        )
+
     def test_environment_manifest_rejects_unlocked_or_wrong_packages(self) -> None:
         _, lock = self.dependency_files()
 
@@ -1712,6 +1751,117 @@ class ProfileSecretPresenceTests(unittest.TestCase):
         self.assertEqual("", settings.api_key)
         self.assertEqual(provider_result, result)
 
+    def test_provider_validation_uses_configured_profile_repository_without_sqlite_access(self) -> None:
+        repository = Mock()
+        repository.get_profile.return_value = {
+            "ai_provider": "openai",
+            "ai_model": "gpt-5-mini",
+            "openai_api_key": "owner-scoped-openai-key",
+            "maps_provider": "openstreetmap",
+            "google_maps_api_key": "",
+        }
+        ai_result = {"success": True, "provider": "openai"}
+        maps_result = {"success": True, "provider": "openstreetmap"}
+        with (
+            patch.object(
+                app_module,
+                "get_db_connection",
+                side_effect=AssertionError("Shared validation opened SQLite"),
+            ) as sqlite_connection,
+            patch.object(
+                app_module,
+                "runtime_profile_repository",
+                return_value=repository,
+            ) as profile_factory,
+            patch.object(
+                app_module,
+                "validate_provider_capability",
+                return_value=ai_result,
+            ) as validate_ai,
+            patch.object(
+                app_module,
+                "validate_maps_provider",
+                return_value=maps_result,
+            ) as validate_maps,
+        ):
+            self.assertEqual(ai_result, app_module.validate_ai_provider())
+            self.assertEqual(maps_result, app_module.validate_selected_maps_provider())
+
+        self.assertEqual(2, profile_factory.call_count)
+        for call in profile_factory.call_args_list:
+            self.assertIs(
+                sqlite_connection,
+                call.kwargs["sqlite_connection_factory"],
+            )
+        sqlite_connection.assert_not_called()
+        self.assertEqual(2, repository.get_profile.call_count)
+        ai_settings = validate_ai.call_args.args[0]
+        maps_settings = validate_maps.call_args.args[0]
+        self.assertEqual("openai", ai_settings.provider)
+        self.assertEqual("gpt-5-mini", ai_settings.model)
+        self.assertEqual("owner-scoped-openai-key", ai_settings.api_key)
+        self.assertEqual("openstreetmap", maps_settings.provider)
+        self.assertEqual("", maps_settings.api_key)
+
+    def test_owner_scoped_validation_preserves_bounded_provider_errors(self) -> None:
+        repository = Mock()
+        repository.get_profile.return_value = {
+            "ai_provider": "gemini",
+            "ai_model": "gemini-2.5-flash",
+            "gemini_api_key": "owner-scoped-gemini-key",
+            "maps_provider": "google",
+            "google_maps_api_key": "owner-scoped-maps-key",
+        }
+        with (
+            patch.object(
+                app_module,
+                "get_db_connection",
+                side_effect=AssertionError("Shared validation opened SQLite"),
+            ) as sqlite_connection,
+            patch.object(
+                app_module,
+                "runtime_profile_repository",
+                return_value=repository,
+            ),
+            patch.object(
+                app_module,
+                "validate_provider_capability",
+                side_effect=app_module.AIProviderError(
+                    "gemini", "provider_error", "Provider validation failed safely."
+                ),
+            ),
+            self.assertRaises(app_module.HTTPException) as ai_error,
+        ):
+            app_module.validate_ai_provider()
+        self.assertEqual(422, ai_error.exception.status_code)
+        self.assertEqual("Provider validation failed safely.", ai_error.exception.detail)
+        sqlite_connection.assert_not_called()
+
+        with (
+            patch.object(
+                app_module,
+                "get_db_connection",
+                side_effect=AssertionError("Shared validation opened SQLite"),
+            ) as sqlite_connection,
+            patch.object(
+                app_module,
+                "runtime_profile_repository",
+                return_value=repository,
+            ),
+            patch.object(
+                app_module,
+                "validate_maps_provider",
+                side_effect=app_module.MapsProviderError(
+                    "google", "provider_error", "Maps validation failed safely."
+                ),
+            ),
+            self.assertRaises(app_module.HTTPException) as maps_error,
+        ):
+            app_module.validate_selected_maps_provider()
+        self.assertEqual(422, maps_error.exception.status_code)
+        self.assertEqual("Maps validation failed safely.", maps_error.exception.detail)
+        sqlite_connection.assert_not_called()
+
 
 class DataStoreConfigurationTests(unittest.TestCase):
     POSTGRES_URL = "postgresql+psycopg://runtime:test@database.test/careertrellis"
@@ -1857,6 +2007,35 @@ class DataStoreConfigurationTests(unittest.TestCase):
             )
         repository.list_base_resumes.assert_called_once_with()
         repository.get_version.assert_called_once_with(7, 3)
+
+    def test_shared_profile_factory_uses_authenticated_owner_without_sqlite_fallback(self) -> None:
+        selected = Mock()
+        sqlite_factory = Mock(side_effect=AssertionError("SQLite fallback used"))
+        with (
+            patch.object(
+                profile_repository_module,
+                "data_store_kind",
+                return_value=data_store_module.SHARED_DATA_STORE,
+            ),
+            patch.object(
+                profile_repository_module,
+                "current_owner_user_id",
+                return_value=71,
+            ),
+            patch.object(
+                profile_repository_module,
+                "PostgreSQLProfileRepository",
+                return_value=selected,
+            ) as postgres_repository,
+        ):
+            result = profile_repository_module.runtime_profile_repository(
+                sqlite_connection_factory=sqlite_factory,
+                engine="synthetic-engine",
+            )
+
+        self.assertIs(selected, result)
+        postgres_repository.assert_called_once_with(71, engine="synthetic-engine")
+        sqlite_factory.assert_not_called()
 
     def test_discovery_routes_dispatch_through_the_configured_repository(self) -> None:
         repository = Mock()
@@ -2738,6 +2917,146 @@ class LocalBrowserBoundaryTests(unittest.TestCase):
             connection.close()
             self.assertEqual(("Original resume", "existing"), stored)
 
+    def test_shared_resume_ocr_uses_owner_scoped_profile_without_sqlite_access(self) -> None:
+        repository = Mock()
+        repository.get_profile.return_value = {
+            "ai_provider": "openai",
+            "ai_model": "gpt-5-mini",
+            "openai_api_key": "owner-scoped-ocr-key",
+        }
+
+        def import_with_ocr(
+            filename,
+            content,
+            *,
+            allow_ocr,
+            ocr_images,
+            checkpoint,
+        ):
+            self.assertEqual("resume.pdf", filename)
+            self.assertEqual(b"synthetic scanned resume", content)
+            self.assertTrue(allow_ocr)
+            self.assertEqual(
+                ["# Synthetic OCR result"],
+                ocr_images([b"synthetic-page-image"], checkpoint),
+            )
+            return SimpleNamespace(
+                text="# Synthetic OCR result",
+                source_format="pdf",
+                ocr_used=True,
+                page_count=1,
+            )
+
+        with (
+            patch.object(
+                app_module,
+                "get_db_connection",
+                side_effect=AssertionError("Shared OCR opened SQLite"),
+            ) as sqlite_connection,
+            patch.object(
+                app_module,
+                "runtime_profile_repository",
+                return_value=repository,
+            ) as profile_factory,
+            patch.object(
+                app_module,
+                "extract_text_from_images",
+                return_value=["# Synthetic OCR result"],
+            ) as extract,
+            patch.object(
+                app_module,
+                "import_resume_document",
+                side_effect=import_with_ocr,
+            ),
+        ):
+            response = self.client.post(
+                "/api/profile/upload-resume",
+                headers={"Origin": "http://127.0.0.1:8001"},
+                data={"allow_ocr": "true"},
+                files={
+                    "file": (
+                        "resume.pdf",
+                        b"synthetic scanned resume",
+                        "application/pdf",
+                    )
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("# Synthetic OCR result", response.json()["resume_text"])
+        self.assertTrue(response.json()["ocr_used"])
+        profile_factory.assert_called_once_with(
+            sqlite_connection_factory=sqlite_connection
+        )
+        repository.get_profile.assert_called_once_with()
+        sqlite_connection.assert_not_called()
+        settings, images, _checkpoint = extract.call_args.args
+        self.assertEqual("openai", settings.provider)
+        self.assertEqual("gpt-5-mini", settings.model)
+        self.assertEqual("owner-scoped-ocr-key", settings.api_key)
+        self.assertEqual([b"synthetic-page-image"], images)
+
+    def test_shared_resume_ocr_preserves_bounded_provider_error(self) -> None:
+        repository = Mock()
+        repository.get_profile.return_value = {
+            "ai_provider": "gemini",
+            "ai_model": "gemini-2.5-flash",
+            "gemini_api_key": "owner-scoped-ocr-key",
+        }
+
+        def import_with_ocr(
+            _filename,
+            _content,
+            *,
+            allow_ocr,
+            ocr_images,
+            checkpoint,
+        ):
+            self.assertTrue(allow_ocr)
+            ocr_images([b"synthetic-page-image"], checkpoint)
+            raise AssertionError("OCR provider error was not propagated")
+
+        with (
+            patch.object(
+                app_module,
+                "get_db_connection",
+                side_effect=AssertionError("Shared OCR opened SQLite"),
+            ) as sqlite_connection,
+            patch.object(
+                app_module,
+                "runtime_profile_repository",
+                return_value=repository,
+            ),
+            patch.object(
+                app_module,
+                "extract_text_from_images",
+                side_effect=app_module.AIProviderError(
+                    "gemini", "provider_error", "OCR provider failed safely."
+                ),
+            ),
+            patch.object(
+                app_module,
+                "import_resume_document",
+                side_effect=import_with_ocr,
+            ),
+        ):
+            response = self.client.post(
+                "/api/profile/upload-resume",
+                headers={"Origin": "http://127.0.0.1:8001"},
+                data={"allow_ocr": "true"},
+                files={
+                    "file": (
+                        "resume.pdf",
+                        b"synthetic scanned resume",
+                        "application/pdf",
+                    )
+                },
+            )
+
+        self.assertEqual(422, response.status_code)
+        self.assertEqual("OCR provider failed safely.", response.json()["detail"])
+        sqlite_connection.assert_not_called()
+
 
 class UserDataExportTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -3295,6 +3614,88 @@ class ManualJobImportTests(unittest.TestCase):
             41,
             match_score=91,
             match_analysis="Excellent match.",
+        )
+
+    def test_shared_save_uses_owner_scoped_profile_without_sqlite_access(self) -> None:
+        discovery_repository = Mock()
+        discovery_repository.create_job_if_available.return_value = {
+            "outcome": "created",
+            "job": {"id": 42},
+        }
+        discovery_repository.complete_initial_job_match.return_value = {
+            "id": 42,
+            "match_score": 93,
+        }
+        profile_repository = Mock()
+        profile_repository.get_profile.return_value = {
+            "base_resume_text": "Synthetic owner-scoped resume",
+            "ai_provider": "openai",
+            "ai_model": "gpt-5-mini",
+            "openai_api_key": "owner-scoped-match-key",
+        }
+        request = app_module.ManualJobSaveRequest(
+            url="https://example.test/jobs/shared-owner",
+            title="Data Director",
+            company="Example Health",
+            description="Lead enterprise data strategy and analytics. " * 3,
+        )
+        with (
+            patch.object(
+                app_module,
+                "get_db_connection",
+                side_effect=AssertionError("Shared manual import opened SQLite"),
+            ) as sqlite_connection,
+            patch.object(
+                app_module,
+                "runtime_profile_repository",
+                return_value=profile_repository,
+            ) as profile_factory,
+            patch.object(
+                app_module,
+                "runtime_discovery_repository",
+                return_value=discovery_repository,
+            ),
+            patch.object(
+                app_module,
+                "validate_public_http_url",
+                return_value=(True, ""),
+            ),
+            patch.object(
+                app_module,
+                "analyze_job_match",
+                return_value={
+                    "success": True,
+                    "match_score": 93,
+                    "match_analysis": "Owner-scoped match.",
+                },
+            ) as analyze,
+        ):
+            result = app_module.save_manual_job(request)
+
+        self.assertEqual(42, result["job_id"])
+        self.assertEqual(93, result["match_score"])
+        profile_factory.assert_called_once_with(
+            sqlite_connection_factory=sqlite_connection
+        )
+        profile_repository.get_profile.assert_called_once_with()
+        sqlite_connection.assert_not_called()
+        self.assertEqual(
+            (
+                "Synthetic owner-scoped resume",
+                "Data Director",
+                "Example Health",
+                request.description.strip(),
+                "owner-scoped-match-key",
+            ),
+            analyze.call_args.args,
+        )
+        self.assertEqual("openai", analyze.call_args.kwargs["ai_provider"])
+        self.assertEqual("gpt-5-mini", analyze.call_args.kwargs["ai_model"])
+        self.assertTrue(callable(analyze.call_args.kwargs["cancel_check"]))
+        discovery_repository.complete_initial_job_match.assert_called_once_with(
+            42,
+            match_score=93,
+            match_analysis="Owner-scoped match.",
         )
 
     def test_save_maps_repository_duplicate_and_suppression_to_conflict(self) -> None:

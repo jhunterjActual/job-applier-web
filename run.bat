@@ -23,7 +23,9 @@ if errorlevel 1 goto repair_venv
 if not errorlevel 1 goto environment_ready
 echo The dependency lock or installed environment changed. Rebuilding it...
 set "BOOTSTRAP_PYTHON="
-for /f "usebackq delims=" %%P in (`"%VENV_PYTHON%" -c "import sys; print(sys._base_executable)"`) do set "BOOTSTRAP_PYTHON=%%P"
+rem BEGIN_BOOTSTRAP_PYTHON_DISCOVERY
+for /f "usebackq delims=" %%P in (`^""%VENV_PYTHON%" -c "import sys; print(sys._base_executable)"^"`) do set "BOOTSTRAP_PYTHON=%%P"
+rem END_BOOTSTRAP_PYTHON_DISCOVERY
 goto find_bootstrap
 
 :repair_venv
@@ -99,7 +101,7 @@ echo Launching FastAPI Backend...
 echo Access the Dashboard at http://127.0.0.1:%PORT%/
 echo Press Ctrl+C to stop CareerTrellis.
 
-start "" /b powershell -NoProfile -WindowStyle Hidden -Command "$ready=$false; 1..30 | ForEach-Object { if (-not $ready) { Start-Sleep 1; try { $v=Invoke-RestMethod 'http://127.0.0.1:%PORT%/api/version' -TimeoutSec 1; if ($v.build -eq '20260813.6') { $ready=$true; Start-Process 'http://127.0.0.1:%PORT%/?build=20260813.6' } } catch {} } }"
+start "" /b powershell -NoProfile -WindowStyle Hidden -Command "$ready=$false; 1..30 | ForEach-Object { if (-not $ready) { Start-Sleep 1; try { $v=Invoke-RestMethod 'http://127.0.0.1:%PORT%/api/version' -TimeoutSec 1; if ($v.build -eq '20260813.7') { $ready=$true; Start-Process 'http://127.0.0.1:%PORT%/?build=20260813.7' } } catch {} } }"
 "%VENV_PYTHON%" -m uvicorn app:app --host 127.0.0.1 --port %PORT% --reload
 set "SERVER_EXIT=%ERRORLEVEL%"
 pause
