@@ -116,6 +116,15 @@ Its short cache read closes before maps or AI provider work, and its eligible
 write uses a separate transaction after that work. Its storage-policy contract
 is in `STAGE_3_POSTGRES_HEADQUARTERS_CACHE.md`.
 
+The shared backup/restore policy now fails both encrypted-workspace endpoints
+closed when PostgreSQL is the selected data store. The HTTP boundary rejects a
+restore after normal shared authentication but before multipart parsing, and
+the endpoint boundary repeats the guard before local paths, locks, temporary
+files, archive helpers, or restore mutation. Local SQLite behavior is
+unchanged. Hosted PostgreSQL and private
+object-store recovery remain operator-managed; see
+`STAGE_3_SHARED_BACKUP_RESTORE_POLICY.md`.
+
 The portable user-data export now selects the configured repository. Local mode
 uses one explicit SQLite read transaction. Shared mode uses one PostgreSQL JSON
 statement under transaction-local tenant context, with explicit owner
@@ -136,8 +145,6 @@ converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 - account-deletion reads and writes;
 - generated-material creation, replacement, and deletion through encrypted
   private object storage rather than authoritative local filesystem paths;
-- hosted backup/restore behavior, which must not replace the frozen SQLite
-  workspace after PostgreSQL becomes authoritative; and
 - any background-worker transaction that later consumes the worker database
   credential.
 
