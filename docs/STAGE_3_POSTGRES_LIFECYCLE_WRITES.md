@@ -58,8 +58,8 @@ This slice does not convert or authorize:
 - deletion of jobs with applications, lifecycle history, generated materials,
   stored objects, or other protected dependent records;
 - tailoring, generated-material creation/replacement/deletion, private-object
-  mutations, application downloads, engagements, interview preparation, or
-  follow-up management beyond retaining the lifecycle form fields;
+  mutations, application downloads, application record listing, or application
+  insight aggregation;
 - durable saved-search claims, provider execution, process-global search state,
   retries, leases, or worker execution;
 - headquarters cache, export/account deletion, hosted backup/restore, public
@@ -88,3 +88,7 @@ The full data-authority and final cutover contract remains in
 
 Protected untouched-job retention is documented separately in
 `STAGE_3_POSTGRES_JOB_RETENTION_WRITES.md`.
+
+Owner-scoped engagement tracking and interview-preparation workspace
+operations are documented separately in
+`STAGE_3_POSTGRES_APPLICATION_OPERATIONS.md`.

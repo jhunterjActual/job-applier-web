@@ -62,8 +62,9 @@ This slice does not convert or authorize:
 
 - deletion of jobs with applications, lifecycle history, generated materials,
   stored objects, or other protected dependent records;
-- application operations outside lifecycle status coupling, engagements,
-  interview preparation, or follow-up management;
+- the application record list and application-insight aggregation, plus
+  application operations outside the converted lifecycle, engagement, and
+  interview-preparation repository boundaries;
 - tailoring or generated-material object creation, replacement, download, or
   deletion;
 - saved-search claims, retries, leases, durable jobs, or worker execution;
@@ -97,3 +98,6 @@ The final authority and rollback contract remains in
 
 Protected untouched-job archive, restore, and deletion are documented in
 `STAGE_3_POSTGRES_JOB_RETENTION_WRITES.md`.
+
+Owner-scoped engagement tracking and interview-preparation workspace
+operations are documented in `STAGE_3_POSTGRES_APPLICATION_OPERATIONS.md`.

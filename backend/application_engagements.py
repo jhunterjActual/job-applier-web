@@ -75,6 +75,11 @@ def _validated_values(values: dict[str, object]) -> dict[str, object]:
     }
 
 
+def validated_engagement_values(values: dict[str, object]) -> dict[str, object]:
+    """Return bounded engagement values without opening or mutating a store."""
+    return _validated_values(values)
+
+
 def list_engagements(connection: sqlite3.Connection, job_id: int) -> dict[str, object]:
     """Return bounded local relationship and milestone records for a job."""
     job = _require_job(connection, job_id)

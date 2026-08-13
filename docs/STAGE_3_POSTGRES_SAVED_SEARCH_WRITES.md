@@ -69,8 +69,10 @@ This slice does not convert or authorize:
   state, durable work claiming, retries, leases, or worker scheduling;
 - job creation, lifecycle, verification, archive/restore, cleanup, permanent
   deletion, or coupled suppression creation;
-- applications, engagements, interview preparation, generated materials,
-  headquarters cache, export/account deletion, or hosted backup/restore; or
+- the application record list and application-insight aggregation, plus
+  application operations outside separately converted repository boundaries;
+- generated materials, headquarters cache, export/account deletion, or hosted
+  backup/restore; or
 - deployment activation, permanent import, repository authority transition,
   R2 changes, public signup, or additional users.
 
@@ -87,6 +89,10 @@ Lifecycle transitions and undo are handled by the later bounded slice in
 `STAGE_3_POSTGRES_LIFECYCLE_WRITES.md`; they do not expand this saved-search
 transaction.
 
+Owner-scoped engagement tracking and interview-preparation workspace
+operations are handled separately in
+`STAGE_3_POSTGRES_APPLICATION_OPERATIONS.md`.
+
 ## Verification gates
 
 - [ ] Clean local SQLite tests prove create, conflict update, re-enable,
@@ -94,7 +100,7 @@ transaction.
       rejection without touching the user's workspace.
 - [ ] Route tests prove both write branches use the configured repository and
       enqueue no work after failed authorization.
-- [ ] Alembic reports one head at `20260813_0005`; upgrade is idempotent and the
+- [ ] Alembic reports one head at `20260813_0006`; upgrade is idempotent and the
       validated frequency constraint rejects unsupported values.
 - [ ] Disposable PostgreSQL 18 tests prove same-query isolation between two
       owners, owner-scoped conflict updates, cross-owner advance denial,

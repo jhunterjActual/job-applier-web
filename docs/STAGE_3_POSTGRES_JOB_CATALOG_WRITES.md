@@ -56,7 +56,8 @@ This slice does not convert or authorize:
 
 - deletion of jobs with applications, history, generated materials, stored
   objects, or other protected dependent records;
-- applications, engagements, interview preparation, or follow-up data;
+- the application record list and application-insight aggregation, plus
+  application operations outside separately converted repository boundaries;
 - tailoring, generated-material creation/replacement/download/deletion, or
   private-object operations;
 - saved-search claiming, retries, leases, durable work, or worker execution;
@@ -80,6 +81,10 @@ pre-application application row.
 Protected untouched-job archive, restore, and permanent deletion with an atomic
 privacy-minimized suppression are handled by
 `STAGE_3_POSTGRES_JOB_RETENTION_WRITES.md`.
+
+Owner-scoped engagement tracking and interview-preparation workspace
+operations are handled by
+`STAGE_3_POSTGRES_APPLICATION_OPERATIONS.md`.
 
 ## Verification gates
 
