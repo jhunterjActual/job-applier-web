@@ -44,6 +44,10 @@ from application_workspace_repository import (
     runtime_application_workspace_repository,
 )
 from data_export import build_user_data_export
+from user_data_export_repository import (
+    EXPORT_UNAVAILABLE_MESSAGE,
+    runtime_user_data_export_repository,
+)
 from database import get_db_connection, init_db
 from data_store import (
     LOCAL_DATA_STORE,
@@ -1464,16 +1468,30 @@ def get_source_diagnostic_history(limit: int = 100) -> JSONResponse:
 
 @app.get("/api/data-export")
 def export_user_data() -> StreamingResponse:
-    """Download an explicit local-data export without credentials or host paths."""
-    conn = get_db_connection()
+    """Download the authenticated owner's explicit portable-data export."""
+    try:
+        snapshot = runtime_user_data_export_repository(
+            sqlite_connection_factory=get_db_connection
+        ).snapshot()
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail=EXPORT_UNAVAILABLE_MESSAGE,
+        ) from None
+
+    # The repository transaction and connection are closed before public-shape
+    # serialization starts and before the response iterator can yield bytes.
     try:
         payload = build_user_data_export(
-            conn,
+            snapshot,
             exported_at=datetime.now().isoformat(timespec="seconds"),
             application_build=APP_BUILD,
         )
-    finally:
-        conn.close()
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail=EXPORT_UNAVAILABLE_MESSAGE,
+        ) from None
     filename = f"career-trellis-user-data-{date.today().isoformat()}.json"
     content = json.JSONEncoder(ensure_ascii=False, indent=2).iterencode(payload)
     return StreamingResponse(

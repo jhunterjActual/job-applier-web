@@ -39,6 +39,7 @@ import provider_secrets as provider_secrets_module
 import searcher as searcher_module
 import source_diagnostics as source_diagnostics_module
 import sqlite_postgres_import as sqlite_postgres_import_module
+import user_data_export_repository as user_data_export_repository_module
 import worker as worker_module
 import web_auth as web_auth_module
 from application_insights import build_application_insights
@@ -56,6 +57,12 @@ from application_workspace_repository import (
 )
 from application_read_repository import SQLiteApplicationReadRepository
 from data_export import EXPORT_FORMAT, EXPORT_SCHEMA_VERSION, build_user_data_export
+from user_data_export_repository import (
+    EXPORT_UNAVAILABLE_MESSAGE,
+    PostgreSQLUserDataExportRepository,
+    SQLiteUserDataExportRepository,
+    UserDataExportUnavailable,
+)
 from backup_restore import (
     BackupAuthenticationError,
     BackupCompatibilityError,
@@ -3688,6 +3695,9 @@ class UserDataExportTests(unittest.TestCase):
                 cache_key TEXT PRIMARY KEY, provider TEXT, address TEXT,
                 country_code TEXT, attribution TEXT, resolved_at TEXT
             );
+            CREATE TABLE stored_objects (
+                id TEXT PRIMARY KEY, object_key TEXT, wrapped_data_key BLOB
+            );
             INSERT INTO profile VALUES (
                 1, 'Export Candidate', 'candidate@example.test', 'Legacy resume',
                 'analyst', 'openai', 'gpt-5-mini', 'openstreetmap', 1, 'es',
@@ -3732,6 +3742,9 @@ class UserDataExportTests(unittest.TestCase):
                 'private-cache-key', 'openstreetmap', 'Private cached address',
                 'us', 'provider', '2026-08-06'
             );
+            INSERT INTO stored_objects VALUES (
+                'private-object-id', 'private-object-key', X'00112233'
+            );
         """)
         connection.commit()
         connection.close()
@@ -3745,15 +3758,12 @@ class UserDataExportTests(unittest.TestCase):
         return connection
 
     def test_export_is_versioned_complete_and_excludes_credentials_and_host_details(self) -> None:
-        connection = self.connection_factory()
-        try:
-            payload = build_user_data_export(
-                connection,
-                exported_at="2026-08-08T12:00:00",
-                application_build="test-build",
-            )
-        finally:
-            connection.close()
+        snapshot = SQLiteUserDataExportRepository(self.connection_factory).snapshot()
+        payload = build_user_data_export(
+            snapshot,
+            exported_at="2026-08-08T12:00:00",
+            application_build="test-build",
+        )
 
         self.assertEqual(EXPORT_FORMAT, payload["format"])
         self.assertEqual(EXPORT_SCHEMA_VERSION, payload["schema_version"])
@@ -3772,10 +3782,106 @@ class UserDataExportTests(unittest.TestCase):
         for forbidden in (
             "gemini-secret", "openai-secret", "maps-secret", "C:/private/resume.pdf",
             "C:/private/cover-letter.txt", "private-url-fingerprint", "private-cache-key",
-            "Private cached address",
+            "Private cached address", "private-object-id", "private-object-key",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, encoded)
+
+        self.assertNotIn("gemini_api_key", snapshot["profile"][0])
+        self.assertNotIn("tailored_resume_path", snapshot["applications"][0])
+        self.assertNotIn("url_fingerprint", snapshot["job_suppressions"][0])
+
+    def test_sqlite_snapshot_is_stably_ordered_and_serializer_does_not_mutate_it(self) -> None:
+        connection = self.connection_factory()
+        connection.execute(
+            "INSERT INTO jobs (id, title, company, url, status) VALUES (?, ?, ?, ?, ?)",
+            (5, "Earlier ID", "Example", "https://jobs.example.test/5", "matched"),
+        )
+        connection.commit()
+        connection.close()
+
+        snapshot = SQLiteUserDataExportRepository(self.connection_factory).snapshot()
+        self.assertEqual([5, 30], [row["id"] for row in snapshot["jobs"]])
+        original_evidence = snapshot["base_resumes"][0]["professional_evidence"]
+
+        first = build_user_data_export(
+            snapshot,
+            exported_at="2026-08-08T12:00:00",
+            application_build="test-build",
+        )
+        second = build_user_data_export(
+            snapshot,
+            exported_at="2026-08-08T12:00:00",
+            application_build="test-build",
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(original_evidence, snapshot["base_resumes"][0]["professional_evidence"])
+        self.assertIsInstance(original_evidence, str)
+
+    def test_export_repository_failure_is_fixed_and_closes_the_sqlite_connection(self) -> None:
+        connection = Mock()
+        connection.execute.side_effect = sqlite3.OperationalError(
+            "private path C:/private/jobapplier.db"
+        )
+
+        with self.assertRaisesRegex(
+            UserDataExportUnavailable, f"^{re.escape(EXPORT_UNAVAILABLE_MESSAGE)}$"
+        ) as raised:
+            SQLiteUserDataExportRepository(lambda: connection).snapshot()
+
+        self.assertNotIn("private", str(raised.exception))
+        connection.rollback.assert_called_once_with()
+        connection.close.assert_called_once_with()
+
+    def test_shared_export_repository_never_falls_back_to_sqlite(self) -> None:
+        sqlite_connection_factory = Mock(side_effect=AssertionError("SQLite fallback"))
+        engine = Mock()
+        with (
+            patch.object(user_data_export_repository_module, "data_store_kind", return_value="postgres"),
+            patch.object(user_data_export_repository_module, "current_owner_user_id", return_value=42),
+        ):
+            repository = user_data_export_repository_module.runtime_user_data_export_repository(
+                sqlite_connection_factory=sqlite_connection_factory,
+                engine=engine,
+            )
+
+        self.assertIsInstance(repository, PostgreSQLUserDataExportRepository)
+        self.assertEqual(42, repository._owner_user_id)
+        self.assertIs(engine, repository._engine)
+        sqlite_connection_factory.assert_not_called()
+
+    def test_postgres_export_uses_one_owner_bound_statement_and_closes_transaction(self) -> None:
+        raw_snapshot = {table: [] for table in user_data_export_repository_module.EXPORT_FIELDS}
+        raw_snapshot["profile"] = [{"id": 1, "name": "Owner"}]
+        connection = Mock()
+        connection.execute.return_value.scalar_one.return_value = raw_snapshot
+        engine = Mock()
+
+        with patch.object(
+            user_data_export_repository_module, "tenant_transaction"
+        ) as transaction:
+            transaction.return_value.__enter__.return_value = connection
+            snapshot = PostgreSQLUserDataExportRepository(42, engine=engine).snapshot()
+
+        transaction.assert_called_once_with(engine, 42)
+        transaction.return_value.__exit__.assert_called_once()
+        connection.execute.assert_called_once()
+        statement, parameters = connection.execute.call_args.args
+        statement_text = str(statement)
+        self.assertEqual({"owner_user_id": 42}, parameters)
+        self.assertGreaterEqual(
+            statement_text.count("WHERE owner_user_id = :owner_user_id"),
+            9,
+        )
+        self.assertIn("WHERE p.owner_user_id = :owner_user_id", statement_text)
+        for forbidden in (
+            "provider_secrets", "stored_objects", "headquarters_cache",
+            "url_fingerprint", "tailored_resume_object_id", "cover_letter_object_id",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, statement_text)
+        self.assertEqual("Owner", snapshot["profile"][0]["name"])
 
     def test_export_endpoint_downloads_pretty_json_without_browser_caching(self) -> None:
         client = TestClient(app_module.app, base_url="http://127.0.0.1:8001")
@@ -3794,6 +3900,69 @@ class UserDataExportTests(unittest.TestCase):
             r'^attachment; filename="career-trellis-user-data-\d{4}-\d{2}-\d{2}\.json"$',
         )
         self.assertIn('\n  "schema_version": 3,', response.text)
+
+    def test_export_endpoint_closes_repository_scope_before_serialization(self) -> None:
+        connection_state = {"closed": False}
+
+        def tracked_connection_factory():
+            real_connection = self.connection_factory()
+
+            class TrackedConnection:
+                def __getattr__(self, name: str):
+                    return getattr(real_connection, name)
+
+                def close(self) -> None:
+                    connection_state["closed"] = True
+                    real_connection.close()
+
+            return TrackedConnection()
+
+        real_serializer = app_module.build_user_data_export
+
+        def serialize_after_close(*args, **kwargs):
+            self.assertTrue(connection_state["closed"])
+            return real_serializer(*args, **kwargs)
+
+        client = TestClient(app_module.app, base_url="http://127.0.0.1:8001")
+        try:
+            with (
+                patch.object(
+                    app_module,
+                    "runtime_user_data_export_repository",
+                    return_value=SQLiteUserDataExportRepository(tracked_connection_factory),
+                ),
+                patch.object(
+                    app_module,
+                    "build_user_data_export",
+                    side_effect=serialize_after_close,
+                ),
+            ):
+                response = client.get("/api/data-export")
+        finally:
+            client.close()
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(connection_state["closed"])
+
+    def test_export_endpoint_returns_only_fixed_error_on_repository_failure(self) -> None:
+        client = TestClient(app_module.app, base_url="http://127.0.0.1:8001")
+        repository = Mock()
+        repository.snapshot.side_effect = RuntimeError(
+            "postgresql://private-user:private-password@database.internal/private"
+        )
+        try:
+            with patch.object(
+                app_module,
+                "runtime_user_data_export_repository",
+                return_value=repository,
+            ):
+                response = client.get("/api/data-export")
+        finally:
+            client.close()
+
+        self.assertEqual(503, response.status_code)
+        self.assertEqual(EXPORT_UNAVAILABLE_MESSAGE, response.json()["detail"])
+        self.assertNotIn("private-password", response.text)
 
 
 class EncryptedFullBackupTests(unittest.TestCase):
