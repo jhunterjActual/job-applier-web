@@ -1,5 +1,10 @@
+"""Pure, deterministic serialization for the portable user-data export."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from datetime import date, datetime
 import json
-import sqlite3
 from typing import Any
 
 
@@ -7,6 +12,9 @@ EXPORT_FORMAT = "career-trellis-user-data"
 EXPORT_SCHEMA_VERSION = 3
 
 
+# This allowlist is the public export contract. Persistence repositories may
+# return no additional fields, and the serializer applies it again as a
+# defense-in-depth boundary before bytes are produced for a response.
 EXPORT_FIELDS = {
     "profile": (
         "id", "name", "email", "phone", "github", "linkedin", "website",
@@ -15,11 +23,12 @@ EXPORT_FIELDS = {
         "active_base_resume_id",
     ),
     "base_resumes": (
-        "id", "name", "resume_mode", "content", "evidence_json", "created_at", "updated_at",
+        "id", "name", "resume_mode", "content", "professional_evidence",
+        "created_at", "updated_at",
     ),
     "base_resume_versions": (
         "id", "base_resume_id", "version_number", "name", "resume_mode", "content",
-        "evidence_json", "created_at",
+        "professional_evidence", "created_at",
     ),
     "jobs": (
         "id", "title", "company", "description", "url", "match_score", "match_analysis",
@@ -50,74 +59,78 @@ EXPORT_FIELDS = {
         "id", "hostname", "company", "title", "deleted_at", "deletion_source",
     ),
     "source_diagnostics": (
-        "id", "recorded_at", "provider", "diagnostic_code", "counters_json",
+        "id", "recorded_at", "provider", "diagnostic_code", "counters",
     ),
 }
 
 
-def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
-    return {row[1] for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()}
+_JSON_FIELDS = {
+    ("base_resumes", "professional_evidence"),
+    ("base_resume_versions", "professional_evidence"),
+    ("applications", "submission_evidence"),
+    ("source_diagnostics", "counters"),
+}
+_BOOLEAN_FIELDS = {
+    ("profile", "prefer_us_headquarters"),
+    ("jobs", "is_expired"),
+    ("saved_searches", "enabled"),
+}
 
 
-def _export_rows(
-    connection: sqlite3.Connection,
-    table: str,
-    fields: tuple[str, ...],
-) -> list[dict[str, Any]]:
-    available = _table_columns(connection, table)
-    selected = [field for field in fields if field in available]
-    if not selected:
-        return []
-    projection = ", ".join(f'"{field}"' for field in selected)
-    rows = connection.execute(f'SELECT {projection} FROM "{table}" ORDER BY rowid').fetchall()
-    return [dict(zip(selected, row)) for row in rows]
+def _portable_value(value: Any) -> Any:
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        return {
+            str(key): _portable_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_portable_value(item) for item in value]
+    return value
 
 
-def _decode_json_field(record: dict[str, Any], stored_name: str, exported_name: str) -> None:
-    raw_value = record.pop(stored_name, None)
-    if raw_value in (None, ""):
-        record[exported_name] = None
-        return
-    try:
-        record[exported_name] = json.loads(raw_value)
-    except (TypeError, json.JSONDecodeError):
-        record[exported_name] = raw_value
+def _json_value(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            pass
+    return _portable_value(value)
+
+
+def _public_record(table: str, raw_record: Mapping[str, Any]) -> dict[str, Any]:
+    record: dict[str, Any] = {}
+    for field in EXPORT_FIELDS[table]:
+        if field not in raw_record:
+            continue
+        value = raw_record[field]
+        if (table, field) in _JSON_FIELDS:
+            value = _json_value(value)
+        elif (table, field) in _BOOLEAN_FIELDS:
+            value = bool(value)
+        else:
+            value = _portable_value(value)
+        record[field] = value
+    return record
 
 
 def build_user_data_export(
-    connection: sqlite3.Connection,
+    snapshot: Mapping[str, list[Mapping[str, Any]]],
     *,
     exported_at: str,
     application_build: str,
 ) -> dict[str, Any]:
-    """Build an explicit, portable export without credentials or host-only paths."""
+    """Serialize one already-closed repository snapshot into the public format."""
     records = {
-        table: _export_rows(connection, table, fields)
-        for table, fields in EXPORT_FIELDS.items()
+        table: [_public_record(table, row) for row in snapshot.get(table, [])]
+        for table in EXPORT_FIELDS
     }
-
-    for resume in records["base_resumes"]:
-        _decode_json_field(resume, "evidence_json", "professional_evidence")
-    for version in records["base_resume_versions"]:
-        _decode_json_field(version, "evidence_json", "professional_evidence")
-    for application in records["applications"]:
-        _decode_json_field(application, "submission_evidence", "submission_evidence")
-    for diagnostic in records["source_diagnostics"]:
-        _decode_json_field(diagnostic, "counters_json", "counters")
-
-    for profile in records["profile"]:
-        if "prefer_us_headquarters" in profile:
-            profile["prefer_us_headquarters"] = bool(profile["prefer_us_headquarters"])
-    for job in records["jobs"]:
-        if "is_expired" in job:
-            job["is_expired"] = bool(job["is_expired"])
-    for search in records["saved_searches"]:
-        if "enabled" in search:
-            search["enabled"] = bool(search["enabled"])
-
-    profile = records.pop("profile")
+    profiles = records.pop("profile")
     counts = {name: len(items) for name, items in records.items()}
-    counts["profiles"] = len(profile)
+    counts["profiles"] = len(profiles)
 
     return {
         "format": EXPORT_FORMAT,
@@ -125,14 +138,14 @@ def build_user_data_export(
         "exported_at": exported_at,
         "application_build": application_build,
         "scope": {
-            "purpose": "Portable, human-readable copy of locally stored job-search data.",
+            "purpose": "Portable, human-readable copy of stored job-search data.",
             "excluded": [
-                "Stored AI and maps API keys",
-                "Generated-material filesystem paths",
-                "Internal URL fingerprints and provider caches",
+                "Stored provider credentials and encryption material",
+                "Generated-object identifiers, keys, storage locations, and local paths",
+                "Owner identifiers, internal URL fingerprints, and provider caches",
             ],
         },
         "counts": counts,
-        "profile": profile[0] if profile else None,
+        "profile": profiles[0] if profiles else None,
         **records,
     }

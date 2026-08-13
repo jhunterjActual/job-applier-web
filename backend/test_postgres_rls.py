@@ -33,6 +33,7 @@ from base_resumes import BaseResumeNotFound, LastBaseResumeError
 from profile_repository import PostgreSQLProfileRepository
 from discovery_repository import PostgreSQLDiscoveryRepository
 from headquarters_cache_repository import PostgreSQLHeadquartersCacheRepository
+from user_data_export_repository import PostgreSQLUserDataExportRepository
 from lifecycle_repository import PostgreSQLLifecycleRepository
 from verification_repository import (
     PostgreSQLVerificationRepository,
@@ -462,6 +463,153 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                     ),
                     {"other": self.user_two},
                 )
+
+    def test_user_data_export_snapshot_is_owner_scoped_and_omits_internal_material(self) -> None:
+        with self.admin_engine.begin() as connection:
+            resume_one = connection.scalar(
+                text(
+                    "INSERT INTO careertrellis.base_resumes "
+                    "(owner_user_id, name, content, evidence) "
+                    "VALUES (:owner, 'One Resume', 'one private resume', "
+                    "'{\"skills\":\"One\"}'::jsonb) RETURNING id"
+                ),
+                {"owner": self.user_one},
+            )
+            resume_two = connection.scalar(
+                text(
+                    "INSERT INTO careertrellis.base_resumes "
+                    "(owner_user_id, name, content, evidence) "
+                    "VALUES (:owner, 'Two Resume', 'two private resume', "
+                    "'{\"skills\":\"Two\"}'::jsonb) RETURNING id"
+                ),
+                {"owner": self.user_two},
+            )
+            connection.execute(
+                text(
+                    "UPDATE careertrellis.profiles SET active_base_resume_id = :resume "
+                    "WHERE owner_user_id = :owner"
+                ),
+                {"resume": resume_one, "owner": self.user_one},
+            )
+            connection.execute(
+                text(
+                    "UPDATE careertrellis.profiles SET active_base_resume_id = :resume "
+                    "WHERE owner_user_id = :owner"
+                ),
+                {"resume": resume_two, "owner": self.user_two},
+            )
+            for owner, resume, job, marker in (
+                (self.user_one, resume_one, self.job_one, "one"),
+                (self.user_two, resume_two, self.job_two, "two"),
+            ):
+                connection.execute(
+                    text(
+                        "INSERT INTO careertrellis.base_resume_versions "
+                        "(owner_user_id, base_resume_id, version_number, name, resume_mode, "
+                        " content, evidence) VALUES "
+                        "(:owner, :resume, 1, :name, 'general_professional', :content, '{}'::jsonb)"
+                    ),
+                    {
+                        "owner": owner,
+                        "resume": resume,
+                        "name": f"{marker} version",
+                        "content": f"{marker} version content",
+                    },
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO careertrellis.saved_searches "
+                        "(owner_user_id, name, keywords) VALUES (:owner, :name, :keywords)"
+                    ),
+                    {"owner": owner, "name": f"{marker} search", "keywords": marker},
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO careertrellis.applications "
+                        "(owner_user_id, job_id, company, position, tailored_resume_text, "
+                        " cover_letter, submission_evidence, notes, interview_prep) VALUES "
+                        "(:owner, :job, :company, :position, :resume_text, :letter, "
+                        " :evidence, :notes, :prep)"
+                    ),
+                    {
+                        "owner": owner,
+                        "job": job,
+                        "company": f"{marker} company",
+                        "position": f"{marker} position",
+                        "resume_text": f"{marker} tailored resume",
+                        "letter": f"{marker} cover letter",
+                        "evidence": json.dumps({"marker": marker}),
+                        "notes": f"{marker} application notes",
+                        "prep": f"{marker} interview prep",
+                    },
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO careertrellis.application_status_history "
+                        "(owner_user_id, job_id, from_status, to_status, source, notes) "
+                        "VALUES (:owner, :job, 'matched', 'applied', 'manual', :notes)"
+                    ),
+                    {"owner": owner, "job": job, "notes": f"{marker} history"},
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO careertrellis.application_engagements "
+                        "(owner_user_id, job_id, engagement_type, name, notes) "
+                        "VALUES (:owner, :job, 'recruiter', :name, :notes)"
+                    ),
+                    {"owner": owner, "job": job, "name": f"{marker} recruiter", "notes": marker},
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO careertrellis.job_suppressions "
+                        "(owner_user_id, url_fingerprint, hostname, company, title, deletion_source) "
+                        "VALUES (:owner, :fingerprint, 'example.test', :company, :title, 'manual_delete')"
+                    ),
+                    {
+                        "owner": owner,
+                        "fingerprint": f"private-{marker}-fingerprint",
+                        "company": f"{marker} suppressed company",
+                        "title": f"{marker} suppressed title",
+                    },
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO careertrellis.source_diagnostics "
+                        "(owner_user_id, provider, diagnostic_code, counters) "
+                        "VALUES (:owner, 'lever', 'format_drift', CAST(:counters AS jsonb))"
+                    ),
+                    {"owner": owner, "counters": json.dumps({"marker": marker})},
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO careertrellis.headquarters_cache "
+                        "(owner_user_id, cache_key, provider, address, country_code) "
+                        "VALUES (:owner, :cache_key, 'openstreetmap', :address, 'us')"
+                    ),
+                    {
+                        "owner": owner,
+                        "cache_key": f"private-{marker}-cache-key",
+                        "address": f"private {marker} cached address",
+                    },
+                )
+
+        snapshot_one = PostgreSQLUserDataExportRepository(
+            self.user_one, engine=self.runtime_engine
+        ).snapshot()
+        snapshot_two = PostgreSQLUserDataExportRepository(
+            self.user_two, engine=self.runtime_engine
+        ).snapshot()
+
+        encoded_one = json.dumps(snapshot_one)
+        self.assertEqual(["Tenant One"], [row["name"] for row in snapshot_one["profile"]])
+        self.assertEqual(["One Job"], [row["title"] for row in snapshot_one["jobs"]])
+        self.assertEqual(["Tenant Two"], [row["name"] for row in snapshot_two["profile"]])
+        self.assertIn("one private resume", encoded_one)
+        self.assertNotIn("two private resume", encoded_one)
+        self.assertNotIn("owner_user_id", encoded_one)
+        self.assertNotIn("private-one-fingerprint", encoded_one)
+        self.assertNotIn("private-one-cache-key", encoded_one)
+        self.assertNotIn("private one cached address", encoded_one)
 
     def test_base_resume_soft_delete_is_available_and_tenant_isolated(self) -> None:
         with tenant_transaction(self.runtime_engine, self.user_one) as connection:
