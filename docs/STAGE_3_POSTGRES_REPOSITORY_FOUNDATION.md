@@ -73,11 +73,15 @@ The lifecycle write slice adds atomic owner-scoped job/application lifecycle
 transitions and latest-change undo. Its bounded transaction contract is in
 `STAGE_3_POSTGRES_LIFECYCLE_WRITES.md`.
 
+The posting-verification slice adds owner-scoped active refresh and expiry
+writes, including atomic application closure for pre-application states. Its
+bounded transaction contract is in `STAGE_3_POSTGRES_VERIFICATION_WRITES.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
-- posting verification, expiry changes, cleanup, archive/restore, and permanent
-  deletion after initial score completion;
+- cleanup, archive/restore, and permanent deletion after initial score
+  completion;
 - durable saved-search claiming, retry, and background-worker execution;
 - suppression creation coupled to permanent job deletion;
 - application operations outside the converted lifecycle transition, plus

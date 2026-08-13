@@ -55,8 +55,8 @@ writable SQLite is forbidden. This slice does not reach that boundary.
 
 This slice does not convert or authorize:
 
-- posting verification, expiry updates, archive/restore, cleanup, or permanent
-  deletion after initial score completion;
+- archive/restore, cleanup, or permanent deletion after initial score
+  completion;
 - suppression creation coupled to permanent job deletion;
 - applications, engagements, interview preparation, or follow-up data;
 - tailoring, generated-material creation/replacement/download/deletion, or
@@ -74,6 +74,10 @@ catalog result and its initial score completion.
 Atomic lifecycle transitions and undo are handled by the next bounded slice in
 `STAGE_3_POSTGRES_LIFECYCLE_WRITES.md`; they remain separate from catalog
 creation and initial scoring.
+
+Posting refresh and expiry writes are handled by
+`STAGE_3_POSTGRES_VERIFICATION_WRITES.md`, including the coupled closure of a
+pre-application application row.
 
 ## Verification gates
 

@@ -110,6 +110,10 @@ from searcher import (
 )
 from utils import generate_resume_pdf, resume_pdf_metadata
 from lifecycle_repository import MAX_LIFECYCLE_NOTES_CHARS, runtime_lifecycle_repository
+from verification_repository import (
+    VerificationTargetChanged,
+    runtime_verification_repository,
+)
 from job_cleanup import apply_cleanup, cleanup_preview
 from job_suppressions import record_job_suppression
 from job_filters import derive_job_filter_facets
@@ -1780,14 +1784,18 @@ def verify_job_posting(
 
 def _verify_job_posting(job_id: int, operation: OperationToken) -> dict:
     operation.checkpoint()
-    conn = get_db_connection()
-    job = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-    conn.close()
-    if not job:
+    repository = runtime_verification_repository(
+        sqlite_connection_factory=get_db_connection
+    )
+    try:
+        target = repository.get_verification_target(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Job not found.") from exc
+    if not target:
         raise HTTPException(status_code=404, detail="Job not found.")
 
-    checked_at = datetime.now().isoformat(timespec="seconds")
-    outcome = inspect_job_posting(job["url"], cancel_check=operation.checkpoint)
+    checked_at = datetime.now(timezone.utc)
+    outcome = inspect_job_posting(target["url"], cancel_check=operation.checkpoint)
     operation.checkpoint()
     details = outcome["details"]
     if not details and outcome.get("status") != "stale":
@@ -1795,31 +1803,17 @@ def _verify_job_posting(job_id: int, operation: OperationToken) -> dict:
             status_code=503,
             detail="The posting could not be verified because its source was unavailable or unreadable. No job status was changed.",
         )
-    conn = get_db_connection()
-    if details:
-        conn.execute("""
-            UPDATE jobs SET title = ?, company = ?, description = ?, location = ?,
-                work_arrangement = ?, employment_type = ?, compensation = ?, source = ?,
-                last_checked_at = ?, is_expired = 0, expiration_reason = NULL
-            WHERE id = ?
-        """, (
-            details["title"], details["company"], details["description"], details.get("location", ""),
-            details.get("work_arrangement", ""), details.get("employment_type", ""),
-            details.get("compensation", ""), details.get("source", ""), checked_at, job_id,
-        ))
-        result = {"success": True, "expired": False, "message": "Listing is still active."}
-    else:
-        next_status = "closed" if job["status"] in {"matched", "tailored", "form_filled", "submitted"} else job["status"]
-        conn.execute("""
-            UPDATE jobs SET status = ?, last_checked_at = ?, is_expired = 1,
-                expiration_reason = 'Source reports posting is no longer published'
-            WHERE id = ?
-        """, (next_status, checked_at, job_id))
-        if next_status == "closed":
-            conn.execute("UPDATE applications SET status = 'closed' WHERE job_id = ?", (job_id,))
-        result = {"success": True, "expired": True, "message": "Listing appears closed or unavailable."}
-    conn.commit()
-    conn.close()
+    try:
+        result = repository.apply_verification(
+            job_id,
+            expected_url=target["url"],
+            details=details or None,
+            checked_at=checked_at,
+        )
+    except VerificationTargetChanged as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
     return result
 
 @app.post("/api/jobs/search")
