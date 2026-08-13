@@ -579,6 +579,78 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 )
             )
 
+    def test_provider_context_profiles_are_owner_isolated_for_validation_ocr_and_import(self) -> None:
+        owner_one = PostgreSQLProfileRepository(self.user_one, engine=self.runtime_engine)
+        owner_two = PostgreSQLProfileRepository(self.user_two, engine=self.runtime_engine)
+
+        def profile_values(
+            name: str,
+            resume_text: str,
+            ai_provider: str,
+            ai_model: str,
+            maps_provider: str,
+        ) -> dict:
+            return {
+                "name": name,
+                "email": f"{name.lower().replace(' ', '-')}@example.test",
+                "phone": "",
+                "github": "",
+                "linkedin": "",
+                "website": "",
+                "base_resume_id": None,
+                "base_resume_id_provided": False,
+                "base_resume_name": f"{name} Resume",
+                "base_resume_text": resume_text,
+                "professional_evidence": {},
+                "resume_mode": "general_professional",
+                "ai_provider": ai_provider,
+                "ai_model": ai_model,
+                "maps_provider": maps_provider,
+                "prefer_us_headquarters": False,
+                "interface_language": "en",
+            }
+
+        saved_one = owner_one.update_profile(
+            profile_values(
+                "Tenant One",
+                "Owner one synthetic resume for OCR and manual import matching",
+                "openai",
+                "gpt-5-mini",
+                "google",
+            )
+        )
+        saved_two = owner_two.update_profile(
+            profile_values(
+                "Tenant Two",
+                "Owner two synthetic resume for OCR and manual import matching",
+                "gemini",
+                "gemini-2.5-flash",
+                "openstreetmap",
+            )
+        )
+
+        profile_one = owner_one.get_profile()
+        profile_two = owner_two.get_profile()
+        self.assertEqual("openai", profile_one["ai_provider"])
+        self.assertEqual("gpt-5-mini", profile_one["ai_model"])
+        self.assertEqual("google", profile_one["maps_provider"])
+        self.assertEqual(
+            "Owner one synthetic resume for OCR and manual import matching",
+            profile_one["base_resume_text"],
+        )
+        self.assertEqual("gemini", profile_two["ai_provider"])
+        self.assertEqual("gemini-2.5-flash", profile_two["ai_model"])
+        self.assertEqual("openstreetmap", profile_two["maps_provider"])
+        self.assertEqual(
+            "Owner two synthetic resume for OCR and manual import matching",
+            profile_two["base_resume_text"],
+        )
+        self.assertNotEqual(saved_one["base_resume_id"], saved_two["base_resume_id"])
+        with self.assertRaises(BaseResumeNotFound):
+            owner_one.get_base_resume(saved_two["base_resume_id"])
+        with self.assertRaises(BaseResumeNotFound):
+            owner_two.get_base_resume(saved_one["base_resume_id"])
+
     def test_discovery_repository_is_owner_scoped_and_privacy_minimized(self) -> None:
         owner_one = PostgreSQLDiscoveryRepository(self.user_one, engine=self.runtime_engine)
         owner_two = PostgreSQLDiscoveryRepository(self.user_two, engine=self.runtime_engine)

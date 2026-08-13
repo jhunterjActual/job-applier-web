@@ -91,12 +91,20 @@ The application-read slice adds the owner-scoped Application Logs projection
 and private in-process outcome insight aggregation. Its response-minimization
 contract is in `STAGE_3_POSTGRES_APPLICATION_READS.md`.
 
+The provider-context slice routes AI/maps capability validation, explicitly
+consented resume OCR, and manual-import scoring through the authenticated
+owner's existing profile and encrypted-secret boundaries. Its transaction and
+data-minimization contract is in
+`STAGE_3_POSTGRES_PROVIDER_CONTEXT_READS.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
 - deletion of jobs with applications, lifecycle history, generated materials,
   stored objects, or other protected dependent records;
-- durable saved-search claiming, retry, and background-worker execution;
+- search execution's remaining profile keyword-cache write and job/suppression
+  reads, plus durable saved-search claiming, retry, and background-worker
+  execution;
 - any application operation outside the converted lifecycle, engagement,
   interview-preparation, record-list, and insight repository boundaries;
 - headquarters cache entries and any unconverted job-domain reads;
@@ -109,7 +117,8 @@ converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
   credential.
 
 Provider secrets and stored-object metadata already have PostgreSQL/RLS
-boundaries, but their application flows must be verified again with the final
+boundaries. The four provider-context consumers use the encrypted secret
+boundary, but all application flows must be verified again with the final
 repository implementation. The current worker is an idle heartbeat scaffold;
 do not give it the web keyrings or R2 credential merely for symmetry.
 

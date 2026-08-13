@@ -70,6 +70,13 @@ Search-provider network execution and process-global search state remain
 outside the repository transaction. This slice persists only the accepted job
 catalog result and its initial score completion.
 
+The later provider-context slice routes the manual-import scoring profile and
+credential reads through the authenticated owner's existing repositories. The
+reviewed job is saved before the external provider call, and successful match
+completion remains a separate owner-scoped job-catalog transaction. That
+consumer contract is documented in
+`STAGE_3_POSTGRES_PROVIDER_CONTEXT_READS.md`.
+
 Atomic lifecycle transitions and undo are handled by the next bounded slice in
 `STAGE_3_POSTGRES_LIFECYCLE_WRITES.md`; they remain separate from catalog
 creation and initial scoring.
