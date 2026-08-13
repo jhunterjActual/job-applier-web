@@ -45,9 +45,14 @@ from application_workspace_repository import (
     runtime_application_workspace_repository,
 )
 from data_export import build_user_data_export
+from user_data_export_repository import (
+    EXPORT_UNAVAILABLE_MESSAGE,
+    runtime_user_data_export_repository,
+)
 from database import get_db_connection, init_db
 from data_store import (
     LOCAL_DATA_STORE,
+    SHARED_DATA_STORE,
     check_data_store_ready,
     data_store_kind,
     validate_data_store_configuration,
@@ -186,6 +191,10 @@ BACKUP_RESTORE_LOCK = Lock()
 TRUSTED_PROXY_TOKEN_HEADER = "x-careertrellis-proxy-token"
 PUBLIC_SHARED_HOST_PATHS = frozenset(
     {"/health/live", "/health/ready", "/auth/login", "/auth/callback"}
+)
+FULL_BACKUP_PATHS = frozenset({"/api/full-backup", "/api/full-backup/restore"})
+SHARED_BACKUP_RESTORE_DETAIL = (
+    "In-app full backup and restore are unavailable in shared mode."
 )
 
 initialize_sentry(APP_BUILD)
@@ -329,6 +338,12 @@ def _unauthenticated_response(request: Request, clear_cookie: bool = False) -> R
     return _secured_response(request, response)
 
 
+def _require_local_backup_restore() -> None:
+    """Keep SQLite workspace archives out of PostgreSQL-authoritative runtimes."""
+    if data_store_kind() == SHARED_DATA_STORE:
+        raise HTTPException(status_code=409, detail=SHARED_BACKUP_RESTORE_DETAIL)
+
+
 @app.middleware("http")
 async def protect_local_browser_boundary(request: Request, call_next):
     """Enforce the configured browser boundary and prevent direct origin access."""
@@ -352,6 +367,14 @@ async def protect_local_browser_boundary(request: Request, call_next):
         source = origin or referer
         if source and not _same_origin(source, request_authority, request.url.scheme):
             return JSONResponse({"detail": "Request origin does not match this app."}, status_code=403)
+
+    # Record the selected storage policy before any route/body handling, but
+    # preserve the normal private-route authentication boundary below.
+    shared_backup_restore_requested = (
+        request.method.upper() == "POST"
+        and request.url.path in FULL_BACKUP_PATHS
+        and data_store_kind() == SHARED_DATA_STORE
+    )
 
     auth_settings = None
     if request.url.path not in {"/health/live", "/health/ready"}:
@@ -394,7 +417,16 @@ async def protect_local_browser_boundary(request: Request, call_next):
         owner_context_token = set_current_owner_user_id(local_user_id)
 
     try:
-        response = await call_next(request)
+        if shared_backup_restore_requested:
+            # An authenticated shared request is rejected before call_next, so
+            # FastAPI never parses a restore upload or creates an UploadFile.
+            response = JSONResponse(
+                {"detail": SHARED_BACKUP_RESTORE_DETAIL},
+                status_code=409,
+                headers={"Cache-Control": "no-store"},
+            )
+        else:
+            response = await call_next(request)
     finally:
         if owner_context_token is not None:
             reset_current_owner_user_id(owner_context_token)
@@ -1448,20 +1480,34 @@ def get_source_diagnostic_history(limit: int = 100) -> JSONResponse:
 
 @app.get("/api/data-export")
 def export_user_data() -> StreamingResponse:
-    """Download an explicit local-data export without credentials or host paths."""
-    conn = get_db_connection()
+    """Download the authenticated owner's explicit portable-data export."""
+    try:
+        snapshot = runtime_user_data_export_repository(
+            sqlite_connection_factory=get_db_connection
+        ).snapshot()
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail=EXPORT_UNAVAILABLE_MESSAGE,
+        ) from None
+
+    # The repository transaction and connection are closed before public-shape
+    # serialization starts and before the response iterator can yield bytes.
     try:
         payload = build_user_data_export(
-            conn,
+            snapshot,
             exported_at=datetime.now().isoformat(timespec="seconds"),
             application_build=APP_BUILD,
         )
-    finally:
-        conn.close()
+        content = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail=EXPORT_UNAVAILABLE_MESSAGE,
+        ) from None
     filename = f"career-trellis-user-data-{date.today().isoformat()}.json"
-    content = json.JSONEncoder(ensure_ascii=False, indent=2).iterencode(payload)
     return StreamingResponse(
-        content=content,
+        content=iter((content,)),
         media_type="application/json",
         headers={
             "Cache-Control": "no-store",
@@ -1485,6 +1531,7 @@ def download_full_backup(
     operation_id: Optional[str] = Header(default=None, alias="X-CareerTrellis-Operation"),
 ):
     """Create an authenticated encrypted download of the database and generated materials."""
+    _require_local_backup_restore()
     if not BACKUP_RESTORE_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Another backup or restore is already in progress.")
     operation = start_operation(operation_id)
@@ -1547,6 +1594,14 @@ async def restore_full_backup(
     operation_id: Optional[str] = Header(default=None, alias="X-CareerTrellis-Operation"),
 ) -> dict:
     """Restore a validated full backup and retain the replaced workspace for recovery."""
+    try:
+        _require_local_backup_restore()
+    except HTTPException:
+        # Normal HTTP traffic is rejected by middleware before an UploadFile is
+        # created. Direct/internal callers that already own one still receive
+        # the same fixed response without leaking its underlying file handle.
+        await file.close()
+        raise
     if not confirm_replace:
         await file.close()
         raise HTTPException(status_code=400, detail="Confirm that the current workspace will be replaced.")
@@ -1814,11 +1869,19 @@ def search_jobs(
             if req.save_search:
                 search_keywords = saved["keywords"]
                 search_location = saved["location"]
-                search_run_repository.update_queued_request(
-                    run_id, search_keywords, search_location
-                )
-    except Exception:
-        search_run_repository.abandon_queued(run_id)
+        search_run_repository.publish_prepared(
+            run_id, search_keywords, search_location
+        )
+    except Exception as exc:
+        try:
+            search_run_repository.abandon_prepared(run_id)
+        except Exception:
+            pass
+        if isinstance(exc, SearchRunUnavailable):
+            raise HTTPException(
+                status_code=503,
+                detail="The job search could not be queued.",
+            ) from exc
         raise
     if data_store_kind() == LOCAL_DATA_STORE:
         background_tasks.add_task(run_local_search_run, run_id)

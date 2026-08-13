@@ -9,7 +9,7 @@ Type=simple
 User=careertrellis
 Group=careertrellis
 WorkingDirectory=/opt/careertrellis/staging/current/backend
-EnvironmentFile=/etc/careertrellis/staging.env
+EnvironmentFile=/etc/careertrellis/search-worker.env
 EnvironmentFile=/etc/careertrellis/postgres-worker.env
 EnvironmentFile=/etc/careertrellis/provider-secrets.env
 Environment=PYTHONDONTWRITEBYTECODE=1

@@ -28,7 +28,7 @@ def upgrade() -> None:
         sa.Column("operation_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("keywords", sa.String(length=500), nullable=False),
         sa.Column("location", sa.String(length=240), nullable=False, server_default=""),
-        sa.Column("status", sa.String(length=24), nullable=False, server_default="queued"),
+        sa.Column("status", sa.String(length=24), nullable=False, server_default="preparing"),
         sa.Column("result_json", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("error_code", sa.String(length=64), nullable=True),
         sa.Column("attempts", sa.SmallInteger(), nullable=False, server_default="0"),
@@ -41,7 +41,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.CheckConstraint("status IN ('queued','running','cancel_requested','succeeded','failed','cancelled')", name="ck_search_runs_status"),
+        sa.CheckConstraint("status IN ('preparing','queued','running','cancel_requested','succeeded','failed','cancelled')", name="ck_search_runs_status"),
         sa.CheckConstraint("attempts >= 0 AND max_attempts BETWEEN 1 AND 10 AND attempts <= max_attempts", name="ck_search_runs_attempts"),
         sa.CheckConstraint("octet_length(keywords) <= 2000 AND octet_length(location) <= 960", name="ck_search_runs_request_bytes"),
         sa.CheckConstraint("result_json IS NULL OR octet_length(result_json::text) <= 16384", name="ck_search_runs_result_bytes"),
@@ -56,7 +56,7 @@ def upgrade() -> None:
         ["owner_user_id"],
         unique=True,
         schema=SCHEMA,
-        postgresql_where=sa.text("status IN ('queued','running','cancel_requested')"),
+        postgresql_where=sa.text("status IN ('preparing','queued','running','cancel_requested')"),
     )
     op.create_index(
         "idx_search_runs_owner_recent",

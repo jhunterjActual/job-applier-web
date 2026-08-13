@@ -16,21 +16,24 @@ switch is accidentally enabled. Do not set either activation control, import
 the permanent SQLite source, change data authority, restart staging for this
 slice, or enable public access.
 
-The worker unit loads only its dedicated `careertrellis_worker` PostgreSQL
-credential and the existing encrypted provider-secret keyring in addition to
-the common staging environment. It does not receive the web runtime database
+The worker unit loads a dedicated non-web runtime environment, its dedicated
+`careertrellis_worker` PostgreSQL credential, and the existing encrypted
+provider-secret keyring. It does not receive the common staging environment,
+WorkOS or cookie secrets, proxy token, web runtime database
 credential, migration credential, object-storage/R2 credential, or object
 keyring. Provider keys remain encrypted per owner in PostgreSQL and are loaded
 only after the claimed owner is bound in trusted server context.
 
 ## Owner and transaction boundary
 
-`POST /api/jobs/search` first inserts one owner-scoped queued run. The partial
-unique index permits only one `queued`, `running`, or `cancel_requested` run
-per owner. Saved-search bookkeeping and any normalized queued-request update
-use separate short transactions. Local mode schedules an in-process task only
-after those writes close; selected shared mode leaves the durable run for the
-worker.
+`POST /api/jobs/search` first reserves one owner-scoped `preparing` run. The
+partial unique index permits only one `preparing`, `queued`, `running`, or
+`cancel_requested` run per owner. The claim broker ignores `preparing` rows.
+After saved-search bookkeeping succeeds, one short owner transaction updates
+the normalized request and publishes the run as `queued`; any preparation
+failure deletes only that still-unpublished row. Local mode schedules an
+in-process task only after publication; selected shared mode leaves the durable
+run for the worker.
 
 Status, cleanup gating, and cancellation derive ownership only from the
 authenticated request context. They never accept an owner ID from a header,
@@ -76,8 +79,8 @@ URLs, prompts, posting/resume content, credentials, WorkOS IDs, raw exceptions,
 SQL, database URLs, worker IDs, and lease tokens are not stored in that result
 or returned by the status route.
 
-Statuses are `queued`, `running`, `cancel_requested`, `succeeded`, `failed`,
-and `cancelled`. Queued cancellation is immediately terminal. Running
+Statuses are `preparing`, `queued`, `running`, `cancel_requested`, `succeeded`,
+`failed`, and `cancelled`. Preparing or queued cancellation is immediately terminal. Running
 cancellation becomes durable and is observed at the next existing safe search
 checkpoint. Jobs committed before that checkpoint remain committed.
 
@@ -133,7 +136,8 @@ or additional users.
 - [ ] Local tests prove owner isolation, one-active-run enforcement, queued and
       running cancellation, minimized results, stale-lease rejection, crash
       retry, and two-worker single-claim behavior.
-- [ ] Route tests prove enqueue precedes background scheduling, shared mode
+- [ ] Route tests prove a preparing reservation precedes saved-search writes,
+      publication precedes background scheduling, shared mode
       does not use an in-process worker, status/cancel/cleanup use durable
       owner-scoped state, and outages fail closed with fixed errors.
 - [ ] Execution tests prove owner context is set only for one claim, reset on

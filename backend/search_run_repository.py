@@ -20,7 +20,7 @@ from postgres_database import runtime_postgres_engine, tenant_transaction
 from provider_secrets import current_owner_user_id
 
 
-ACTIVE_STATUSES = ("queued", "running", "cancel_requested")
+ACTIVE_STATUSES = ("preparing", "queued", "running", "cancel_requested")
 TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
 MAX_KEYWORDS_CHARS = 500
 MAX_LOCATION_CHARS = 240
@@ -65,9 +65,9 @@ class SearchRunClaim:
 class SearchRunRepository(Protocol):
     def enqueue(self, operation_id: object, keywords: object, location: object) -> str: ...
 
-    def update_queued_request(self, run_id: object, keywords: object, location: object) -> None: ...
+    def publish_prepared(self, run_id: object, keywords: object, location: object) -> None: ...
 
-    def abandon_queued(self, run_id: object) -> None: ...
+    def abandon_prepared(self, run_id: object) -> None: ...
 
     def status(self) -> dict[str, object]: ...
 
@@ -211,7 +211,7 @@ class SQLiteSearchRunRepository:
                 INSERT INTO search_runs (
                     id, owner_user_id, operation_id, keywords, location, status,
                     attempts, max_attempts, available_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, 'preparing', 0, ?, ?, ?, ?)
                 """,
                 (run_id, self._owner_user_id, operation, query, place, MAX_ATTEMPTS, now, now, now),
             )
@@ -222,36 +222,44 @@ class SQLiteSearchRunRepository:
             if "search_runs.owner_user_id" in str(exc) or "idx_search_runs_owner_active" in str(exc):
                 raise SearchRunAlreadyActive() from exc
             raise SearchRunUnavailable() from exc
+        except SearchRunUnavailable:
+            connection.rollback()
+            raise
         except sqlite3.DatabaseError as exc:
             connection.rollback()
             raise SearchRunUnavailable() from exc
         finally:
             connection.close()
 
-    def update_queued_request(self, run_id: object, keywords: object, location: object) -> None:
+    def publish_prepared(self, run_id: object, keywords: object, location: object) -> None:
         query, place = _request(keywords, location)
-        self._update_queued(_uuid(run_id, "run ID"), query, place, abandon=False)
+        self._finish_preparation(_uuid(run_id, "run ID"), query, place, abandon=False)
 
-    def abandon_queued(self, run_id: object) -> None:
-        self._update_queued(_uuid(run_id, "run ID"), "", "", abandon=True)
+    def abandon_prepared(self, run_id: object) -> None:
+        self._finish_preparation(_uuid(run_id, "run ID"), "", "", abandon=True)
 
-    def _update_queued(self, run_id: str, keywords: str, location: str, *, abandon: bool) -> None:
+    def _finish_preparation(self, run_id: str, keywords: str, location: str, *, abandon: bool) -> None:
         connection = self._connection_factory()
         now = datetime.now(timezone.utc).isoformat()
         try:
             if abandon:
                 connection.execute(
                     """DELETE FROM search_runs
-                       WHERE id = ? AND owner_user_id = ? AND status = 'queued'""",
+                       WHERE id = ? AND owner_user_id = ? AND status = 'preparing'""",
                     (run_id, self._owner_user_id),
                 )
             else:
-                connection.execute(
-                    """UPDATE search_runs SET keywords = ?, location = ?, updated_at = ?
-                       WHERE id = ? AND owner_user_id = ? AND status = 'queued'""",
+                cursor = connection.execute(
+                    """UPDATE search_runs SET keywords = ?, location = ?, status = 'queued', updated_at = ?
+                       WHERE id = ? AND owner_user_id = ? AND status = 'preparing'""",
                     (keywords, location, now, run_id, self._owner_user_id),
                 )
+                if cursor.rowcount != 1:
+                    raise SearchRunUnavailable()
             connection.commit()
+        except SearchRunUnavailable:
+            connection.rollback()
+            raise
         except sqlite3.DatabaseError as exc:
             connection.rollback()
             raise SearchRunUnavailable() from exc
@@ -276,7 +284,7 @@ class SQLiteSearchRunRepository:
         connection = self._connection_factory()
         try:
             return connection.execute(
-                "SELECT 1 FROM search_runs WHERE owner_user_id = ? AND status IN ('queued','running','cancel_requested') LIMIT 1",
+                "SELECT 1 FROM search_runs WHERE owner_user_id = ? AND status IN ('preparing','queued','running','cancel_requested') LIMIT 1",
                 (self._owner_user_id,),
             ).fetchone() is not None
         except sqlite3.DatabaseError as exc:
@@ -299,7 +307,7 @@ class SQLiteSearchRunRepository:
             if row is None or row["status"] not in ACTIVE_STATUSES:
                 connection.commit()
                 return False
-            if row["status"] == "queued":
+            if row["status"] in ("preparing", "queued"):
                 connection.execute(
                     "UPDATE search_runs SET status='cancelled', completed_at=?, updated_at=? WHERE id=?",
                     (now, now, row["id"]),
@@ -463,8 +471,8 @@ class PostgreSQLSearchRunRepository:
                 )
                 return str(connection.scalar(text("""
                     INSERT INTO careertrellis.search_runs
-                        (owner_user_id, operation_id, keywords, location)
-                    VALUES (:owner, CAST(:operation AS uuid), :keywords, :location)
+                        (owner_user_id, operation_id, keywords, location, status)
+                    VALUES (:owner, CAST(:operation AS uuid), :keywords, :location, 'preparing')
                     RETURNING id
                 """), {"owner": self._owner_user_id, "operation": operation, "keywords": query, "location": place}))
         except IntegrityError as exc:
@@ -474,24 +482,28 @@ class PostgreSQLSearchRunRepository:
         except SQLAlchemyError as exc:
             raise SearchRunUnavailable() from exc
 
-    def update_queued_request(self, run_id: object, keywords: object, location: object) -> None:
+    def publish_prepared(self, run_id: object, keywords: object, location: object) -> None:
         query, place = _request(keywords, location)
-        self._update_queued(_uuid(run_id, "run ID"), query, place, abandon=False)
+        self._finish_preparation(_uuid(run_id, "run ID"), query, place, abandon=False)
 
-    def abandon_queued(self, run_id: object) -> None:
-        self._update_queued(_uuid(run_id, "run ID"), "", "", abandon=True)
+    def abandon_prepared(self, run_id: object) -> None:
+        self._finish_preparation(_uuid(run_id, "run ID"), "", "", abandon=True)
 
-    def _update_queued(self, run_id: str, keywords: str, location: str, *, abandon: bool) -> None:
+    def _finish_preparation(self, run_id: str, keywords: str, location: str, *, abandon: bool) -> None:
         try:
             with tenant_transaction(self._engine, self._owner_user_id) as connection:
                 if abandon:
                     connection.execute(text("""DELETE FROM careertrellis.search_runs
                         WHERE id=CAST(:run_id AS uuid) AND owner_user_id=:owner
-                          AND status='queued'"""), {"run_id": run_id, "owner": self._owner_user_id})
+                          AND status='preparing'"""), {"run_id": run_id, "owner": self._owner_user_id})
                 else:
-                    connection.execute(text("""UPDATE careertrellis.search_runs
-                        SET keywords=:keywords, location=:location, updated_at=CURRENT_TIMESTAMP
-                        WHERE id=CAST(:run_id AS uuid) AND owner_user_id=:owner AND status='queued'"""), {"run_id": run_id, "owner": self._owner_user_id, "keywords": keywords, "location": location})
+                    changed = connection.execute(text("""UPDATE careertrellis.search_runs
+                        SET keywords=:keywords, location=:location, status='queued', updated_at=CURRENT_TIMESTAMP
+                        WHERE id=CAST(:run_id AS uuid) AND owner_user_id=:owner AND status='preparing'"""), {"run_id": run_id, "owner": self._owner_user_id, "keywords": keywords, "location": location}).rowcount
+                    if changed != 1:
+                        raise SearchRunUnavailable()
+        except SearchRunUnavailable:
+            raise
         except SQLAlchemyError as exc:
             raise SearchRunUnavailable() from exc
 
@@ -510,7 +522,7 @@ class PostgreSQLSearchRunRepository:
             with tenant_transaction(self._engine, self._owner_user_id) as connection:
                 return connection.scalar(text("""SELECT EXISTS (
                     SELECT 1 FROM careertrellis.search_runs WHERE owner_user_id=:owner
-                    AND status IN ('queued','running','cancel_requested'))"""), {"owner": self._owner_user_id}) is True
+                    AND status IN ('preparing','queued','running','cancel_requested'))"""), {"owner": self._owner_user_id}) is True
         except SQLAlchemyError as exc:
             raise SearchRunUnavailable() from exc
 
@@ -525,7 +537,7 @@ class PostgreSQLSearchRunRepository:
                     {"owner": self._owner_user_id, "operation": operation}).mappings().first()
                 if row is None or row["status"] not in ACTIVE_STATUSES:
                     return False
-                terminal = row["status"] == "queued"
+                terminal = row["status"] in ("preparing", "queued")
                 connection.execute(text("""UPDATE careertrellis.search_runs SET
                     status=:status, completed_at=CASE WHEN :terminal THEN CURRENT_TIMESTAMP ELSE completed_at END,
                     updated_at=CURRENT_TIMESTAMP WHERE id=:run_id AND owner_user_id=:owner"""),

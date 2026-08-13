@@ -40,6 +40,7 @@ import search_run_execution as search_run_execution_module
 import searcher as searcher_module
 import source_diagnostics as source_diagnostics_module
 import sqlite_postgres_import as sqlite_postgres_import_module
+import user_data_export_repository as user_data_export_repository_module
 import worker as worker_module
 import web_auth as web_auth_module
 from application_insights import build_application_insights
@@ -57,6 +58,12 @@ from application_workspace_repository import (
 )
 from application_read_repository import SQLiteApplicationReadRepository
 from data_export import EXPORT_FORMAT, EXPORT_SCHEMA_VERSION, build_user_data_export
+from user_data_export_repository import (
+    EXPORT_UNAVAILABLE_MESSAGE,
+    PostgreSQLUserDataExportRepository,
+    SQLiteUserDataExportRepository,
+    UserDataExportUnavailable,
+)
 from backup_restore import (
     BackupAuthenticationError,
     BackupCompatibilityError,
@@ -1985,6 +1992,24 @@ class DependencyLockTests(unittest.TestCase):
         self.assertNotIn("postgres-worker.env", web_service)
         self.assertIn("postgres-worker.env", worker_service)
         self.assertIn("provider-secrets.env", worker_service)
+        self.assertIn(
+            "EnvironmentFile=/etc/careertrellis/search-worker.env", worker_service
+        )
+        self.assertEqual(
+            {
+                "EnvironmentFile=/etc/careertrellis/search-worker.env",
+                "EnvironmentFile=/etc/careertrellis/postgres-worker.env",
+                "EnvironmentFile=/etc/careertrellis/provider-secrets.env",
+            },
+            {
+                line.strip()
+                for line in worker_service.splitlines()
+                if line.startswith("EnvironmentFile=")
+            },
+        )
+        self.assertNotIn(
+            "EnvironmentFile=/etc/careertrellis/staging.env", worker_service
+        )
         self.assertNotIn("postgres-runtime.env", worker_service)
         self.assertNotIn("object-storage.env", worker_service)
 
@@ -2836,6 +2861,10 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
         repository = Mock()
         search_runs = Mock()
         search_runs.enqueue.return_value = "00000000-0000-4000-8000-000000000101"
+        calls = Mock()
+        calls.attach_mock(search_runs.enqueue, "enqueue")
+        calls.attach_mock(repository.upsert_saved_search, "prepare_saved_search")
+        calls.attach_mock(search_runs.publish_prepared, "publish")
         repository.upsert_saved_search.return_value = {
             "id": 12,
             "keywords": "stored keywords",
@@ -2864,15 +2893,25 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
                 ),
                 background_tasks,
                 request,
+                operation_id=None,
             )
         self.assertTrue(result["success"])
         repository.upsert_saved_search.assert_called_once()
         run_at = repository.upsert_saved_search.call_args.kwargs["run_at"]
         self.assertEqual(timezone.utc, run_at.tzinfo)
-        search_runs.update_queued_request.assert_called_once_with(
+        search_runs.enqueue.assert_called_once_with(
+            None,
+            " submitted ",
+            " submitted place ",
+        )
+        search_runs.publish_prepared.assert_called_once_with(
             "00000000-0000-4000-8000-000000000101",
             "stored keywords",
             "stored location",
+        )
+        self.assertEqual(
+            ["enqueue", "prepare_saved_search", "publish"],
+            [call[0] for call in calls.mock_calls],
         )
         background_tasks.add_task.assert_called_once_with(
             app_module.run_local_search_run,
@@ -2880,6 +2919,8 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
         )
 
         background_tasks.reset_mock()
+        search_runs.reset_mock()
+        search_runs.enqueue.return_value = "00000000-0000-4000-8000-000000000101"
         with (
             patch.object(app_module, "runtime_search_run_repository", return_value=search_runs),
             patch.object(app_module, "data_store_kind", return_value=data_store_module.SHARED_DATA_STORE),
@@ -2889,11 +2930,18 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
                 app_module.SearchRequest(keywords="shared keywords"),
                 background_tasks,
                 request,
+                operation_id=None,
             )
         self.assertTrue(shared_result["success"])
+        search_runs.enqueue.assert_called_once_with(None, "shared keywords", "")
+        search_runs.publish_prepared.assert_called_once_with(
+            "00000000-0000-4000-8000-000000000101", "shared keywords", ""
+        )
         background_tasks.add_task.assert_not_called()
 
         background_tasks.reset_mock()
+        search_runs.reset_mock()
+        search_runs.enqueue.return_value = "00000000-0000-4000-8000-000000000101"
         with (
             patch.object(app_module, "runtime_discovery_repository", return_value=repository),
             patch.object(app_module, "runtime_search_run_repository", return_value=search_runs),
@@ -2908,13 +2956,21 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
                 ),
                 background_tasks,
                 request,
+                operation_id=None,
             )
         repository.advance_saved_search_run.assert_called_once()
         # Preserve the existing route contract: selecting a saved search
         # advances its schedule, while the submitted (possibly edited) query
         # is the one executed. Only a create/upsert replaces the queued query
-        # with repository-normalized values.
-        self.assertEqual(1, search_runs.update_queued_request.call_count)
+        # with repository-normalized values before publication.
+        search_runs.enqueue.assert_called_once_with(
+            None, "edited keywords", "edited location"
+        )
+        search_runs.publish_prepared.assert_called_once_with(
+            "00000000-0000-4000-8000-000000000101",
+            "edited keywords",
+            "edited location",
+        )
         background_tasks.add_task.assert_called_once_with(
             app_module.run_local_search_run,
             "00000000-0000-4000-8000-000000000101",
@@ -2935,12 +2991,92 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
                     app_module.SearchRequest(keywords="ignored", saved_search_id=99),
                     background_tasks,
                     SimpleNamespace(state=SimpleNamespace(local_user_id=42)),
+                    operation_id=None,
                 )
         self.assertEqual(404, raised.exception.status_code)
-        search_runs.abandon_queued.assert_called_once_with(
+        search_runs.enqueue.assert_called_once_with(None, "ignored", "")
+        search_runs.abandon_prepared.assert_called_once_with(
             "00000000-0000-4000-8000-000000000102"
         )
+        search_runs.publish_prepared.assert_not_called()
         background_tasks.add_task.assert_not_called()
+
+    def test_search_route_reserves_before_saved_search_write_and_keeps_enqueue_race_safe(self) -> None:
+        repository = Mock()
+        repository.upsert_saved_search.return_value = {
+            "id": 12,
+            "keywords": "normalized keywords",
+            "location": "Normalized place",
+        }
+        search_runs = Mock()
+        search_runs.enqueue.side_effect = app_module.SearchRunAlreadyActive()
+        background_tasks = Mock()
+        request = SimpleNamespace(state=SimpleNamespace(local_user_id=42))
+        with (
+            patch.object(app_module, "runtime_discovery_repository", return_value=repository),
+            patch.object(app_module, "runtime_search_run_repository", return_value=search_runs),
+        ):
+            raced = app_module.search_jobs(
+                app_module.SearchRequest(
+                    keywords="submitted",
+                    save_search=True,
+                    saved_search_name="Saved",
+                ),
+                background_tasks,
+                request,
+                operation_id=None,
+            )
+
+        self.assertFalse(raced["success"])
+        repository.upsert_saved_search.assert_not_called()
+        search_runs.enqueue.assert_called_once_with(None, "submitted", "")
+        search_runs.publish_prepared.assert_not_called()
+        background_tasks.add_task.assert_not_called()
+
+    def test_search_route_publish_failure_is_fixed_even_when_abandon_fails(self) -> None:
+        private_publish_error = (
+            "postgresql://runtime:secret@private-database.test/careertrellis"
+        )
+        private_abandon_error = "private cleanup path C:/workspace/search-runs.db"
+        operation_id = "00000000-0000-4000-8000-000000000104"
+        run_id = "00000000-0000-4000-8000-000000000105"
+        request = SimpleNamespace(state=SimpleNamespace(local_user_id=42))
+
+        for abandon_side_effect in (None, RuntimeError(private_abandon_error)):
+            with self.subTest(abandon_fails=abandon_side_effect is not None):
+                search_runs = Mock()
+                search_runs.enqueue.return_value = run_id
+                publish_error = app_module.SearchRunUnavailable()
+                publish_error.__cause__ = RuntimeError(private_publish_error)
+                search_runs.publish_prepared.side_effect = publish_error
+                search_runs.abandon_prepared.side_effect = abandon_side_effect
+                background_tasks = Mock()
+                with patch.object(
+                    app_module,
+                    "runtime_search_run_repository",
+                    return_value=search_runs,
+                ):
+                    with self.assertRaises(app_module.HTTPException) as raised:
+                        app_module.search_jobs(
+                            app_module.SearchRequest(keywords="synthetic"),
+                            background_tasks,
+                            request,
+                            operation_id=operation_id,
+                        )
+
+                self.assertEqual(503, raised.exception.status_code)
+                self.assertEqual(
+                    "The job search could not be queued.", raised.exception.detail
+                )
+                self.assertNotIn("private", raised.exception.detail)
+                search_runs.enqueue.assert_called_once_with(
+                    operation_id, "synthetic", ""
+                )
+                search_runs.publish_prepared.assert_called_once_with(
+                    run_id, "synthetic", ""
+                )
+                search_runs.abandon_prepared.assert_called_once_with(run_id)
+                background_tasks.add_task.assert_not_called()
 
     def test_search_status_and_cancel_dispatch_to_durable_repository(self) -> None:
         repository = Mock()
@@ -3735,6 +3871,9 @@ class UserDataExportTests(unittest.TestCase):
                 cache_key TEXT PRIMARY KEY, provider TEXT, address TEXT,
                 country_code TEXT, attribution TEXT, resolved_at TEXT
             );
+            CREATE TABLE stored_objects (
+                id TEXT PRIMARY KEY, object_key TEXT, wrapped_data_key BLOB
+            );
             INSERT INTO profile VALUES (
                 1, 'Export Candidate', 'candidate@example.test', 'Legacy resume',
                 'analyst', 'openai', 'gpt-5-mini', 'openstreetmap', 1, 'es',
@@ -3779,6 +3918,9 @@ class UserDataExportTests(unittest.TestCase):
                 'private-cache-key', 'openstreetmap', 'Private cached address',
                 'us', 'provider', '2026-08-06'
             );
+            INSERT INTO stored_objects VALUES (
+                'private-object-id', 'private-object-key', X'00112233'
+            );
         """)
         connection.commit()
         connection.close()
@@ -3792,15 +3934,12 @@ class UserDataExportTests(unittest.TestCase):
         return connection
 
     def test_export_is_versioned_complete_and_excludes_credentials_and_host_details(self) -> None:
-        connection = self.connection_factory()
-        try:
-            payload = build_user_data_export(
-                connection,
-                exported_at="2026-08-08T12:00:00",
-                application_build="test-build",
-            )
-        finally:
-            connection.close()
+        snapshot = SQLiteUserDataExportRepository(self.connection_factory).snapshot()
+        payload = build_user_data_export(
+            snapshot,
+            exported_at="2026-08-08T12:00:00",
+            application_build="test-build",
+        )
 
         self.assertEqual(EXPORT_FORMAT, payload["format"])
         self.assertEqual(EXPORT_SCHEMA_VERSION, payload["schema_version"])
@@ -3819,10 +3958,106 @@ class UserDataExportTests(unittest.TestCase):
         for forbidden in (
             "gemini-secret", "openai-secret", "maps-secret", "C:/private/resume.pdf",
             "C:/private/cover-letter.txt", "private-url-fingerprint", "private-cache-key",
-            "Private cached address",
+            "Private cached address", "private-object-id", "private-object-key",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, encoded)
+
+        self.assertNotIn("gemini_api_key", snapshot["profile"][0])
+        self.assertNotIn("tailored_resume_path", snapshot["applications"][0])
+        self.assertNotIn("url_fingerprint", snapshot["job_suppressions"][0])
+
+    def test_sqlite_snapshot_is_stably_ordered_and_serializer_does_not_mutate_it(self) -> None:
+        connection = self.connection_factory()
+        connection.execute(
+            "INSERT INTO jobs (id, title, company, url, status) VALUES (?, ?, ?, ?, ?)",
+            (5, "Earlier ID", "Example", "https://jobs.example.test/5", "matched"),
+        )
+        connection.commit()
+        connection.close()
+
+        snapshot = SQLiteUserDataExportRepository(self.connection_factory).snapshot()
+        self.assertEqual([5, 30], [row["id"] for row in snapshot["jobs"]])
+        original_evidence = snapshot["base_resumes"][0]["professional_evidence"]
+
+        first = build_user_data_export(
+            snapshot,
+            exported_at="2026-08-08T12:00:00",
+            application_build="test-build",
+        )
+        second = build_user_data_export(
+            snapshot,
+            exported_at="2026-08-08T12:00:00",
+            application_build="test-build",
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(original_evidence, snapshot["base_resumes"][0]["professional_evidence"])
+        self.assertIsInstance(original_evidence, str)
+
+    def test_export_repository_failure_is_fixed_and_closes_the_sqlite_connection(self) -> None:
+        connection = Mock()
+        connection.execute.side_effect = sqlite3.OperationalError(
+            "private path C:/private/jobapplier.db"
+        )
+
+        with self.assertRaisesRegex(
+            UserDataExportUnavailable, f"^{re.escape(EXPORT_UNAVAILABLE_MESSAGE)}$"
+        ) as raised:
+            SQLiteUserDataExportRepository(lambda: connection).snapshot()
+
+        self.assertNotIn("private", str(raised.exception))
+        connection.rollback.assert_called_once_with()
+        connection.close.assert_called_once_with()
+
+    def test_shared_export_repository_never_falls_back_to_sqlite(self) -> None:
+        sqlite_connection_factory = Mock(side_effect=AssertionError("SQLite fallback"))
+        engine = Mock()
+        with (
+            patch.object(user_data_export_repository_module, "data_store_kind", return_value="postgres"),
+            patch.object(user_data_export_repository_module, "current_owner_user_id", return_value=42),
+        ):
+            repository = user_data_export_repository_module.runtime_user_data_export_repository(
+                sqlite_connection_factory=sqlite_connection_factory,
+                engine=engine,
+            )
+
+        self.assertIsInstance(repository, PostgreSQLUserDataExportRepository)
+        self.assertEqual(42, repository._owner_user_id)
+        self.assertIs(engine, repository._engine)
+        sqlite_connection_factory.assert_not_called()
+
+    def test_postgres_export_uses_one_owner_bound_statement_and_closes_transaction(self) -> None:
+        raw_snapshot = {table: [] for table in user_data_export_repository_module.EXPORT_FIELDS}
+        raw_snapshot["profile"] = [{"id": 1, "name": "Owner"}]
+        connection = Mock()
+        connection.execute.return_value.scalar_one.return_value = raw_snapshot
+        engine = Mock()
+
+        with patch.object(
+            user_data_export_repository_module, "tenant_transaction"
+        ) as transaction:
+            transaction.return_value.__enter__.return_value = connection
+            snapshot = PostgreSQLUserDataExportRepository(42, engine=engine).snapshot()
+
+        transaction.assert_called_once_with(engine, 42)
+        transaction.return_value.__exit__.assert_called_once()
+        connection.execute.assert_called_once()
+        statement, parameters = connection.execute.call_args.args
+        statement_text = str(statement)
+        self.assertEqual({"owner_user_id": 42}, parameters)
+        self.assertGreaterEqual(
+            statement_text.count("WHERE owner_user_id = :owner_user_id"),
+            9,
+        )
+        self.assertIn("WHERE p.owner_user_id = :owner_user_id", statement_text)
+        for forbidden in (
+            "provider_secrets", "stored_objects", "headquarters_cache",
+            "url_fingerprint", "tailored_resume_object_id", "cover_letter_object_id",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, statement_text)
+        self.assertEqual("Owner", snapshot["profile"][0]["name"])
 
     def test_export_endpoint_downloads_pretty_json_without_browser_caching(self) -> None:
         client = TestClient(app_module.app, base_url="http://127.0.0.1:8001")
@@ -3841,6 +4076,98 @@ class UserDataExportTests(unittest.TestCase):
             r'^attachment; filename="career-trellis-user-data-\d{4}-\d{2}-\d{2}\.json"$',
         )
         self.assertIn('\n  "schema_version": 3,', response.text)
+
+    def test_export_endpoint_closes_repository_scope_before_serialization(self) -> None:
+        connection_state = {"closed": False}
+
+        def tracked_connection_factory():
+            real_connection = self.connection_factory()
+
+            class TrackedConnection:
+                def __getattr__(self, name: str):
+                    return getattr(real_connection, name)
+
+                def close(self) -> None:
+                    connection_state["closed"] = True
+                    real_connection.close()
+
+            return TrackedConnection()
+
+        real_serializer = app_module.build_user_data_export
+
+        def serialize_after_close(*args, **kwargs):
+            self.assertTrue(connection_state["closed"])
+            return real_serializer(*args, **kwargs)
+
+        client = TestClient(app_module.app, base_url="http://127.0.0.1:8001")
+        try:
+            with (
+                patch.object(
+                    app_module,
+                    "runtime_user_data_export_repository",
+                    return_value=SQLiteUserDataExportRepository(tracked_connection_factory),
+                ),
+                patch.object(
+                    app_module,
+                    "build_user_data_export",
+                    side_effect=serialize_after_close,
+                ),
+            ):
+                response = client.get("/api/data-export")
+        finally:
+            client.close()
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(connection_state["closed"])
+
+    def test_export_endpoint_returns_only_fixed_error_on_repository_failure(self) -> None:
+        client = TestClient(app_module.app, base_url="http://127.0.0.1:8001")
+        repository = Mock()
+        repository.snapshot.side_effect = RuntimeError(
+            "postgresql://private-user:private-password@database.internal/private"
+        )
+        try:
+            with patch.object(
+                app_module,
+                "runtime_user_data_export_repository",
+                return_value=repository,
+            ):
+                response = client.get("/api/data-export")
+        finally:
+            client.close()
+
+        self.assertEqual(503, response.status_code)
+        self.assertEqual(EXPORT_UNAVAILABLE_MESSAGE, response.json()["detail"])
+        self.assertNotIn("private-password", response.text)
+
+    def test_export_endpoint_validates_json_before_starting_the_response(self) -> None:
+        repository = Mock()
+        repository.snapshot.return_value = {
+            "profile": [{"id": 1, "name": object()}],
+            "base_resumes": [],
+            "base_resume_versions": [],
+            "jobs": [],
+            "saved_searches": [],
+            "applications": [],
+            "application_lifecycle_history": [],
+            "application_engagements": [],
+            "job_suppressions": [],
+            "source_diagnostics": [],
+        }
+        client = TestClient(app_module.app, base_url="http://127.0.0.1:8001")
+        try:
+            with patch.object(
+                app_module,
+                "runtime_user_data_export_repository",
+                return_value=repository,
+            ):
+                response = client.get("/api/data-export")
+        finally:
+            client.close()
+
+        self.assertEqual(503, response.status_code)
+        self.assertEqual(EXPORT_UNAVAILABLE_MESSAGE, response.json()["detail"])
+        self.assertNotIn("object at", response.text)
 
 
 class EncryptedFullBackupTests(unittest.TestCase):
@@ -4039,7 +4366,10 @@ class EncryptedFullBackupTests(unittest.TestCase):
         database_path = data_directory / "jobapplier.db"
         database_path.write_bytes(b"placeholder")
 
+        temporary_backups = []
+
         def fake_backup(destination, *_args, **_kwargs):
+            temporary_backups.append(Path(destination))
             Path(destination).write_bytes(b"authenticated backup")
             return unittest.mock.Mock(material_file_count=2, warning_count=0)
 
@@ -4061,6 +4391,8 @@ class EncryptedFullBackupTests(unittest.TestCase):
             self.assertEqual(b"authenticated backup", response.content)
             self.assertEqual("no-store", response.headers["cache-control"])
             self.assertIn("career-trellis-full-backup-", response.headers["content-disposition"])
+            self.assertEqual(1, len(temporary_backups))
+            self.assertFalse(temporary_backups[0].exists())
 
             response = client.post(
                 "/api/full-backup/restore",
@@ -4085,6 +4417,285 @@ class EncryptedFullBackupTests(unittest.TestCase):
             self.assertTrue(restore_mock.called)
         finally:
             client.close()
+
+    def test_local_restore_rejection_closes_the_uploaded_file(self) -> None:
+        upload = app_module.UploadFile(
+            file=io.BytesIO(b"synthetic encrypted backup"),
+            filename="workspace.ctbackup",
+        )
+        with (
+            patch.object(app_module, "data_store_kind", return_value=data_store_module.LOCAL_DATA_STORE),
+            self.assertRaises(app_module.HTTPException) as raised,
+        ):
+            asyncio.run(
+                app_module.restore_full_backup(
+                    file=upload,
+                    password=self.PASSWORD,
+                    confirm_replace=False,
+                    operation_id=None,
+                )
+            )
+
+        self.assertEqual(400, raised.exception.status_code)
+        self.assertTrue(upload.file.closed)
+
+    def test_unauthenticated_shared_backup_routes_keep_private_auth_boundary(self) -> None:
+        proxy_token = "synthetic-shared-proxy-token"
+        unauthenticated = web_auth_module.SessionAuthentication(
+            status="unauthenticated"
+        )
+        local_lock = Mock()
+        client = TestClient(
+            app_module.app, base_url="https://shared.example.test"
+        )
+        try:
+            with (
+                patch.object(
+                    app_module,
+                    "data_store_kind",
+                    return_value=data_store_module.SHARED_DATA_STORE,
+                ),
+                patch.object(
+                    app_module,
+                    "_allowed_authority",
+                    return_value=("shared.example.test", 443),
+                ),
+                patch.object(
+                    app_module.config,
+                    "get_trusted_proxy_token",
+                    return_value=proxy_token,
+                ),
+                patch.object(
+                    app_module.config,
+                    "get_runtime_environment",
+                    return_value="staging",
+                ),
+                patch.object(app_module, "get_auth_configuration", return_value=Mock()),
+                patch.object(
+                    app_module,
+                    "authenticate_session",
+                    return_value=unauthenticated,
+                ),
+                patch.object(
+                    app_module.Request,
+                    "form",
+                    side_effect=AssertionError("upload parsed"),
+                ) as form,
+                patch.object(app_module, "BACKUP_RESTORE_LOCK", local_lock),
+                patch.object(app_module, "create_encrypted_backup") as create,
+                patch.object(app_module, "restore_encrypted_backup") as restore,
+            ):
+                headers = {app_module.TRUSTED_PROXY_TOKEN_HEADER: proxy_token}
+                backup_response = client.post(
+                    "/api/full-backup",
+                    json={"password": self.PASSWORD},
+                    headers=headers,
+                )
+                restore_response = client.post(
+                    "/api/full-backup/restore",
+                    data={"password": self.PASSWORD, "confirm_replace": "true"},
+                    files={
+                        "file": (
+                            "workspace.ctbackup",
+                            b"synthetic archive",
+                            "application/octet-stream",
+                        )
+                    },
+                    headers=headers,
+                )
+
+            for response in (backup_response, restore_response):
+                self.assertEqual(401, response.status_code)
+                self.assertEqual(
+                    {"detail": "Authentication required."}, response.json()
+                )
+            form.assert_not_called()
+            local_lock.acquire.assert_not_called()
+            create.assert_not_called()
+            restore.assert_not_called()
+        finally:
+            client.close()
+
+    def test_authenticated_shared_backup_routes_fail_before_body_or_local_authority_access(self) -> None:
+        secret = "postgresql://private-user:private-password@database.test/private"
+        proxy_token = "synthetic-shared-proxy-token"
+        authenticated = web_auth_module.SessionAuthentication(
+            status="authenticated",
+            workos_user_id="user_SYNTHETICOWNER",
+            session_id="session_SYNTHETIC",
+        )
+        local_lock = Mock()
+        local_helpers = {
+            "create": Mock(side_effect=AssertionError("backup helper must not run")),
+            "restore": Mock(side_effect=AssertionError("restore helper must not run")),
+            "operation": Mock(side_effect=AssertionError("operation must not start")),
+            "temporary": Mock(side_effect=AssertionError("temp file must not open")),
+            "database": Mock(side_effect=AssertionError("SQLite must not open")),
+            "migration": Mock(side_effect=AssertionError("migration must not run")),
+        }
+        client = TestClient(
+            app_module.app, base_url="https://shared.example.test"
+        )
+        try:
+            with (
+                patch.object(
+                    app_module,
+                    "data_store_kind",
+                    return_value=data_store_module.SHARED_DATA_STORE,
+                ),
+                patch.object(
+                    app_module,
+                    "_allowed_authority",
+                    return_value=("shared.example.test", 443),
+                ),
+                patch.object(
+                    app_module.config,
+                    "get_trusted_proxy_token",
+                    return_value=proxy_token,
+                ),
+                patch.object(
+                    app_module.config,
+                    "get_runtime_environment",
+                    return_value="staging",
+                ),
+                patch.object(app_module, "get_auth_configuration", return_value=Mock()),
+                patch.object(
+                    app_module,
+                    "authenticate_session",
+                    return_value=authenticated,
+                ),
+                patch.object(app_module, "authorized_local_owner", return_value=73),
+                patch.object(app_module.Request, "form", side_effect=AssertionError("upload parsed")) as form,
+                patch.object(app_module, "BACKUP_RESTORE_LOCK", local_lock),
+                patch.object(app_module, "create_encrypted_backup", local_helpers["create"]),
+                patch.object(app_module, "restore_encrypted_backup", local_helpers["restore"]),
+                patch.object(app_module, "start_operation", local_helpers["operation"]),
+                patch.object(app_module.tempfile, "NamedTemporaryFile", local_helpers["temporary"]),
+                patch.object(app_module, "get_db_connection", local_helpers["database"]),
+                patch.object(app_module, "init_db", local_helpers["migration"]),
+            ):
+                backup_response = client.post(
+                    "/api/full-backup",
+                    json={"password": secret},
+                    headers={
+                        app_module.TRUSTED_PROXY_TOKEN_HEADER: proxy_token,
+                        "Cookie": f"{web_auth_module.SESSION_COOKIE_NAME}=sealed-session",
+                    },
+                )
+                restore_response = client.post(
+                    "/api/full-backup/restore",
+                    data={
+                        "password": secret,
+                        "confirm_replace": "true",
+                        "private_path": "C:/private/workspace/jobapplier.db",
+                    },
+                    files={
+                        "file": (
+                            "private-workspace.ctbackup",
+                            b"synthetic private archive bytes",
+                            "application/octet-stream",
+                        )
+                    },
+                    headers={
+                        app_module.TRUSTED_PROXY_TOKEN_HEADER: proxy_token,
+                        "Cookie": f"{web_auth_module.SESSION_COOKIE_NAME}=sealed-session",
+                    },
+                )
+
+            for response in (backup_response, restore_response):
+                self.assertEqual(409, response.status_code)
+                self.assertEqual(
+                    {"detail": app_module.SHARED_BACKUP_RESTORE_DETAIL},
+                    response.json(),
+                )
+                self.assertEqual("no-store", response.headers["cache-control"])
+                response_text = response.text
+                self.assertNotIn(secret, response_text)
+                self.assertNotIn("private-workspace", response_text)
+                self.assertNotIn("jobapplier.db", response_text)
+
+            form.assert_not_called()
+            local_lock.acquire.assert_not_called()
+            local_lock.release.assert_not_called()
+            for helper in local_helpers.values():
+                helper.assert_not_called()
+            with self.assertRaises(
+                provider_secrets_module.ProviderSecretAuthorizationError
+            ):
+                provider_secrets_module.current_owner_user_id()
+        finally:
+            client.close()
+
+    def test_direct_shared_backup_guards_precede_lock_paths_and_upload_reads(self) -> None:
+        request = app_module.FullBackupRequest(password=self.PASSWORD)
+        upload = Mock()
+        upload.close = unittest.mock.AsyncMock()
+        lock = Mock()
+
+        class NoLocalAuthorityConfig:
+            def __getattr__(self, name):
+                raise AssertionError(f"local config must not be read: {name}")
+
+        with (
+            patch.object(
+                app_module,
+                "data_store_kind",
+                return_value=data_store_module.SHARED_DATA_STORE,
+            ),
+            patch.object(app_module, "config", NoLocalAuthorityConfig()),
+            patch.object(app_module, "BACKUP_RESTORE_LOCK", lock),
+            patch.object(
+                app_module.tempfile,
+                "NamedTemporaryFile",
+                side_effect=AssertionError("temp file must not open"),
+            ) as temporary,
+            patch.object(
+                app_module,
+                "create_encrypted_backup",
+                side_effect=AssertionError("backup helper must not run"),
+            ) as create,
+            patch.object(
+                app_module,
+                "restore_encrypted_backup",
+                side_effect=AssertionError("restore helper must not run"),
+            ) as restore,
+            self.assertRaises(app_module.HTTPException) as backup_error,
+        ):
+            app_module.download_full_backup(request, operation_id=None)
+        self.assertEqual(409, backup_error.exception.status_code)
+        self.assertEqual(
+            app_module.SHARED_BACKUP_RESTORE_DETAIL,
+            backup_error.exception.detail,
+        )
+
+        with (
+            patch.object(
+                app_module,
+                "data_store_kind",
+                return_value=data_store_module.SHARED_DATA_STORE,
+            ),
+            patch.object(app_module, "config", NoLocalAuthorityConfig()),
+            self.assertRaises(app_module.HTTPException) as restore_error,
+        ):
+            asyncio.run(
+                app_module.restore_full_backup(
+                    file=upload,
+                    password=self.PASSWORD,
+                    confirm_replace=True,
+                    operation_id=None,
+                )
+            )
+        self.assertEqual(409, restore_error.exception.status_code)
+        self.assertEqual(
+            app_module.SHARED_BACKUP_RESTORE_DETAIL,
+            restore_error.exception.detail,
+        )
+        upload.read.assert_not_called()
+        upload.close.assert_awaited_once_with()
+        lock.acquire.assert_not_called()
+        temporary.assert_not_called()
+        create.assert_not_called()
+        restore.assert_not_called()
 
 
 class ManualJobImportTests(unittest.TestCase):

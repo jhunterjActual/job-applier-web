@@ -245,8 +245,8 @@ def init_db() -> None:
         operation_id TEXT NOT NULL,
         keywords TEXT NOT NULL,
         location TEXT NOT NULL DEFAULT '',
-        status TEXT NOT NULL DEFAULT 'queued'
-            CHECK (status IN ('queued', 'running', 'cancel_requested', 'succeeded', 'failed', 'cancelled')),
+        status TEXT NOT NULL DEFAULT 'preparing'
+            CHECK (status IN ('preparing', 'queued', 'running', 'cancel_requested', 'succeeded', 'failed', 'cancelled')),
         result_json TEXT,
         error_code TEXT,
         attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
@@ -265,7 +265,7 @@ def init_db() -> None:
     cursor.execute(
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_search_runs_owner_active
         ON search_runs(owner_user_id)
-        WHERE status IN ('queued', 'running', 'cancel_requested')"""
+        WHERE status IN ('preparing', 'queued', 'running', 'cancel_requested')"""
     )
     cursor.execute(
         """CREATE INDEX IF NOT EXISTS idx_search_runs_owner_recent

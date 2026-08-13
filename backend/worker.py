@@ -42,7 +42,7 @@ def _request_stop(_signal_number, _frame) -> None:
 
 def run(once: bool = False) -> int:
     """Claim at most one run at a time and never retain tenant context between runs."""
-    summary = config.validate_runtime_configuration()
+    summary = config.validate_worker_runtime_configuration()
     interval = config.get_worker_heartbeat_seconds()
     enabled = config.search_worker_enabled()
     heartbeat_path = config.DATA_DIR / "worker-heartbeat.json"

@@ -47,6 +47,9 @@ install -o root -g root -m 0755 "${repository_root}/deploy/scripts/rollback-rele
 if [[ ! -e /etc/careertrellis/staging.env ]]; then
     install -o root -g root -m 0600 "${repository_root}/deploy/config/staging-app.environment.example" /etc/careertrellis/staging.env
 fi
+if [[ ! -e /etc/careertrellis/search-worker.env ]]; then
+    install -o root -g root -m 0600 "${repository_root}/deploy/config/search-worker.environment.example" /etc/careertrellis/search-worker.env
+fi
 if [[ ! -e /etc/caddy/careertrellis-staging.env ]]; then
     install -o root -g root -m 0600 "${repository_root}/deploy/config/staging-caddy.environment.example" /etc/caddy/careertrellis-staging.env
 fi
@@ -54,5 +57,6 @@ fi
 systemctl daemon-reload
 echo "Provisioning files installed. Replace every placeholder in:"
 echo "  /etc/careertrellis/staging.env"
+echo "  /etc/careertrellis/search-worker.env"
 echo "  /etc/caddy/careertrellis-staging.env"
 echo "Then validate Caddy and deploy an exact commit. Services were not started."

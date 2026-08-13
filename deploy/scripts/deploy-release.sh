@@ -100,6 +100,7 @@ activate_release() {
 
     for environment_file in \
         /etc/careertrellis/staging.env \
+        /etc/careertrellis/search-worker.env \
         /etc/careertrellis/postgres-runtime.env \
         /etc/careertrellis/postgres-worker.env \
         /etc/careertrellis/provider-secrets.env \

@@ -9,11 +9,12 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import database as database_module
 import config as config_module
 import search_run_execution as execution_module
+import worker as worker_module
 from operations import OperationCancelled
 from search_run_repository import (
     SQLiteSearchRunRepository,
@@ -53,6 +54,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
             one.enqueue(
                 "00000000-0000-4000-8000-000000000003", "other", ""
             )
+        one.publish_prepared(run_one, "security", "Remote")
         claim = one.claim(run_one, "10000000-0000-4000-8000-000000000001")
         one.succeed(
             claim,
@@ -71,13 +73,20 @@ class SQLiteSearchRunTests(unittest.TestCase):
 
     def test_queued_and_running_cancellation_are_durable(self) -> None:
         repository = self.repository()
+        preparing_operation = "00000000-0000-4000-8000-000000000010"
+        repository.enqueue(preparing_operation, "preparing", "")
+        self.assertTrue(repository.request_cancel(preparing_operation))
+        self.assertTrue(repository.status()["last_result"]["cancelled"])
+
         queued_operation = "00000000-0000-4000-8000-000000000011"
-        repository.enqueue(queued_operation, "queued", "")
+        queued_run = repository.enqueue(queued_operation, "queued", "")
+        repository.publish_prepared(queued_run, "queued", "")
         self.assertTrue(repository.request_cancel(queued_operation))
         self.assertTrue(repository.status()["last_result"]["cancelled"])
 
         running_operation = "00000000-0000-4000-8000-000000000012"
         run_id = repository.enqueue(running_operation, "running", "")
+        repository.publish_prepared(run_id, "running", "")
         claim = repository.claim(run_id, "10000000-0000-4000-8000-000000000011")
         self.assertTrue(repository.request_cancel(running_operation))
         with self.assertRaises(OperationCancelled):
@@ -87,6 +96,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
 
         race_operation = "00000000-0000-4000-8000-000000000013"
         race_run = repository.enqueue(race_operation, "completion race", "")
+        repository.publish_prepared(race_run, "completion race", "")
         race_claim = repository.claim(
             race_run, "10000000-0000-4000-8000-000000000013"
         )
@@ -99,6 +109,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
         run_id = repository.enqueue(
             "00000000-0000-4000-8000-000000000021", "concurrent", ""
         )
+        repository.publish_prepared(run_id, "concurrent", "")
         barrier = Barrier(2)
 
         def claim(worker_id: str):
@@ -122,6 +133,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
         run_id = repository.enqueue(
             "00000000-0000-4000-8000-000000000031", "retry", ""
         )
+        repository.publish_prepared(run_id, "retry", "")
         first = repository.claim(run_id, "10000000-0000-4000-8000-000000000031")
         connection = self.connection()
         connection.execute(
@@ -142,6 +154,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
         run_id = repository.enqueue(
             "00000000-0000-4000-8000-000000000041", "owner", ""
         )
+        repository.publish_prepared(run_id, "owner", "")
         claim = repository.claim(run_id, "10000000-0000-4000-8000-000000000041")
         observed_owners = []
 
@@ -162,6 +175,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
         repository = self.repository()
         operation = "00000000-0000-4000-8000-000000000051"
         run_id = repository.enqueue(operation, "cancel", "")
+        repository.publish_prepared(run_id, "cancel", "")
         claim = repository.claim(run_id, "10000000-0000-4000-8000-000000000051")
         repository.request_cancel(operation)
         provider = Mock()
@@ -192,6 +206,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
         run_id = repository.enqueue(
             "00000000-0000-4000-8000-000000000061", "transactions", ""
         )
+        repository.publish_prepared(run_id, "transactions", "")
         claim = repository.claim(run_id, "10000000-0000-4000-8000-000000000061")
         self.assertEqual([], open_connections)
 
@@ -205,6 +220,26 @@ class SQLiteSearchRunTests(unittest.TestCase):
             execution_module.execute_search_claim(claim, repository)
         self.assertEqual([], open_connections)
 
+    def test_preparing_is_active_but_not_claimable_until_published(self) -> None:
+        repository = self.repository()
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000062", "submitted", "draft"
+        )
+
+        self.assertTrue(repository.has_active())
+        self.assertTrue(repository.status()["searching"])
+        self.assertIsNone(
+            repository.claim(run_id, "10000000-0000-4000-8000-000000000062")
+        )
+
+        repository.publish_prepared(run_id, "normalized", "Final place")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000062"
+        )
+        self.assertIsNotNone(claim)
+        self.assertEqual("normalized", claim.keywords)
+        self.assertEqual("Final place", claim.location)
+
     def test_worker_activation_switch_is_strict_and_disabled_by_default(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
             self.assertFalse(config_module.search_worker_enabled())
@@ -214,11 +249,124 @@ class SQLiteSearchRunTests(unittest.TestCase):
             with self.assertRaises(config_module.RuntimeConfigurationError):
                 config_module.search_worker_enabled()
 
+    def test_enabled_worker_uses_only_dedicated_runtime_configuration(self) -> None:
+        engine = Mock()
+        environment = {
+            "CAREERTRELLIS_ENVIRONMENT": "staging",
+            "CAREERTRELLIS_DATA_DIR": self.temporary_directory.name,
+            "CAREERTRELLIS_WORKER_HEARTBEAT_SECONDS": "15",
+            "CAREERTRELLIS_SEARCH_WORKER_ENABLED": "true",
+            "CAREERTRELLIS_DATA_STORE": "postgres",
+        }
+        with (
+            patch.dict("os.environ", environment, clear=True),
+            patch.object(worker_module.config, "DATA_DIR", Path(self.temporary_directory.name)),
+            patch.object(
+                worker_module.config,
+                "validate_worker_runtime_configuration",
+                return_value={"environment": "staging"},
+            ) as worker_runtime_configuration,
+            patch.object(
+                worker_module.config,
+                "validate_runtime_configuration",
+                side_effect=AssertionError("worker loaded common web runtime configuration"),
+            ) as common_runtime_configuration,
+            patch.object(
+                worker_module,
+                "validate_data_store_configuration",
+                return_value="postgres",
+            ),
+            patch.object(
+                worker_module, "validate_provider_secret_store_configuration"
+            ) as provider_secret_configuration,
+            patch.object(worker_module, "runtime_postgres_engine", return_value=engine),
+            patch.object(
+                worker_module,
+                "claim_next_postgres_search_run",
+                return_value=None,
+            ) as claim_next,
+        ):
+            worker_module.STOP_EVENT.clear()
+            self.assertEqual(0, worker_module.run(once=True))
+
+        worker_runtime_configuration.assert_called_once_with()
+        common_runtime_configuration.assert_not_called()
+        provider_secret_configuration.assert_called_once_with()
+        claim_next.assert_called_once_with(ANY, engine=engine)
+        heartbeat = json.loads(
+            (Path(self.temporary_directory.name) / "worker-heartbeat.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual("idle", heartbeat["status"])
+        for common_web_credential in (
+            "CAREERTRELLIS_ALLOWED_HOSTS",
+            "CAREERTRELLIS_TRUSTED_PROXY_TOKEN",
+            "WORKOS_API_KEY",
+            "WORKOS_CLIENT_ID",
+            "WORKOS_COOKIE_PASSWORD",
+            "WORKOS_REDIRECT_URI",
+            "WORKOS_LOGOUT_RETURN_TO",
+        ):
+            self.assertNotIn(common_web_credential, environment)
+
+    def test_worker_runtime_validation_does_not_require_web_credentials(self) -> None:
+        environment = {
+            "CAREERTRELLIS_ENVIRONMENT": "staging",
+            "CAREERTRELLIS_WORKER_HEARTBEAT_SECONDS": "15",
+            "CAREERTRELLIS_SEARCH_WORKER_ENABLED": "true",
+        }
+        with (
+            patch.dict("os.environ", environment, clear=True),
+            patch.object(
+                config_module,
+                "validate_runtime_configuration",
+                side_effect=AssertionError("worker validator delegated to web validation"),
+            ) as common_runtime_configuration,
+        ):
+            summary = config_module.validate_worker_runtime_configuration()
+
+        self.assertEqual("staging", summary["environment"])
+        common_runtime_configuration.assert_not_called()
+
+    def test_worker_runtime_rejects_forbidden_web_migration_and_object_credentials(self) -> None:
+        base_environment = {
+            "CAREERTRELLIS_ENVIRONMENT": "staging",
+            "CAREERTRELLIS_WORKER_HEARTBEAT_SECONDS": "15",
+            "CAREERTRELLIS_SEARCH_WORKER_ENABLED": "false",
+            "CAREERTRELLIS_PROVIDER_SECRET_KEYRING_B64": "worker-owned-keyring",
+        }
+        for variable in (
+            "WORKOS_API_KEY",
+            "CAREERTRELLIS_TRUSTED_PROXY_TOKEN",
+            "CAREERTRELLIS_MIGRATION_DATABASE_URL",
+            "CAREERTRELLIS_OBJECT_STORE_SECRET_ACCESS_KEY",
+        ):
+            with self.subTest(variable=variable):
+                with (
+                    patch.dict(
+                        "os.environ",
+                        {**base_environment, variable: "must-not-be-loaded"},
+                        clear=True,
+                    ),
+                    self.assertRaises(config_module.RuntimeConfigurationError) as raised,
+                ):
+                    config_module.validate_worker_runtime_configuration()
+                self.assertEqual(
+                    "The search worker environment contains a credential or setting reserved for the web, migration, or object-storage runtime.",
+                    str(raised.exception),
+                )
+
+        with patch.dict("os.environ", base_environment, clear=True):
+            summary = config_module.validate_worker_runtime_configuration()
+        self.assertEqual("staging", summary["environment"])
+
     def test_worker_stop_leaves_lease_retryable_without_recording_user_cancel(self) -> None:
         repository = self.repository()
         run_id = repository.enqueue(
             "00000000-0000-4000-8000-000000000071", "restart recovery", ""
         )
+        repository.publish_prepared(run_id, "restart recovery", "")
         first = repository.claim(
             run_id, "10000000-0000-4000-8000-000000000071"
         )

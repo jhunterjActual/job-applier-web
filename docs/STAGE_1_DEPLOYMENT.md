@@ -43,6 +43,7 @@ openssl rand -hex 32
 Put that same value in the two root-only files created by provisioning:
 
 - `/etc/careertrellis/staging.env`
+- `/etc/careertrellis/search-worker.env`
 - `/etc/caddy/careertrellis-staging.env`
 
 Generate the temporary staging password hash interactively; never put the plaintext password in either file:

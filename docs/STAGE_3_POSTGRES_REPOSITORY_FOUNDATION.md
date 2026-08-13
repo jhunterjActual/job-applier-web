@@ -121,6 +121,22 @@ cancellation, leases, retry/crash recovery, and a worker-only least-privilege
 claim broker. Its no-activation and rollback contract is in
 `STAGE_3_POSTGRES_SEARCH_RUNS.md`.
 
+The shared backup/restore policy now fails both encrypted-workspace endpoints
+closed when PostgreSQL is the selected data store. The HTTP boundary rejects a
+restore after normal shared authentication but before multipart parsing, and
+the endpoint boundary repeats the guard before local paths, locks, temporary
+files, archive helpers, or restore mutation. Local SQLite behavior is
+unchanged. Hosted PostgreSQL and private
+object-store recovery remain operator-managed; see
+`STAGE_3_SHARED_BACKUP_RESTORE_POLICY.md`.
+
+The portable user-data export now selects the configured repository. Local mode
+uses one explicit SQLite read transaction. Shared mode uses one PostgreSQL JSON
+statement under transaction-local tenant context, with explicit owner
+predicates on every protected relation. Both repository scopes close before
+serialization or response streaming begins. Its privacy and consistency
+contract is in `STAGE_3_POSTGRES_USER_DATA_EXPORT.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
@@ -130,11 +146,9 @@ converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 - any application operation outside the converted lifecycle, engagement,
   interview-preparation, record-list, and insight repository boundaries;
 - any unconverted job-domain reads;
-- all user export and account-deletion reads and writes;
+- account-deletion reads and writes;
 - generated-material creation, replacement, and deletion through encrypted
   private object storage rather than authoritative local filesystem paths;
-- hosted backup/restore behavior, which must not replace the frozen SQLite
-  workspace after PostgreSQL becomes authoritative.
 
 Provider secrets and stored-object metadata already have PostgreSQL/RLS
 boundaries. The four provider-context consumers use the encrypted secret
@@ -181,9 +195,11 @@ not waive the exact-release checks:
    `careertrellis-deploy --prepare-only`; this supplies the immutable-release,
    local automated-test, object-integrity, and syntax receipts but does not
    substitute for the configured PostgreSQL CI job.
-3. Confirm `/etc/careertrellis/staging.env`, `postgres-runtime.env`,
-   `provider-secrets.env`, and `object-storage.env` are `root:root` mode `0600`;
-   confirm both complete keyrings can be retrieved independently.
+3. Confirm `/etc/careertrellis/staging.env`, `search-worker.env`,
+   `postgres-runtime.env`, `postgres-worker.env`, `provider-secrets.env`, and
+   `object-storage.env` are `root:root` mode `0600`; confirm both complete
+   keyrings can be retrieved independently. Confirm the worker unit loads the
+   dedicated worker files, not `staging.env` or any WorkOS/web-cookie values.
 4. Confirm WireGuard, the runtime database role, the permanent private R2
    bucket, its bucket-only credential, and its application-egress `/32`
    restriction are ready without printing secrets.
@@ -239,6 +255,9 @@ recovery evidence is incomplete.
       `HOSTED_REPOSITORY_CUTOVER_COMPLETE` is false.
 - [ ] Profile, base-resume, and base-resume-version repositories use explicit
       owner-scoped PostgreSQL transactions with transaction-local tenant context.
+- [ ] User-data export uses a single owner-scoped repository snapshot, exposes
+      only its explicit public allowlist, and cannot fall back to SQLite in
+      shared mode.
 - [ ] Base-resume soft deletion cannot select, delete, or reassign another
       owner's resume or expose a deleted resume through normal reads.
 - [ ] Missing-context and two-tenant tests deny cross-owner reads, writes, and
