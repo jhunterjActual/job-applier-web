@@ -29,7 +29,7 @@ releases_dir=${release_root}/releases
 release_dir=${releases_dir}/${revision}
 current_link=${release_root}/current
 previous_link=${release_root}/previous
-browser_path=${PLAYWRIGHT_BROWSERS_PATH:-/var/lib/careertrellis/staging/ms-playwright}
+browser_path=/var/lib/careertrellis/shared/ms-playwright
 temporary_release=""
 test_data=""
 
@@ -49,7 +49,7 @@ if ! git -C "${source_dir}" cat-file -e "${revision}^{commit}"; then
 fi
 
 install -d -o root -g root -m 0755 "${releases_dir}"
-install -d -o careertrellis -g careertrellis -m 0750 "${browser_path}"
+install -d -o root -g careertrellis -m 0750 "${browser_path}"
 
 if [[ ! -d ${release_dir} ]]; then
     temporary_release=$(mktemp -d "${releases_dir}/.deploy-${revision}-XXXXXX")
@@ -62,7 +62,7 @@ if [[ ! -d ${release_dir} ]]; then
     "${temporary_release}/backend/venv/bin/python" -m playwright install-deps chromium
     env PLAYWRIGHT_BROWSERS_PATH="${browser_path}" \
         "${temporary_release}/backend/venv/bin/python" -m playwright install chromium
-    chown -R careertrellis:careertrellis "${browser_path}"
+    chown -R root:careertrellis "${browser_path}"
     chmod -R u=rwX,g=rX,o= "${browser_path}"
 
     test_data=$(mktemp -d /tmp/careertrellis-deploy-test-XXXXXX)
@@ -108,6 +108,14 @@ activate_release() {
         /etc/careertrellis/object-storage.env; do
         if [[ ! -f ${environment_file} || $(stat -c '%U:%G %a' "${environment_file}") != "root:root 600" ]]; then
             echo "Every service runtime environment file must be root:root mode 0600." >&2
+            return 1
+        fi
+    done
+    for environment_file in \
+        /etc/careertrellis/staging.env \
+        /etc/careertrellis/search-worker.env; do
+        if ! grep -Fx "PLAYWRIGHT_BROWSERS_PATH=${browser_path}" "${environment_file}" >/dev/null; then
+            echo "Web and worker runtime files must use the reviewed shared browser path." >&2
             return 1
         fi
     done

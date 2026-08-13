@@ -13,6 +13,7 @@ if ! flock -n 8; then
 fi
 
 release_root=${CAREERTRELLIS_RELEASE_ROOT:-/opt/careertrellis/staging}
+browser_path=/var/lib/careertrellis/shared/ms-playwright
 current_link=${release_root}/current
 previous_link=${release_root}/previous
 requested_revision=${1:-}
@@ -62,6 +63,14 @@ activate_release() {
         /etc/careertrellis/object-storage.env; do
         if [[ ! -f ${environment_file} || $(stat -c '%U:%G %a' "${environment_file}") != "root:root 600" ]]; then
             echo "Every service runtime environment file must be root:root mode 0600." >&2
+            return 1
+        fi
+    done
+    for environment_file in \
+        /etc/careertrellis/staging.env \
+        /etc/careertrellis/search-worker.env; do
+        if ! grep -Fx "PLAYWRIGHT_BROWSERS_PATH=${browser_path}" "${environment_file}" >/dev/null; then
+            echo "Web and worker runtime files must use the reviewed shared browser path." >&2
             return 1
         fi
     done

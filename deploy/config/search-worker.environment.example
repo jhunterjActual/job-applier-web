@@ -7,4 +7,4 @@ CAREERTRELLIS_WORKER_HEARTBEAT_SECONDS=15
 # Both activation controls remain false until final cutover is separately reviewed.
 CAREERTRELLIS_SEARCH_WORKER_ENABLED=false
 # CAREERTRELLIS_DATA_STORE=postgres
-PLAYWRIGHT_BROWSERS_PATH=/var/lib/careertrellis/staging/ms-playwright
+PLAYWRIGHT_BROWSERS_PATH=/var/lib/careertrellis/shared/ms-playwright

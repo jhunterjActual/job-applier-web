@@ -2037,13 +2037,48 @@ class DependencyLockTests(unittest.TestCase):
             project_dir / "deploy" / "scripts" / "deploy-release.sh"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            'install -d -o careertrellis -g careertrellis -m 0750 "${browser_path}"',
+            "browser_path=/var/lib/careertrellis/shared/ms-playwright", deploy
+        )
+        self.assertNotIn("browser_path=${PLAYWRIGHT_BROWSERS_PATH", deploy)
+        self.assertIn(
+            'install -d -o root -g careertrellis -m 0750 "${browser_path}"',
             deploy,
         )
         self.assertIn(
-            'chown -R careertrellis:careertrellis "${browser_path}"', deploy
+            'chown -R root:careertrellis "${browser_path}"', deploy
         )
         self.assertIn('chmod -R u=rwX,g=rX,o= "${browser_path}"', deploy)
+        self.assertIn(
+            "install -d -o root -g careertrellis -m 0750 /var/lib/careertrellis/shared",
+            provision,
+        )
+        for environment_name in (
+            "staging-app.environment.example",
+            "search-worker.environment.example",
+        ):
+            environment = (
+                project_dir / "deploy" / "config" / environment_name
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "PLAYWRIGHT_BROWSERS_PATH=/var/lib/careertrellis/shared/ms-playwright",
+                environment,
+            )
+            self.assertNotIn(
+                "PLAYWRIGHT_BROWSERS_PATH=/var/lib/careertrellis/staging",
+                environment,
+            )
+
+        rollback = (
+            project_dir / "deploy" / "scripts" / "rollback-release.sh"
+        ).read_text(encoding="utf-8")
+        for script in (deploy, rollback):
+            self.assertIn(
+                'grep -Fx "PLAYWRIGHT_BROWSERS_PATH=${browser_path}"', script
+            )
+            self.assertIn(
+                "Web and worker runtime files must use the reviewed shared browser path.",
+                script,
+            )
 
         workflow = (
             project_dir / ".github" / "workflows" / "web-foundation.yml"

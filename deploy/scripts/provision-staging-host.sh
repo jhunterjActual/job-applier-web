@@ -30,6 +30,7 @@ fi
 install -d -o root -g root -m 0755 /opt/careertrellis/staging/releases
 install -d -o careertrellis -g careertrellis -m 0700 /var/lib/careertrellis/staging
 install -d -o careertrellis-worker -g careertrellis -m 0700 /var/lib/careertrellis/worker
+install -d -o root -g careertrellis -m 0750 /var/lib/careertrellis/shared
 install -d -o root -g root -m 0755 /etc/careertrellis
 install -d -o caddy -g caddy -m 0750 /var/log/caddy
 caddy_access_log=/var/log/caddy/careertrellis-staging-access.log
