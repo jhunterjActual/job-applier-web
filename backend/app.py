@@ -114,8 +114,13 @@ from verification_repository import (
     VerificationTargetChanged,
     runtime_verification_repository,
 )
-from job_cleanup import apply_cleanup, cleanup_preview
-from job_suppressions import record_job_suppression
+from job_retention_repository import (
+    CleanupBatchTooLarge,
+    CleanupPreviewChanged,
+    JobRetentionNotFound,
+    JobRetentionProtected,
+    runtime_job_retention_repository,
+)
 from job_filters import derive_job_filter_facets
 from interview_prep import (
     MAX_INTERVIEW_PREP_CHARS,
@@ -487,7 +492,11 @@ class ManualJobSaveRequest(BaseModel):
 
 class CleanupRequest(BaseModel):
     action: Literal["archive", "delete", "restore"]
-    preview_token: str
+    preview_token: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
 
 class LifecycleUpdateRequest(BaseModel):
@@ -1372,11 +1381,15 @@ def undo_job_lifecycle(job_id: int) -> dict:
 @app.get("/api/jobs/cleanup-preview")
 def preview_job_cleanup() -> dict:
     """Preview protected archive/delete/restore candidate sets without mutation."""
-    conn = get_db_connection()
     try:
-        return cleanup_preview(conn)
-    finally:
-        conn.close()
+        return runtime_job_retention_repository(
+            sqlite_connection_factory=get_db_connection
+        ).cleanup_preview()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="CareerTrellis could not prepare the cleanup preview.",
+        ) from exc
 
 
 @app.post("/api/jobs/cleanup")
@@ -1386,24 +1399,20 @@ def cleanup_jobs(req: CleanupRequest) -> dict:
     if IS_SEARCHING:
         raise HTTPException(status_code=409, detail="Wait for the current job search to finish before cleanup.")
 
-    conn = get_db_connection()
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        affected = apply_cleanup(
-            conn,
-            req.action,
-            req.preview_token,
-            datetime.now().isoformat(timespec="seconds"),
-        )
-        conn.commit()
-    except ValueError as exc:
-        conn.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+        affected = runtime_job_retention_repository(
+            sqlite_connection_factory=get_db_connection
+        ).apply_cleanup(req.action, req.preview_token)
+    except (CleanupPreviewChanged, CleanupBatchTooLarge) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="The cleanup selection is no longer safe to apply. Refresh the preview before continuing.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="CareerTrellis could not complete the cleanup request.",
+        ) from exc
 
     verbs = {"archive": "archived", "delete": "permanently deleted", "restore": "restored"}
     return {
@@ -1452,37 +1461,23 @@ def delete_job(job_id: int) -> dict:
     Returns:
         dict: Success status and feedback message.
     """
-    conn = get_db_connection()
     try:
-        # Check if exists
-        job = conn.execute(
-            "SELECT id, url, company, title FROM jobs WHERE id = ?", (job_id,)
-        ).fetchone()
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found.")
-
-        record_job_suppression(
-            conn,
-            url=job["url"],
-            company=job["company"],
-            title=job["title"],
-            deleted_at=datetime.now().isoformat(timespec="seconds"),
-            deletion_source="manual",
-        )
-        # Delete corresponding application first to prevent foreign key issues
-        conn.execute("DELETE FROM applications WHERE job_id = ?", (job_id,))
-        # Delete job
-        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-        conn.commit()
+        runtime_job_retention_repository(
+            sqlite_connection_factory=get_db_connection
+        ).delete_job(job_id)
         return {"success": True, "message": "Job posting deleted successfully."}
-    except HTTPException:
-        conn.rollback()
-        raise
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete job: {str(e)}")
-    finally:
-        conn.close()
+    except JobRetentionNotFound as exc:
+        raise HTTPException(status_code=404, detail="Job not found.") from exc
+    except JobRetentionProtected as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="This job cannot be deleted because it has related application activity or generated materials.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="CareerTrellis could not delete the job posting.",
+        ) from exc
 
 @app.get("/api/jobs/status")
 def get_search_status() -> dict:
