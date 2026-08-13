@@ -116,6 +116,13 @@ Its short cache read closes before maps or AI provider work, and its eligible
 write uses a separate transaction after that work. Its storage-policy contract
 is in `STAGE_3_POSTGRES_HEADQUARTERS_CACHE.md`.
 
+The portable user-data export now selects the configured repository. Local mode
+uses one explicit SQLite read transaction. Shared mode uses one PostgreSQL JSON
+statement under transaction-local tenant context, with explicit owner
+predicates on every protected relation. Both repository scopes close before
+serialization or response streaming begins. Its privacy and consistency
+contract is in `STAGE_3_POSTGRES_USER_DATA_EXPORT.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
@@ -126,7 +133,7 @@ converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 - any application operation outside the converted lifecycle, engagement,
   interview-preparation, record-list, and insight repository boundaries;
 - any unconverted job-domain reads;
-- all user export and account-deletion reads and writes;
+- account-deletion reads and writes;
 - generated-material creation, replacement, and deletion through encrypted
   private object storage rather than authoritative local filesystem paths;
 - hosted backup/restore behavior, which must not replace the frozen SQLite
@@ -235,6 +242,9 @@ recovery evidence is incomplete.
       `HOSTED_REPOSITORY_CUTOVER_COMPLETE` is false.
 - [ ] Profile, base-resume, and base-resume-version repositories use explicit
       owner-scoped PostgreSQL transactions with transaction-local tenant context.
+- [ ] User-data export uses a single owner-scoped repository snapshot, exposes
+      only its explicit public allowlist, and cannot fall back to SQLite in
+      shared mode.
 - [ ] Base-resume soft deletion cannot select, delete, or reassign another
       owner's resume or expose a deleted resume through normal reads.
 - [ ] Missing-context and two-tenant tests deny cross-owner reads, writes, and
