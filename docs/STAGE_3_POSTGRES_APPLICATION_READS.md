@@ -71,9 +71,11 @@ a staging rollback mechanism.
 
 This slice does not convert or authorize:
 
-- tailoring, generated-material creation or editing, encrypted-object download
-  integration, stored-object mutation, deletion, R2 tombstones, retry,
-  reconciliation, or orphan cleanup;
+- tailoring and generated-material persistence, which are governed by
+  `STAGE_3_POSTGRES_GENERATED_MATERIALS.md`; this historical read slice does not
+  broaden that write boundary or encrypted-object download policy;
+- deletion, bucket-wide R2 enumeration, account erasure, or protected
+  application/job removal across the database and private object store;
 - deletion of an application, job, lifecycle history, stored-object row, or
   encrypted R2 object;
 - application operations outside the converted lifecycle, engagement,
@@ -85,9 +87,10 @@ This slice does not convert or authorize:
 - deployment activation, permanent import, authority transition, R2 changes,
   public signup, or additional users.
 
-Generated-material download and cross-store deletion require later bounded
-designs. The current worker remains an idle scaffold and receives no web
-keyring or R2 credential in this slice.
+Generated-material download now follows the later bounded contract in
+`STAGE_3_POSTGRES_GENERATED_MATERIALS.md`; protected cross-store deletion still
+requires a later independently reviewed design. The current worker receives no
+web keyring or R2 credential in this slice.
 
 ## Verification gates
 

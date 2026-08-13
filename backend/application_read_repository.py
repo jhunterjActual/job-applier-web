@@ -128,8 +128,10 @@ class PostgreSQLApplicationReadRepository:
                             WHERE e.job_id = a.job_id
                               AND e.owner_user_id = :owner_user_id)
                                AS engagement_count,
-                           FALSE AS resume_download_available,
-                           FALSE AS cover_letter_download_available,
+                           a.tailored_resume_object_id IS NOT NULL
+                               AS resume_download_available,
+                           a.cover_letter_object_id IS NOT NULL
+                               AS cover_letter_download_available,
                            NULLIF(BTRIM(COALESCE(a.interview_prep, '')), '')
                                IS NOT NULL AS interview_prep_available
                     FROM careertrellis.applications a

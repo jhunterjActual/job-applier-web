@@ -60,6 +60,11 @@ from application_workspace_repository import (
     PostgreSQLApplicationWorkspaceRepository,
 )
 from application_read_repository import PostgreSQLApplicationReadRepository
+from generated_material_repository import (
+    GeneratedMaterialChanged,
+    GeneratedMaterialNotFound,
+    PostgreSQLGeneratedMaterialRepository,
+)
 from application_engagements import EngagementLimitError, MAX_ENGAGEMENTS_PER_JOB
 from job_suppressions import job_url_fingerprint
 from maps_providers import HeadquartersResult
@@ -363,6 +368,208 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 ),
                 {"owner": self.user_two},
             )
+
+    def test_generated_material_replacement_is_owner_scoped_atomic_and_stale_safe(self) -> None:
+        object_backend = object_store_module.InMemoryObjectBackend()
+        object_keyring = object_store_module.ObjectKeyring(
+            active_key_id="generated-material-test",
+            keys={"generated-material-test": b"g" * 32},
+        )
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            resume_id = connection.scalar(
+                text(
+                    """
+                    INSERT INTO careertrellis.base_resumes
+                        (owner_user_id, name, resume_mode, content, evidence)
+                    VALUES
+                        (:owner, 'Primary Resume', 'general_professional',
+                         'Synthetic base resume', '{}'::jsonb)
+                    RETURNING id
+                    """
+                ),
+                {"owner": self.user_one},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO careertrellis.base_resume_versions
+                        (owner_user_id, base_resume_id, version_number, name,
+                         resume_mode, content, evidence)
+                    VALUES
+                        (:owner, :resume, 1, 'Primary Resume',
+                         'general_professional', 'Synthetic base resume', '{}'::jsonb)
+                    """
+                ),
+                {"owner": self.user_one, "resume": resume_id},
+            )
+            connection.execute(
+                text(
+                    """
+                    UPDATE careertrellis.profiles
+                    SET active_base_resume_id = :resume, ai_provider = 'gemini',
+                        ai_model = 'gemini-2.5-flash', maps_provider = 'openstreetmap'
+                    WHERE owner_user_id = :owner
+                    """
+                ),
+                {"owner": self.user_one, "resume": resume_id},
+            )
+            connection.execute(
+                text(
+                    """
+                    UPDATE careertrellis.jobs
+                    SET company = 'Synthetic Employer', description = 'Synthetic description',
+                        location = 'Remote', source = 'manual'
+                    WHERE id = :job AND owner_user_id = :owner
+                    """
+                ),
+                {"job": self.job_one, "owner": self.user_one},
+            )
+
+        owner_one = PostgreSQLGeneratedMaterialRepository(
+            self.user_one,
+            engine=self.runtime_engine,
+            backend=object_backend,
+            keyring=object_keyring,
+        )
+        owner_two = PostgreSQLGeneratedMaterialRepository(
+            self.user_two,
+            engine=self.runtime_engine,
+            backend=object_backend,
+            keyring=object_keyring,
+        )
+        context = owner_one.generation_context(self.job_one)
+        values = {
+            "company": "Synthetic Employer",
+            "position": "One Job",
+            "us_hq": "Synthetic HQ",
+            "headquarters_source": "openstreetmap",
+            "headquarters_attribution": "Synthetic attribution",
+            "resume_text": "# Reviewed resume",
+            "cover_letter": "Reviewed letter",
+            "base_resume_id": resume_id,
+            "base_resume_name": "Primary Resume",
+            "base_resume_version": 1,
+        }
+        references = owner_one.replace_materials(
+            self.job_one,
+            context["context_token"],
+            b"%PDF-1.7\nsynthetic generated resume",
+            "Reviewed letter",
+            values,
+        )
+        material = owner_one.materials(self.job_one)
+        self.assertEqual(
+            references["tailored_resume_object_id"],
+            material["tailored_resume_object_id"],
+        )
+        application_record = next(
+            row
+            for row in PostgreSQLApplicationReadRepository(
+                self.user_one, engine=self.runtime_engine
+            ).list_applications()
+            if row["job_id"] == self.job_one
+        )
+        self.assertTrue(application_record["resume_download_available"])
+        self.assertTrue(application_record["cover_letter_download_available"])
+        self.assertNotIn("tailored_resume_object_id", application_record)
+        self.assertNotIn("cover_letter_object_id", application_record)
+        self.assertEqual(2, len(object_backend.objects))
+        with self.assertRaises(GeneratedMaterialNotFound):
+            owner_two.materials(self.job_one)
+        download = stored_objects_module.download_stored_object(
+            self.user_one,
+            material["tailored_resume_object_id"],
+            engine=self.runtime_engine,
+            backend=object_backend,
+            keyring=object_keyring,
+        )
+        self.assertEqual(b"%PDF-1.7\nsynthetic generated resume", download.content)
+
+        stale_context = owner_one.edit_context(self.job_one)
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            connection.execute(
+                text(
+                    "UPDATE careertrellis.jobs SET title = 'Changed title' "
+                    "WHERE id = :job AND owner_user_id = :owner"
+                ),
+                {"job": self.job_one, "owner": self.user_one},
+            )
+        with self.assertRaises(GeneratedMaterialChanged):
+            owner_one.replace_materials(
+                self.job_one,
+                stale_context["context_token"],
+                b"%PDF-1.7\nstale",
+                "Stale letter",
+                values,
+                require_application=True,
+            )
+        self.assertEqual(2, len(object_backend.objects))
+
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            connection.execute(
+                text(
+                    "UPDATE careertrellis.jobs SET status = 'submitted' "
+                    "WHERE id = :job AND owner_user_id = :owner"
+                ),
+                {"job": self.job_one, "owner": self.user_one},
+            )
+            connection.execute(
+                text(
+                    "UPDATE careertrellis.applications SET status = 'offer' "
+                    "WHERE job_id = :job AND owner_user_id = :owner"
+                ),
+                {"job": self.job_one, "owner": self.user_one},
+            )
+        current = owner_one.edit_context(self.job_one)
+        owner_one.replace_materials(
+            self.job_one,
+            current["context_token"],
+            b"%PDF-1.7\nreplacement",
+            "Replacement letter",
+            {**values, "position": "Changed title"},
+            require_application=True,
+        )
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            statuses = connection.execute(
+                text(
+                    "SELECT j.status, a.status FROM careertrellis.jobs AS j "
+                    "JOIN careertrellis.applications AS a "
+                    "ON a.job_id = j.id AND a.owner_user_id = j.owner_user_id "
+                    "WHERE j.id = :job AND j.owner_user_id = :owner"
+                ),
+                {"job": self.job_one, "owner": self.user_one},
+            ).one()
+            self.assertEqual(("submitted", "offer"), tuple(statuses))
+            self.assertEqual(
+                2,
+                connection.scalar(
+                    text(
+                        "SELECT count(*) FROM careertrellis.stored_objects "
+                        "WHERE owner_user_id = :owner AND deleted_at IS NULL"
+                    ),
+                    {"owner": self.user_one},
+                ),
+            )
+            self.assertEqual(
+                2,
+                connection.scalar(
+                    text(
+                        "SELECT count(*) FROM careertrellis.stored_objects "
+                        "WHERE owner_user_id = :owner AND deleted_at IS NOT NULL"
+                    ),
+                    {"owner": self.user_one},
+                ),
+            )
+            connection.execute(
+                text(
+                    "UPDATE careertrellis.stored_objects "
+                    "SET deleted_at = CURRENT_TIMESTAMP - INTERVAL '1 minute' "
+                    "WHERE owner_user_id = :owner AND deleted_at IS NOT NULL"
+                ),
+                {"owner": self.user_one},
+            )
+        self.assertEqual(2, owner_one.reconcile_deleted_objects())
+        self.assertEqual(2, len(object_backend.objects))
 
     def _insert_job(
         self,
