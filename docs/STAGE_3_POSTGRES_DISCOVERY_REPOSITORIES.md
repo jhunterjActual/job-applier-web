@@ -71,6 +71,12 @@ Owner-scoped application records and private in-process outcome insights are
 added by the bounded read slice documented in
 `STAGE_3_POSTGRES_APPLICATION_READS.md`.
 
+The later search-execution context slice reuses the owner-scoped job-catalog
+write boundary and adds one minimized snapshot of canonical known-job statuses
+and suppression fingerprints for the authenticated owner's search loop. Its
+short-transaction and privacy contract is documented in
+`STAGE_3_POSTGRES_SEARCH_EXECUTION_CONTEXT.md`.
+
 ## Operations intentionally not converted
 
 This slice does not move any of the following hosted paths:

@@ -107,6 +107,13 @@ prompt nor changes its optimistic-concurrency write contract. The current
 worker remains an idle scaffold and receives no web keyring, provider
 credential, or R2 credential.
 
+The later search-execution context slice reuses the authenticated owner's
+profile, active-resume, and encrypted-provider-secret boundaries and adds the
+conditional suggested-keyword cache operation. Its separate transaction and
+catalog-snapshot contract is documented in
+`STAGE_3_POSTGRES_SEARCH_EXECUTION_CONTEXT.md`; the exclusions above remain the
+historical boundary of this provider-context slice.
+
 ## Verification gates
 
 - [ ] Temporary SQLite tests prove provider/model/maps selection, opt-in OCR,

@@ -17,7 +17,6 @@ from ai_providers import (
     settings_from_profile,
 )
 import config
-from database import get_db_connection
 from operations import OperationCancelled
 from tailor import analyze_job_match, analyze_job_matches_batch
 from datetime import date, datetime, timezone
@@ -1039,12 +1038,13 @@ def run_job_search_and_matching(
     location: str = "",
     cancel_check: Callable[[], None] | None = None,
     job_repository: Any | None = None,
+    profile_repository: Any | None = None,
 ) -> dict:
     """
     Coordinates the entire job search pipeline: retrieves the resume,
     calculates/suggests keywords if undefined, searches job boards in parallel,
     scrapes detailed job profiles, performs batch AI matching, and stores
-    results in the SQLite database.
+    results through the configured owner-scoped repositories.
     
     Args:
         keywords (str): The keywords to search for. If empty, uses cached resume-suggested keywords.
@@ -1053,27 +1053,24 @@ def run_job_search_and_matching(
     Returns:
         dict: A dictionary containing success status and number of new jobs matched.
     """
-    # 1. Fetch user's base resume
-    conn = get_db_connection()
+    # 1. Fetch the user's base resume through one short repository operation.
+    if profile_repository is None:
+        from profile_repository import runtime_profile_repository
+
+        profile_repository = runtime_profile_repository()
     if job_repository is None:
         # Import lazily because the repository's URL canonicalization helpers
         # depend on this module during application startup.
         from discovery_repository import runtime_discovery_repository
 
-        job_repository = runtime_discovery_repository(
-            sqlite_connection_factory=get_db_connection
-        )
+        job_repository = runtime_discovery_repository()
+
     def check_cancelled() -> None:
-        try:
-            _cancellation_checkpoint(cancel_check)
-        except Exception:
-            conn.close()
-            raise
+        _cancellation_checkpoint(cancel_check)
 
     check_cancelled()
-    profile = conn.execute("SELECT * FROM profile LIMIT 1").fetchone()
+    profile = profile_repository.get_profile()
     if not profile or not profile["base_resume_text"]:
-        conn.close()
         return {"error": "Profile or base resume text is missing. Please setup your profile first."}
         
     resume_text = profile["base_resume_text"]
@@ -1098,9 +1095,10 @@ def run_job_search_and_matching(
                 ai_model=ai_settings.model,
             )
             check_cancelled()
-            # Save suggestions to cache
-            conn.execute("UPDATE profile SET suggested_keywords = ? WHERE id = 1", (",".join(search_keywords),))
-            conn.commit()
+            # Cache only when another request has not already populated it.
+            profile_repository.cache_suggested_keywords_if_empty(
+                ",".join(search_keywords)
+            )
             print(f"No keywords entered. Extracted and cached keywords: {search_keywords}")
     else:
         search_keywords = [stripped_kw]
@@ -1159,12 +1157,10 @@ def run_job_search_and_matching(
     
     # 4. Scrape all job descriptions first
     scraped_jobs = []
-    known_urls = {
-        canonicalize_job_url(row["url"]): row["status"]
-        for row in conn.execute("SELECT url, status FROM jobs").fetchall()
-    }
-    from job_suppressions import job_url_fingerprint, suppressed_job_fingerprints
-    suppressed_fingerprints = suppressed_job_fingerprints(conn)
+    catalog_context = job_repository.search_catalog_context()
+    known_urls = catalog_context["known_status_by_url"]
+    suppressed_fingerprints = catalog_context["suppressed_fingerprints"]
+    from job_suppressions import job_url_fingerprint
     for item in results:
         check_cancelled()
         url = item["url"]
@@ -1282,13 +1278,12 @@ def run_job_search_and_matching(
             check_cancelled()
         except OperationCancelled:
             raise
-        except Exception as e:
-            print(f"Error inserting job {url}: {e}")
+        except Exception:
+            print("A discovered job could not be saved; the search remains available.")
             
     alerts = provider_alerts_from_health(provider_health)
 
     check_cancelled()
-    conn.close()
     return {
         "success": ai_error is None,
         "jobs_added": matches_added,

@@ -103,14 +103,20 @@ It remains ownerless, returns only fixed health responses, and does not weaken
 the final cutover gate. Its operational and privacy contract is in
 `STAGE_3_POSTGRES_READINESS.md`.
 
+The search-execution context slice routes the authenticated owner's profile,
+conditional suggested-keyword cache, known-job statuses, suppression
+fingerprints, and accepted-job writes through the existing repository
+boundaries. Each short database transaction closes before external provider
+or AI work begins. Its ownership, minimization, and transaction contract is in
+`STAGE_3_POSTGRES_SEARCH_EXECUTION_CONTEXT.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
 - deletion of jobs with applications, lifecycle history, generated materials,
   stored objects, or other protected dependent records;
-- search execution's remaining profile keyword-cache write and job/suppression
-  reads, plus durable saved-search claiming, retry, and background-worker
-  execution;
+- process-global search status/results, durable saved-search claiming, retry,
+  leases, and background-worker execution;
 - any application operation outside the converted lifecycle, engagement,
   interview-preparation, record-list, and insight repository boundaries;
 - headquarters cache entries and any unconverted job-domain reads;
