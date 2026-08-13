@@ -15,6 +15,7 @@ See [docs/STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md](docs/STAGE_3_POSTGRES_REPOS
 See [docs/STAGE_3_POSTGRES_DISCOVERY_REPOSITORIES.md](docs/STAGE_3_POSTGRES_DISCOVERY_REPOSITORIES.md) for the owner-scoped job-discovery read/delete slice and its continuing no-activation boundary.
 See [docs/STAGE_3_POSTGRES_SAVED_SEARCH_WRITES.md](docs/STAGE_3_POSTGRES_SAVED_SEARCH_WRITES.md) for owner-scoped saved-search creation and schedule advancement under the continuing no-activation boundary.
 See [docs/STAGE_3_POSTGRES_JOB_CATALOG_WRITES.md](docs/STAGE_3_POSTGRES_JOB_CATALOG_WRITES.md) for owner-scoped manual/discovery job creation and initial score completion under the continuing no-activation boundary.
+See [docs/STAGE_3_POSTGRES_LIFECYCLE_WRITES.md](docs/STAGE_3_POSTGRES_LIFECYCLE_WRITES.md) for atomic owner-scoped job/application lifecycle transitions and undo under the continuing no-activation boundary.
 
 A self-contained, privacy-first workspace designed to streamline job discovery, resume tailoring, guided-manual applications, progress tracking, and interview preparation.
 

@@ -109,7 +109,7 @@ from searcher import (
     validate_public_http_url,
 )
 from utils import generate_resume_pdf, resume_pdf_metadata
-from lifecycle import undo_latest_lifecycle_change, update_lifecycle
+from lifecycle_repository import MAX_LIFECYCLE_NOTES_CHARS, runtime_lifecycle_repository
 from job_cleanup import apply_cleanup, cleanup_preview
 from job_suppressions import record_job_suppression
 from job_filters import derive_job_filter_facets
@@ -490,7 +490,7 @@ class LifecycleUpdateRequest(BaseModel):
     status: Literal["matched", "tailored", "form_filled", "submitted", "applied", "interview", "offer", "rejected", "withdrawn", "closed"]
     applied_on: Optional[date] = None
     method: Optional[Literal["company_site", "job_board", "email", "recruiter", "referral", "other"]] = None
-    notes: Optional[str] = None
+    notes: Optional[str] = Field(default=None, max_length=MAX_LIFECYCLE_NOTES_CHARS)
     follow_up_on: Optional[date] = None
 
 
@@ -1326,20 +1326,17 @@ def _save_manual_job(req: ManualJobSaveRequest, operation: OperationToken) -> di
 @app.patch("/api/jobs/{job_id}/lifecycle")
 def change_job_lifecycle(job_id: int, req: LifecycleUpdateRequest) -> dict:
     """Record a manual application or pipeline correction with audit history."""
-    conn = get_db_connection()
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        result = update_lifecycle(
-            conn,
+        result = runtime_lifecycle_repository(
+            sqlite_connection_factory=get_db_connection
+        ).update_lifecycle(
             job_id,
             req.status,
             applied_on=req.applied_on,
             method=req.method,
             notes=req.notes,
             follow_up_on=req.follow_up_on,
-            source="manual",
         )
-        conn.commit()
         capture_event(
             "job_lifecycle_updated",
             {
@@ -1351,35 +1348,21 @@ def change_job_lifecycle(job_id: int, req: LifecycleUpdateRequest) -> dict:
         )
         return {"success": True, **result}
     except LookupError as exc:
-        conn.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        conn.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 @app.post("/api/jobs/{job_id}/lifecycle/undo")
 def undo_job_lifecycle(job_id: int) -> dict:
     """Undo the latest recorded manual lifecycle correction."""
-    conn = get_db_connection()
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        result = undo_latest_lifecycle_change(conn, job_id)
-        conn.commit()
+        result = runtime_lifecycle_repository(
+            sqlite_connection_factory=get_db_connection
+        ).undo_latest_lifecycle_change(job_id)
         return {"success": True, **result}
     except LookupError as exc:
-        conn.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 @app.get("/api/jobs/cleanup-preview")

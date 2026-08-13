@@ -41,9 +41,10 @@ database URLs, raw provider errors, and unrelated tenant data.
 
 ## Migration and rollback
 
-This slice adds no migration. Alembic must continue to report exactly one head
-at `20260812_0004`; the existing owner-scoped uniqueness, indexes, relationships,
-forced RLS policy, and saved-search frequency constraint remain unchanged.
+This slice itself adds no migration. The later lifecycle slice advances the
+repository migration chain to `20260813_0005`; the existing owner-scoped
+uniqueness, relationships, forced RLS policy, and saved-search frequency
+constraint remain unchanged.
 
 No data is copied and repository authority does not change. PostgreSQL tests and
 imports use disposable targets only while the hard gate is false. After an
@@ -54,8 +55,8 @@ writable SQLite is forbidden. This slice does not reach that boundary.
 
 This slice does not convert or authorize:
 
-- job lifecycle/status transitions after initial score completion, posting
-  verification, expiry updates, archive/restore, cleanup, or permanent deletion;
+- posting verification, expiry updates, archive/restore, cleanup, or permanent
+  deletion after initial score completion;
 - suppression creation coupled to permanent job deletion;
 - applications, engagements, interview preparation, or follow-up data;
 - tailoring, generated-material creation/replacement/download/deletion, or
@@ -70,6 +71,10 @@ Search-provider network execution and process-global search state remain
 outside the repository transaction. This slice persists only the accepted job
 catalog result and its initial score completion.
 
+Atomic lifecycle transitions and undo are handled by the next bounded slice in
+`STAGE_3_POSTGRES_LIFECYCLE_WRITES.md`; they remain separate from catalog
+creation and initial scoring.
+
 ## Verification gates
 
 - [ ] Clean local SQLite tests prove manual/discovery creation, canonical
@@ -77,8 +82,8 @@ catalog result and its initial score completion.
       touching the user's workspace.
 - [ ] Route tests prove every in-scope write uses the configured repository and
       shared mode has no SQLite fallback.
-- [ ] Alembic reports one head at `20260812_0004`; no migration or RLS-policy
-      change is included.
+- [ ] Alembic reports one head at `20260813_0005`; this catalog slice itself
+      adds no migration or RLS-policy change.
 - [ ] Disposable PostgreSQL 18 tests prove missing-context denial, same-URL
       isolation between two owners, owner-scoped conflict behavior, cross-owner
       score-update denial, deterministic concurrent writes, and no partial batch.

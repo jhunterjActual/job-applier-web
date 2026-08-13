@@ -52,6 +52,7 @@ from docx import Document as WordDocument
 from fastapi.testclient import TestClient
 from ai_providers import AIProviderError, AIProviderSettings, CapabilityResponse, extract_text_from_images, generate_structured, settings_from_profile
 from lifecycle import undo_latest_lifecycle_change, update_lifecycle
+from lifecycle_repository import SQLiteLifecycleRepository
 from materials import material_download_name, persist_cover_letter, resolve_output_file
 from resume_documents import (
     MAX_IMPORTED_RESUME_CHARACTERS,
@@ -5072,6 +5073,88 @@ class ManualLifecycleTests(unittest.TestCase):
         self.assertEqual("matched", result["status"])
         self.assertEqual("matched", self.connection.execute("SELECT status FROM jobs WHERE id=1").fetchone()[0])
         self.assertIsNone(self.connection.execute("SELECT id FROM applications WHERE job_id=1").fetchone())
+
+    def test_routes_delegate_lifecycle_transactions_to_the_repository(self) -> None:
+        repository = Mock()
+        repository.update_lifecycle.return_value = {
+            "previous_status": "matched",
+            "status": "applied",
+            "date_applied": "2026-08-03",
+        }
+        repository.undo_latest_lifecycle_change.return_value = {
+            "previous_status": "applied",
+            "status": "matched",
+            "date_applied": None,
+        }
+        request = app_module.LifecycleUpdateRequest(
+            status="applied",
+            applied_on=date(2026, 8, 3),
+            method="referral",
+            notes="Referred by Alex",
+        )
+        with (
+            patch.object(app_module, "runtime_lifecycle_repository", return_value=repository),
+            patch.object(app_module, "get_db_connection") as sqlite_connection,
+            patch.object(app_module, "capture_event"),
+        ):
+            changed = app_module.change_job_lifecycle(41, request)
+            undone = app_module.undo_job_lifecycle(41)
+        self.assertEqual("applied", changed["status"])
+        self.assertEqual("matched", undone["status"])
+        repository.update_lifecycle.assert_called_once_with(
+            41,
+            "applied",
+            applied_on=date(2026, 8, 3),
+            method="referral",
+            notes="Referred by Alex",
+            follow_up_on=None,
+        )
+        repository.undo_latest_lifecycle_change.assert_called_once_with(41)
+        sqlite_connection.assert_not_called()
+
+    def test_sqlite_repository_rolls_back_failed_lifecycle_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "lifecycle.db"
+            connection = sqlite3.connect(database_path)
+            connection.executescript("""
+                CREATE TABLE jobs (
+                    id INTEGER PRIMARY KEY, company TEXT, title TEXT, status TEXT
+                );
+                CREATE TABLE applications (
+                    id INTEGER PRIMARY KEY, job_id INTEGER UNIQUE, company TEXT, position TEXT,
+                    date_applied TEXT, status TEXT, created_at TEXT, submitted_at TEXT,
+                    confirmed_at TEXT, application_method TEXT, submission_evidence TEXT,
+                    notes TEXT, follow_up_date TEXT, tailored_resume_path TEXT, cover_letter TEXT
+                );
+                CREATE TABLE application_status_history (
+                    id INTEGER PRIMARY KEY, job_id INTEGER, from_status TEXT, to_status TEXT,
+                    changed_at TEXT, source TEXT, notes TEXT, undone_at TEXT
+                );
+                INSERT INTO jobs VALUES (1, 'Example Co', 'Data Director', 'matched');
+            """)
+            connection.commit()
+            connection.close()
+
+            def connect() -> sqlite3.Connection:
+                opened = sqlite3.connect(database_path)
+                opened.row_factory = sqlite3.Row
+                return opened
+
+            repository = SQLiteLifecycleRepository(connect)
+            with self.assertRaisesRegex(LookupError, "Job not found"):
+                repository.update_lifecycle(999, "applied")
+            verification = connect()
+            try:
+                self.assertEqual(
+                    "matched",
+                    verification.execute("SELECT status FROM jobs WHERE id = 1").fetchone()[0],
+                )
+                self.assertEqual(
+                    0,
+                    verification.execute("SELECT count(*) FROM applications").fetchone()[0],
+                )
+            finally:
+                verification.close()
 
 
 class BulkCleanupTests(unittest.TestCase):
