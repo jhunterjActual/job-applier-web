@@ -26,6 +26,7 @@ import data_store as data_store_module
 import local_users as local_users_module
 import materials as materials_module
 import operations as operations_module
+import job_retention_repository as job_retention_repository_module
 import provider_secrets as provider_secrets_module
 import searcher as searcher_module
 import source_diagnostics as source_diagnostics_module
@@ -83,6 +84,13 @@ from dependency_lock import (
 )
 from discovery_repository import SQLiteDiscoveryRepository
 from job_cleanup import apply_cleanup, cleanup_preview
+from job_retention_repository import (
+    CleanupBatchTooLarge,
+    CleanupPreviewChanged,
+    JobRetentionNotFound,
+    JobRetentionProtected,
+    SQLiteJobRetentionRepository,
+)
 from job_filters import derive_job_filter_facets
 from job_suppressions import job_url_fingerprint, record_job_suppression
 from interview_prep import (
@@ -1857,6 +1865,105 @@ class DataStoreConfigurationTests(unittest.TestCase):
         repository.delete_saved_search.assert_called_once_with(8)
         repository.list_source_diagnostics.assert_called_once_with(100)
 
+    def test_job_retention_routes_dispatch_through_the_configured_repository(self) -> None:
+        repository = Mock()
+        repository.cleanup_preview.return_value = {
+            "actions": {"archive": {"count": 2, "preview_token": "preview"}}
+        }
+        repository.apply_cleanup.return_value = 2
+        with (
+            patch.object(
+                app_module,
+                "runtime_job_retention_repository",
+                return_value=repository,
+            ) as factory,
+            patch.object(app_module, "IS_SEARCHING", False),
+        ):
+            self.assertEqual(
+                repository.cleanup_preview.return_value,
+                app_module.preview_job_cleanup(),
+            )
+            cleanup = app_module.cleanup_jobs(
+                app_module.CleanupRequest(action="archive", preview_token="a" * 64)
+            )
+            deleted = app_module.delete_job(7)
+
+        self.assertEqual(2, cleanup["affected"])
+        self.assertTrue(deleted["success"])
+        self.assertEqual(3, factory.call_count)
+        for call in factory.call_args_list:
+            self.assertIs(app_module.get_db_connection, call.kwargs["sqlite_connection_factory"])
+        repository.cleanup_preview.assert_called_once_with()
+        repository.apply_cleanup.assert_called_once_with("archive", "a" * 64)
+        repository.delete_job.assert_called_once_with(7)
+
+    def test_job_retention_conflicts_and_failures_use_stable_private_errors(self) -> None:
+        repository = Mock()
+        secret = "postgresql://runtime:secret@private-database.test/careertrellis"
+        with (
+            patch.object(
+                app_module,
+                "runtime_job_retention_repository",
+                return_value=repository,
+            ),
+            patch.object(app_module, "IS_SEARCHING", False),
+        ):
+            for failure in (
+                CleanupPreviewChanged(secret),
+                CleanupBatchTooLarge(secret),
+            ):
+                repository.apply_cleanup.side_effect = failure
+                with self.subTest(failure=type(failure).__name__):
+                    with self.assertRaises(app_module.HTTPException) as raised:
+                        app_module.cleanup_jobs(
+                            app_module.CleanupRequest(
+                                action="delete", preview_token="a" * 64
+                            )
+                        )
+                    self.assertEqual(409, raised.exception.status_code)
+                    self.assertNotIn(secret, raised.exception.detail)
+
+            for failure, expected_status in (
+                (JobRetentionNotFound(secret), 404),
+                (JobRetentionProtected(secret), 409),
+                (RuntimeError(secret), 500),
+            ):
+                repository.delete_job.side_effect = failure
+                with self.subTest(failure=type(failure).__name__):
+                    with self.assertRaises(app_module.HTTPException) as raised:
+                        app_module.delete_job(7)
+                    self.assertEqual(expected_status, raised.exception.status_code)
+                    self.assertNotIn(secret, raised.exception.detail)
+
+            repository.cleanup_preview.side_effect = RuntimeError(secret)
+            with self.assertRaises(app_module.HTTPException) as raised:
+                app_module.preview_job_cleanup()
+            self.assertEqual(500, raised.exception.status_code)
+            self.assertNotIn(secret, raised.exception.detail)
+
+    def test_search_in_progress_blocks_cleanup_before_repository_dispatch(self) -> None:
+        with (
+            patch.object(app_module, "runtime_job_retention_repository") as factory,
+            patch.object(app_module, "IS_SEARCHING", True),
+            self.assertRaises(app_module.HTTPException) as raised,
+        ):
+            app_module.cleanup_jobs(
+                app_module.CleanupRequest(action="archive", preview_token="a" * 64)
+            )
+        self.assertEqual(409, raised.exception.status_code)
+        factory.assert_not_called()
+
+    def test_cleanup_request_rejects_unbounded_or_malformed_preview_tokens(self) -> None:
+        for token in ("short", "g" * 64, "a" * 65, "a" * 100_000):
+            with self.subTest(length=len(token)):
+                with self.assertRaises(ValueError):
+                    app_module.CleanupRequest(action="delete", preview_token=token)
+
+        request = app_module.CleanupRequest(
+            action="delete", preview_token="a" * 64
+        )
+        self.assertEqual("a" * 64, request.preview_token)
+
 
 class SavedSearchWriteRepositoryTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -3032,6 +3139,12 @@ class ManualJobImportTests(unittest.TestCase):
             );
             CREATE TABLE applications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, status TEXT
+            );
+            CREATE TABLE application_status_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER
+            );
+            CREATE TABLE application_engagements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER
             );
             CREATE TABLE job_suppressions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5299,6 +5412,210 @@ class ManualLifecycleTests(unittest.TestCase):
                 )
             finally:
                 verification.close()
+
+
+class SQLiteJobRetentionRepositoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_directory = tempfile.TemporaryDirectory()
+        self.database_path = Path(self.temp_directory.name) / "job-retention.db"
+        connection = self.connection_factory()
+        connection.executescript("""
+            CREATE TABLE jobs (
+                id INTEGER PRIMARY KEY,
+                company TEXT,
+                title TEXT,
+                url TEXT,
+                date_found TEXT,
+                match_score INTEGER,
+                status TEXT,
+                archived_at TEXT,
+                archived_from_status TEXT
+            );
+            CREATE TABLE applications (id INTEGER PRIMARY KEY, job_id INTEGER);
+            CREATE TABLE application_status_history (
+                id INTEGER PRIMARY KEY, job_id INTEGER
+            );
+            CREATE TABLE application_engagements (
+                id INTEGER PRIMARY KEY, job_id INTEGER
+            );
+            CREATE TABLE job_suppressions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url_fingerprint TEXT NOT NULL UNIQUE,
+                hostname TEXT NOT NULL,
+                company TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                deleted_at TEXT NOT NULL,
+                deletion_source TEXT NOT NULL
+            );
+            INSERT INTO jobs VALUES
+                (1, 'A', 'Untouched', 'https://jobs.example.test/secret-1',
+                 '2026-01-01', 90, 'matched', NULL, NULL),
+                (2, 'B', 'Has Application', 'https://jobs.example.test/2',
+                 '2026-01-01', 80, 'matched', NULL, NULL),
+                (3, 'C', 'Tailored', 'https://jobs.example.test/3',
+                 '2026-01-01', 70, 'tailored', NULL, NULL),
+                (4, 'D', 'Archived', 'https://jobs.example.test/secret-4',
+                 '2026-01-01', 60, 'archived', '2026-01-02', 'matched'),
+                (5, 'E', 'Has History', 'https://jobs.example.test/5',
+                 '2026-01-01', 50, 'matched', NULL, NULL),
+                (6, 'F', 'Has Engagement', 'https://jobs.example.test/6',
+                 '2026-01-01', 40, 'matched', NULL, NULL);
+            INSERT INTO applications VALUES (1, 2);
+            INSERT INTO application_status_history VALUES (1, 5);
+            INSERT INTO application_engagements VALUES (1, 6);
+        """)
+        connection.commit()
+        connection.close()
+        self.repository = SQLiteJobRetentionRepository(self.connection_factory)
+
+    def tearDown(self) -> None:
+        self.temp_directory.cleanup()
+
+    def connection_factory(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.database_path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def test_preview_protects_related_work_and_stale_token_writes_nothing(self) -> None:
+        preview = self.repository.cleanup_preview()
+        self.assertEqual(1, preview["actions"]["archive"]["count"])
+        self.assertEqual(2, preview["actions"]["delete"]["count"])
+        self.assertEqual(1, preview["actions"]["restore"]["count"])
+        self.assertEqual(4, preview["protected_count"])
+        self.assertEqual([1], [row["id"] for row in preview["sample"]])
+
+        connection = self.connection_factory()
+        connection.execute(
+            "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+            (7, "G", "New", "https://jobs.example.test/7", "2026-01-03", 30, "matched"),
+        )
+        connection.commit()
+        connection.close()
+        with self.assertRaises(CleanupPreviewChanged):
+            self.repository.apply_cleanup(
+                "archive", preview["actions"]["archive"]["preview_token"]
+            )
+        connection = self.connection_factory()
+        statuses = connection.execute(
+            "SELECT status FROM jobs WHERE id IN (1, 7) ORDER BY id"
+        ).fetchall()
+        connection.close()
+        self.assertEqual(["matched", "matched"], [row[0] for row in statuses])
+
+    def test_archive_and_restore_preserve_standalone_behavior(self) -> None:
+        preview = self.repository.cleanup_preview()
+        self.assertEqual(
+            1,
+            self.repository.apply_cleanup(
+                "archive", preview["actions"]["archive"]["preview_token"]
+            ),
+        )
+        connection = self.connection_factory()
+        archived = connection.execute(
+            "SELECT status, archived_from_status, archived_at FROM jobs WHERE id = 1"
+        ).fetchone()
+        connection.close()
+        self.assertEqual(("archived", "matched"), tuple(archived[:2]))
+        self.assertTrue(archived[2])
+
+        preview = self.repository.cleanup_preview()
+        self.assertEqual(
+            2,
+            self.repository.apply_cleanup(
+                "restore", preview["actions"]["restore"]["preview_token"]
+            ),
+        )
+        connection = self.connection_factory()
+        restored = connection.execute(
+            "SELECT status, archived_from_status, archived_at "
+            "FROM jobs WHERE id IN (1, 4) ORDER BY id"
+        ).fetchall()
+        connection.close()
+        self.assertEqual(
+            [("matched", None, None), ("matched", None, None)],
+            [tuple(row) for row in restored],
+        )
+
+    def test_bulk_delete_is_exact_and_suppressions_are_minimized(self) -> None:
+        preview = self.repository.cleanup_preview()
+        self.assertEqual(
+            2,
+            self.repository.apply_cleanup(
+                "delete", preview["actions"]["delete"]["preview_token"]
+            ),
+        )
+        connection = self.connection_factory()
+        remaining = connection.execute("SELECT id FROM jobs ORDER BY id").fetchall()
+        suppressions = connection.execute(
+            "SELECT url_fingerprint, hostname, company, title, deletion_source "
+            "FROM job_suppressions ORDER BY id"
+        ).fetchall()
+        connection.close()
+        self.assertEqual([2, 3, 5, 6], [row[0] for row in remaining])
+        self.assertEqual(
+            [
+                job_url_fingerprint("https://jobs.example.test/secret-1"),
+                job_url_fingerprint("https://jobs.example.test/secret-4"),
+            ],
+            [row["url_fingerprint"] for row in suppressions],
+        )
+        self.assertEqual(
+            ["bulk_cleanup", "bulk_cleanup"],
+            [row["deletion_source"] for row in suppressions],
+        )
+        self.assertNotIn(
+            "secret-",
+            " ".join(str(value) for row in suppressions for value in row),
+        )
+
+    def test_manual_delete_rejects_missing_and_protected_jobs(self) -> None:
+        with self.assertRaises(JobRetentionNotFound):
+            self.repository.delete_job(999)
+        for job_id in (2, 5, 6):
+            with self.subTest(job_id=job_id), self.assertRaises(JobRetentionProtected):
+                self.repository.delete_job(job_id)
+
+        connection = self.connection_factory()
+        connection.execute(
+            "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+            (7, "G", "Manual", "https://manual.example.test/private-7", "2026-01-03", 30, "matched"),
+        )
+        connection.commit()
+        connection.close()
+        self.repository.delete_job(7)
+        connection = self.connection_factory()
+        count = connection.execute("SELECT COUNT(*) FROM jobs WHERE id = 7").fetchone()[0]
+        suppression = connection.execute(
+            "SELECT hostname, deletion_source FROM job_suppressions WHERE title = 'Manual'"
+        ).fetchone()
+        connection.close()
+        self.assertEqual(0, count)
+        self.assertEqual(("manual.example.test", "manual"), tuple(suppression))
+
+    def test_suppression_failure_rolls_back_bulk_and_manual_deletes(self) -> None:
+        preview = self.repository.cleanup_preview()
+        with patch.object(
+            job_retention_repository_module,
+            "record_job_suppression",
+            side_effect=RuntimeError("synthetic suppression failure"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.repository.apply_cleanup(
+                    "delete", preview["actions"]["delete"]["preview_token"]
+                )
+            with self.assertRaises(RuntimeError):
+                self.repository.delete_job(1)
+
+        connection = self.connection_factory()
+        remaining = connection.execute(
+            "SELECT id FROM jobs WHERE id IN (1, 4) ORDER BY id"
+        ).fetchall()
+        suppression_count = connection.execute(
+            "SELECT COUNT(*) FROM job_suppressions"
+        ).fetchone()[0]
+        connection.close()
+        self.assertEqual([1, 4], [row[0] for row in remaining])
+        self.assertEqual(0, suppression_count)
 
 
 class BulkCleanupTests(unittest.TestCase):

@@ -41,10 +41,9 @@ database URLs, raw provider errors, and unrelated tenant data.
 
 ## Migration and rollback
 
-This slice itself adds no migration. The later lifecycle slice advances the
-repository migration chain to `20260813_0005`; the existing owner-scoped
-uniqueness, relationships, forced RLS policy, and saved-search frequency
-constraint remain unchanged.
+This slice itself adds no migration. The later retention slice advances the
+repository migration chain to `20260813_0006`; the existing owner-scoped
+uniqueness, relationships, and forced RLS policy remain unchanged.
 
 No data is copied and repository authority does not change. PostgreSQL tests and
 imports use disposable targets only while the hard gate is false. After an
@@ -55,9 +54,8 @@ writable SQLite is forbidden. This slice does not reach that boundary.
 
 This slice does not convert or authorize:
 
-- archive/restore, cleanup, or permanent deletion after initial score
-  completion;
-- suppression creation coupled to permanent job deletion;
+- deletion of jobs with applications, history, generated materials, stored
+  objects, or other protected dependent records;
 - applications, engagements, interview preparation, or follow-up data;
 - tailoring, generated-material creation/replacement/download/deletion, or
   private-object operations;
@@ -79,6 +77,10 @@ Posting refresh and expiry writes are handled by
 `STAGE_3_POSTGRES_VERIFICATION_WRITES.md`, including the coupled closure of a
 pre-application application row.
 
+Protected untouched-job archive, restore, and permanent deletion with an atomic
+privacy-minimized suppression are handled by
+`STAGE_3_POSTGRES_JOB_RETENTION_WRITES.md`.
+
 ## Verification gates
 
 - [ ] Clean local SQLite tests prove manual/discovery creation, canonical
@@ -86,7 +88,7 @@ pre-application application row.
       touching the user's workspace.
 - [ ] Route tests prove every in-scope write uses the configured repository and
       shared mode has no SQLite fallback.
-- [ ] Alembic reports one head at `20260813_0005`; this catalog slice itself
+- [ ] Alembic reports one head at `20260813_0006`; this catalog slice itself
       adds no migration or RLS-policy change.
 - [ ] Disposable PostgreSQL 18 tests prove missing-context denial, same-URL
       isolation between two owners, owner-scoped conflict behavior, cross-owner

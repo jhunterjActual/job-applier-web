@@ -47,9 +47,10 @@ expired.
 
 ## Migration and rollback
 
-This slice adds no migration. Alembic remains at the single head
-`20260813_0005`; existing owner-scoped relationships, forced-RLS policies, and
-the lifecycle-history index are sufficient.
+This slice adds no migration. The later retention slice advances Alembic to the
+single head `20260813_0006` with one concurrent owner/status/id
+retention-candidate index;
+existing owner-scoped relationships and forced-RLS policies remain unchanged.
 
 No data is copied and authority does not change. After an eventual first
 authoritative PostgreSQL/R2 write, a code-only rollback to writable SQLite is
@@ -59,8 +60,8 @@ forbidden. This slice does not reach that boundary.
 
 This slice does not convert or authorize:
 
-- cleanup preview/apply, archive/restore, permanent job deletion, or the
-  suppression write coupled to deletion;
+- deletion of jobs with applications, lifecycle history, generated materials,
+  stored objects, or other protected dependent records;
 - application operations outside lifecycle status coupling, engagements,
   interview preparation, or follow-up management;
 - tailoring or generated-material object creation, replacement, download, or
@@ -79,7 +80,7 @@ transaction. Only its validated outcome enters the owner-scoped transaction.
       coupling, changed-target rollback, and unavailable-source no-write parity.
 - [ ] Route tests prove the configured repository is used before inspection and
       shared mode has no SQLite fallback.
-- [ ] Alembic reports exactly one head at `20260813_0005`; this slice adds no
+- [ ] Alembic reports exactly one head at `20260813_0006`; this slice adds no
       schema or RLS-policy change.
 - [ ] Disposable PostgreSQL 18 tests prove missing/cross-owner denial, active
       refresh, atomic pre-application closure, changed-target rollback, and
@@ -93,3 +94,6 @@ transaction. Only its validated outcome enters the owner-scoped transaction.
 
 The final authority and rollback contract remains in
 `STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md`.
+
+Protected untouched-job archive, restore, and deletion are documented in
+`STAGE_3_POSTGRES_JOB_RETENTION_WRITES.md`.

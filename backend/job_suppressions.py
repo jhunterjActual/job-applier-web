@@ -2,6 +2,8 @@
 
 import hashlib
 import sqlite3
+from datetime import datetime
+from typing import Any
 from urllib.parse import urlsplit
 
 from searcher import canonicalize_job_url
@@ -11,6 +13,26 @@ def job_url_fingerprint(url: str) -> str:
     """Return a stable, non-reversible identity for a canonical job URL."""
     canonical_url = canonicalize_job_url(url)
     return hashlib.sha256(canonical_url.encode("utf-8")).hexdigest()
+
+
+def suppression_values(
+    *,
+    url: str,
+    company: str | None,
+    title: str | None,
+    deleted_at: str | datetime,
+    deletion_source: str,
+) -> dict[str, Any]:
+    """Return the bounded, privacy-minimized values retained after deletion."""
+    canonical_url = canonicalize_job_url(url)
+    return {
+        "url_fingerprint": job_url_fingerprint(canonical_url),
+        "hostname": (urlsplit(canonical_url).hostname or "unknown").lower()[:253],
+        "company": str(company or "")[:180],
+        "title": str(title or "")[:180],
+        "deleted_at": deleted_at,
+        "deletion_source": deletion_source,
+    }
 
 
 def record_job_suppression(
@@ -23,8 +45,13 @@ def record_job_suppression(
     deletion_source: str,
 ) -> None:
     """Remember a deleted posting without retaining its full URL or description."""
-    canonical_url = canonicalize_job_url(url)
-    hostname = (urlsplit(canonical_url).hostname or "unknown").lower()[:253]
+    values = suppression_values(
+        url=url,
+        company=company,
+        title=title,
+        deleted_at=deleted_at,
+        deletion_source=deletion_source,
+    )
     connection.execute(
         """
         INSERT INTO job_suppressions (
@@ -38,9 +65,9 @@ def record_job_suppression(
             deletion_source = excluded.deletion_source
         """,
         (
-            job_url_fingerprint(canonical_url), hostname,
-            str(company or "")[:180], str(title or "")[:180],
-            deleted_at, deletion_source,
+            values["url_fingerprint"], values["hostname"],
+            values["company"], values["title"],
+            values["deleted_at"], values["deletion_source"],
         ),
     )
 

@@ -56,13 +56,19 @@ Atomic owner-scoped job/application lifecycle transitions and undo are added by
 the bounded lifecycle slice documented in
 `STAGE_3_POSTGRES_LIFECYCLE_WRITES.md`.
 
+Owner-scoped posting refresh and expiry writes are added by the bounded
+verification slice documented in `STAGE_3_POSTGRES_VERIFICATION_WRITES.md`.
+
+Protected owner-scoped untouched-job preview, archive, restore, and permanent
+deletion are added by the bounded retention slice documented in
+`STAGE_3_POSTGRES_JOB_RETENTION_WRITES.md`.
+
 ## Operations intentionally not converted
 
 This slice does not move any of the following hosted paths:
 
-- verification, archive, restore, bulk-cleanup, or permanent-job writes after
-  initial catalog creation and score completion;
-- suppression creation that is coupled to permanent job deletion;
+- deletion of jobs with applications, history, generated materials, stored
+  objects, or other protected dependent records;
 - the process-global search-status/result state or durable background work;
 - application operations outside converted lifecycle transitions, engagements,
   interview preparation, and follow-up management;
@@ -79,9 +85,11 @@ write aggregate and its transaction semantics before any route flip.
 
 Migration `20260812_0003` adds only owner-first indexes; the following bounded
 saved-search slice advances the head to `20260812_0004`; the lifecycle slice
-advances it to `20260813_0005` with one active-history lookup index. None of
-these migrations copies data, changes RLS, or changes repository authority.
-Apply them only to disposable test databases
+advances it to `20260813_0005` with one active-history lookup index; and the
+retention slice advances it to `20260813_0006` with one concurrent
+owner/status/id retention-candidate index. None of these migrations copies data,
+changes RLS, or changes repository authority. Apply them only to disposable
+test databases
 while this no-activation gate is in force. Staging schema changes are reserved
 for the final exact-release migration window after a fresh verified backup and
 isolated restore receipt.
@@ -96,7 +104,7 @@ must enforce that distinction; this slice does not weaken it.
 
 - [ ] The standalone P0 suite passes from a clean local SQLite workspace.
 - [ ] Syntax compilation and shell-script syntax checks pass.
-- [ ] Alembic reports exactly one head at `20260813_0005`.
+- [ ] Alembic reports exactly one head at `20260813_0006`.
 - [ ] A disposable PostgreSQL 18 database upgrades through every migration and
       passes the full configured RLS suite.
 - [ ] Two-tenant tests prove converted job, suppression, saved-search, and

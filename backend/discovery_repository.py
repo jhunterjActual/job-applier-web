@@ -36,6 +36,17 @@ from source_diagnostics import (
 )
 
 
+def acquire_owner_job_catalog_lock(connection: Any, owner_user_id: int) -> None:
+    """Serialize one owner's job creation, suppression, and retention writes."""
+    connection.execute(
+        text(
+            "SELECT pg_advisory_xact_lock("
+            "hashtextextended(:catalog_lock_name, 0))"
+        ),
+        {"catalog_lock_name": f"careertrellis-job-catalog:{owner_user_id}"},
+    )
+
+
 class JobCreateResult(TypedDict, total=False):
     outcome: Literal["created", "duplicate", "suppressed"]
     job: dict[str, Any]
@@ -798,17 +809,7 @@ class PostgreSQLDiscoveryRepository:
         )
 
         def create(connection: Any) -> JobCreateResult:
-            connection.execute(
-                text(
-                    "SELECT pg_advisory_xact_lock("
-                    "hashtextextended(:catalog_lock_name, 0))"
-                ),
-                {
-                    "catalog_lock_name": (
-                        f"careertrellis-job-catalog:{self._owner_user_id}"
-                    )
-                },
-            )
+            acquire_owner_job_catalog_lock(connection, self._owner_user_id)
             suppressed = connection.scalar(
                 text(
                     """
@@ -926,26 +927,30 @@ class PostgreSQLDiscoveryRepository:
         return self._run(load)
 
     def clear_job_suppression(self, suppression_id: int) -> int:
-        return self._run(
-            lambda connection: connection.execute(
+        def clear(connection: Any) -> int:
+            acquire_owner_job_catalog_lock(connection, self._owner_user_id)
+            return connection.execute(
                 text(
                     "DELETE FROM careertrellis.job_suppressions "
                     "WHERE id = :suppression_id AND owner_user_id = :owner_user_id"
                 ),
                 {"suppression_id": suppression_id, "owner_user_id": self._owner_user_id},
             ).rowcount
-        )
+
+        return self._run(clear)
 
     def clear_all_job_suppressions(self) -> int:
-        return self._run(
-            lambda connection: connection.execute(
+        def clear(connection: Any) -> int:
+            acquire_owner_job_catalog_lock(connection, self._owner_user_id)
+            return connection.execute(
                 text(
                     "DELETE FROM careertrellis.job_suppressions "
                     "WHERE owner_user_id = :owner_user_id"
                 ),
                 {"owner_user_id": self._owner_user_id},
             ).rowcount
-        )
+
+        return self._run(clear)
 
     def list_saved_searches(self) -> list[dict[str, Any]]:
         def load(connection: Any) -> list[dict[str, Any]]:

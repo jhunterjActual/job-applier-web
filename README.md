@@ -17,6 +17,7 @@ See [docs/STAGE_3_POSTGRES_SAVED_SEARCH_WRITES.md](docs/STAGE_3_POSTGRES_SAVED_S
 See [docs/STAGE_3_POSTGRES_JOB_CATALOG_WRITES.md](docs/STAGE_3_POSTGRES_JOB_CATALOG_WRITES.md) for owner-scoped manual/discovery job creation and initial score completion under the continuing no-activation boundary.
 See [docs/STAGE_3_POSTGRES_LIFECYCLE_WRITES.md](docs/STAGE_3_POSTGRES_LIFECYCLE_WRITES.md) for atomic owner-scoped job/application lifecycle transitions and undo under the continuing no-activation boundary.
 See [docs/STAGE_3_POSTGRES_VERIFICATION_WRITES.md](docs/STAGE_3_POSTGRES_VERIFICATION_WRITES.md) for owner-scoped posting refresh/expiry writes and atomic pre-application closure under the continuing no-activation boundary.
+See [docs/STAGE_3_POSTGRES_JOB_RETENTION_WRITES.md](docs/STAGE_3_POSTGRES_JOB_RETENTION_WRITES.md) for owner-scoped untouched-job archive, restore, and permanent deletion with atomic privacy-minimized suppression under the continuing no-activation boundary.
 
 A self-contained, privacy-first workspace designed to streamline job discovery, resume tailoring, guided-manual applications, progress tracking, and interview preparation.
 

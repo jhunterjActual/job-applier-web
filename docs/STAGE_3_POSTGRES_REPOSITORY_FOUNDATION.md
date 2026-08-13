@@ -77,13 +77,17 @@ The posting-verification slice adds owner-scoped active refresh and expiry
 writes, including atomic application closure for pre-application states. Its
 bounded transaction contract is in `STAGE_3_POSTGRES_VERIFICATION_WRITES.md`.
 
+The job-retention slice adds owner-scoped bounded preview, archive, restore, and
+permanent deletion for untouched jobs, with atomic privacy-minimized
+suppression. Its protected transaction contract is in
+`STAGE_3_POSTGRES_JOB_RETENTION_WRITES.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
-- cleanup, archive/restore, and permanent deletion after initial score
-  completion;
+- deletion of jobs with applications, lifecycle history, generated materials,
+  stored objects, or other protected dependent records;
 - durable saved-search claiming, retry, and background-worker execution;
-- suppression creation coupled to permanent job deletion;
 - application operations outside the converted lifecycle transition, plus
   engagements, interview preparation, and follow-up management;
 - headquarters cache entries and any unconverted job-domain reads;

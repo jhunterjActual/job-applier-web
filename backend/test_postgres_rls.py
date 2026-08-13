@@ -36,6 +36,14 @@ from verification_repository import (
     PostgreSQLVerificationRepository,
     VerificationTargetChanged,
 )
+from job_retention_repository import (
+    MAX_RETENTION_BATCH,
+    CleanupBatchTooLarge,
+    CleanupPreviewChanged,
+    JobRetentionNotFound,
+    JobRetentionProtected,
+    PostgreSQLJobRetentionRepository,
+)
 from job_suppressions import job_url_fingerprint
 
 from postgres_database import (
@@ -312,6 +320,38 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                     "VALUES (:owner, 'Two Job', 'https://example.test/two') RETURNING id"
                 ),
                 {"owner": self.user_two},
+            )
+
+    def _insert_job(
+        self,
+        owner_user_id: int,
+        url: str,
+        *,
+        title: str = "Retention job",
+        status: str = "matched",
+        archived_from_status: str | None = None,
+    ) -> int:
+        with self.admin_engine.begin() as connection:
+            return connection.scalar(
+                text(
+                    """
+                    INSERT INTO careertrellis.jobs (
+                        owner_user_id, title, company, url, status,
+                        archived_at, archived_from_status
+                    ) VALUES (
+                        :owner, :title, 'Synthetic Employer', :url, :status,
+                        CASE WHEN :status = 'archived' THEN CURRENT_TIMESTAMP END,
+                        :archived_from_status
+                    ) RETURNING id
+                    """
+                ),
+                {
+                    "owner": owner_user_id,
+                    "title": title,
+                    "url": url,
+                    "status": status,
+                    "archived_from_status": archived_from_status,
+                },
             )
 
     def test_no_context_exposes_no_protected_rows(self) -> None:
@@ -802,6 +842,269 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         self.assertIn("match_score DESC NULLS LAST", jobs_definition)
         self.assertIn("id DESC", jobs_definition)
         self.assertIn("WHERE (status <> 'archived'::text)", jobs_definition)
+
+    def test_job_retention_index_is_exact_valid_and_ready(self) -> None:
+        with self.admin_engine.begin() as connection:
+            index = connection.execute(
+                text(
+                    """
+                    SELECT pg_get_indexdef(i.indexrelid), i.indisvalid, i.indisready
+                    FROM pg_index i
+                    JOIN pg_class c ON c.oid = i.indexrelid
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = 'careertrellis'
+                      AND c.relname = 'idx_jobs_owner_retention_candidates'
+                    """
+                )
+            ).one()
+        self.assertTrue(index.indisvalid)
+        self.assertTrue(index.indisready)
+        self.assertIn("(owner_user_id, status, id)", index[0])
+        self.assertIn("INCLUDE (archived_from_status)", index[0])
+        self.assertIn("WHERE (status = ANY (ARRAY['matched'::text, 'archived'::text]))", index[0])
+
+    def test_retention_preview_is_owner_isolated_bound_and_progress_protected(self) -> None:
+        owner_one = PostgreSQLJobRetentionRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        owner_two = PostgreSQLJobRetentionRepository(
+            self.user_two, engine=self.runtime_engine
+        )
+        history_job = self._insert_job(
+            self.user_one, "https://retention.example.test/history"
+        )
+        engagement_job = self._insert_job(
+            self.user_one, "https://retention.example.test/engagement"
+        )
+        free_job = self._insert_job(
+            self.user_one, "https://retention.example.test/free", title="Free job"
+        )
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO careertrellis.applications "
+                    "(owner_user_id, job_id) VALUES (:owner, :job_id)"
+                ),
+                {"owner": self.user_one, "job_id": self.job_one},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO careertrellis.application_status_history
+                        (owner_user_id, job_id, from_status, to_status, source)
+                    VALUES (:owner, :job_id, 'matched', 'tailored', 'test')
+                    """
+                ),
+                {"owner": self.user_one, "job_id": history_job},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO careertrellis.application_engagements
+                        (owner_user_id, job_id, engagement_type, name)
+                    VALUES (:owner, :job_id, 'recruiter', 'Synthetic contact')
+                    """
+                ),
+                {"owner": self.user_one, "job_id": engagement_job},
+            )
+
+        preview_one = owner_one.cleanup_preview()
+        preview_two = owner_two.cleanup_preview()
+        self.assertEqual(1, preview_one["actions"]["delete"]["count"])
+        self.assertEqual(3, preview_one["protected_count"])
+        self.assertEqual([free_job], [row["id"] for row in preview_one["sample"]])
+        self.assertEqual(1, preview_two["actions"]["delete"]["count"])
+        self.assertNotEqual(
+            preview_one["actions"]["delete"]["preview_token"],
+            preview_two["actions"]["delete"]["preview_token"],
+        )
+        self.assertNotIn("owner_user_id", json.dumps(preview_one, sort_keys=True))
+
+        with self.assertRaises(CleanupPreviewChanged):
+            owner_two.apply_cleanup(
+                "delete", preview_one["actions"]["delete"]["preview_token"]
+            )
+        with self.assertRaises(CleanupPreviewChanged):
+            owner_one.apply_cleanup(
+                "archive", preview_one["actions"]["delete"]["preview_token"]
+            )
+        self._insert_job(self.user_one, "https://retention.example.test/stale")
+        with self.assertRaises(CleanupPreviewChanged):
+            owner_one.apply_cleanup(
+                "delete", preview_one["actions"]["delete"]["preview_token"]
+            )
+
+        for protected_job in (self.job_one, history_job, engagement_job):
+            with self.subTest(job_id=protected_job):
+                with self.assertRaises(JobRetentionProtected):
+                    owner_one.delete_job(protected_job)
+        with self.assertRaises(JobRetentionNotFound):
+            owner_two.delete_job(self.job_one)
+        with self.assertRaises(JobRetentionNotFound):
+            owner_one.delete_job(999_999_999)
+        with self.runtime_engine.begin() as connection:
+            self.assertEqual(
+                0,
+                connection.execute(
+                    text("DELETE FROM careertrellis.jobs WHERE id = :job_id"),
+                    {"job_id": free_job},
+                ).rowcount,
+            )
+
+    def test_retention_archive_restore_and_deletes_are_atomic_and_owner_scoped(self) -> None:
+        owner_one = PostgreSQLJobRetentionRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        owner_two = PostgreSQLJobRetentionRepository(
+            self.user_two, engine=self.runtime_engine
+        )
+        second_job = self._insert_job(
+            self.user_one, "https://retention.example.test/second"
+        )
+
+        preview = owner_one.cleanup_preview()
+        self.assertEqual(2, owner_one.apply_cleanup(
+            "archive", preview["actions"]["archive"]["preview_token"]
+        ))
+        preview = owner_one.cleanup_preview()
+        self.assertEqual(2, owner_one.apply_cleanup(
+            "restore", preview["actions"]["restore"]["preview_token"]
+        ))
+        preview = owner_one.cleanup_preview()
+        self.assertEqual(2, owner_one.apply_cleanup(
+            "delete", preview["actions"]["delete"]["preview_token"]
+        ))
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            self.assertEqual(0, connection.scalar(text(
+                "SELECT COUNT(*) FROM careertrellis.jobs"
+            )))
+            suppressions = connection.execute(text(
+                "SELECT deletion_source, hostname FROM careertrellis.job_suppressions "
+                "ORDER BY id"
+            )).all()
+        self.assertEqual(2, len(suppressions))
+        self.assertTrue(all(row.deletion_source == "bulk_cleanup" for row in suppressions))
+        self.assertTrue(all(row.hostname in {"example.test", "retention.example.test"} for row in suppressions))
+        self.assertEqual(1, owner_two.cleanup_preview()["actions"]["delete"]["count"])
+
+        manual_job = self._insert_job(
+            self.user_one, "https://retention.example.test/manual-secret-path"
+        )
+        owner_one.delete_job(manual_job)
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            manual = connection.execute(text(
+                "SELECT * FROM careertrellis.job_suppressions "
+                "WHERE deletion_source = 'manual'"
+            )).mappings().one()
+        self.assertEqual("retention.example.test", manual["hostname"])
+        self.assertNotIn("manual-secret-path", " ".join(str(value) for value in manual.values()))
+        self.assertNotIn("owner_user_id", owner_two.cleanup_preview()["sample"][0])
+
+    def test_retention_delete_rolls_back_suppression_on_injected_failure(self) -> None:
+        repository = PostgreSQLJobRetentionRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        original = repository._upsert_suppression
+
+        def fail_after_suppression(*args, **kwargs) -> None:
+            original(*args, **kwargs)
+            raise RuntimeError("synthetic post-suppression failure")
+
+        with patch.object(repository, "_upsert_suppression", side_effect=fail_after_suppression):
+            with self.assertRaisesRegex(RuntimeError, "synthetic"):
+                repository.delete_job(self.job_one)
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            self.assertEqual(1, connection.scalar(text(
+                "SELECT COUNT(*) FROM careertrellis.jobs WHERE id = :job_id"
+            ), {"job_id": self.job_one}))
+            self.assertEqual(0, connection.scalar(text(
+                "SELECT COUNT(*) FROM careertrellis.job_suppressions"
+            )))
+
+    def test_retention_and_discovery_share_catalog_lock(self) -> None:
+        retention = PostgreSQLJobRetentionRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        discovery = PostgreSQLDiscoveryRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        url = "https://retention.example.test/concurrent"
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            connection.execute(
+                text("UPDATE careertrellis.jobs SET url = :url WHERE id = :job_id"),
+                {"url": url, "job_id": self.job_one},
+            )
+        barrier = Barrier(2)
+
+        def delete() -> None:
+            barrier.wait(timeout=5)
+            retention.delete_job(self.job_one)
+
+        def create() -> dict:
+            barrier.wait(timeout=5)
+            return discovery.create_job_if_available(
+                title="Concurrent recreation",
+                company="Synthetic Employer",
+                description="Synthetic description",
+                url=url,
+                match_score=None,
+                match_analysis=None,
+                date_found=date(2026, 8, 13),
+                location="Remote",
+                work_arrangement="remote",
+                employment_type="full-time",
+                compensation="",
+                source="manual",
+                last_checked_at=datetime(2026, 8, 13, tzinfo=timezone.utc),
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            delete_future = executor.submit(delete)
+            create_future = executor.submit(create)
+            delete_future.result(timeout=10)
+            created = create_future.result(timeout=10)
+        self.assertIn(created["outcome"], {"duplicate", "suppressed"})
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            self.assertEqual(0, connection.scalar(text(
+                "SELECT COUNT(*) FROM careertrellis.jobs WHERE url = :url"
+            ), {"url": url}))
+            self.assertEqual(1, connection.scalar(text(
+                "SELECT COUNT(*) FROM careertrellis.job_suppressions "
+                "WHERE url_fingerprint = :fingerprint"
+            ), {"fingerprint": job_url_fingerprint(url)}))
+
+    def test_retention_batch_cap_fails_before_mutation(self) -> None:
+        repository = PostgreSQLJobRetentionRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        with self.admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO careertrellis.jobs (owner_user_id, title, url)
+                    SELECT :owner, 'Batch ' || value,
+                           'https://batch.example.test/' || value
+                    FROM generate_series(1, :count) AS value
+                    """
+                ),
+                {"owner": self.user_one, "count": MAX_RETENTION_BATCH},
+            )
+        preview = repository.cleanup_preview()
+        self.assertEqual(
+            MAX_RETENTION_BATCH + 1,
+            preview["actions"]["archive"]["count"],
+        )
+        with self.assertRaises(CleanupBatchTooLarge):
+            repository.apply_cleanup(
+                "archive", preview["actions"]["archive"]["preview_token"]
+            )
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            self.assertEqual(
+                MAX_RETENTION_BATCH + 1,
+                connection.scalar(text(
+                    "SELECT COUNT(*) FROM careertrellis.jobs WHERE status = 'matched'"
+                )),
+            )
 
     def test_saved_search_writes_are_owner_scoped_monotonic_and_constrained(self) -> None:
         owner_one = PostgreSQLDiscoveryRepository(self.user_one, engine=self.runtime_engine)
