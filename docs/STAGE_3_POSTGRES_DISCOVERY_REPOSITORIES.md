@@ -67,6 +67,10 @@ Owner-scoped engagement tracking and interview-preparation workspace
 operations are added by the bounded application-operations slice documented in
 `STAGE_3_POSTGRES_APPLICATION_OPERATIONS.md`.
 
+Owner-scoped application records and private in-process outcome insights are
+added by the bounded read slice documented in
+`STAGE_3_POSTGRES_APPLICATION_READS.md`.
+
 ## Operations intentionally not converted
 
 This slice does not move any of the following hosted paths:
@@ -74,9 +78,8 @@ This slice does not move any of the following hosted paths:
 - deletion of jobs with applications, history, generated materials, stored
   objects, or other protected dependent records;
 - the process-global search-status/result state or durable background work;
-- the application record list and application-insight aggregation, plus
-  application operations outside the converted lifecycle, engagement, and
-  interview-preparation repository boundaries;
+- application operations outside the converted lifecycle, engagement,
+  interview-preparation, record-list, and insight repository boundaries;
 - generated-material creation, replacement, download integration, or deletion;
 - headquarters cache, user export, account deletion, or hosted backup/restore;
   or

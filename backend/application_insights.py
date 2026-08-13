@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 import sqlite3
 
@@ -82,7 +83,9 @@ def _parse_date(value: object) -> date | None:
         return None
 
 
-def _milestone_date(rows: list[sqlite3.Row], statuses: frozenset[str]) -> date | None:
+def _milestone_date(
+    rows: list[Mapping[str, object]], statuses: frozenset[str]
+) -> date | None:
     dates = [
         _parse_date(row["changed_at"])
         for row in rows
@@ -133,25 +136,14 @@ def _present_bucket(bucket: dict[str, object]) -> dict[str, object]:
     }
 
 
-def build_application_insights(connection: sqlite3.Connection) -> dict[str, object]:
-    """Summarize confirmed applications without sending or changing user data."""
-    applications = connection.execute("""
-        SELECT a.job_id, a.position, a.date_applied, a.confirmed_at,
-               a.application_method, a.base_resume_name, a.base_resume_version,
-               a.status, j.source, j.location
-        FROM applications a
-        LEFT JOIN jobs j ON j.id = a.job_id
-        WHERE a.status IN ('applied','interview','offer','rejected','withdrawn','closed')
-        ORDER BY COALESCE(a.date_applied, a.confirmed_at, a.created_at), a.id
-    """).fetchall()
-    history_by_job: dict[int, list[sqlite3.Row]] = defaultdict(list)
-    histories = connection.execute("""
-        SELECT h.job_id, h.to_status, h.changed_at, h.undone_at
-        FROM application_status_history h
-        INNER JOIN applications a ON a.job_id = h.job_id
-        WHERE a.status IN ('applied','interview','offer','rejected','withdrawn','closed')
-        ORDER BY h.changed_at, h.id
-    """).fetchall()
+def build_application_insights_from_rows(
+    application_rows: Iterable[Mapping[str, object]],
+    history_rows: Iterable[Mapping[str, object]],
+) -> dict[str, object]:
+    """Summarize already owner-scoped application rows without external calls."""
+    applications = list(application_rows)
+    histories = list(history_rows)
+    history_by_job: dict[int, list[Mapping[str, object]]] = defaultdict(list)
     for history in histories:
         history_by_job[int(history["job_id"])].append(history)
 
@@ -210,3 +202,24 @@ def build_application_insights(connection: sqlite3.Connection) -> dict[str, obje
         "summary": _present_bucket(summary),
         "groups": presented_groups,
     }
+
+
+def build_application_insights(connection: sqlite3.Connection) -> dict[str, object]:
+    """Summarize confirmed applications from the standalone SQLite store."""
+    applications = connection.execute("""
+        SELECT a.job_id, a.position, a.date_applied, a.confirmed_at,
+               a.application_method, a.base_resume_name, a.base_resume_version,
+               a.status, j.source, j.location
+        FROM applications a
+        LEFT JOIN jobs j ON j.id = a.job_id
+        WHERE a.status IN ('applied','interview','offer','rejected','withdrawn','closed')
+        ORDER BY COALESCE(a.date_applied, a.confirmed_at, a.created_at), a.id
+    """).fetchall()
+    histories = connection.execute("""
+        SELECT h.job_id, h.to_status, h.changed_at, h.undone_at
+        FROM application_status_history h
+        INNER JOIN applications a ON a.job_id = h.job_id
+        WHERE a.status IN ('applied','interview','offer','rejected','withdrawn','closed')
+        ORDER BY h.changed_at, h.id
+    """).fetchall()
+    return build_application_insights_from_rows(applications, histories)

@@ -58,8 +58,9 @@ This slice does not convert or authorize:
 - deletion of jobs with applications, lifecycle history, generated materials,
   stored objects, or other protected dependent records;
 - tailoring, generated-material creation/replacement/deletion, private-object
-  mutations, application downloads, application record listing, or application
-  insight aggregation;
+  mutations, or application downloads;
+- application operations outside separately converted workspace, record-list,
+  insight, and lifecycle repository boundaries;
 - durable saved-search claims, provider execution, process-global search state,
   retries, leases, or worker execution;
 - headquarters cache, export/account deletion, hosted backup/restore, public

@@ -82,8 +82,8 @@ a staging rollback mechanism.
 
 This slice does not convert or authorize:
 
-- the `/api/applications` record list or `/api/application-insights`
-  aggregation, including their generated-material availability contract;
+- application operations outside the separately converted record-list,
+  insight, lifecycle, engagement, and interview-preparation boundaries;
 - lifecycle operations beyond the already converted lifecycle repository;
 - tailoring, generated-material creation or editing, stored-object mutation,
   generated-material download integration, object deletion, R2 tombstones,

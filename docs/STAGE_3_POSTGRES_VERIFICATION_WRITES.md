@@ -62,9 +62,8 @@ This slice does not convert or authorize:
 
 - deletion of jobs with applications, lifecycle history, generated materials,
   stored objects, or other protected dependent records;
-- the application record list and application-insight aggregation, plus
-  application operations outside the converted lifecycle, engagement, and
-  interview-preparation repository boundaries;
+- application operations outside the converted lifecycle, engagement,
+  interview-preparation, record-list, and insight repository boundaries;
 - tailoring or generated-material object creation, replacement, download, or
   deletion;
 - saved-search claims, retries, leases, durable jobs, or worker execution;

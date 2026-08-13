@@ -37,7 +37,7 @@ from maps_providers import (
     resolve_headquarters,
     validate_maps_provider,
 )
-from application_insights import build_application_insights
+from application_read_repository import runtime_application_read_repository
 from application_engagements import EngagementLimitError
 from application_workspace_repository import (
     ApplicationWorkspaceChanged,
@@ -2579,32 +2579,30 @@ def remove_job_engagement(job_id: int, engagement_id: int) -> dict:
 
 @app.get("/api/applications")
 def get_applications() -> list[dict]:
-    """
-    Retrieve logs of all job applications that have been processed.
-    
-    Returns:
-        list[dict]: A list of application records.
-    """
-    conn = get_db_connection()
-    rows = conn.execute("""
-    SELECT a.*, j.url,
-           (SELECT COUNT(*) FROM application_engagements e WHERE e.job_id = a.job_id) AS engagement_count
-    FROM applications a
-    LEFT JOIN jobs j ON a.job_id = j.id
-    ORDER BY a.date_applied DESC
-    """).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    """Return bounded application records through the configured data store."""
+    try:
+        return runtime_application_read_repository(
+            sqlite_connection_factory=get_db_connection
+        ).list_applications()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="CareerTrellis could not load application records.",
+        ) from exc
 
 
 @app.get("/api/application-insights")
 def get_application_insights() -> dict:
-    """Return local-only application funnel and response-rate aggregates."""
-    conn = get_db_connection()
+    """Return owner-scoped application funnel and response-rate aggregates."""
     try:
-        return build_application_insights(conn)
-    finally:
-        conn.close()
+        return runtime_application_read_repository(
+            sqlite_connection_factory=get_db_connection
+        ).application_insights()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="CareerTrellis could not load application insights.",
+        ) from exc
 
 # Mount frontend static folder
 static_dir = os.path.join(os.path.dirname(__file__), "static")

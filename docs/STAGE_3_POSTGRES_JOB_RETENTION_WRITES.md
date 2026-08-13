@@ -81,9 +81,8 @@ This slice does not convert or authorize:
   generated materials, stored-object metadata, or other protected dependents;
 - stored-object tombstoning, encrypted R2 deletion, cross-store retry or
   reconciliation, or orphan-object cleanup;
-- the application record list and application-insight aggregation, plus
-  application operations outside the converted lifecycle, engagement, and
-  interview-preparation repository boundaries;
+- application operations outside the converted lifecycle, engagement,
+  interview-preparation, record-list, and insight repository boundaries;
 - tailoring or generated-material creation, replacement, download, or deletion;
 - saved-search claims, retries, leases, durable work, or worker execution;
 - headquarters cache, export/account deletion, or hosted backup/restore; or
