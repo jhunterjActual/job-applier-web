@@ -13,6 +13,7 @@ See [docs/STAGE_3_ENCRYPTED_PROVIDER_SECRETS.md](docs/STAGE_3_ENCRYPTED_PROVIDER
 See [docs/STAGE_3_PRIVATE_OBJECT_STORAGE.md](docs/STAGE_3_PRIVATE_OBJECT_STORAGE.md) for private per-user generated-object encryption, disposable migration rehearsal, and the no-cutover acceptance gate.
 See [docs/STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md](docs/STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md) for the profile/base-resume PostgreSQL repository slice, explicit no-activation boundary, and final data-authority cutover contract.
 See [docs/STAGE_3_POSTGRES_DISCOVERY_REPOSITORIES.md](docs/STAGE_3_POSTGRES_DISCOVERY_REPOSITORIES.md) for the owner-scoped job-discovery read/delete slice and its continuing no-activation boundary.
+See [docs/STAGE_3_POSTGRES_SAVED_SEARCH_WRITES.md](docs/STAGE_3_POSTGRES_SAVED_SEARCH_WRITES.md) for owner-scoped saved-search creation and schedule advancement under the continuing no-activation boundary.
 
 A self-contained, privacy-first workspace designed to streamline job discovery, resume tailoring, guided-manual applications, progress tracking, and interview preparation.
 

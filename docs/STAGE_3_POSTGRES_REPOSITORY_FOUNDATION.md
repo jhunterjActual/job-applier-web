@@ -56,16 +56,21 @@ use synthetic temporary workspaces and disposable PostgreSQL targets.
 
 ## Domains still blocking repository cutover
 
-The next discovery slice converts job-list reads, duplicate/suppression checks,
+The discovery slice converts job-list reads, duplicate/suppression checks,
 suppression review/clearing, saved-search reads/deletion, and minimized source-
 diagnostic history. Its exact scope and no-activation gate are documented in
 `STAGE_3_POSTGRES_DISCOVERY_REPOSITORIES.md`.
 
+The saved-search write slice adds owner-scoped create/upsert and atomic
+post-run reminder advancement. Its transaction and scheduling contract is in
+`STAGE_3_POSTGRES_SAVED_SEARCH_WRITES.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
-- job/search-result creation, saved-search creation/update/scheduling, and job-
-  status transitions, verification, cleanup, and permanent deletion;
+- job/search-result creation and job-status transitions, verification,
+  cleanup, and permanent deletion;
+- durable saved-search claiming, retry, and background-worker execution;
 - suppression creation coupled to permanent job deletion;
 - applications, engagements, interview preparation, and follow-up data;
 - headquarters cache entries and any unconverted job-domain reads;

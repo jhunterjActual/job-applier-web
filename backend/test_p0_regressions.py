@@ -9,7 +9,7 @@ import tempfile
 import unittest
 import zipfile
 import asyncio
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -76,6 +76,7 @@ from dependency_lock import (
     stamp_is_current,
     write_stamp,
 )
+from discovery_repository import SQLiteDiscoveryRepository
 from job_cleanup import apply_cleanup, cleanup_preview
 from job_filters import derive_job_filter_facets
 from job_suppressions import job_url_fingerprint, record_job_suppression
@@ -1850,6 +1851,227 @@ class DataStoreConfigurationTests(unittest.TestCase):
         repository.clear_job_suppression.assert_called_once_with(9)
         repository.delete_saved_search.assert_called_once_with(8)
         repository.list_source_diagnostics.assert_called_once_with(100)
+
+
+class SavedSearchWriteRepositoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_directory = tempfile.TemporaryDirectory()
+        self.database_path = Path(self.temp_directory.name) / "saved-searches.db"
+        connection = sqlite3.connect(self.database_path)
+        connection.execute(
+            """
+            CREATE TABLE saved_searches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                keywords TEXT NOT NULL,
+                location TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                last_run_at TEXT,
+                schedule_frequency TEXT NOT NULL DEFAULT 'none',
+                next_alert_at TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(keywords, location)
+            )
+            """
+        )
+        connection.commit()
+        connection.close()
+
+    def tearDown(self) -> None:
+        self.temp_directory.cleanup()
+
+    def connection(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.database_path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def test_sqlite_upsert_reenables_and_preserves_local_contract(self) -> None:
+        repository = SQLiteDiscoveryRepository(self.connection)
+        first_run = datetime(2026, 8, 12, 18, 0, tzinfo=timezone.utc)
+        created = repository.upsert_saved_search(
+            name="  Data roles  ",
+            keywords="  data engineer  ",
+            location="  Remote  ",
+            schedule_frequency="daily",
+            run_at=first_run,
+        )
+        self.assertEqual("Data roles", created["name"])
+        self.assertEqual("data engineer", created["keywords"])
+        self.assertEqual("Remote", created["location"])
+        expected_alert = (
+            (first_run + timedelta(days=1))
+            .astimezone()
+            .replace(tzinfo=None)
+            .isoformat(timespec="seconds")
+        )
+        self.assertEqual(expected_alert, created["next_alert_at"])
+        self.assertNotIn("+", created["next_alert_at"])
+
+        connection = self.connection()
+        connection.execute(
+            "UPDATE saved_searches SET enabled = 0 WHERE id = ?", (created["id"],)
+        )
+        connection.commit()
+        connection.close()
+        later_run = first_run + timedelta(hours=2)
+        updated = repository.upsert_saved_search(
+            name="Renamed",
+            keywords="data engineer",
+            location="Remote",
+            schedule_frequency="none",
+            run_at=later_run,
+        )
+        self.assertEqual(created["id"], updated["id"])
+        self.assertEqual(1, updated["enabled"])
+        self.assertEqual("Renamed", updated["name"])
+        self.assertIsNone(updated["next_alert_at"])
+        self.assertEqual(created["created_at"], updated["created_at"])
+
+    def test_sqlite_advance_uses_stored_query_and_schedule(self) -> None:
+        repository = SQLiteDiscoveryRepository(self.connection)
+        first_run = datetime(2026, 8, 12, 18, 0, tzinfo=timezone.utc)
+        saved = repository.upsert_saved_search(
+            name="Weekly search",
+            keywords="security",
+            location="Ohio",
+            schedule_frequency="weekly",
+            run_at=first_run,
+        )
+        next_run = first_run + timedelta(days=2)
+        advanced = repository.advance_saved_search_run(saved["id"], next_run)
+        self.assertEqual("security", advanced["keywords"])
+        self.assertEqual("Ohio", advanced["location"])
+        self.assertEqual(
+            next_run.astimezone().replace(tzinfo=None).isoformat(timespec="seconds"),
+            advanced["last_run_at"],
+        )
+        self.assertEqual(
+            (next_run + timedelta(days=7))
+            .astimezone()
+            .replace(tzinfo=None)
+            .isoformat(timespec="seconds"),
+            advanced["next_alert_at"],
+        )
+        self.assertIsNone(repository.advance_saved_search_run(999999, next_run))
+        with self.assertRaises(ValueError):
+            repository.advance_saved_search_run(saved["id"], datetime(2026, 8, 12, 20, 0))
+
+    def test_sqlite_due_searches_compare_legacy_local_timestamps(self) -> None:
+        repository = SQLiteDiscoveryRepository(self.connection)
+        local_now = datetime.now().astimezone().replace(microsecond=0)
+        saved = repository.upsert_saved_search(
+            name="Legacy reminder",
+            keywords="legacy",
+            location="Remote",
+            schedule_frequency="daily",
+            run_at=local_now - timedelta(days=1),
+        )
+        future_local = (local_now + timedelta(minutes=30)).replace(tzinfo=None)
+        connection = self.connection()
+        connection.execute(
+            "UPDATE saved_searches SET next_alert_at = ? WHERE id = ?",
+            (future_local.isoformat(timespec="seconds"), saved["id"]),
+        )
+        connection.commit()
+        connection.close()
+
+        self.assertEqual([], repository.list_due_saved_searches(local_now.astimezone(timezone.utc)))
+        due = repository.list_due_saved_searches(
+            (local_now + timedelta(minutes=31)).astimezone(timezone.utc)
+        )
+        self.assertEqual([saved["id"]], [row["id"] for row in due])
+
+    def test_search_route_delegates_saved_search_writes_before_enqueue(self) -> None:
+        repository = Mock()
+        repository.upsert_saved_search.return_value = {
+            "id": 12,
+            "keywords": "stored keywords",
+            "location": "stored location",
+        }
+        repository.advance_saved_search_run.return_value = {
+            "id": 12,
+            "keywords": "stored keywords",
+            "location": "stored location",
+        }
+        background_tasks = Mock()
+        request = SimpleNamespace(state=SimpleNamespace(local_user_id=42))
+        operation = Mock()
+        app_module.IS_SEARCHING = False
+        with (
+            patch.object(app_module, "runtime_discovery_repository", return_value=repository),
+            patch.object(app_module, "start_operation", return_value=operation),
+            patch.object(app_module, "capture_event"),
+        ):
+            result = app_module.search_jobs(
+                app_module.SearchRequest(
+                    keywords=" submitted ",
+                    location=" submitted place ",
+                    save_search=True,
+                    saved_search_name="Named",
+                    schedule_frequency="daily",
+                ),
+                background_tasks,
+                request,
+            )
+        self.assertTrue(result["success"])
+        repository.upsert_saved_search.assert_called_once()
+        run_at = repository.upsert_saved_search.call_args.kwargs["run_at"]
+        self.assertEqual(timezone.utc, run_at.tzinfo)
+        background_tasks.add_task.assert_called_once_with(
+            app_module.run_search_wrapper,
+            "stored keywords",
+            "stored location",
+            operation,
+            42,
+        )
+        app_module.IS_SEARCHING = False
+
+        background_tasks.reset_mock()
+        with (
+            patch.object(app_module, "runtime_discovery_repository", return_value=repository),
+            patch.object(app_module, "start_operation", return_value=operation),
+            patch.object(app_module, "capture_event"),
+        ):
+            app_module.search_jobs(
+                app_module.SearchRequest(
+                    keywords="edited keywords",
+                    location="edited location",
+                    saved_search_id=12,
+                ),
+                background_tasks,
+                request,
+            )
+        repository.advance_saved_search_run.assert_called_once()
+        background_tasks.add_task.assert_called_once_with(
+            app_module.run_search_wrapper,
+            "edited keywords",
+            "edited location",
+            operation,
+            42,
+        )
+        app_module.IS_SEARCHING = False
+
+    def test_search_route_rejects_unowned_saved_search_before_enqueue(self) -> None:
+        repository = Mock()
+        repository.advance_saved_search_run.return_value = None
+        background_tasks = Mock()
+        operation = Mock()
+        app_module.IS_SEARCHING = False
+        with (
+            patch.object(app_module, "runtime_discovery_repository", return_value=repository),
+            patch.object(app_module, "start_operation", return_value=operation),
+            patch.object(app_module, "finish_operation") as finish_operation,
+        ):
+            with self.assertRaises(app_module.HTTPException) as raised:
+                app_module.search_jobs(
+                    app_module.SearchRequest(keywords="ignored", saved_search_id=99),
+                    background_tasks,
+                    SimpleNamespace(state=SimpleNamespace(local_user_id=42)),
+                )
+        self.assertEqual(404, raised.exception.status_code)
+        finish_operation.assert_called_once_with(operation)
+        background_tasks.add_task.assert_not_called()
+        self.assertFalse(app_module.IS_SEARCHING)
 
 
 class WebAuthenticationTests(unittest.TestCase):

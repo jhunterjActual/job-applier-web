@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from typing import Literal, Optional
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import config
 from ai_providers import (
@@ -459,11 +459,11 @@ class ProfileSecretsUpdate(BaseModel):
     google_maps_api_key: Optional[str] = Field(default=None, max_length=512)
 
 class SearchRequest(BaseModel):
-    keywords: str
-    location: Optional[str] = ""
+    keywords: str = Field(max_length=500)
+    location: Optional[str] = Field(default="", max_length=240)
     save_search: bool = False
-    saved_search_name: Optional[str] = None
-    saved_search_id: Optional[int] = None
+    saved_search_name: Optional[str] = Field(default=None, max_length=80)
+    saved_search_id: Optional[int] = Field(default=None, gt=0)
     schedule_frequency: Literal["none", "daily", "weekly"] = "none"
 
 
@@ -1770,7 +1770,7 @@ def get_saved_searches() -> list[dict]:
 def get_due_saved_searches() -> list[dict]:
     return runtime_discovery_repository(
         sqlite_connection_factory=get_db_connection
-    ).list_due_saved_searches(datetime.now())
+    ).list_due_saved_searches(datetime.now(timezone.utc))
 
 
 @app.delete("/api/saved-searches/{search_id}")
@@ -1871,45 +1871,42 @@ def search_jobs(
         finish_operation(operation)
         return {"success": False, "cancelled": True, "message": "Search stopped before it started."}
     LAST_SEARCH_RESULT = None
-    if req.save_search:
-        search_name = (req.saved_search_name or req.keywords or "Resume-suggested search").strip()
-        now = datetime.now().isoformat(timespec="seconds")
-        conn = get_db_connection()
-        interval = timedelta(days=1 if req.schedule_frequency == "daily" else 7)
-        next_alert = (datetime.now() + interval).isoformat(timespec="seconds") if req.schedule_frequency != "none" else None
-        conn.execute("""
-            INSERT INTO saved_searches (
-                name, keywords, location, created_at, last_run_at,
-                schedule_frequency, next_alert_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(keywords, location) DO UPDATE SET
-                name = excluded.name, last_run_at = excluded.last_run_at,
-                schedule_frequency = excluded.schedule_frequency,
-                next_alert_at = excluded.next_alert_at, enabled = 1
-        """, (
-            search_name, req.keywords.strip(), (req.location or "").strip(), now, now,
-            req.schedule_frequency, next_alert,
-        ))
-        conn.commit()
-        conn.close()
-    elif req.saved_search_id:
-        conn = get_db_connection()
-        saved = conn.execute("SELECT schedule_frequency FROM saved_searches WHERE id = ?", (req.saved_search_id,)).fetchone()
-        if saved:
-            frequency = saved["schedule_frequency"] or "none"
-            interval = timedelta(days=1 if frequency == "daily" else 7)
-            next_alert = (datetime.now() + interval).isoformat(timespec="seconds") if frequency != "none" else None
-            conn.execute(
-                "UPDATE saved_searches SET last_run_at = ?, next_alert_at = ? WHERE id = ?",
-                (datetime.now().isoformat(timespec="seconds"), next_alert, req.saved_search_id),
+    search_keywords = req.keywords
+    search_location = req.location
+    try:
+        if req.save_search or req.saved_search_id:
+            saved_search_repository = runtime_discovery_repository(
+                sqlite_connection_factory=get_db_connection
             )
-            conn.commit()
-        conn.close()
+            run_at = datetime.now(timezone.utc)
+            if req.save_search:
+                search_name = (
+                    req.saved_search_name or req.keywords or "Resume-suggested search"
+                ).strip()
+                saved = saved_search_repository.upsert_saved_search(
+                    name=search_name,
+                    keywords=req.keywords,
+                    location=req.location or "",
+                    schedule_frequency=req.schedule_frequency,
+                    run_at=run_at,
+                )
+            else:
+                saved = saved_search_repository.advance_saved_search_run(
+                    req.saved_search_id, run_at
+                )
+                if saved is None:
+                    raise HTTPException(status_code=404, detail="Saved search not found.")
+            if req.save_search:
+                search_keywords = saved["keywords"]
+                search_location = saved["location"]
+    except Exception:
+        finish_operation(operation)
+        raise
     IS_SEARCHING = True
     background_tasks.add_task(
         run_search_wrapper,
-        req.keywords,
-        req.location,
+        search_keywords,
+        search_location,
         operation,
         getattr(request.state, "local_user_id", None),
     )

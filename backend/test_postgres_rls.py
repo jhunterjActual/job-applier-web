@@ -12,8 +12,10 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Barrier
 from unittest.mock import Mock, patch
 
 from alembic import command
@@ -660,6 +662,127 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         self.assertIn("match_score DESC NULLS LAST", jobs_definition)
         self.assertIn("id DESC", jobs_definition)
         self.assertIn("WHERE (status <> 'archived'::text)", jobs_definition)
+
+    def test_saved_search_writes_are_owner_scoped_monotonic_and_constrained(self) -> None:
+        owner_one = PostgreSQLDiscoveryRepository(self.user_one, engine=self.runtime_engine)
+        owner_two = PostgreSQLDiscoveryRepository(self.user_two, engine=self.runtime_engine)
+        first_run = datetime(2026, 8, 12, 18, 0, tzinfo=timezone.utc)
+        one = owner_one.upsert_saved_search(
+            name="Owner one",
+            keywords="shared query",
+            location="Remote",
+            schedule_frequency="daily",
+            run_at=first_run,
+        )
+        two = owner_two.upsert_saved_search(
+            name="Owner two",
+            keywords="shared query",
+            location="Remote",
+            schedule_frequency="weekly",
+            run_at=first_run,
+        )
+        self.assertNotEqual(one["id"], two["id"])
+        self.assertNotIn("owner_user_id", one)
+        self.assertEqual((first_run + timedelta(days=1)).isoformat(), one["next_alert_at"])
+
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            connection.execute(
+                text(
+                    "UPDATE careertrellis.saved_searches SET enabled = FALSE "
+                    "WHERE id = :search_id"
+                ),
+                {"search_id": one["id"]},
+            )
+        later_run = first_run + timedelta(hours=1)
+        reenlisted = owner_one.upsert_saved_search(
+            name="Renamed",
+            keywords="shared query",
+            location="Remote",
+            schedule_frequency="none",
+            run_at=later_run,
+        )
+        self.assertEqual(one["id"], reenlisted["id"])
+        self.assertEqual(one["created_at"], reenlisted["created_at"])
+        self.assertEqual(1, reenlisted["enabled"])
+        self.assertIsNone(reenlisted["next_alert_at"])
+
+        self.assertIsNone(owner_one.advance_saved_search_run(two["id"], later_run))
+        with self.assertRaises(ValueError):
+            owner_one.advance_saved_search_run(one["id"], datetime(2026, 8, 12, 20, 0))
+        with tenant_transaction(self.runtime_engine, self.user_two) as connection:
+            unchanged = connection.execute(
+                text(
+                    "SELECT last_run_at, next_alert_at FROM careertrellis.saved_searches "
+                    "WHERE id = :search_id"
+                ),
+                {"search_id": two["id"]},
+            ).one()
+        self.assertEqual(first_run, unchanged.last_run_at)
+        self.assertEqual(first_run + timedelta(days=7), unchanged.next_alert_at)
+
+        with self.admin_engine.begin() as connection:
+            validated = connection.scalar(
+                text(
+                    "SELECT convalidated FROM pg_constraint "
+                    "WHERE conname = 'ck_saved_searches_schedule_frequency'"
+                )
+            )
+        self.assertTrue(validated)
+        with self.assertRaises(DBAPIError):
+            with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO careertrellis.saved_searches "
+                        "(owner_user_id, name, keywords, location, schedule_frequency) "
+                        "VALUES (:owner, 'Invalid', 'invalid', '', 'monthly')"
+                    ),
+                    {"owner": self.user_one},
+                )
+
+    def test_concurrent_saved_search_writes_keep_one_monotonic_owner_row(self) -> None:
+        owner_one = PostgreSQLDiscoveryRepository(self.user_one, engine=self.runtime_engine)
+        older = datetime(2026, 8, 12, 18, 0, tzinfo=timezone.utc)
+        newer = older + timedelta(hours=2)
+        barrier = Barrier(2)
+
+        def upsert(name: str, frequency: str, run_at: datetime) -> dict:
+            barrier.wait(timeout=5)
+            return owner_one.upsert_saved_search(
+                name=name,
+                keywords="concurrent",
+                location="Remote",
+                schedule_frequency=frequency,
+                run_at=run_at,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    lambda arguments: upsert(*arguments),
+                    (("Older", "daily", older), ("Newer", "weekly", newer)),
+                )
+            )
+        self.assertEqual(1, len({result["id"] for result in results}))
+        owner_one.upsert_saved_search(
+            name="Stale retry",
+            keywords="concurrent",
+            location="Remote",
+            schedule_frequency="none",
+            run_at=older,
+        )
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT name, schedule_frequency, last_run_at, next_alert_at "
+                    "FROM careertrellis.saved_searches "
+                    "WHERE keywords = 'concurrent' AND location = 'Remote'"
+                )
+            ).all()
+        self.assertEqual(1, len(rows))
+        self.assertEqual("Newer", rows[0].name)
+        self.assertEqual("weekly", rows[0].schedule_frequency)
+        self.assertEqual(newer, rows[0].last_run_at)
+        self.assertEqual(newer + timedelta(days=7), rows[0].next_alert_at)
 
     def test_composite_foreign_keys_prevent_cross_tenant_relationships(self) -> None:
         with self.assertRaises(DBAPIError):
