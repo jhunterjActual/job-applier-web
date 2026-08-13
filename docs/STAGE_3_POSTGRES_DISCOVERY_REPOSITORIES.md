@@ -48,12 +48,16 @@ Owner-scoped saved-search creation/upsert and post-run reminder advancement are
 added by the next bounded slice documented in
 `STAGE_3_POSTGRES_SAVED_SEARCH_WRITES.md`.
 
+Owner-scoped manual/discovery job creation and initial score completion are
+added by the bounded job-catalog slice documented in
+`STAGE_3_POSTGRES_JOB_CATALOG_WRITES.md`.
+
 ## Operations intentionally not converted
 
 This slice does not move any of the following hosted paths:
 
-- search-result, manual-job, lifecycle, verification, archive, restore,
-  bulk-cleanup, or permanent-job writes;
+- lifecycle, verification, archive, restore, bulk-cleanup, or permanent-job
+  writes after initial catalog creation and score completion;
 - suppression creation that is coupled to permanent job deletion;
 - the process-global search-status/result state or durable background work;
 - applications, engagements, interview preparation, and follow-up records;

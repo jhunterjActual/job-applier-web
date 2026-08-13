@@ -20,8 +20,8 @@ import config
 from database import get_db_connection
 from operations import OperationCancelled
 from tailor import analyze_job_match, analyze_job_matches_batch
-from datetime import datetime
-from typing import Callable
+from datetime import date, datetime, timezone
+from typing import Any, Callable
 
 MIN_MATCH_SCORE = 40
 MAX_JOB_DESCRIPTION_CHARS = 50_000
@@ -1038,6 +1038,7 @@ def run_job_search_and_matching(
     keywords: str,
     location: str = "",
     cancel_check: Callable[[], None] | None = None,
+    job_repository: Any | None = None,
 ) -> dict:
     """
     Coordinates the entire job search pipeline: retrieves the resume,
@@ -1054,6 +1055,14 @@ def run_job_search_and_matching(
     """
     # 1. Fetch user's base resume
     conn = get_db_connection()
+    if job_repository is None:
+        # Import lazily because the repository's URL canonicalization helpers
+        # depend on this module during application startup.
+        from discovery_repository import runtime_discovery_repository
+
+        job_repository = runtime_discovery_repository(
+            sqlite_connection_factory=get_db_connection
+        )
     def check_cancelled() -> None:
         try:
             _cancellation_checkpoint(cancel_check)
@@ -1253,20 +1262,23 @@ def run_job_search_and_matching(
         analysis_text = match_info["analysis"]
         
         try:
-            conn.execute("""
-            INSERT INTO jobs (
-                title, company, description, url, match_score, match_analysis,
-                date_found, status, location, work_arrangement, employment_type,
-                compensation, source, last_checked_at, is_expired
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'matched', ?, ?, ?, ?, ?, ?, 0)
-            """, (
-                title, company, desc, url, score, analysis_text, datetime.now().strftime("%Y-%m-%d"),
-                job.get("location", ""), job.get("work_arrangement", ""), job.get("employment_type", ""),
-                job.get("compensation", ""), job.get("source", provider_for_url(url)),
-                datetime.now().isoformat(timespec="seconds"),
-            ))
-            conn.commit()
-            matches_added += 1
+            created = job_repository.create_job_if_available(
+                title=title,
+                company=company,
+                description=desc,
+                url=url,
+                match_score=score,
+                match_analysis=analysis_text,
+                date_found=date.today(),
+                location=job.get("location", ""),
+                work_arrangement=job.get("work_arrangement", ""),
+                employment_type=job.get("employment_type", ""),
+                compensation=job.get("compensation", ""),
+                source=job.get("source", provider_for_url(url)),
+                last_checked_at=datetime.now(timezone.utc),
+            )
+            if created["outcome"] == "created":
+                matches_added += 1
             check_cancelled()
         except OperationCancelled:
             raise

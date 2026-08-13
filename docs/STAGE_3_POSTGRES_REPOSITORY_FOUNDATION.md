@@ -65,11 +65,15 @@ The saved-search write slice adds owner-scoped create/upsert and atomic
 post-run reminder advancement. Its transaction and scheduling contract is in
 `STAGE_3_POSTGRES_SAVED_SEARCH_WRITES.md`.
 
+The job-catalog write slice adds owner-scoped manual/discovery job creation and
+initial score completion. Its bounded transaction contract is in
+`STAGE_3_POSTGRES_JOB_CATALOG_WRITES.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
-- job/search-result creation and job-status transitions, verification,
-  cleanup, and permanent deletion;
+- job-status transitions after initial score completion, verification, cleanup,
+  archive/restore, and permanent deletion;
 - durable saved-search claiming, retry, and background-worker execution;
 - suppression creation coupled to permanent job deletion;
 - applications, engagements, interview preparation, and follow-up data;
