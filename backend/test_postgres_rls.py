@@ -32,6 +32,7 @@ import stored_objects as stored_objects_module
 from base_resumes import BaseResumeNotFound, LastBaseResumeError
 from profile_repository import PostgreSQLProfileRepository
 from discovery_repository import PostgreSQLDiscoveryRepository
+from headquarters_cache_repository import PostgreSQLHeadquartersCacheRepository
 from lifecycle_repository import PostgreSQLLifecycleRepository
 from verification_repository import (
     PostgreSQLVerificationRepository,
@@ -53,6 +54,7 @@ from application_workspace_repository import (
 from application_read_repository import PostgreSQLApplicationReadRepository
 from application_engagements import EngagementLimitError, MAX_ENGAGEMENTS_PER_JOB
 from job_suppressions import job_url_fingerprint
+from maps_providers import HeadquartersResult
 
 from postgres_database import (
     PostgreSQLConfigurationError,
@@ -697,6 +699,73 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                     text("SELECT suggested_keywords FROM careertrellis.profiles")
                 ).all(),
             )
+
+    def test_headquarters_cache_is_owner_isolated_and_hidden_without_context(self) -> None:
+        owner_one = PostgreSQLHeadquartersCacheRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        owner_two = PostgreSQLHeadquartersCacheRepository(
+            self.user_two, engine=self.runtime_engine
+        )
+        shared_key = "a" * 64
+        owner_one_result = HeadquartersResult(
+            address="1 Synthetic Plaza, Dayton, OH 45402, United States",
+            source="openstreetmap",
+            attribution="© OpenStreetMap contributors",
+            country_code="US",
+        )
+        owner_two_result = HeadquartersResult(
+            address="2 Synthetic Way, Columbus, OH 43215, United States",
+            source="openstreetmap",
+            attribution="© OpenStreetMap contributors",
+            country_code="US",
+        )
+
+        self.assertTrue(
+            owner_one.cache_openstreetmap_result(
+                shared_key, owner_one_result, "openstreetmap"
+            )
+        )
+        self.assertEqual(owner_one_result, owner_one.get(shared_key))
+        self.assertIsNone(owner_two.get(shared_key))
+        self.assertTrue(
+            owner_two.cache_openstreetmap_result(
+                shared_key, owner_two_result, "openstreetmap"
+            )
+        )
+        self.assertEqual(owner_one_result, owner_one.get(shared_key))
+        self.assertEqual(owner_two_result, owner_two.get(shared_key))
+
+        with self.runtime_engine.begin() as connection:
+            self.assertEqual(
+                [],
+                connection.execute(
+                    text(
+                        "SELECT cache_key, address "
+                        "FROM careertrellis.headquarters_cache"
+                    )
+                ).all(),
+            )
+
+        with self.admin_engine.begin() as connection:
+            rows = connection.execute(
+                text(
+                    """
+                    SELECT owner_user_id, address
+                    FROM careertrellis.headquarters_cache
+                    WHERE cache_key = :cache_key
+                    ORDER BY owner_user_id
+                    """
+                ),
+                {"cache_key": shared_key},
+            ).all()
+        self.assertEqual(
+            [
+                (self.user_one, owner_one_result.address),
+                (self.user_two, owner_two_result.address),
+            ],
+            [tuple(row) for row in rows],
+        )
 
     def test_provider_context_profiles_are_owner_isolated_for_validation_ocr_and_import(self) -> None:
         owner_one = PostgreSQLProfileRepository(self.user_one, engine=self.runtime_engine)

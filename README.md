@@ -23,6 +23,7 @@ See [docs/STAGE_3_POSTGRES_APPLICATION_READS.md](docs/STAGE_3_POSTGRES_APPLICATI
 See [docs/STAGE_3_POSTGRES_PROVIDER_CONTEXT_READS.md](docs/STAGE_3_POSTGRES_PROVIDER_CONTEXT_READS.md) for owner-scoped AI/maps validation, opt-in resume OCR, and manual-import scoring context under the continuing no-activation boundary.
 See [docs/STAGE_3_POSTGRES_READINESS.md](docs/STAGE_3_POSTGRES_READINESS.md) for ownerless, fixed-response readiness checks against the explicitly selected local or shared stores under the continuing no-activation boundary.
 See [docs/STAGE_3_POSTGRES_SEARCH_EXECUTION_CONTEXT.md](docs/STAGE_3_POSTGRES_SEARCH_EXECUTION_CONTEXT.md) for owner-scoped profile, keyword-cache, and minimized job-catalog persistence during search execution, with every external provider and AI call outside database transactions and the no-activation boundary intact.
+See [docs/STAGE_3_POSTGRES_HEADQUARTERS_CACHE.md](docs/STAGE_3_POSTGRES_HEADQUARTERS_CACHE.md) for the owner-scoped, privacy-minimized OpenStreetMap headquarters cache boundary, with provider calls outside database transactions and no hosted activation.
 
 A self-contained, privacy-first workspace designed to streamline job discovery, resume tailoring, guided-manual applications, progress tracking, and interview preparation.
 

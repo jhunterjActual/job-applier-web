@@ -2,7 +2,6 @@ import hashlib
 import hmac
 import json
 import os
-import sqlite3
 import tempfile
 import time
 from contextlib import asynccontextmanager
@@ -77,6 +76,10 @@ from object_store import (
 )
 from stored_objects import StoredObjectNotFound, download_stored_object
 from discovery_repository import runtime_discovery_repository
+from headquarters_cache_repository import (
+    HeadquartersCacheUnavailable,
+    runtime_headquarters_cache_repository,
+)
 from profile_repository import runtime_profile_repository
 from web_auth import (
     LOGIN_FLOW_COOKIE_NAME,
@@ -203,56 +206,22 @@ def _headquarters_cache_key(
 
 
 def _cached_headquarters(cache_key: str) -> HeadquartersResult | None:
-    conn = get_db_connection()
     try:
-        row = conn.execute(
-            "SELECT provider, address, country_code, attribution FROM headquarters_cache WHERE cache_key = ?",
-            (cache_key,),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        row = None
-    finally:
-        conn.close()
-    if not row:
+        return runtime_headquarters_cache_repository(
+            sqlite_connection_factory=get_db_connection
+        ).get(cache_key)
+    except HeadquartersCacheUnavailable:
         return None
-    return HeadquartersResult(
-        address=row["address"],
-        source=row["provider"],
-        attribution=row["attribution"],
-        country_code=row["country_code"],
-    )
 
 
 def _cache_headquarters(cache_key: str, result: HeadquartersResult, selected_provider: str) -> None:
     """Cache provider results; AI fallbacks remain retryable and explicitly provisional."""
-    provider = normalize_maps_provider(selected_provider)
-    # The public Nominatim policy asks applications to cache results. Google
-    # Places content has separate storage restrictions, so it is never added to
-    # this lookup cache (application history remains a distinct user record).
-    if provider != "openstreetmap" or result.address == "Unknown" or result.source != provider:
-        return
-    conn = get_db_connection()
     try:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO headquarters_cache (
-                cache_key, provider, address, country_code, attribution, resolved_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                cache_key,
-                provider,
-                result.address,
-                result.country_code,
-                result.attribution,
-                datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        conn.commit()
-    except sqlite3.OperationalError:
+        runtime_headquarters_cache_repository(
+            sqlite_connection_factory=get_db_connection
+        ).cache_openstreetmap_result(cache_key, result, selected_provider)
+    except HeadquartersCacheUnavailable:
         pass
-    finally:
-        conn.close()
 
 
 @asynccontextmanager

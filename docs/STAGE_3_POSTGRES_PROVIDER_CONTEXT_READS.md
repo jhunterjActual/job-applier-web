@@ -114,6 +114,12 @@ catalog-snapshot contract is documented in
 `STAGE_3_POSTGRES_SEARCH_EXECUTION_CONTEXT.md`; the exclusions above remain the
 historical boundary of this provider-context slice.
 
+The later headquarters-cache slice reuses the authenticated owner's maps and
+encrypted-provider-secret context while converting only cache persistence. It
+does not expand provider-backed resolution or prompt behavior. Its separate
+storage-policy contract is documented in
+`STAGE_3_POSTGRES_HEADQUARTERS_CACHE.md`.
+
 ## Verification gates
 
 - [ ] Temporary SQLite tests prove provider/model/maps selection, opt-in OCR,
