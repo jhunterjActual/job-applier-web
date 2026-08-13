@@ -110,6 +110,12 @@ boundaries. Each short database transaction closes before external provider
 or AI work begins. Its ownership, minimization, and transaction contract is in
 `STAGE_3_POSTGRES_SEARCH_EXECUTION_CONTEXT.md`.
 
+The headquarters-cache slice routes the authenticated owner's privacy-minimized
+OpenStreetMap cache lookup and eligible write through a dedicated repository.
+Its short cache read closes before maps or AI provider work, and its eligible
+write uses a separate transaction after that work. Its storage-policy contract
+is in `STAGE_3_POSTGRES_HEADQUARTERS_CACHE.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
@@ -119,7 +125,7 @@ converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
   leases, and background-worker execution;
 - any application operation outside the converted lifecycle, engagement,
   interview-preparation, record-list, and insight repository boundaries;
-- headquarters cache entries and any unconverted job-domain reads;
+- any unconverted job-domain reads;
 - all user export and account-deletion reads and writes;
 - generated-material creation, replacement, and deletion through encrypted
   private object storage rather than authoritative local filesystem paths;

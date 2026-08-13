@@ -25,6 +25,7 @@ import ai_providers as ai_providers_module
 import backup_restore as backup_restore_module
 import config as config_module
 import maps_providers as maps_providers_module
+import headquarters_cache_repository as headquarters_cache_repository_module
 import database as database_module
 import data_store as data_store_module
 import discovery_repository as discovery_repository_module
@@ -96,6 +97,13 @@ from dependency_lock import (
     write_stamp,
 )
 from discovery_repository import SQLiteDiscoveryRepository
+from headquarters_cache_repository import (
+    HeadquartersCacheUnavailable,
+    MAX_HEADQUARTERS_ADDRESS_CHARS,
+    MAX_HEADQUARTERS_ATTRIBUTION_CHARS,
+    MAX_HEADQUARTERS_CACHE_KEY_CHARS,
+    SQLiteHeadquartersCacheRepository,
+)
 from profile_repository import SQLiteProfileRepository
 from job_cleanup import apply_cleanup, cleanup_preview
 from job_retention_repository import (
@@ -430,6 +438,401 @@ class MapsProviderAbstractionTests(unittest.TestCase):
             )
         self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM headquarters_cache").fetchone()[0])
         connection.close()
+
+    def test_sqlite_headquarters_repository_round_trips_bounds_and_closes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "headquarters-cache.db"
+            connection = sqlite3.connect(database_path)
+            connection.execute(
+                """
+                CREATE TABLE headquarters_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    country_code TEXT NOT NULL DEFAULT '',
+                    attribution TEXT NOT NULL DEFAULT '',
+                    resolved_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.commit()
+            connection.close()
+            opened_connections = []
+
+            class TrackedConnection:
+                def __init__(self):
+                    self.connection = sqlite3.connect(database_path)
+                    self.connection.row_factory = sqlite3.Row
+                    self.closed = False
+
+                def execute(self, *args, **kwargs):
+                    return self.connection.execute(*args, **kwargs)
+
+                def commit(self):
+                    return self.connection.commit()
+
+                def rollback(self):
+                    return self.connection.rollback()
+
+                def close(self):
+                    self.closed = True
+                    return self.connection.close()
+
+            def connection_factory():
+                tracked = TrackedConnection()
+                opened_connections.append(tracked)
+                return tracked
+
+            repository = SQLiteHeadquartersCacheRepository(connection_factory)
+            cache_key = " synthetic-cache-key "
+            result = HeadquartersResult(
+                address=" 1 Synthetic Plaza, Dayton, OH 45402, United States ",
+                source="openstreetmap",
+                attribution=" © OpenStreetMap contributors ",
+                country_code=" us ",
+            )
+            self.assertIsNone(repository.get(cache_key))
+            self.assertTrue(
+                repository.cache_openstreetmap_result(
+                    cache_key, result, "OPENSTREETMAP"
+                )
+            )
+            self.assertEqual(
+                HeadquartersResult(
+                    address="1 Synthetic Plaza, Dayton, OH 45402, United States",
+                    source="openstreetmap",
+                    attribution="© OpenStreetMap contributors",
+                    country_code="US",
+                ),
+                repository.get("synthetic-cache-key"),
+            )
+            replacement = HeadquartersResult(
+                address="2 Synthetic Way, Columbus, OH 43215, United States",
+                source="openstreetmap",
+                attribution="© OpenStreetMap contributors",
+                country_code="US",
+            )
+            self.assertTrue(
+                repository.cache_openstreetmap_result(
+                    "synthetic-cache-key", replacement, "openstreetmap"
+                )
+            )
+            self.assertEqual(replacement, repository.get("synthetic-cache-key"))
+            self.assertTrue(opened_connections)
+            self.assertTrue(all(item.closed for item in opened_connections))
+
+            opened_connections.clear()
+            with self.assertRaisesRegex(ValueError, "128 characters or fewer"):
+                repository.get("x" * (MAX_HEADQUARTERS_CACHE_KEY_CHARS + 1))
+            with self.assertRaisesRegex(ValueError, "250 characters or fewer"):
+                repository.cache_openstreetmap_result(
+                    "bounded-key",
+                    HeadquartersResult(
+                        address="x" * (MAX_HEADQUARTERS_ADDRESS_CHARS + 1),
+                        source="openstreetmap",
+                    ),
+                    "openstreetmap",
+                )
+            with self.assertRaisesRegex(ValueError, "250 characters or fewer"):
+                repository.cache_openstreetmap_result(
+                    "bounded-key",
+                    HeadquartersResult(
+                        address="Synthetic address",
+                        source="openstreetmap",
+                        attribution="x" * (MAX_HEADQUARTERS_ATTRIBUTION_CHARS + 1),
+                    ),
+                    "openstreetmap",
+                )
+            self.assertEqual([], opened_connections)
+
+    def test_headquarters_cache_eligibility_avoids_connections_and_failures_are_safe(self) -> None:
+        connection_factory = Mock(side_effect=AssertionError("database must not open"))
+        repository = SQLiteHeadquartersCacheRepository(connection_factory)
+        ineligible = (
+            (HeadquartersResult("Google address", "google"), "google"),
+            (HeadquartersResult("AI address", "ai_openai"), "openstreetmap"),
+            (HeadquartersResult("Unknown", "openstreetmap"), "openstreetmap"),
+            (HeadquartersResult("", "openstreetmap"), "openstreetmap"),
+        )
+        for result, selected_provider in ineligible:
+            with self.subTest(result=result, selected_provider=selected_provider):
+                self.assertFalse(
+                    repository.cache_openstreetmap_result(
+                        "x" * (MAX_HEADQUARTERS_CACHE_KEY_CHARS + 1),
+                        result,
+                        selected_provider,
+                    )
+                )
+        connection_factory.assert_not_called()
+
+        operational_connection = Mock()
+        operational_connection.execute.side_effect = sqlite3.OperationalError(
+            "synthetic unavailable table"
+        )
+        operational_repository = SQLiteHeadquartersCacheRepository(
+            Mock(return_value=operational_connection)
+        )
+        self.assertIsNone(operational_repository.get("cache-key"))
+        self.assertFalse(
+            operational_repository.cache_openstreetmap_result(
+                "cache-key",
+                HeadquartersResult("Synthetic address", "openstreetmap"),
+                "openstreetmap",
+            )
+        )
+        operational_connection.rollback.assert_called_once()
+        self.assertEqual(2, operational_connection.close.call_count)
+
+        secret = "postgresql://private-user:private-password@database.test/private"
+        failed_connection = Mock()
+        failed_connection.execute.side_effect = sqlite3.IntegrityError(secret)
+        failed_repository = SQLiteHeadquartersCacheRepository(
+            Mock(return_value=failed_connection)
+        )
+        with self.assertRaises(HeadquartersCacheUnavailable) as raised:
+            failed_repository.get("cache-key")
+        self.assertEqual(
+            "The headquarters cache is temporarily unavailable.", str(raised.exception)
+        )
+        self.assertNotIn(secret, str(raised.exception))
+        failed_connection.close.assert_called_once()
+
+    def test_shared_headquarters_wrappers_use_repository_without_sqlite_and_fail_open(self) -> None:
+        secret = "postgresql://private-user:private-password@database.test/private"
+        direct_sqlite_factory = Mock(
+            side_effect=AssertionError("shared mode must not open SQLite")
+        )
+        shared_engine = Mock()
+        with (
+            patch.object(
+                headquarters_cache_repository_module,
+                "data_store_kind",
+                return_value="postgresql",
+            ),
+            patch.object(
+                headquarters_cache_repository_module,
+                "current_owner_user_id",
+                return_value=47,
+            ),
+        ):
+            shared_repository = (
+                headquarters_cache_repository_module.runtime_headquarters_cache_repository(
+                    sqlite_connection_factory=direct_sqlite_factory,
+                    engine=shared_engine,
+                )
+            )
+        self.assertIsInstance(
+            shared_repository,
+            headquarters_cache_repository_module.PostgreSQLHeadquartersCacheRepository,
+        )
+        self.assertEqual(47, shared_repository._owner_user_id)
+        self.assertIs(shared_engine, shared_repository._engine)
+        direct_sqlite_factory.assert_not_called()
+
+        repository = Mock()
+        repository.get.return_value = HeadquartersResult(
+            "Synthetic address", "openstreetmap", "OSM attribution", "US"
+        )
+        sqlite_connection_factory = Mock(
+            side_effect=AssertionError("shared mode must not open SQLite")
+        )
+        with (
+            patch.object(app_module, "get_db_connection", sqlite_connection_factory),
+            patch.object(
+                app_module,
+                "runtime_headquarters_cache_repository",
+                return_value=repository,
+            ) as runtime_repository,
+        ):
+            self.assertEqual(
+                repository.get.return_value,
+                app_module._cached_headquarters("cache-key"),
+            )
+            app_module._cache_headquarters(
+                "cache-key", repository.get.return_value, "openstreetmap"
+            )
+        sqlite_connection_factory.assert_not_called()
+        self.assertEqual(2, runtime_repository.call_count)
+        for call in runtime_repository.call_args_list:
+            self.assertIs(
+                sqlite_connection_factory,
+                call.kwargs["sqlite_connection_factory"],
+            )
+        repository.get.assert_called_once_with("cache-key")
+        repository.cache_openstreetmap_result.assert_called_once_with(
+            "cache-key", repository.get.return_value, "openstreetmap"
+        )
+
+        repository.get.side_effect = HeadquartersCacheUnavailable()
+        repository.cache_openstreetmap_result.side_effect = HeadquartersCacheUnavailable()
+        with patch.object(
+            app_module,
+            "runtime_headquarters_cache_repository",
+            return_value=repository,
+        ):
+            self.assertIsNone(app_module._cached_headquarters(secret))
+            app_module._cache_headquarters(
+                secret,
+                HeadquartersResult("Synthetic address", "openstreetmap"),
+                "openstreetmap",
+            )
+
+    def test_tailoring_reads_cache_before_provider_and_caches_only_a_miss(self) -> None:
+        def run_flow(cached_result):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                database_path = root / "tailor-headquarters.db"
+                connection = sqlite3.connect(database_path)
+                connection.executescript(
+                    """
+                    CREATE TABLE profile (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT,
+                        base_resume_text TEXT,
+                        active_base_resume_id INTEGER,
+                        resume_mode TEXT,
+                        ai_provider TEXT,
+                        ai_model TEXT,
+                        gemini_api_key TEXT,
+                        maps_provider TEXT,
+                        prefer_us_headquarters INTEGER
+                    );
+                    CREATE TABLE jobs (
+                        id INTEGER PRIMARY KEY,
+                        title TEXT,
+                        company TEXT,
+                        description TEXT,
+                        location TEXT,
+                        url TEXT,
+                        source TEXT,
+                        status TEXT
+                    );
+                    CREATE TABLE applications (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        job_id INTEGER,
+                        company TEXT,
+                        position TEXT,
+                        date_applied TEXT,
+                        us_hq TEXT,
+                        headquarters_source TEXT,
+                        headquarters_attribution TEXT,
+                        tailored_resume_path TEXT,
+                        cover_letter_path TEXT,
+                        tailored_resume_text TEXT,
+                        cover_letter TEXT,
+                        status TEXT,
+                        created_at TEXT,
+                        tailored_at TEXT,
+                        base_resume_id INTEGER,
+                        base_resume_name TEXT,
+                        base_resume_version INTEGER
+                    );
+                    INSERT INTO profile VALUES (
+                        1, 'Synthetic Candidate', 'Synthetic resume evidence', NULL,
+                        'general_professional', 'gemini', 'gemini-2.5-flash',
+                        'synthetic-test-key', 'openstreetmap', 1
+                    );
+                    INSERT INTO jobs VALUES (
+                        7, 'Data Director', 'Synthetic Employer',
+                        'Lead a synthetic data organization.', 'Dayton, OH',
+                        'https://jobs.example.test/7', 'manual', 'matched'
+                    );
+                    """
+                )
+                connection.commit()
+                connection.close()
+                opened_connections = []
+
+                class TrackedConnection:
+                    def __init__(self):
+                        self.connection = sqlite3.connect(database_path)
+                        self.connection.row_factory = sqlite3.Row
+                        self.closed = False
+
+                    def execute(self, *args, **kwargs):
+                        return self.connection.execute(*args, **kwargs)
+
+                    def commit(self):
+                        return self.connection.commit()
+
+                    def close(self):
+                        self.closed = True
+                        return self.connection.close()
+
+                def connection_factory():
+                    tracked = TrackedConnection()
+                    opened_connections.append(tracked)
+                    return tracked
+
+                events = []
+                repository = Mock()
+                repository.get.side_effect = lambda _key: (
+                    events.append("cache_read") or cached_result
+                )
+                repository.cache_openstreetmap_result.side_effect = (
+                    lambda *_args: events.append("cache_write") or True
+                )
+                resolved = HeadquartersResult(
+                    "1 Synthetic Plaza, Dayton, OH 45402, United States",
+                    "openstreetmap",
+                    "© OpenStreetMap contributors",
+                    "US",
+                )
+
+                def resolve(*_args, **_kwargs):
+                    self.assertTrue(opened_connections)
+                    self.assertTrue(all(item.closed for item in opened_connections))
+                    events.append("provider")
+                    return resolved
+
+                def render(_markdown, output_path, **_kwargs):
+                    Path(output_path).write_bytes(b"%PDF-1.7\nSynthetic")
+                    return {"page_count": 1, "compact": False}
+
+                with (
+                    patch.object(app_module, "get_db_connection", side_effect=connection_factory),
+                    patch.object(app_module.config, "OUTPUT_DIR", str(root)),
+                    patch.object(
+                        app_module,
+                        "runtime_headquarters_cache_repository",
+                        return_value=repository,
+                    ),
+                    patch.object(
+                        app_module,
+                        "tailor_resume_and_cover_letter",
+                        return_value={
+                            "success": True,
+                            "tailored_resume": "# Synthetic tailored resume",
+                            "cover_letter": "Synthetic cover letter",
+                        },
+                    ),
+                    patch.object(app_module, "generate_resume_pdf", side_effect=render),
+                    patch.object(app_module, "resolve_headquarters", side_effect=resolve),
+                    patch.object(app_module, "capture_event"),
+                ):
+                    result = app_module._tailor_resume_endpoint(
+                        7, operations_module.OperationToken()
+                    )
+                self.assertTrue(result["success"])
+                self.assertTrue(all(item.closed for item in opened_connections))
+                return events, repository, resolved
+
+        events, repository, resolved = run_flow(None)
+        self.assertEqual(["cache_read", "provider", "cache_write"], events)
+        repository.cache_openstreetmap_result.assert_called_once()
+        cache_call = repository.cache_openstreetmap_result.call_args
+        self.assertEqual(resolved, cache_call.args[1])
+        self.assertEqual("openstreetmap", cache_call.args[2])
+
+        cached = HeadquartersResult(
+            "Cached synthetic address",
+            "openstreetmap",
+            "© OpenStreetMap contributors",
+            "US",
+        )
+        events, repository, _resolved = run_flow(cached)
+        self.assertEqual(["cache_read"], events)
+        repository.cache_openstreetmap_result.assert_not_called()
 
 
 class ApplicationMaterialsSafetyTests(unittest.TestCase):

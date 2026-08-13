@@ -102,6 +102,12 @@ Generated-material and cross-store deletion require a later design with object
 tombstones, bounded retry, and reconciliation. The current worker remains an
 idle scaffold and receives no web keyring or R2 credential in this slice.
 
+The later headquarters-cache slice converts only the privacy-minimized cache
+read and eligible OpenStreetMap write used during tailoring. Its repository and
+transaction contract is documented in
+`STAGE_3_POSTGRES_HEADQUARTERS_CACHE.md`; the exclusions above remain the
+historical boundary of this application-operations slice.
+
 ## Verification gates
 
 - [ ] Temporary SQLite tests prove engagement list/create/update/delete parity,
