@@ -53,6 +53,10 @@ from fastapi.testclient import TestClient
 from ai_providers import AIProviderError, AIProviderSettings, CapabilityResponse, extract_text_from_images, generate_structured, settings_from_profile
 from lifecycle import undo_latest_lifecycle_change, update_lifecycle
 from lifecycle_repository import SQLiteLifecycleRepository
+from verification_repository import (
+    SQLiteVerificationRepository,
+    VerificationTargetChanged,
+)
 from materials import material_download_name, persist_cover_letter, resolve_output_file
 from resume_documents import (
     MAX_IMPORTED_RESUME_CHARACTERS,
@@ -3414,6 +3418,146 @@ class ManualJobImportTests(unittest.TestCase):
         connection.close()
         self.assertEqual("matched", stored["status"])
         self.assertEqual(0, stored["is_expired"])
+
+    def test_verification_repository_refreshes_or_closes_one_atomic_aggregate(self) -> None:
+        connection = self.connection_factory()
+        cursor = connection.execute(
+            "INSERT INTO jobs (title, company, description, url, status, is_expired) "
+            "VALUES (?, ?, ?, ?, ?, 0)",
+            (
+                "Data Director", "Example", "Original description",
+                "https://example.test/jobs/repository-verify", "tailored",
+            ),
+        )
+        job_id = cursor.lastrowid
+        connection.execute(
+            "INSERT INTO applications (job_id, status) VALUES (?, 'tailored')",
+            (job_id,),
+        )
+        connection.commit()
+        connection.close()
+        repository = SQLiteVerificationRepository(self.connection_factory)
+        checked_at = datetime(2026, 8, 13, 14, 0, tzinfo=timezone.utc)
+
+        active = repository.apply_verification(
+            job_id,
+            expected_url="https://example.test/jobs/repository-verify",
+            details={
+                "title": "Director of Data",
+                "company": "Example Health",
+                "description": "Updated complete description",
+                "location": "Remote",
+                "work_arrangement": "remote",
+                "employment_type": "full_time",
+                "compensation": "$150,000",
+                "source": "employer",
+            },
+            checked_at=checked_at,
+        )
+        self.assertFalse(active["expired"])
+        connection = self.connection_factory()
+        refreshed = connection.execute(
+            "SELECT title, company, status, is_expired, expiration_reason "
+            "FROM jobs WHERE id = ?", (job_id,),
+        ).fetchone()
+        connection.close()
+        self.assertEqual("Director of Data", refreshed["title"])
+        self.assertEqual("Example Health", refreshed["company"])
+        self.assertEqual("tailored", refreshed["status"])
+        self.assertEqual(0, refreshed["is_expired"])
+        self.assertIsNone(refreshed["expiration_reason"])
+
+        stale = repository.apply_verification(
+            job_id,
+            expected_url="https://example.test/jobs/repository-verify",
+            details=None,
+            checked_at=checked_at + timedelta(hours=1),
+        )
+        self.assertTrue(stale["expired"])
+        connection = self.connection_factory()
+        closed = connection.execute(
+            "SELECT status, is_expired, expiration_reason FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        application_status = connection.execute(
+            "SELECT status FROM applications WHERE job_id = ?", (job_id,)
+        ).fetchone()[0]
+        connection.close()
+        self.assertEqual("closed", closed["status"])
+        self.assertEqual(1, closed["is_expired"])
+        self.assertEqual("Source reports posting is no longer published", closed["expiration_reason"])
+        self.assertEqual("closed", application_status)
+
+    def test_verification_repository_rejects_changed_target_without_writing(self) -> None:
+        connection = self.connection_factory()
+        cursor = connection.execute(
+            "INSERT INTO jobs (title, company, description, url, status, is_expired) "
+            "VALUES (?, ?, ?, ?, 'matched', 0)",
+            (
+                "Data Director", "Example", "Complete description",
+                "https://example.test/jobs/original",
+            ),
+        )
+        job_id = cursor.lastrowid
+        connection.commit()
+        connection.close()
+        repository = SQLiteVerificationRepository(self.connection_factory)
+        target = repository.get_verification_target(job_id)
+        connection = self.connection_factory()
+        connection.execute(
+            "UPDATE jobs SET url = ? WHERE id = ?",
+            ("https://example.test/jobs/replaced", job_id),
+        )
+        connection.commit()
+        connection.close()
+
+        with self.assertRaises(VerificationTargetChanged):
+            repository.apply_verification(
+                job_id,
+                expected_url=target["url"],
+                details=None,
+                checked_at=datetime(2026, 8, 13, 14, 0, tzinfo=timezone.utc),
+            )
+        connection = self.connection_factory()
+        stored = connection.execute(
+            "SELECT status, is_expired, last_checked_at FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        connection.close()
+        self.assertEqual("matched", stored["status"])
+        self.assertEqual(0, stored["is_expired"])
+        self.assertIsNone(stored["last_checked_at"])
+
+    def test_verification_route_delegates_before_source_inspection(self) -> None:
+        repository = Mock()
+        repository.get_verification_target.return_value = {
+            "id": 42,
+            "url": "https://example.test/jobs/delegated",
+        }
+        repository.apply_verification.return_value = {
+            "success": True,
+            "expired": False,
+            "message": "Listing is still active.",
+        }
+        operation = Mock()
+        with (
+            patch.object(app_module, "runtime_verification_repository", return_value=repository),
+            patch.object(app_module, "get_db_connection") as sqlite_connection,
+            patch.object(app_module, "inspect_job_posting", return_value={
+                "status": "ok",
+                "details": {
+                    "title": "Data Director",
+                    "company": "Example",
+                    "description": "Complete description",
+                },
+            }),
+        ):
+            result = app_module._verify_job_posting(42, operation)
+
+        self.assertFalse(result["expired"])
+        repository.get_verification_target.assert_called_once_with(42)
+        repository.apply_verification.assert_called_once()
+        sqlite_connection.assert_not_called()
+        self.assertGreaterEqual(operation.checkpoint.call_count, 2)
 
 
 class BaseResumeVersionTests(unittest.TestCase):

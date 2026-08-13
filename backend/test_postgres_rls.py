@@ -32,6 +32,10 @@ from base_resumes import BaseResumeNotFound, LastBaseResumeError
 from profile_repository import PostgreSQLProfileRepository
 from discovery_repository import PostgreSQLDiscoveryRepository
 from lifecycle_repository import PostgreSQLLifecycleRepository
+from verification_repository import (
+    PostgreSQLVerificationRepository,
+    VerificationTargetChanged,
+)
 from job_suppressions import job_url_fingerprint
 
 from postgres_database import (
@@ -1065,6 +1069,153 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
 
         reverted = repository.undo_latest_lifecycle_change(self.job_one)
         self.assertEqual(history[1].from_status, reverted["status"])
+
+    def test_verification_writes_are_owner_scoped_and_close_pre_application_state(self) -> None:
+        owner_one = PostgreSQLVerificationRepository(self.user_one, engine=self.runtime_engine)
+        owner_two = PostgreSQLVerificationRepository(self.user_two, engine=self.runtime_engine)
+        checked_at = datetime(2026, 8, 13, 15, 0, tzinfo=timezone.utc)
+        self.assertIsNone(owner_two.get_verification_target(self.job_one))
+        self.assertIsNone(
+            owner_two.apply_verification(
+                self.job_one,
+                expected_url="https://example.test/one",
+                details=None,
+                checked_at=checked_at,
+            )
+        )
+
+        active = owner_one.apply_verification(
+            self.job_one,
+            expected_url="https://example.test/one",
+            details={
+                "title": "Verified One Job",
+                "company": "Tenant One Company",
+                "description": "A complete verified description",
+                "location": "Remote",
+                "work_arrangement": "remote",
+                "employment_type": "full_time",
+                "compensation": "$150,000",
+                "source": "employer",
+            },
+            checked_at=checked_at,
+        )
+        self.assertFalse(active["expired"])
+        self.assertNotIn("owner_user_id", active)
+        PostgreSQLLifecycleRepository(
+            self.user_one, engine=self.runtime_engine
+        ).update_lifecycle(self.job_one, "tailored")
+
+        stale = owner_one.apply_verification(
+            self.job_one,
+            expected_url="https://example.test/one",
+            details=None,
+            checked_at=checked_at + timedelta(hours=1),
+        )
+        self.assertTrue(stale["expired"])
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            job = connection.execute(
+                text(
+                    "SELECT title, status, is_expired, expiration_reason "
+                    "FROM careertrellis.jobs WHERE id = :job_id"
+                ),
+                {"job_id": self.job_one},
+            ).mappings().one()
+            application_status = connection.scalar(
+                text(
+                    "SELECT status FROM careertrellis.applications "
+                    "WHERE job_id = :job_id"
+                ),
+                {"job_id": self.job_one},
+            )
+        with tenant_transaction(self.runtime_engine, self.user_two) as connection:
+            other_job = connection.execute(
+                text(
+                    "SELECT status, is_expired FROM careertrellis.jobs "
+                    "WHERE id = :job_id"
+                ),
+                {"job_id": self.job_two},
+            ).one()
+        self.assertEqual("Verified One Job", job["title"])
+        self.assertEqual("closed", job["status"])
+        self.assertTrue(job["is_expired"])
+        self.assertEqual("Source reports posting is no longer published", job["expiration_reason"])
+        self.assertEqual("closed", application_status)
+        self.assertEqual("matched", other_job.status)
+        self.assertFalse(other_job.is_expired)
+
+    def test_verification_rejects_a_changed_target_and_serializes_with_lifecycle(self) -> None:
+        verification = PostgreSQLVerificationRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        target = verification.get_verification_target(self.job_one)
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            connection.execute(
+                text("UPDATE careertrellis.jobs SET url = :url WHERE id = :job_id"),
+                {"url": "https://example.test/one-replaced", "job_id": self.job_one},
+            )
+        with self.assertRaises(VerificationTargetChanged):
+            verification.apply_verification(
+                self.job_one,
+                expected_url=target["url"],
+                details=None,
+                checked_at=datetime(2026, 8, 13, 15, 0, tzinfo=timezone.utc),
+            )
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            unchanged = connection.execute(
+                text(
+                    "SELECT status, is_expired, last_checked_at "
+                    "FROM careertrellis.jobs WHERE id = :job_id"
+                ),
+                {"job_id": self.job_one},
+            ).one()
+        self.assertEqual("matched", unchanged.status)
+        self.assertFalse(unchanged.is_expired)
+        self.assertIsNone(unchanged.last_checked_at)
+
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            connection.execute(
+                text("UPDATE careertrellis.jobs SET url = :url WHERE id = :job_id"),
+                {"url": target["url"], "job_id": self.job_one},
+            )
+        lifecycle = PostgreSQLLifecycleRepository(self.user_one, engine=self.runtime_engine)
+        barrier = Barrier(2)
+
+        def mark_stale() -> dict:
+            barrier.wait(timeout=5)
+            return verification.apply_verification(
+                self.job_one,
+                expected_url=target["url"],
+                details=None,
+                checked_at=datetime(2026, 8, 13, 16, 0, tzinfo=timezone.utc),
+            )
+
+        def mark_applied() -> dict:
+            barrier.wait(timeout=5)
+            return lifecycle.update_lifecycle(self.job_one, "applied")
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            stale_future = executor.submit(mark_stale)
+            applied_future = executor.submit(mark_applied)
+            stale_future.result(timeout=10)
+            applied_future.result(timeout=10)
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            job = connection.execute(
+                text(
+                    "SELECT status, is_expired FROM careertrellis.jobs "
+                    "WHERE id = :job_id"
+                ),
+                {"job_id": self.job_one},
+            ).one()
+            application_status = connection.scalar(
+                text(
+                    "SELECT status FROM careertrellis.applications "
+                    "WHERE job_id = :job_id"
+                ),
+                {"job_id": self.job_one},
+            )
+        self.assertEqual("applied", job.status)
+        self.assertTrue(job.is_expired)
+        self.assertEqual("applied", application_status)
 
     def test_context_is_transaction_local_and_cleared_before_pool_reuse(self) -> None:
         with tenant_transaction(self.runtime_engine, self.user_one) as connection:

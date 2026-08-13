@@ -53,8 +53,8 @@ slice does not reach that boundary.
 
 This slice does not convert or authorize:
 
-- posting verification, expiry updates, archive/restore, bulk cleanup, or
-  permanent job deletion and its coupled suppression write;
+- archive/restore, bulk cleanup, or permanent job deletion and its coupled
+  suppression write;
 - tailoring, generated-material creation/replacement/deletion, private-object
   mutations, application downloads, engagements, interview preparation, or
   follow-up management beyond retaining the lifecycle form fields;
