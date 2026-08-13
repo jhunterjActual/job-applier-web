@@ -25,6 +25,7 @@ See [docs/STAGE_3_POSTGRES_READINESS.md](docs/STAGE_3_POSTGRES_READINESS.md) for
 See [docs/STAGE_3_POSTGRES_SEARCH_EXECUTION_CONTEXT.md](docs/STAGE_3_POSTGRES_SEARCH_EXECUTION_CONTEXT.md) for owner-scoped profile, keyword-cache, and minimized job-catalog persistence during search execution, with every external provider and AI call outside database transactions and the no-activation boundary intact.
 See [docs/STAGE_3_POSTGRES_USER_DATA_EXPORT.md](docs/STAGE_3_POSTGRES_USER_DATA_EXPORT.md) for the owner-scoped, privacy-minimized, consistent user-data export snapshot under the continuing no-activation boundary.
 See [docs/STAGE_3_POSTGRES_HEADQUARTERS_CACHE.md](docs/STAGE_3_POSTGRES_HEADQUARTERS_CACHE.md) for the owner-scoped, privacy-minimized OpenStreetMap headquarters cache boundary, with provider calls outside database transactions and no hosted activation.
+See [docs/STAGE_3_POSTGRES_SEARCH_RUNS.md](docs/STAGE_3_POSTGRES_SEARCH_RUNS.md) for durable owner-isolated search status, cancellation, retry/lease recovery, and the least-privilege worker claim broker under the continuing no-activation boundary.
 See [docs/STAGE_3_SHARED_BACKUP_RESTORE_POLICY.md](docs/STAGE_3_SHARED_BACKUP_RESTORE_POLICY.md) for the fail-closed shared-host backup/restore policy: encrypted workspace archives remain local-only, while PostgreSQL and private object-store recovery stay operator-managed.
 
 A self-contained, privacy-first workspace designed to streamline job discovery, resume tailoring, guided-manual applications, progress tracking, and interview preparation.

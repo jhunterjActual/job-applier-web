@@ -23,9 +23,14 @@ done
 if ! id careertrellis >/dev/null 2>&1; then
     useradd --system --user-group --home-dir /var/lib/careertrellis --shell /usr/sbin/nologin careertrellis
 fi
+if ! id careertrellis-worker >/dev/null 2>&1; then
+    useradd --system --gid careertrellis --home-dir /var/lib/careertrellis/worker --shell /usr/sbin/nologin careertrellis-worker
+fi
 
 install -d -o root -g root -m 0755 /opt/careertrellis/staging/releases
 install -d -o careertrellis -g careertrellis -m 0700 /var/lib/careertrellis/staging
+install -d -o careertrellis-worker -g careertrellis -m 0700 /var/lib/careertrellis/worker
+install -d -o root -g careertrellis -m 0750 /var/lib/careertrellis/shared
 install -d -o root -g root -m 0755 /etc/careertrellis
 install -d -o caddy -g caddy -m 0750 /var/log/caddy
 caddy_access_log=/var/log/caddy/careertrellis-staging-access.log
@@ -47,6 +52,9 @@ install -o root -g root -m 0755 "${repository_root}/deploy/scripts/rollback-rele
 if [[ ! -e /etc/careertrellis/staging.env ]]; then
     install -o root -g root -m 0600 "${repository_root}/deploy/config/staging-app.environment.example" /etc/careertrellis/staging.env
 fi
+if [[ ! -e /etc/careertrellis/search-worker.env ]]; then
+    install -o root -g root -m 0600 "${repository_root}/deploy/config/search-worker.environment.example" /etc/careertrellis/search-worker.env
+fi
 if [[ ! -e /etc/caddy/careertrellis-staging.env ]]; then
     install -o root -g root -m 0600 "${repository_root}/deploy/config/staging-caddy.environment.example" /etc/caddy/careertrellis-staging.env
 fi
@@ -54,5 +62,6 @@ fi
 systemctl daemon-reload
 echo "Provisioning files installed. Replace every placeholder in:"
 echo "  /etc/careertrellis/staging.env"
+echo "  /etc/careertrellis/search-worker.env"
 echo "  /etc/caddy/careertrellis-staging.env"
 echo "Then validate Caddy and deploy an exact commit. Services were not started."

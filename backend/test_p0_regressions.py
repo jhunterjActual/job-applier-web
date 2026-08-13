@@ -36,6 +36,7 @@ import job_retention_repository as job_retention_repository_module
 import postgres_database as postgres_database_module
 import profile_repository as profile_repository_module
 import provider_secrets as provider_secrets_module
+import search_run_execution as search_run_execution_module
 import searcher as searcher_module
 import source_diagnostics as source_diagnostics_module
 import sqlite_postgres_import as sqlite_postgres_import_module
@@ -1989,9 +1990,116 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("EnvironmentFile=/etc/careertrellis/object-storage.env", web_service)
         self.assertNotIn("postgres-migration.env", web_service)
         self.assertNotIn("postgres-worker.env", web_service)
+        self.assertIn("User=careertrellis\n", web_service)
+        self.assertIn("Group=careertrellis\n", web_service)
+        self.assertIn("ReadWritePaths=/var/lib/careertrellis/staging", web_service)
+        self.assertNotIn("ReadWritePaths=/var/lib/careertrellis/worker", web_service)
+        self.assertIn("User=careertrellis-worker\n", worker_service)
+        self.assertIn("Group=careertrellis\n", worker_service)
+        self.assertIn("ReadWritePaths=/var/lib/careertrellis/worker", worker_service)
+        self.assertNotIn("ReadWritePaths=/var/lib/careertrellis/staging", worker_service)
+        self.assertIn("postgres-worker.env", worker_service)
+        self.assertIn("provider-secrets.env", worker_service)
+        self.assertIn(
+            "EnvironmentFile=/etc/careertrellis/search-worker.env", worker_service
+        )
+        self.assertEqual(
+            {
+                "EnvironmentFile=/etc/careertrellis/search-worker.env",
+                "EnvironmentFile=/etc/careertrellis/postgres-worker.env",
+                "EnvironmentFile=/etc/careertrellis/provider-secrets.env",
+            },
+            {
+                line.strip()
+                for line in worker_service.splitlines()
+                if line.startswith("EnvironmentFile=")
+            },
+        )
+        self.assertNotIn(
+            "EnvironmentFile=/etc/careertrellis/staging.env", worker_service
+        )
         self.assertNotIn("postgres-runtime.env", worker_service)
-        self.assertNotIn("provider-secrets.env", worker_service)
         self.assertNotIn("object-storage.env", worker_service)
+
+        provision = (
+            project_dir / "deploy" / "scripts" / "provision-staging-host.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "useradd --system --gid careertrellis --home-dir /var/lib/careertrellis/worker --shell /usr/sbin/nologin careertrellis-worker",
+            provision,
+        )
+        self.assertIn(
+            "install -d -o careertrellis-worker -g careertrellis -m 0700 /var/lib/careertrellis/worker",
+            provision,
+        )
+
+        deploy = (
+            project_dir / "deploy" / "scripts" / "deploy-release.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "browser_path=/var/lib/careertrellis/shared/ms-playwright", deploy
+        )
+        self.assertNotIn("browser_path=${PLAYWRIGHT_BROWSERS_PATH", deploy)
+        self.assertIn(
+            'install -d -o root -g careertrellis -m 0750 "${browser_path}"',
+            deploy,
+        )
+        self.assertIn(
+            'chown -R root:careertrellis "${browser_path}"', deploy
+        )
+        self.assertIn('chmod -R u=rwX,g=rX,o= "${browser_path}"', deploy)
+        self.assertIn(
+            "install -d -o root -g careertrellis -m 0750 /var/lib/careertrellis/shared",
+            provision,
+        )
+        for environment_name in (
+            "staging-app.environment.example",
+            "search-worker.environment.example",
+        ):
+            environment = (
+                project_dir / "deploy" / "config" / environment_name
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "PLAYWRIGHT_BROWSERS_PATH=/var/lib/careertrellis/shared/ms-playwright",
+                environment,
+            )
+            self.assertNotIn(
+                "PLAYWRIGHT_BROWSERS_PATH=/var/lib/careertrellis/staging",
+                environment,
+            )
+
+        rollback = (
+            project_dir / "deploy" / "scripts" / "rollback-release.sh"
+        ).read_text(encoding="utf-8")
+        for script in (deploy, rollback):
+            self.assertIn(
+                'grep -Fx "PLAYWRIGHT_BROWSERS_PATH=${browser_path}"', script
+            )
+            self.assertIn(
+                "Web and worker runtime files must use the reviewed shared browser path.",
+                script,
+            )
+
+        workflow = (
+            project_dir / ".github" / "workflows" / "web-foundation.yml"
+        ).read_text(encoding="utf-8")
+        worker_step = workflow.split(
+            "- name: Exercise staging worker entrypoint", 1
+        )[1].split("- name: Check deployment shell syntax", 1)[0]
+        worker_env = worker_step.split("env:", 1)[1].split("run:", 1)[0]
+        self.assertEqual(
+            {"CAREERTRELLIS_ENVIRONMENT", "CAREERTRELLIS_DATA_DIR"},
+            {
+                line.strip().split(":", 1)[0]
+                for line in worker_env.splitlines()
+                if ":" in line
+            },
+        )
+        self.assertIn("CAREERTRELLIS_ENVIRONMENT: staging", worker_env)
+        self.assertIn(
+            "CAREERTRELLIS_DATA_DIR: ${{ runner.temp }}/careertrellis-worker",
+            worker_env,
+        )
 
     def test_import_and_rotation_wrappers_require_reviewed_release_and_root_owned_envs(self) -> None:
         scripts = self.project_dir() / "deploy" / "scripts"
@@ -2609,7 +2717,11 @@ class DataStoreConfigurationTests(unittest.TestCase):
                 "runtime_job_retention_repository",
                 return_value=repository,
             ) as factory,
-            patch.object(app_module, "IS_SEARCHING", False),
+            patch.object(
+                app_module,
+                "runtime_search_run_repository",
+                return_value=Mock(has_active=Mock(return_value=False)),
+            ),
         ):
             self.assertEqual(
                 repository.cleanup_preview.return_value,
@@ -2638,7 +2750,11 @@ class DataStoreConfigurationTests(unittest.TestCase):
                 "runtime_job_retention_repository",
                 return_value=repository,
             ),
-            patch.object(app_module, "IS_SEARCHING", False),
+            patch.object(
+                app_module,
+                "runtime_search_run_repository",
+                return_value=Mock(has_active=Mock(return_value=False)),
+            ),
         ):
             for failure in (
                 CleanupPreviewChanged(secret),
@@ -2676,7 +2792,11 @@ class DataStoreConfigurationTests(unittest.TestCase):
     def test_search_in_progress_blocks_cleanup_before_repository_dispatch(self) -> None:
         with (
             patch.object(app_module, "runtime_job_retention_repository") as factory,
-            patch.object(app_module, "IS_SEARCHING", True),
+            patch.object(
+                app_module,
+                "runtime_search_run_repository",
+                return_value=Mock(has_active=Mock(return_value=True)),
+            ),
             self.assertRaises(app_module.HTTPException) as raised,
         ):
             app_module.cleanup_jobs(
@@ -2825,8 +2945,14 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
         )
         self.assertEqual([saved["id"]], [row["id"] for row in due])
 
-    def test_search_route_delegates_saved_search_writes_before_enqueue(self) -> None:
+    def test_search_route_enqueues_durable_run_and_delegates_saved_search_writes(self) -> None:
         repository = Mock()
+        search_runs = Mock()
+        search_runs.enqueue.return_value = "00000000-0000-4000-8000-000000000101"
+        calls = Mock()
+        calls.attach_mock(search_runs.enqueue, "enqueue")
+        calls.attach_mock(repository.upsert_saved_search, "prepare_saved_search")
+        calls.attach_mock(search_runs.publish_prepared, "publish")
         repository.upsert_saved_search.return_value = {
             "id": 12,
             "keywords": "stored keywords",
@@ -2839,11 +2965,10 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
         }
         background_tasks = Mock()
         request = SimpleNamespace(state=SimpleNamespace(local_user_id=42))
-        operation = Mock()
-        app_module.IS_SEARCHING = False
         with (
             patch.object(app_module, "runtime_discovery_repository", return_value=repository),
-            patch.object(app_module, "start_operation", return_value=operation),
+            patch.object(app_module, "runtime_search_run_repository", return_value=search_runs),
+            patch.object(app_module, "data_store_kind", return_value=data_store_module.LOCAL_DATA_STORE),
             patch.object(app_module, "capture_event"),
         ):
             result = app_module.search_jobs(
@@ -2856,24 +2981,59 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
                 ),
                 background_tasks,
                 request,
+                operation_id=None,
             )
         self.assertTrue(result["success"])
         repository.upsert_saved_search.assert_called_once()
         run_at = repository.upsert_saved_search.call_args.kwargs["run_at"]
         self.assertEqual(timezone.utc, run_at.tzinfo)
-        background_tasks.add_task.assert_called_once_with(
-            app_module.run_search_wrapper,
+        search_runs.enqueue.assert_called_once_with(
+            None,
+            " submitted ",
+            " submitted place ",
+        )
+        search_runs.publish_prepared.assert_called_once_with(
+            "00000000-0000-4000-8000-000000000101",
             "stored keywords",
             "stored location",
-            operation,
-            42,
         )
-        app_module.IS_SEARCHING = False
+        self.assertEqual(
+            ["enqueue", "prepare_saved_search", "publish"],
+            [call[0] for call in calls.mock_calls],
+        )
+        background_tasks.add_task.assert_called_once_with(
+            app_module.run_local_search_run,
+            "00000000-0000-4000-8000-000000000101",
+        )
 
         background_tasks.reset_mock()
+        search_runs.reset_mock()
+        search_runs.enqueue.return_value = "00000000-0000-4000-8000-000000000101"
+        with (
+            patch.object(app_module, "runtime_search_run_repository", return_value=search_runs),
+            patch.object(app_module, "data_store_kind", return_value=data_store_module.SHARED_DATA_STORE),
+            patch.object(app_module, "capture_event"),
+        ):
+            shared_result = app_module.search_jobs(
+                app_module.SearchRequest(keywords="shared keywords"),
+                background_tasks,
+                request,
+                operation_id=None,
+            )
+        self.assertTrue(shared_result["success"])
+        search_runs.enqueue.assert_called_once_with(None, "shared keywords", "")
+        search_runs.publish_prepared.assert_called_once_with(
+            "00000000-0000-4000-8000-000000000101", "shared keywords", ""
+        )
+        background_tasks.add_task.assert_not_called()
+
+        background_tasks.reset_mock()
+        search_runs.reset_mock()
+        search_runs.enqueue.return_value = "00000000-0000-4000-8000-000000000101"
         with (
             patch.object(app_module, "runtime_discovery_repository", return_value=repository),
-            patch.object(app_module, "start_operation", return_value=operation),
+            patch.object(app_module, "runtime_search_run_repository", return_value=search_runs),
+            patch.object(app_module, "data_store_kind", return_value=data_store_module.LOCAL_DATA_STORE),
             patch.object(app_module, "capture_event"),
         ):
             app_module.search_jobs(
@@ -2884,38 +3044,141 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
                 ),
                 background_tasks,
                 request,
+                operation_id=None,
             )
         repository.advance_saved_search_run.assert_called_once()
-        background_tasks.add_task.assert_called_once_with(
-            app_module.run_search_wrapper,
+        # Preserve the existing route contract: selecting a saved search
+        # advances its schedule, while the submitted (possibly edited) query
+        # is the one executed. Only a create/upsert replaces the queued query
+        # with repository-normalized values before publication.
+        search_runs.enqueue.assert_called_once_with(
+            None, "edited keywords", "edited location"
+        )
+        search_runs.publish_prepared.assert_called_once_with(
+            "00000000-0000-4000-8000-000000000101",
             "edited keywords",
             "edited location",
-            operation,
-            42,
         )
-        app_module.IS_SEARCHING = False
+        background_tasks.add_task.assert_called_once_with(
+            app_module.run_local_search_run,
+            "00000000-0000-4000-8000-000000000101",
+        )
 
     def test_search_route_rejects_unowned_saved_search_before_enqueue(self) -> None:
         repository = Mock()
         repository.advance_saved_search_run.return_value = None
+        search_runs = Mock()
+        search_runs.enqueue.return_value = "00000000-0000-4000-8000-000000000102"
         background_tasks = Mock()
-        operation = Mock()
-        app_module.IS_SEARCHING = False
         with (
             patch.object(app_module, "runtime_discovery_repository", return_value=repository),
-            patch.object(app_module, "start_operation", return_value=operation),
-            patch.object(app_module, "finish_operation") as finish_operation,
+            patch.object(app_module, "runtime_search_run_repository", return_value=search_runs),
         ):
             with self.assertRaises(app_module.HTTPException) as raised:
                 app_module.search_jobs(
                     app_module.SearchRequest(keywords="ignored", saved_search_id=99),
                     background_tasks,
                     SimpleNamespace(state=SimpleNamespace(local_user_id=42)),
+                    operation_id=None,
                 )
         self.assertEqual(404, raised.exception.status_code)
-        finish_operation.assert_called_once_with(operation)
+        search_runs.enqueue.assert_called_once_with(None, "ignored", "")
+        search_runs.abandon_prepared.assert_called_once_with(
+            "00000000-0000-4000-8000-000000000102"
+        )
+        search_runs.publish_prepared.assert_not_called()
         background_tasks.add_task.assert_not_called()
-        self.assertFalse(app_module.IS_SEARCHING)
+
+    def test_search_route_reserves_before_saved_search_write_and_keeps_enqueue_race_safe(self) -> None:
+        repository = Mock()
+        repository.upsert_saved_search.return_value = {
+            "id": 12,
+            "keywords": "normalized keywords",
+            "location": "Normalized place",
+        }
+        search_runs = Mock()
+        search_runs.enqueue.side_effect = app_module.SearchRunAlreadyActive()
+        background_tasks = Mock()
+        request = SimpleNamespace(state=SimpleNamespace(local_user_id=42))
+        with (
+            patch.object(app_module, "runtime_discovery_repository", return_value=repository),
+            patch.object(app_module, "runtime_search_run_repository", return_value=search_runs),
+        ):
+            raced = app_module.search_jobs(
+                app_module.SearchRequest(
+                    keywords="submitted",
+                    save_search=True,
+                    saved_search_name="Saved",
+                ),
+                background_tasks,
+                request,
+                operation_id=None,
+            )
+
+        self.assertFalse(raced["success"])
+        repository.upsert_saved_search.assert_not_called()
+        search_runs.enqueue.assert_called_once_with(None, "submitted", "")
+        search_runs.publish_prepared.assert_not_called()
+        background_tasks.add_task.assert_not_called()
+
+    def test_search_route_publish_failure_is_fixed_even_when_abandon_fails(self) -> None:
+        private_publish_error = (
+            "postgresql://runtime:secret@private-database.test/careertrellis"
+        )
+        private_abandon_error = "private cleanup path C:/workspace/search-runs.db"
+        operation_id = "00000000-0000-4000-8000-000000000104"
+        run_id = "00000000-0000-4000-8000-000000000105"
+        request = SimpleNamespace(state=SimpleNamespace(local_user_id=42))
+
+        for abandon_side_effect in (None, RuntimeError(private_abandon_error)):
+            with self.subTest(abandon_fails=abandon_side_effect is not None):
+                search_runs = Mock()
+                search_runs.enqueue.return_value = run_id
+                publish_error = app_module.SearchRunUnavailable()
+                publish_error.__cause__ = RuntimeError(private_publish_error)
+                search_runs.publish_prepared.side_effect = publish_error
+                search_runs.abandon_prepared.side_effect = abandon_side_effect
+                background_tasks = Mock()
+                with patch.object(
+                    app_module,
+                    "runtime_search_run_repository",
+                    return_value=search_runs,
+                ):
+                    with self.assertRaises(app_module.HTTPException) as raised:
+                        app_module.search_jobs(
+                            app_module.SearchRequest(keywords="synthetic"),
+                            background_tasks,
+                            request,
+                            operation_id=operation_id,
+                        )
+
+                self.assertEqual(503, raised.exception.status_code)
+                self.assertEqual(
+                    "The job search could not be queued.", raised.exception.detail
+                )
+                self.assertNotIn("private", raised.exception.detail)
+                search_runs.enqueue.assert_called_once_with(
+                    operation_id, "synthetic", ""
+                )
+                search_runs.publish_prepared.assert_called_once_with(
+                    run_id, "synthetic", ""
+                )
+                search_runs.abandon_prepared.assert_called_once_with(run_id)
+                background_tasks.add_task.assert_not_called()
+
+    def test_search_status_and_cancel_dispatch_to_durable_repository(self) -> None:
+        repository = Mock()
+        repository.status.return_value = {"searching": True, "last_result": None}
+        repository.request_cancel.return_value = True
+        operation_id = "00000000-0000-4000-8000-000000000103"
+        with (
+            patch.object(app_module, "runtime_search_run_repository", return_value=repository),
+            patch.object(app_module, "request_cancellation", return_value=False),
+        ):
+            self.assertEqual(repository.status.return_value, app_module.get_search_status())
+            cancelled = app_module.cancel_operation(operation_id)
+        self.assertTrue(cancelled["active"])
+        repository.request_cancel.assert_called_once_with(operation_id)
 
 
 class WebAuthenticationTests(unittest.TestCase):
@@ -3397,13 +3660,14 @@ class LocalBrowserBoundaryTests(unittest.TestCase):
                     return_value={"environment": "staging"},
                 ),
                 patch.object(worker_module.config, "get_worker_heartbeat_seconds", return_value=15),
+                patch.object(worker_module.config, "search_worker_enabled", return_value=False),
             ):
                 worker_module.STOP_EVENT.clear()
                 self.assertEqual(0, worker_module.run(once=True))
 
             heartbeat = json.loads((data_directory / "worker-heartbeat.json").read_text(encoding="utf-8"))
             self.assertEqual(app_module.APP_BUILD, heartbeat["build"])
-            self.assertEqual("idle_no_queue", heartbeat["status"])
+            self.assertEqual("idle_disabled", heartbeat["status"])
             self.assertNotIn("token", heartbeat)
 
     def test_cross_site_writes_are_rejected_but_local_clients_reach_routing(self) -> None:
@@ -5780,7 +6044,7 @@ class SearchQualityTests(unittest.TestCase):
                 )
         repository.create_job_if_available.assert_called_once()
 
-    def test_search_insert_failure_log_and_wrapper_error_are_privacy_safe(self) -> None:
+    def test_search_insert_failure_log_is_privacy_safe(self) -> None:
         secret = "postgresql://private-user:private-password@database.test/private"
         url = "https://jobs.lever.co/synthetic/private-insert"
         repository = Mock()
@@ -5826,36 +6090,6 @@ class SearchQualityTests(unittest.TestCase):
         log_text = " ".join(str(call) for call in print_message.call_args_list)
         self.assertNotIn(secret, log_text)
         self.assertNotIn(url, log_text)
-
-        observed_owners = []
-
-        def fail_search(*_args, **_kwargs):
-            observed_owners.append(provider_secrets_module.current_owner_user_id())
-            raise RuntimeError(secret)
-
-        operation = Mock()
-        with (
-            patch.object(app_module, "run_job_search_and_matching", side_effect=fail_search),
-            patch.object(app_module, "finish_operation") as finish_operation,
-        ):
-            app_module.IS_SEARCHING = True
-            app_module.run_search_wrapper(
-                "synthetic keywords", "synthetic location", operation, owner_user_id=94
-            )
-        self.assertEqual([94], observed_owners)
-        self.assertEqual(
-            {
-                "success": False,
-                "error": "The job search could not be completed.",
-                "provider_alerts": [],
-            },
-            app_module.LAST_SEARCH_RESULT,
-        )
-        self.assertNotIn(secret, json.dumps(app_module.LAST_SEARCH_RESULT))
-        with self.assertRaises(provider_secrets_module.ProviderSecretAuthorizationError):
-            provider_secrets_module.current_owner_user_id()
-        finish_operation.assert_called_once_with(operation)
-        self.assertFalse(app_module.IS_SEARCHING)
 
     def test_generic_smartrecruiters_career_pages_are_not_job_postings(self) -> None:
         self.assertFalse(is_specific_job_url("https://careers.smartrecruiters.com/QADInc/corporate-careers"))
@@ -6628,44 +6862,35 @@ class SourceDiagnosticHistoryTests(unittest.TestCase):
         result["success"] = True
         repository = Mock()
         repository.persist_source_diagnostics.side_effect = sqlite3.OperationalError("disk full")
-        with (
-            patch.object(app_module, "run_job_search_and_matching", return_value=result),
-            patch.object(app_module, "runtime_discovery_repository", return_value=repository),
+        with patch.object(
+            search_run_execution_module,
+            "runtime_discovery_repository",
+            return_value=repository,
         ):
-            app_module.IS_SEARCHING = True
-            app_module.run_search_wrapper("private keywords", "private location")
+            search_run_execution_module._save_source_diagnostic_history(result)
 
-        self.assertIs(result, app_module.LAST_SEARCH_RESULT)
-        self.assertFalse(app_module.IS_SEARCHING)
         repository.persist_source_diagnostics.assert_called_once()
 
     def test_history_connection_failure_does_not_replace_successful_search_result(self) -> None:
         result = self.search_result()
         result["success"] = True
-        with (
-            patch.object(app_module, "run_job_search_and_matching", return_value=result),
-            patch.object(
-                app_module,
-                "runtime_discovery_repository",
-                side_effect=sqlite3.OperationalError("unavailable"),
-            ),
+        with patch.object(
+            search_run_execution_module,
+            "runtime_discovery_repository",
+            side_effect=sqlite3.OperationalError("unavailable"),
         ):
-            app_module.IS_SEARCHING = True
-            app_module.run_search_wrapper("private keywords", "private location")
-        self.assertIs(result, app_module.LAST_SEARCH_RESULT)
-        self.assertFalse(app_module.IS_SEARCHING)
+            search_run_execution_module._save_source_diagnostic_history(result)
 
     def test_search_without_notices_does_not_open_history_database(self) -> None:
         connection_factory = unittest.mock.Mock()
         result = {"success": True, "provider_alerts": [], "provider_health": {}}
-        with (
-            patch.object(app_module, "run_job_search_and_matching", return_value=result),
-            patch.object(app_module, "get_db_connection", connection_factory),
+        with patch.object(
+            search_run_execution_module,
+            "get_db_connection",
+            connection_factory,
         ):
-            app_module.IS_SEARCHING = True
-            app_module.run_search_wrapper("keywords", "location")
+            search_run_execution_module._save_source_diagnostic_history(result)
         connection_factory.assert_not_called()
-        self.assertIs(result, app_module.LAST_SEARCH_RESULT)
 
     def test_schema_migration_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -6688,11 +6913,14 @@ class SourceDiagnosticHistoryTests(unittest.TestCase):
             interface_language = connection.execute("SELECT interface_language FROM profile WHERE id = 1").fetchone()[0]
             connection.close()
         self.assertIn("source_diagnostics", tables)
+        self.assertIn("search_runs", tables)
         self.assertIn("headquarters_cache", tables)
         self.assertIn("base_resumes", tables)
         self.assertIn("base_resume_versions", tables)
         self.assertIn("application_engagements", tables)
         self.assertIn("idx_source_diagnostics_recorded_at", indexes)
+        self.assertIn("idx_search_runs_owner_active", indexes)
+        self.assertIn("idx_search_runs_owner_recent", indexes)
         self.assertIn("idx_base_resume_versions_resume", indexes)
         self.assertIn("idx_application_engagements_job", indexes)
         self.assertIn("idx_application_engagements_next_action", indexes)

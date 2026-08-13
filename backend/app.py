@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
 from urllib.parse import urlsplit
+from uuid import uuid4
 from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, BackgroundTasks, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse, Response, StreamingResponse
@@ -86,6 +87,12 @@ from headquarters_cache_repository import (
     HeadquartersCacheUnavailable,
     runtime_headquarters_cache_repository,
 )
+from search_run_execution import execute_search_claim
+from search_run_repository import (
+    SearchRunAlreadyActive,
+    SearchRunUnavailable,
+    runtime_search_run_repository,
+)
 from profile_repository import runtime_profile_repository
 from web_auth import (
     LOGIN_FLOW_COOKIE_NAME,
@@ -116,7 +123,6 @@ from searcher import (
     canonicalize_job_url,
     inspect_job_posting,
     provider_for_url,
-    run_job_search_and_matching,
     validate_public_http_url,
 )
 from utils import generate_resume_pdf, resume_pdf_metadata
@@ -997,68 +1003,30 @@ async def upload_resume(
         finish_operation(operation)
         await file.close()
 
-IS_SEARCHING = False
-LAST_SEARCH_RESULT = None
-
-
-def _save_source_diagnostic_history(search_result: dict) -> None:
-    """Best-effort minimized history must never change a search outcome."""
-    try:
-        runtime_discovery_repository(
-            sqlite_connection_factory=get_db_connection
-        ).persist_source_diagnostics(search_result, datetime.now())
-    except Exception:
-        print("Source diagnostic history could not be saved; search results remain available.")
-
-
-def run_search_wrapper(
-    keywords: str,
-    location: str,
-    operation: Optional[OperationToken] = None,
-    owner_user_id: Optional[int] = None,
-) -> None:
-    """
-    A background helper task that triggers the crawling and matching of jobs,
-    ensuring that the searching status flag is reset once completed.
-    
-    Args:
-        keywords (str): Semi-colon or space-separated job keywords.
-        location (str): Semicolon-separated target locations.
-    """
-    operation = operation or start_operation()
-    owner_context_token = (
-        set_current_owner_user_id(owner_user_id) if owner_user_id is not None else None
+def run_local_search_run(run_id: str) -> None:
+    """Claim one SQLite run after the request transaction has fully closed."""
+    repository = runtime_search_run_repository(
+        sqlite_connection_factory=get_db_connection
     )
-    global IS_SEARCHING, LAST_SEARCH_RESULT
-    try:
-        LAST_SEARCH_RESULT = run_job_search_and_matching(keywords, location, operation.checkpoint)
-        if isinstance(LAST_SEARCH_RESULT, dict) and LAST_SEARCH_RESULT.get("provider_alerts"):
-            _save_source_diagnostic_history(LAST_SEARCH_RESULT)
-    except OperationCancelled:
-        LAST_SEARCH_RESULT = {
-            "success": True,
-            "cancelled": True,
-            "partial": True,
-            "message": "Search stopped. Any jobs committed before the stop request were kept.",
-            "provider_alerts": [],
-        }
-    except Exception:
-        LAST_SEARCH_RESULT = {
-            "success": False,
-            "error": "The job search could not be completed.",
-            "provider_alerts": [],
-        }
-    finally:
-        if owner_context_token is not None:
-            reset_current_owner_user_id(owner_context_token)
-        finish_operation(operation)
-        IS_SEARCHING = False
+    claim = repository.claim(run_id, str(uuid4()))
+    if claim is not None:
+        execute_search_claim(claim, repository)
 
 
 @app.post("/api/operations/{operation_id}/cancel")
 def cancel_operation(operation_id: str) -> dict:
     """Request cooperative cancellation at the operation's next safe checkpoint."""
     active = request_cancellation(operation_id)
+    try:
+        active = runtime_search_run_repository(
+            sqlite_connection_factory=get_db_connection
+        ).request_cancel(operation_id) or active
+    except SearchRunUnavailable as exc:
+        if not active:
+            raise HTTPException(
+                status_code=503,
+                detail="Search cancellation is temporarily unavailable.",
+            ) from exc
     return {
         "success": True,
         "active": active,
@@ -1390,8 +1358,16 @@ def preview_job_cleanup() -> dict:
 @app.post("/api/jobs/cleanup")
 def cleanup_jobs(req: CleanupRequest) -> dict:
     """Apply a previously previewed bulk cleanup operation transactionally."""
-    global IS_SEARCHING
-    if IS_SEARCHING:
+    try:
+        search_active = runtime_search_run_repository(
+            sqlite_connection_factory=get_db_connection
+        ).has_active()
+    except SearchRunUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Search status is temporarily unavailable; cleanup was not started.",
+        ) from exc
+    if search_active:
         raise HTTPException(status_code=409, detail="Wait for the current job search to finish before cleanup.")
 
     try:
@@ -1482,8 +1458,15 @@ def get_search_status() -> dict:
     Returns:
         dict: Containing a boolean key 'searching' indicating search status.
     """
-    global IS_SEARCHING, LAST_SEARCH_RESULT
-    return {"searching": IS_SEARCHING, "last_result": LAST_SEARCH_RESULT}
+    try:
+        return runtime_search_run_repository(
+            sqlite_connection_factory=get_db_connection
+        ).status()
+    except SearchRunUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Search status is temporarily unavailable.",
+        ) from exc
 
 
 @app.get("/api/source-diagnostics")
@@ -1846,16 +1829,18 @@ def search_jobs(
     Returns:
         dict: Success status and status message.
     """
-    global IS_SEARCHING, LAST_SEARCH_RESULT
-    if IS_SEARCHING:
-        return {"success": False, "message": "A job search is already in progress."}
-    operation = start_operation(operation_id)
     try:
-        operation.checkpoint()
-    except OperationCancelled:
-        finish_operation(operation)
-        return {"success": False, "cancelled": True, "message": "Search stopped before it started."}
-    LAST_SEARCH_RESULT = None
+        search_run_repository = runtime_search_run_repository(
+            sqlite_connection_factory=get_db_connection
+        )
+        run_id = search_run_repository.enqueue(operation_id, req.keywords, req.location)
+    except SearchRunAlreadyActive:
+        return {"success": False, "message": "A job search is already in progress."}
+    except SearchRunUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The job search could not be queued.",
+        ) from exc
     search_keywords = req.keywords
     search_location = req.location
     try:
@@ -1884,17 +1869,22 @@ def search_jobs(
             if req.save_search:
                 search_keywords = saved["keywords"]
                 search_location = saved["location"]
-    except Exception:
-        finish_operation(operation)
+        search_run_repository.publish_prepared(
+            run_id, search_keywords, search_location
+        )
+    except Exception as exc:
+        try:
+            search_run_repository.abandon_prepared(run_id)
+        except Exception:
+            pass
+        if isinstance(exc, SearchRunUnavailable):
+            raise HTTPException(
+                status_code=503,
+                detail="The job search could not be queued.",
+            ) from exc
         raise
-    IS_SEARCHING = True
-    background_tasks.add_task(
-        run_search_wrapper,
-        search_keywords,
-        search_location,
-        operation,
-        getattr(request.state, "local_user_id", None),
-    )
+    if data_store_kind() == LOCAL_DATA_STORE:
+        background_tasks.add_task(run_local_search_run, run_id)
     capture_event(
         "job_search_started",
         {

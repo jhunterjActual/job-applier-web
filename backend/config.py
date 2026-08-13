@@ -9,6 +9,26 @@ class RuntimeConfigurationError(RuntimeError):
 RUNTIME_ENVIRONMENTS = frozenset({"local", "staging", "production"})
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 MINIMUM_PROXY_TOKEN_CHARACTERS = 32
+WORKER_FORBIDDEN_ENVIRONMENT_VARIABLES = frozenset({
+    "CAREERTRELLIS_ALLOWED_HOSTS",
+    "CAREERTRELLIS_TRUSTED_PROXY_TOKEN",
+    "CAREERTRELLIS_AUTH_MODE",
+    "CAREERTRELLIS_IDENTITY_STORE",
+    "CAREERTRELLIS_STAGING_OWNER_WORKOS_USER_ID",
+    "CAREERTRELLIS_MIGRATION_DATABASE_URL",
+    "CAREERTRELLIS_OBJECT_STORE",
+    "CAREERTRELLIS_OBJECT_STORE_ACCESS_KEY_ID",
+    "CAREERTRELLIS_OBJECT_STORE_ACTIVE_KEY_ID",
+    "CAREERTRELLIS_OBJECT_STORE_BUCKET",
+    "CAREERTRELLIS_OBJECT_STORE_ENDPOINT",
+    "CAREERTRELLIS_OBJECT_STORE_KEYRING_B64",
+    "CAREERTRELLIS_OBJECT_STORE_SECRET_ACCESS_KEY",
+    "WORKOS_API_KEY",
+    "WORKOS_CLIENT_ID",
+    "WORKOS_COOKIE_PASSWORD",
+    "WORKOS_REDIRECT_URI",
+    "WORKOS_LOGOUT_RETURN_TO",
+})
 
 # Paths
 BASE_DIR = Path(__file__).resolve().parent
@@ -76,12 +96,38 @@ def get_worker_heartbeat_seconds() -> int:
     return interval
 
 
+def search_worker_enabled() -> bool:
+    """Require an explicit reviewed switch before the durable worker consumes runs."""
+    raw_value = os.environ.get("CAREERTRELLIS_SEARCH_WORKER_ENABLED", "false").strip().lower()
+    if raw_value not in {"true", "false"}:
+        raise RuntimeConfigurationError(
+            "CAREERTRELLIS_SEARCH_WORKER_ENABLED must be true or false."
+        )
+    return raw_value == "true"
+
+
+def validate_worker_runtime_configuration() -> dict[str, object]:
+    """Validate only worker-owned settings, never web host or auth secrets."""
+    if any(os.environ.get(name, "").strip() for name in WORKER_FORBIDDEN_ENVIRONMENT_VARIABLES):
+        raise RuntimeConfigurationError(
+            "The search worker environment contains a credential or setting reserved for the web, migration, or object-storage runtime."
+        )
+    environment = get_runtime_environment()
+    get_worker_heartbeat_seconds()
+    search_worker_enabled()
+    return {
+        "environment": environment,
+        "data_directory": str(DATA_DIR),
+    }
+
+
 def validate_runtime_configuration() -> dict[str, object]:
     """Fail closed when a shared-host deployment omits its origin protections."""
     environment = get_runtime_environment()
     public_hosts = get_allowed_public_hosts()
     proxy_token = get_trusted_proxy_token()
     get_worker_heartbeat_seconds()
+    search_worker_enabled()
 
     if environment == "local":
         if public_hosts:

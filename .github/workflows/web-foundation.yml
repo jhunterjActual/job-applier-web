@@ -30,14 +30,12 @@ jobs:
       - name: Verify packages
         run: python -m pip check
       - name: Run regressions
-        run: python -m unittest test_p0_regressions.py test_object_store.py test_object_import.py test_stored_objects.py test_analytics.py test_observability.py
+        run: python -m unittest test_p0_regressions.py test_search_runs.py test_object_store.py test_object_import.py test_stored_objects.py test_analytics.py test_observability.py
       - name: Check Python syntax
         run: python -m compileall -q .
       - name: Exercise staging worker entrypoint
         env:
           CAREERTRELLIS_ENVIRONMENT: staging
-          CAREERTRELLIS_ALLOWED_HOSTS: staging-app.jhunterj.com
-          CAREERTRELLIS_TRUSTED_PROXY_TOKEN: ci-only-origin-token-00000000000000000000000000000000
           CAREERTRELLIS_DATA_DIR: ${{ runner.temp }}/careertrellis-worker
         run: python worker.py --once
       - name: Check deployment shell syntax

@@ -12,7 +12,10 @@ The staging path has three independent boundaries:
 
 Local launchers retain their loopback-only behavior. Shared-host mode fails startup when its hostname or proxy token is missing. Do not store real profile, resume, credential, or application data in staging before WorkOS authentication, tenant isolation, encrypted secret storage, and private object storage are complete.
 
-The worker service is intentionally a lifecycle scaffold. It publishes a privacy-safe heartbeat but does not consume jobs; existing expensive actions remain in the web process until the durable-queue stage.
+The worker service remains disabled by default. The later bounded search-run
+slice can consume only durable owner-scoped searches after both its explicit
+worker flag and the separately reviewed repository cutover permit activation;
+see `STAGE_3_POSTGRES_SEARCH_RUNS.md`.
 
 ## Host prerequisites
 
@@ -40,6 +43,7 @@ openssl rand -hex 32
 Put that same value in the two root-only files created by provisioning:
 
 - `/etc/careertrellis/staging.env`
+- `/etc/careertrellis/search-worker.env`
 - `/etc/caddy/careertrellis-staging.env`
 
 Generate the temporary staging password hash interactively; never put the plaintext password in either file:
@@ -66,6 +70,10 @@ sudo CAREERTRELLIS_SOURCE_DIR=/srv/careertrellis/job-applier-web \
 ```
 
 The deployment creates an immutable release-specific virtual environment, installs the hash-locked dependencies and Chromium, runs every regression suite and syntax check, atomically changes the `current` symlink, restarts the supervised web and worker services, and rolls back the code symlink automatically if readiness fails. It does not fetch an unreviewed branch or delete older releases.
+
+The web and durable search worker use separate Unix accounts. The worker's
+private runtime directory is `/var/lib/careertrellis/worker`; the reviewed
+Chromium installation is group-readable, not worker-writable.
 
 Inspect the local origin before changing DNS:
 

@@ -116,6 +116,11 @@ Its short cache read closes before maps or AI provider work, and its eligible
 write uses a separate transaction after that work. Its storage-policy contract
 is in `STAGE_3_POSTGRES_HEADQUARTERS_CACHE.md`.
 
+The durable search-run slice replaces process memory with owner-scoped status,
+cancellation, leases, retry/crash recovery, and a worker-only least-privilege
+claim broker. Its no-activation and rollback contract is in
+`STAGE_3_POSTGRES_SEARCH_RUNS.md`.
+
 The shared backup/restore policy now fails both encrypted-workspace endpoints
 closed when PostgreSQL is the selected data store. The HTTP boundary rejects a
 restore after normal shared authentication but before multipart parsing, and
@@ -137,22 +142,21 @@ converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
 - deletion of jobs with applications, lifecycle history, generated materials,
   stored objects, or other protected dependent records;
-- process-global search status/results, durable saved-search claiming, retry,
-  leases, and background-worker execution;
+- scheduled saved-search dispatch and any general-purpose background queue;
 - any application operation outside the converted lifecycle, engagement,
   interview-preparation, record-list, and insight repository boundaries;
 - any unconverted job-domain reads;
 - account-deletion reads and writes;
 - generated-material creation, replacement, and deletion through encrypted
   private object storage rather than authoritative local filesystem paths;
-- any background-worker transaction that later consumes the worker database
-  credential.
 
 Provider secrets and stored-object metadata already have PostgreSQL/RLS
 boundaries. The four provider-context consumers use the encrypted secret
 boundary, but all application flows must be verified again with the final
-repository implementation. The current worker is an idle heartbeat scaffold;
-do not give it the web keyrings or R2 credential merely for symmetry.
+repository implementation. The bounded search worker described in
+`STAGE_3_POSTGRES_SEARCH_RUNS.md` uses only its dedicated database credential
+and the owner-scoped provider-secret keyring; do not give it the web runtime,
+migration, object-storage, or R2 credentials merely for symmetry.
 
 ## Data authority and rollback contract
 
@@ -191,9 +195,11 @@ not waive the exact-release checks:
    `careertrellis-deploy --prepare-only`; this supplies the immutable-release,
    local automated-test, object-integrity, and syntax receipts but does not
    substitute for the configured PostgreSQL CI job.
-3. Confirm `/etc/careertrellis/staging.env`, `postgres-runtime.env`,
-   `provider-secrets.env`, and `object-storage.env` are `root:root` mode `0600`;
-   confirm both complete keyrings can be retrieved independently.
+3. Confirm `/etc/careertrellis/staging.env`, `search-worker.env`,
+   `postgres-runtime.env`, `postgres-worker.env`, `provider-secrets.env`, and
+   `object-storage.env` are `root:root` mode `0600`; confirm both complete
+   keyrings can be retrieved independently. Confirm the worker unit loads the
+   dedicated worker files, not `staging.env` or any WorkOS/web-cookie values.
 4. Confirm WireGuard, the runtime database role, the permanent private R2
    bucket, its bucket-only credential, and its application-egress `/32`
    restriction are ready without printing secrets.
