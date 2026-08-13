@@ -44,12 +44,16 @@ SQLite remains the implementation in local mode. It continues to use the
 standalone database and existing local output semantics without requiring
 PostgreSQL, WorkOS, R2, or server keyrings.
 
+Owner-scoped saved-search creation/upsert and post-run reminder advancement are
+added by the next bounded slice documented in
+`STAGE_3_POSTGRES_SAVED_SEARCH_WRITES.md`.
+
 ## Operations intentionally not converted
 
 This slice does not move any of the following hosted paths:
 
-- search-result, manual-job, saved-search, lifecycle, verification, archive,
-  restore, bulk-cleanup, or permanent-job writes;
+- search-result, manual-job, lifecycle, verification, archive, restore,
+  bulk-cleanup, or permanent-job writes;
 - suppression creation that is coupled to permanent job deletion;
 - the process-global search-status/result state or durable background work;
 - applications, engagements, interview preparation, and follow-up records;
@@ -64,11 +68,13 @@ write aggregate and its transaction semantics before any route flip.
 
 ## Migration and rollback contract
 
-Migration `20260812_0003` adds only owner-first indexes; it does not copy data,
-change RLS, or change repository authority. Apply it only to disposable test
-databases while this no-activation gate is in force. Staging schema changes are
-reserved for the final exact-release migration window after a fresh verified
-backup and isolated restore receipt.
+Migration `20260812_0003` adds only owner-first indexes; the following bounded
+saved-search slice advances the current head to `20260812_0004` with its
+validated frequency constraint. Neither migration copies data, changes RLS, or
+changes repository authority. Apply them only to disposable test databases
+while this no-activation gate is in force. Staging schema changes are reserved
+for the final exact-release migration window after a fresh verified backup and
+isolated restore receipt.
 
 Until final cutover, SQLite and generated files remain authoritative and
 PostgreSQL/R2 rehearsal targets remain disposable copies. After the eventual
@@ -80,7 +86,7 @@ must enforce that distinction; this slice does not weaken it.
 
 - [ ] The standalone P0 suite passes from a clean local SQLite workspace.
 - [ ] Syntax compilation and shell-script syntax checks pass.
-- [ ] Alembic reports exactly one head at `20260812_0003`.
+- [ ] Alembic reports exactly one head at `20260812_0004`.
 - [ ] A disposable PostgreSQL 18 database upgrades through every migration and
       passes the full configured RLS suite.
 - [ ] Two-tenant tests prove converted job, suppression, saved-search, and

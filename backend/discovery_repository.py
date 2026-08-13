@@ -8,7 +8,7 @@ PostgreSQL RLS for every operation.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 import json
 from typing import Any, Protocol
 
@@ -43,6 +43,18 @@ class DiscoveryRepository(Protocol):
     def clear_all_job_suppressions(self) -> int: ...
     def list_saved_searches(self) -> list[dict[str, Any]]: ...
     def list_due_saved_searches(self, now: datetime) -> list[dict[str, Any]]: ...
+    def upsert_saved_search(
+        self,
+        *,
+        name: str,
+        keywords: str,
+        location: str,
+        schedule_frequency: str,
+        run_at: datetime,
+    ) -> dict[str, Any]: ...
+    def advance_saved_search_run(
+        self, search_id: int, run_at: datetime
+    ) -> dict[str, Any] | None: ...
     def delete_saved_search(self, search_id: int) -> bool: ...
     def persist_source_diagnostics(self, search_result: dict | None, recorded_at: datetime) -> int: ...
     def list_source_diagnostics(self, limit: int = DEFAULT_HISTORY_LIMIT) -> dict[str, Any]: ...
@@ -60,6 +72,83 @@ def _api_row(row: Mapping[str, Any]) -> dict[str, Any]:
         if boolean_name in result:
             result[boolean_name] = int(bool(result[boolean_name]))
     return result
+
+
+SAVED_SEARCH_FREQUENCIES = frozenset({"none", "daily", "weekly"})
+MAX_SAVED_SEARCH_NAME_CHARS = 80
+MAX_SAVED_SEARCH_KEYWORDS_CHARS = 500
+MAX_SAVED_SEARCH_LOCATION_CHARS = 240
+
+
+def _saved_search_run_at(run_at: datetime) -> datetime:
+    if run_at.tzinfo is None or run_at.utcoffset() is None:
+        raise ValueError("Saved-search timestamps must include a timezone.")
+    return run_at.astimezone(timezone.utc)
+
+
+def _sqlite_saved_search_timestamp(value: datetime) -> str:
+    """Preserve the local, timezone-naive timestamp format used by existing SQLite rows."""
+    return (
+        _saved_search_run_at(value)
+        .astimezone()
+        .replace(tzinfo=None)
+        .isoformat(timespec="seconds")
+    )
+
+
+def _saved_search_frequency(schedule_frequency: str) -> str:
+    if schedule_frequency not in SAVED_SEARCH_FREQUENCIES:
+        raise ValueError("Unsupported saved-search schedule frequency.")
+    return schedule_frequency
+
+
+def _saved_search_text(value: str, *, field: str, maximum: int, required: bool) -> str:
+    normalized = (value or "").strip()
+    if required and not normalized:
+        raise ValueError(f"Saved-search {field} is required.")
+    if len(normalized) > maximum:
+        raise ValueError(f"Saved-search {field} is too long.")
+    return normalized
+
+
+def _next_saved_search_alert(run_at: datetime, schedule_frequency: str) -> datetime | None:
+    if schedule_frequency == "daily":
+        return run_at + timedelta(days=1)
+    if schedule_frequency == "weekly":
+        return run_at + timedelta(days=7)
+    return None
+
+
+def _saved_search_values(
+    *,
+    name: str,
+    keywords: str,
+    location: str,
+    schedule_frequency: str,
+    run_at: datetime,
+) -> dict[str, Any]:
+    normalized_run_at = _saved_search_run_at(run_at)
+    frequency = _saved_search_frequency(schedule_frequency)
+    return {
+        "name": _saved_search_text(
+            name, field="name", maximum=MAX_SAVED_SEARCH_NAME_CHARS, required=True
+        ),
+        "keywords": _saved_search_text(
+            keywords,
+            field="keywords",
+            maximum=MAX_SAVED_SEARCH_KEYWORDS_CHARS,
+            required=False,
+        ),
+        "location": _saved_search_text(
+            location,
+            field="location",
+            maximum=MAX_SAVED_SEARCH_LOCATION_CHARS,
+            required=False,
+        ),
+        "schedule_frequency": frequency,
+        "run_at": normalized_run_at,
+        "next_alert_at": _next_saved_search_alert(normalized_run_at, frequency),
+    }
 
 
 def _bounded_counter(value: object) -> int:
@@ -199,10 +288,101 @@ class SQLiteDiscoveryRepository:
                   AND next_alert_at IS NOT NULL AND next_alert_at <= ?
                 ORDER BY next_alert_at
                 """,
-                (now.isoformat(timespec="seconds"),),
+                (_sqlite_saved_search_timestamp(now),),
             ).fetchall()
         )
         return [_api_row(dict(row)) for row in rows]
+
+    def upsert_saved_search(
+        self,
+        *,
+        name: str,
+        keywords: str,
+        location: str,
+        schedule_frequency: str,
+        run_at: datetime,
+    ) -> dict[str, Any]:
+        values = _saved_search_values(
+            name=name,
+            keywords=keywords,
+            location=location,
+            schedule_frequency=schedule_frequency,
+            run_at=run_at,
+        )
+
+        def upsert(connection: Any) -> dict[str, Any]:
+            run_at = _sqlite_saved_search_timestamp(values["run_at"])
+            next_alert_at = (
+                _sqlite_saved_search_timestamp(values["next_alert_at"])
+                if values["next_alert_at"]
+                else None
+            )
+            connection.execute(
+                """
+                INSERT INTO saved_searches (
+                    name, keywords, location, created_at, last_run_at,
+                    schedule_frequency, next_alert_at, enabled
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(keywords, location) DO UPDATE SET
+                    name = excluded.name,
+                    last_run_at = excluded.last_run_at,
+                    schedule_frequency = excluded.schedule_frequency,
+                    next_alert_at = excluded.next_alert_at,
+                    enabled = 1
+                """,
+                (
+                    values["name"],
+                    values["keywords"],
+                    values["location"],
+                    run_at,
+                    run_at,
+                    values["schedule_frequency"],
+                    next_alert_at,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM saved_searches WHERE keywords = ? AND location = ?",
+                (values["keywords"], values["location"]),
+            ).fetchone()
+            return _api_row(dict(row))
+
+        return self._run(upsert, write=True)
+
+    def advance_saved_search_run(
+        self, search_id: int, run_at: datetime
+    ) -> dict[str, Any] | None:
+        if search_id <= 0:
+            return None
+        normalized_run_at = _saved_search_run_at(run_at)
+
+        def advance(connection: Any) -> dict[str, Any] | None:
+            row = connection.execute(
+                "SELECT * FROM saved_searches WHERE id = ? AND enabled = 1",
+                (search_id,),
+            ).fetchone()
+            if not row:
+                return None
+            frequency = _saved_search_frequency(row["schedule_frequency"] or "none")
+            next_alert_at = _next_saved_search_alert(normalized_run_at, frequency)
+            connection.execute(
+                """
+                UPDATE saved_searches
+                SET last_run_at = ?, next_alert_at = ?
+                WHERE id = ? AND enabled = 1
+                """,
+                (
+                    _sqlite_saved_search_timestamp(normalized_run_at),
+                    _sqlite_saved_search_timestamp(next_alert_at) if next_alert_at else None,
+                    search_id,
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM saved_searches WHERE id = ? AND enabled = 1",
+                (search_id,),
+            ).fetchone()
+            return _api_row(dict(updated)) if updated else None
+
+        return self._run(advance, write=True)
 
     def delete_saved_search(self, search_id: int) -> bool:
         return bool(
@@ -376,6 +556,7 @@ class PostgreSQLDiscoveryRepository:
         return self._run(load)
 
     def list_due_saved_searches(self, now: datetime) -> list[dict[str, Any]]:
+        now = _saved_search_run_at(now)
         def load(connection: Any) -> list[dict[str, Any]]:
             rows = connection.execute(
                 text(
@@ -393,6 +574,113 @@ class PostgreSQLDiscoveryRepository:
             return [_api_row(row) for row in rows]
 
         return self._run(load)
+
+    def upsert_saved_search(
+        self,
+        *,
+        name: str,
+        keywords: str,
+        location: str,
+        schedule_frequency: str,
+        run_at: datetime,
+    ) -> dict[str, Any]:
+        values = _saved_search_values(
+            name=name,
+            keywords=keywords,
+            location=location,
+            schedule_frequency=schedule_frequency,
+            run_at=run_at,
+        )
+
+        def upsert(connection: Any) -> dict[str, Any]:
+            row = connection.execute(
+                text(
+                    """
+                    INSERT INTO careertrellis.saved_searches AS saved (
+                        owner_user_id, name, keywords, location, last_run_at,
+                        schedule_frequency, next_alert_at, enabled
+                    ) VALUES (
+                        :owner_user_id, :name, :keywords, :location, :run_at,
+                        :schedule_frequency, :next_alert_at, TRUE
+                    )
+                    ON CONFLICT (owner_user_id, keywords, location) DO UPDATE
+                    SET name = CASE
+                            WHEN saved.last_run_at IS NULL
+                              OR EXCLUDED.last_run_at >= saved.last_run_at
+                            THEN EXCLUDED.name
+                            ELSE saved.name
+                        END,
+                        last_run_at = GREATEST(
+                            COALESCE(saved.last_run_at, '-infinity'::timestamptz),
+                            EXCLUDED.last_run_at
+                        ),
+                        schedule_frequency = CASE
+                            WHEN saved.last_run_at IS NULL
+                              OR EXCLUDED.last_run_at >= saved.last_run_at
+                            THEN EXCLUDED.schedule_frequency
+                            ELSE saved.schedule_frequency
+                        END,
+                        next_alert_at = CASE
+                            WHEN saved.last_run_at IS NULL
+                              OR EXCLUDED.last_run_at >= saved.last_run_at
+                            THEN EXCLUDED.next_alert_at
+                            ELSE saved.next_alert_at
+                        END,
+                        enabled = TRUE
+                    WHERE saved.owner_user_id = :owner_user_id
+                    RETURNING id, name, keywords, location, created_at, last_run_at,
+                              schedule_frequency, next_alert_at, enabled
+                    """
+                ),
+                {"owner_user_id": self._owner_user_id, **values},
+            ).mappings().one()
+            return _api_row(row)
+
+        return self._run(upsert)
+
+    def advance_saved_search_run(
+        self, search_id: int, run_at: datetime
+    ) -> dict[str, Any] | None:
+        if search_id <= 0:
+            return None
+        normalized_run_at = _saved_search_run_at(run_at)
+
+        def advance(connection: Any) -> dict[str, Any] | None:
+            row = connection.execute(
+                text(
+                    """
+                    UPDATE careertrellis.saved_searches AS saved
+                    SET last_run_at = GREATEST(
+                            COALESCE(saved.last_run_at, '-infinity'::timestamptz),
+                            :run_at
+                        ),
+                        next_alert_at = CASE saved.schedule_frequency
+                            WHEN 'daily' THEN GREATEST(
+                                COALESCE(saved.last_run_at, '-infinity'::timestamptz),
+                                :run_at
+                            ) + INTERVAL '1 day'
+                            WHEN 'weekly' THEN GREATEST(
+                                COALESCE(saved.last_run_at, '-infinity'::timestamptz),
+                                :run_at
+                            ) + INTERVAL '7 days'
+                            ELSE NULL
+                        END
+                    WHERE saved.id = :search_id
+                      AND saved.owner_user_id = :owner_user_id
+                      AND saved.enabled IS TRUE
+                    RETURNING id, name, keywords, location, created_at, last_run_at,
+                              schedule_frequency, next_alert_at, enabled
+                    """
+                ),
+                {
+                    "search_id": search_id,
+                    "owner_user_id": self._owner_user_id,
+                    "run_at": normalized_run_at,
+                },
+            ).mappings().one_or_none()
+            return _api_row(row) if row else None
+
+        return self._run(advance)
 
     def delete_saved_search(self, search_id: int) -> bool:
         return bool(
