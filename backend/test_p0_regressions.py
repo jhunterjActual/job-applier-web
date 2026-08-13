@@ -3992,7 +3992,10 @@ class EncryptedFullBackupTests(unittest.TestCase):
         database_path = data_directory / "jobapplier.db"
         database_path.write_bytes(b"placeholder")
 
+        temporary_backups = []
+
         def fake_backup(destination, *_args, **_kwargs):
+            temporary_backups.append(Path(destination))
             Path(destination).write_bytes(b"authenticated backup")
             return unittest.mock.Mock(material_file_count=2, warning_count=0)
 
@@ -4014,6 +4017,8 @@ class EncryptedFullBackupTests(unittest.TestCase):
             self.assertEqual(b"authenticated backup", response.content)
             self.assertEqual("no-store", response.headers["cache-control"])
             self.assertIn("career-trellis-full-backup-", response.headers["content-disposition"])
+            self.assertEqual(1, len(temporary_backups))
+            self.assertFalse(temporary_backups[0].exists())
 
             response = client.post(
                 "/api/full-backup/restore",
@@ -4038,6 +4043,285 @@ class EncryptedFullBackupTests(unittest.TestCase):
             self.assertTrue(restore_mock.called)
         finally:
             client.close()
+
+    def test_local_restore_rejection_closes_the_uploaded_file(self) -> None:
+        upload = app_module.UploadFile(
+            file=io.BytesIO(b"synthetic encrypted backup"),
+            filename="workspace.ctbackup",
+        )
+        with (
+            patch.object(app_module, "data_store_kind", return_value=data_store_module.LOCAL_DATA_STORE),
+            self.assertRaises(app_module.HTTPException) as raised,
+        ):
+            asyncio.run(
+                app_module.restore_full_backup(
+                    file=upload,
+                    password=self.PASSWORD,
+                    confirm_replace=False,
+                    operation_id=None,
+                )
+            )
+
+        self.assertEqual(400, raised.exception.status_code)
+        self.assertTrue(upload.file.closed)
+
+    def test_unauthenticated_shared_backup_routes_keep_private_auth_boundary(self) -> None:
+        proxy_token = "synthetic-shared-proxy-token"
+        unauthenticated = web_auth_module.SessionAuthentication(
+            status="unauthenticated"
+        )
+        local_lock = Mock()
+        client = TestClient(
+            app_module.app, base_url="https://shared.example.test"
+        )
+        try:
+            with (
+                patch.object(
+                    app_module,
+                    "data_store_kind",
+                    return_value=data_store_module.SHARED_DATA_STORE,
+                ),
+                patch.object(
+                    app_module,
+                    "_allowed_authority",
+                    return_value=("shared.example.test", 443),
+                ),
+                patch.object(
+                    app_module.config,
+                    "get_trusted_proxy_token",
+                    return_value=proxy_token,
+                ),
+                patch.object(
+                    app_module.config,
+                    "get_runtime_environment",
+                    return_value="staging",
+                ),
+                patch.object(app_module, "get_auth_configuration", return_value=Mock()),
+                patch.object(
+                    app_module,
+                    "authenticate_session",
+                    return_value=unauthenticated,
+                ),
+                patch.object(
+                    app_module.Request,
+                    "form",
+                    side_effect=AssertionError("upload parsed"),
+                ) as form,
+                patch.object(app_module, "BACKUP_RESTORE_LOCK", local_lock),
+                patch.object(app_module, "create_encrypted_backup") as create,
+                patch.object(app_module, "restore_encrypted_backup") as restore,
+            ):
+                headers = {app_module.TRUSTED_PROXY_TOKEN_HEADER: proxy_token}
+                backup_response = client.post(
+                    "/api/full-backup",
+                    json={"password": self.PASSWORD},
+                    headers=headers,
+                )
+                restore_response = client.post(
+                    "/api/full-backup/restore",
+                    data={"password": self.PASSWORD, "confirm_replace": "true"},
+                    files={
+                        "file": (
+                            "workspace.ctbackup",
+                            b"synthetic archive",
+                            "application/octet-stream",
+                        )
+                    },
+                    headers=headers,
+                )
+
+            for response in (backup_response, restore_response):
+                self.assertEqual(401, response.status_code)
+                self.assertEqual(
+                    {"detail": "Authentication required."}, response.json()
+                )
+            form.assert_not_called()
+            local_lock.acquire.assert_not_called()
+            create.assert_not_called()
+            restore.assert_not_called()
+        finally:
+            client.close()
+
+    def test_authenticated_shared_backup_routes_fail_before_body_or_local_authority_access(self) -> None:
+        secret = "postgresql://private-user:private-password@database.test/private"
+        proxy_token = "synthetic-shared-proxy-token"
+        authenticated = web_auth_module.SessionAuthentication(
+            status="authenticated",
+            workos_user_id="user_SYNTHETICOWNER",
+            session_id="session_SYNTHETIC",
+        )
+        local_lock = Mock()
+        local_helpers = {
+            "create": Mock(side_effect=AssertionError("backup helper must not run")),
+            "restore": Mock(side_effect=AssertionError("restore helper must not run")),
+            "operation": Mock(side_effect=AssertionError("operation must not start")),
+            "temporary": Mock(side_effect=AssertionError("temp file must not open")),
+            "database": Mock(side_effect=AssertionError("SQLite must not open")),
+            "migration": Mock(side_effect=AssertionError("migration must not run")),
+        }
+        client = TestClient(
+            app_module.app, base_url="https://shared.example.test"
+        )
+        try:
+            with (
+                patch.object(
+                    app_module,
+                    "data_store_kind",
+                    return_value=data_store_module.SHARED_DATA_STORE,
+                ),
+                patch.object(
+                    app_module,
+                    "_allowed_authority",
+                    return_value=("shared.example.test", 443),
+                ),
+                patch.object(
+                    app_module.config,
+                    "get_trusted_proxy_token",
+                    return_value=proxy_token,
+                ),
+                patch.object(
+                    app_module.config,
+                    "get_runtime_environment",
+                    return_value="staging",
+                ),
+                patch.object(app_module, "get_auth_configuration", return_value=Mock()),
+                patch.object(
+                    app_module,
+                    "authenticate_session",
+                    return_value=authenticated,
+                ),
+                patch.object(app_module, "authorized_local_owner", return_value=73),
+                patch.object(app_module.Request, "form", side_effect=AssertionError("upload parsed")) as form,
+                patch.object(app_module, "BACKUP_RESTORE_LOCK", local_lock),
+                patch.object(app_module, "create_encrypted_backup", local_helpers["create"]),
+                patch.object(app_module, "restore_encrypted_backup", local_helpers["restore"]),
+                patch.object(app_module, "start_operation", local_helpers["operation"]),
+                patch.object(app_module.tempfile, "NamedTemporaryFile", local_helpers["temporary"]),
+                patch.object(app_module, "get_db_connection", local_helpers["database"]),
+                patch.object(app_module, "init_db", local_helpers["migration"]),
+            ):
+                backup_response = client.post(
+                    "/api/full-backup",
+                    json={"password": secret},
+                    headers={
+                        app_module.TRUSTED_PROXY_TOKEN_HEADER: proxy_token,
+                        "Cookie": f"{web_auth_module.SESSION_COOKIE_NAME}=sealed-session",
+                    },
+                )
+                restore_response = client.post(
+                    "/api/full-backup/restore",
+                    data={
+                        "password": secret,
+                        "confirm_replace": "true",
+                        "private_path": "C:/private/workspace/jobapplier.db",
+                    },
+                    files={
+                        "file": (
+                            "private-workspace.ctbackup",
+                            b"synthetic private archive bytes",
+                            "application/octet-stream",
+                        )
+                    },
+                    headers={
+                        app_module.TRUSTED_PROXY_TOKEN_HEADER: proxy_token,
+                        "Cookie": f"{web_auth_module.SESSION_COOKIE_NAME}=sealed-session",
+                    },
+                )
+
+            for response in (backup_response, restore_response):
+                self.assertEqual(409, response.status_code)
+                self.assertEqual(
+                    {"detail": app_module.SHARED_BACKUP_RESTORE_DETAIL},
+                    response.json(),
+                )
+                self.assertEqual("no-store", response.headers["cache-control"])
+                response_text = response.text
+                self.assertNotIn(secret, response_text)
+                self.assertNotIn("private-workspace", response_text)
+                self.assertNotIn("jobapplier.db", response_text)
+
+            form.assert_not_called()
+            local_lock.acquire.assert_not_called()
+            local_lock.release.assert_not_called()
+            for helper in local_helpers.values():
+                helper.assert_not_called()
+            with self.assertRaises(
+                provider_secrets_module.ProviderSecretAuthorizationError
+            ):
+                provider_secrets_module.current_owner_user_id()
+        finally:
+            client.close()
+
+    def test_direct_shared_backup_guards_precede_lock_paths_and_upload_reads(self) -> None:
+        request = app_module.FullBackupRequest(password=self.PASSWORD)
+        upload = Mock()
+        upload.close = unittest.mock.AsyncMock()
+        lock = Mock()
+
+        class NoLocalAuthorityConfig:
+            def __getattr__(self, name):
+                raise AssertionError(f"local config must not be read: {name}")
+
+        with (
+            patch.object(
+                app_module,
+                "data_store_kind",
+                return_value=data_store_module.SHARED_DATA_STORE,
+            ),
+            patch.object(app_module, "config", NoLocalAuthorityConfig()),
+            patch.object(app_module, "BACKUP_RESTORE_LOCK", lock),
+            patch.object(
+                app_module.tempfile,
+                "NamedTemporaryFile",
+                side_effect=AssertionError("temp file must not open"),
+            ) as temporary,
+            patch.object(
+                app_module,
+                "create_encrypted_backup",
+                side_effect=AssertionError("backup helper must not run"),
+            ) as create,
+            patch.object(
+                app_module,
+                "restore_encrypted_backup",
+                side_effect=AssertionError("restore helper must not run"),
+            ) as restore,
+            self.assertRaises(app_module.HTTPException) as backup_error,
+        ):
+            app_module.download_full_backup(request, operation_id=None)
+        self.assertEqual(409, backup_error.exception.status_code)
+        self.assertEqual(
+            app_module.SHARED_BACKUP_RESTORE_DETAIL,
+            backup_error.exception.detail,
+        )
+
+        with (
+            patch.object(
+                app_module,
+                "data_store_kind",
+                return_value=data_store_module.SHARED_DATA_STORE,
+            ),
+            patch.object(app_module, "config", NoLocalAuthorityConfig()),
+            self.assertRaises(app_module.HTTPException) as restore_error,
+        ):
+            asyncio.run(
+                app_module.restore_full_backup(
+                    file=upload,
+                    password=self.PASSWORD,
+                    confirm_replace=True,
+                    operation_id=None,
+                )
+            )
+        self.assertEqual(409, restore_error.exception.status_code)
+        self.assertEqual(
+            app_module.SHARED_BACKUP_RESTORE_DETAIL,
+            restore_error.exception.detail,
+        )
+        upload.read.assert_not_called()
+        upload.close.assert_awaited_once_with()
+        lock.acquire.assert_not_called()
+        temporary.assert_not_called()
+        create.assert_not_called()
+        restore.assert_not_called()
 
 
 class ManualJobImportTests(unittest.TestCase):
