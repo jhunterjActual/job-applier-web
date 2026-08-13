@@ -1990,6 +1990,14 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("EnvironmentFile=/etc/careertrellis/object-storage.env", web_service)
         self.assertNotIn("postgres-migration.env", web_service)
         self.assertNotIn("postgres-worker.env", web_service)
+        self.assertIn("User=careertrellis\n", web_service)
+        self.assertIn("Group=careertrellis\n", web_service)
+        self.assertIn("ReadWritePaths=/var/lib/careertrellis/staging", web_service)
+        self.assertNotIn("ReadWritePaths=/var/lib/careertrellis/worker", web_service)
+        self.assertIn("User=careertrellis-worker\n", worker_service)
+        self.assertIn("Group=careertrellis\n", worker_service)
+        self.assertIn("ReadWritePaths=/var/lib/careertrellis/worker", worker_service)
+        self.assertNotIn("ReadWritePaths=/var/lib/careertrellis/staging", worker_service)
         self.assertIn("postgres-worker.env", worker_service)
         self.assertIn("provider-secrets.env", worker_service)
         self.assertIn(
@@ -2012,6 +2020,30 @@ class DependencyLockTests(unittest.TestCase):
         )
         self.assertNotIn("postgres-runtime.env", worker_service)
         self.assertNotIn("object-storage.env", worker_service)
+
+        provision = (
+            project_dir / "deploy" / "scripts" / "provision-staging-host.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "useradd --system --gid careertrellis --home-dir /var/lib/careertrellis/worker --shell /usr/sbin/nologin careertrellis-worker",
+            provision,
+        )
+        self.assertIn(
+            "install -d -o careertrellis-worker -g careertrellis -m 0700 /var/lib/careertrellis/worker",
+            provision,
+        )
+
+        deploy = (
+            project_dir / "deploy" / "scripts" / "deploy-release.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'install -d -o careertrellis -g careertrellis -m 0750 "${browser_path}"',
+            deploy,
+        )
+        self.assertIn(
+            'chown -R careertrellis:careertrellis "${browser_path}"', deploy
+        )
+        self.assertIn('chmod -R u=rwX,g=rX,o= "${browser_path}"', deploy)
 
     def test_import_and_rotation_wrappers_require_reviewed_release_and_root_owned_envs(self) -> None:
         scripts = self.project_dir() / "deploy" / "scripts"

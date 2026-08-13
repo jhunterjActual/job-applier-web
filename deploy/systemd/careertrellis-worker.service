@@ -1,12 +1,12 @@
 [Unit]
-Description=CareerTrellis staging worker scaffold
+Description=CareerTrellis durable search worker
 After=network-online.target
 Wants=network-online.target
 ConditionPathIsSymbolicLink=/opt/careertrellis/staging/current
 
 [Service]
 Type=simple
-User=careertrellis
+User=careertrellis-worker
 Group=careertrellis
 WorkingDirectory=/opt/careertrellis/staging/current/backend
 EnvironmentFile=/etc/careertrellis/search-worker.env
@@ -30,7 +30,7 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/var/lib/careertrellis/staging
+ReadWritePaths=/var/lib/careertrellis/worker
 TasksMax=256
 MemoryHigh=1100M
 MemoryMax=1400M

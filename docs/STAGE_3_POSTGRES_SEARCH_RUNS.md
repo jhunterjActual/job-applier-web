@@ -23,6 +23,10 @@ WorkOS or cookie secrets, proxy token, web runtime database
 credential, migration credential, object-storage/R2 credential, or object
 keyring. Provider keys remain encrypted per owner in PostgreSQL and are loaded
 only after the claimed owner is bound in trusted server context.
+The worker runs as the separate `careertrellis-worker` Unix account with its
+own mode-0700 data directory. It can read the reviewed release and shared
+Playwright installation through the non-secret `careertrellis` group, but it
+cannot read the web process environment or the web-owned data directory.
 
 ## Owner and transaction boundary
 

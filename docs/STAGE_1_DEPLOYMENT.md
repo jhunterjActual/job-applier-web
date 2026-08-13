@@ -71,6 +71,10 @@ sudo CAREERTRELLIS_SOURCE_DIR=/srv/careertrellis/job-applier-web \
 
 The deployment creates an immutable release-specific virtual environment, installs the hash-locked dependencies and Chromium, runs every regression suite and syntax check, atomically changes the `current` symlink, restarts the supervised web and worker services, and rolls back the code symlink automatically if readiness fails. It does not fetch an unreviewed branch or delete older releases.
 
+The web and durable search worker use separate Unix accounts. The worker's
+private runtime directory is `/var/lib/careertrellis/worker`; the reviewed
+Chromium installation is group-readable, not worker-writable.
+
 Inspect the local origin before changing DNS:
 
 ```bash

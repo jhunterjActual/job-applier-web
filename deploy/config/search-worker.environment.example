@@ -2,7 +2,7 @@
 # Install as /etc/careertrellis/search-worker.env with root:root mode 0600.
 # Do not add WorkOS, web-cookie, proxy-token, migration, or object-store values.
 CAREERTRELLIS_ENVIRONMENT=staging
-CAREERTRELLIS_DATA_DIR=/var/lib/careertrellis/staging
+CAREERTRELLIS_DATA_DIR=/var/lib/careertrellis/worker
 CAREERTRELLIS_WORKER_HEARTBEAT_SECONDS=15
 # Both activation controls remain false until final cutover is separately reviewed.
 CAREERTRELLIS_SEARCH_WORKER_ENABLED=false

@@ -49,7 +49,7 @@ if ! git -C "${source_dir}" cat-file -e "${revision}^{commit}"; then
 fi
 
 install -d -o root -g root -m 0755 "${releases_dir}"
-install -d -o careertrellis -g careertrellis -m 0700 "${browser_path}"
+install -d -o careertrellis -g careertrellis -m 0750 "${browser_path}"
 
 if [[ ! -d ${release_dir} ]]; then
     temporary_release=$(mktemp -d "${releases_dir}/.deploy-${revision}-XXXXXX")
@@ -63,6 +63,7 @@ if [[ ! -d ${release_dir} ]]; then
     env PLAYWRIGHT_BROWSERS_PATH="${browser_path}" \
         "${temporary_release}/backend/venv/bin/python" -m playwright install chromium
     chown -R careertrellis:careertrellis "${browser_path}"
+    chmod -R u=rwX,g=rX,o= "${browser_path}"
 
     test_data=$(mktemp -d /tmp/careertrellis-deploy-test-XXXXXX)
     (
