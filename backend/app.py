@@ -1487,15 +1487,15 @@ def export_user_data() -> StreamingResponse:
             exported_at=datetime.now().isoformat(timespec="seconds"),
             application_build=APP_BUILD,
         )
+        content = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     except Exception:
         raise HTTPException(
             status_code=503,
             detail=EXPORT_UNAVAILABLE_MESSAGE,
         ) from None
     filename = f"career-trellis-user-data-{date.today().isoformat()}.json"
-    content = json.JSONEncoder(ensure_ascii=False, indent=2).iterencode(payload)
     return StreamingResponse(
-        content=content,
+        content=iter((content,)),
         media_type="application/json",
         headers={
             "Cache-Control": "no-store",

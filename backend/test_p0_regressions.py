@@ -3964,6 +3964,35 @@ class UserDataExportTests(unittest.TestCase):
         self.assertEqual(EXPORT_UNAVAILABLE_MESSAGE, response.json()["detail"])
         self.assertNotIn("private-password", response.text)
 
+    def test_export_endpoint_validates_json_before_starting_the_response(self) -> None:
+        repository = Mock()
+        repository.snapshot.return_value = {
+            "profile": [{"id": 1, "name": object()}],
+            "base_resumes": [],
+            "base_resume_versions": [],
+            "jobs": [],
+            "saved_searches": [],
+            "applications": [],
+            "application_lifecycle_history": [],
+            "application_engagements": [],
+            "job_suppressions": [],
+            "source_diagnostics": [],
+        }
+        client = TestClient(app_module.app, base_url="http://127.0.0.1:8001")
+        try:
+            with patch.object(
+                app_module,
+                "runtime_user_data_export_repository",
+                return_value=repository,
+            ):
+                response = client.get("/api/data-export")
+        finally:
+            client.close()
+
+        self.assertEqual(503, response.status_code)
+        self.assertEqual(EXPORT_UNAVAILABLE_MESSAGE, response.json()["detail"])
+        self.assertNotIn("object at", response.text)
+
 
 class EncryptedFullBackupTests(unittest.TestCase):
     PASSWORD = "correct horse battery staple"
