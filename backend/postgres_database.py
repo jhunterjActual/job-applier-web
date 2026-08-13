@@ -73,6 +73,14 @@ def runtime_postgres_engine() -> Engine:
         return engine
 
 
+def check_postgres_ready(engine: Engine | None = None) -> None:
+    """Verify runtime connectivity without requiring or setting tenant context."""
+    selected = engine or runtime_postgres_engine()
+    with selected.connect() as connection:
+        if connection.scalar(text("SELECT 1")) != 1:
+            raise RuntimeError("The PostgreSQL runtime database is not ready.")
+
+
 def dispose_postgres_engines() -> None:
     """Dispose cached pools during a clean process shutdown."""
     with _ENGINE_REGISTRY_LOCK:

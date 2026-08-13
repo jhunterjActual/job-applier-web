@@ -21,6 +21,7 @@ See [docs/STAGE_3_POSTGRES_JOB_RETENTION_WRITES.md](docs/STAGE_3_POSTGRES_JOB_RE
 See [docs/STAGE_3_POSTGRES_APPLICATION_OPERATIONS.md](docs/STAGE_3_POSTGRES_APPLICATION_OPERATIONS.md) for owner-scoped engagement tracking and interview-preparation workspace operations under the continuing no-activation boundary.
 See [docs/STAGE_3_POSTGRES_APPLICATION_READS.md](docs/STAGE_3_POSTGRES_APPLICATION_READS.md) for owner-scoped application records and private in-process outcome insights under the continuing no-activation boundary.
 See [docs/STAGE_3_POSTGRES_PROVIDER_CONTEXT_READS.md](docs/STAGE_3_POSTGRES_PROVIDER_CONTEXT_READS.md) for owner-scoped AI/maps validation, opt-in resume OCR, and manual-import scoring context under the continuing no-activation boundary.
+See [docs/STAGE_3_POSTGRES_READINESS.md](docs/STAGE_3_POSTGRES_READINESS.md) for ownerless, fixed-response readiness checks against the explicitly selected local or shared stores under the continuing no-activation boundary.
 
 A self-contained, privacy-first workspace designed to streamline job discovery, resume tailoring, guided-manual applications, progress tracking, and interview preparation.
 

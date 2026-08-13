@@ -31,6 +31,7 @@ import local_users as local_users_module
 import materials as materials_module
 import operations as operations_module
 import job_retention_repository as job_retention_repository_module
+import postgres_database as postgres_database_module
 import profile_repository as profile_repository_module
 import provider_secrets as provider_secrets_module
 import searcher as searcher_module
@@ -1943,6 +1944,119 @@ class DataStoreConfigurationTests(unittest.TestCase):
             ):
                 data_store_module.validate_data_store_configuration()
 
+    def test_data_store_readiness_closes_local_sqlite_connection(self) -> None:
+        connection = Mock()
+        connection.execute.return_value.fetchone.return_value = (1,)
+        sqlite_factory = Mock(return_value=connection)
+        with (
+            patch.object(
+                data_store_module,
+                "validate_data_store_configuration",
+                return_value=data_store_module.LOCAL_DATA_STORE,
+            ) as validate,
+            patch.object(data_store_module, "check_postgres_ready") as postgres_ready,
+        ):
+            data_store_module.check_data_store_ready(sqlite_factory)
+
+        validate.assert_called_once_with()
+        sqlite_factory.assert_called_once_with()
+        connection.execute.assert_called_once_with("SELECT 1")
+        connection.execute.return_value.fetchone.assert_called_once_with()
+        connection.close.assert_called_once_with()
+        postgres_ready.assert_not_called()
+
+        failed_connection = Mock()
+        failed_connection.execute.side_effect = RuntimeError("SQLite unavailable")
+        with (
+            patch.object(
+                data_store_module,
+                "validate_data_store_configuration",
+                return_value=data_store_module.LOCAL_DATA_STORE,
+            ),
+            self.assertRaisesRegex(RuntimeError, "SQLite unavailable"),
+        ):
+            data_store_module.check_data_store_ready(
+                Mock(return_value=failed_connection)
+            )
+        failed_connection.close.assert_called_once_with()
+
+    def test_shared_data_store_readiness_uses_ownerless_postgres_without_sqlite_fallback(self) -> None:
+        sqlite_factory = Mock(side_effect=AssertionError("Shared readiness opened SQLite"))
+        postgres_engine = object()
+        with (
+            patch.object(
+                data_store_module,
+                "validate_data_store_configuration",
+                return_value=data_store_module.SHARED_DATA_STORE,
+            ) as validate,
+            patch.object(data_store_module, "check_postgres_ready") as postgres_ready,
+        ):
+            data_store_module.check_data_store_ready(
+                sqlite_factory,
+                postgres_engine=postgres_engine,
+            )
+
+        validate.assert_called_once_with()
+        postgres_ready.assert_called_once_with(postgres_engine)
+        sqlite_factory.assert_not_called()
+
+    def test_postgres_readiness_probe_is_ownerless_and_closes_connection(self) -> None:
+        connection = Mock()
+        connection.scalar.return_value = 1
+        scope_exited = []
+
+        class ConnectionScope:
+            def __enter__(self):
+                return connection
+
+            def __exit__(self, *_args):
+                scope_exited.append(True)
+                return False
+
+        engine = Mock()
+        engine.connect.return_value = ConnectionScope()
+        with (
+            patch.object(postgres_database_module, "set_tenant_context") as tenant_context,
+            patch.object(postgres_database_module, "set_identity_context") as identity_context,
+        ):
+            postgres_database_module.check_postgres_ready(engine)
+
+        engine.connect.assert_called_once_with()
+        connection.scalar.assert_called_once()
+        self.assertEqual("SELECT 1", str(connection.scalar.call_args.args[0]))
+        self.assertEqual([True], scope_exited)
+        tenant_context.assert_not_called()
+        identity_context.assert_not_called()
+
+    def test_data_store_readiness_remains_blocked_before_repository_cutover(self) -> None:
+        sqlite_factory = Mock(side_effect=AssertionError("Readiness opened SQLite"))
+        postgres_engine = Mock()
+        environment = {
+            "CAREERTRELLIS_ENVIRONMENT": "staging",
+            data_store_module.DATA_STORE_ENVIRONMENT_VARIABLE: "postgres",
+            "CAREERTRELLIS_DATABASE_URL": self.POSTGRES_URL,
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(
+                data_store_module,
+                "HOSTED_REPOSITORY_CUTOVER_COMPLETE",
+                False,
+            ),
+            patch.object(data_store_module, "check_postgres_ready") as postgres_ready,
+            self.assertRaisesRegex(
+                config_module.RuntimeConfigurationError,
+                "not fully converted",
+            ),
+        ):
+            data_store_module.check_data_store_ready(
+                sqlite_factory,
+                postgres_engine=postgres_engine,
+            )
+
+        sqlite_factory.assert_not_called()
+        postgres_ready.assert_not_called()
+
     def test_database_import_does_not_initialize_sqlite(self) -> None:
         with patch.object(
             database_module.sqlite3,
@@ -2697,7 +2811,10 @@ class WebAuthenticationTests(unittest.TestCase):
             "CAREERTRELLIS_AUTH_MODE": "",
         }
         headers = {app_module.TRUSTED_PROXY_TOKEN_HEADER: self.ORIGIN_TOKEN}
-        with patch.dict(os.environ, incomplete_environment, clear=False):
+        with (
+            patch.dict(os.environ, incomplete_environment, clear=False),
+            patch.object(app_module, "authenticate_session") as authenticate_session,
+        ):
             client = TestClient(app_module.app, base_url="https://staging-app.jhunterj.com")
             try:
                 liveness = client.get("/health/live", headers=headers)
@@ -2706,6 +2823,11 @@ class WebAuthenticationTests(unittest.TestCase):
                 client.close()
         self.assertEqual(200, liveness.status_code)
         self.assertEqual(503, readiness.status_code)
+        self.assertEqual(
+            {"detail": "Service is not ready."},
+            readiness.json(),
+        )
+        authenticate_session.assert_not_called()
 
 
 class LocalBrowserBoundaryTests(unittest.TestCase):
@@ -2788,9 +2910,8 @@ class LocalBrowserBoundaryTests(unittest.TestCase):
                 config_module.validate_runtime_configuration()
 
     def test_health_endpoints_are_minimal_and_readiness_checks_the_database(self) -> None:
-        connection = sqlite3.connect(":memory:", check_same_thread=False)
         with (
-            patch.object(app_module, "get_db_connection", return_value=connection),
+            patch.object(app_module, "check_data_store_ready") as data_ready,
             patch.object(app_module, "check_identity_store_ready") as identity_ready,
             patch.object(app_module, "check_provider_secret_store_ready") as secrets_ready,
             patch.object(app_module, "check_object_store_ready") as objects_ready,
@@ -2800,9 +2921,58 @@ class LocalBrowserBoundaryTests(unittest.TestCase):
 
         self.assertEqual({"status": "ok", "build": app_module.APP_BUILD}, live.json())
         self.assertEqual({"status": "ready", "build": app_module.APP_BUILD}, ready.json())
+        data_ready.assert_called_once_with(app_module.get_db_connection)
         identity_ready.assert_called_once_with()
         secrets_ready.assert_called_once_with()
         objects_ready.assert_called_once_with()
+
+    def test_readiness_dependency_failures_return_one_privacy_safe_response(self) -> None:
+        secret = "postgresql://runtime:secret@private-database.test/careertrellis"
+        dependency_targets = (
+            (app_module.config, "validate_runtime_configuration"),
+            (app_module, "check_data_store_ready"),
+            (app_module, "check_identity_store_ready"),
+            (app_module, "check_provider_secret_store_ready"),
+            (app_module, "check_object_store_ready"),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_directory = Path(temp_dir)
+            for failed_owner, failed_name in dependency_targets:
+                with self.subTest(dependency=failed_name):
+                    with (
+                        patch.object(app_module.config, "DATA_DIR", runtime_directory),
+                        patch.object(app_module.config, "UPLOAD_DIR", runtime_directory),
+                        patch.object(app_module.config, "OUTPUT_DIR", runtime_directory),
+                        patch.object(
+                            app_module.config,
+                            "validate_runtime_configuration",
+                        ) as runtime_configuration,
+                        patch.object(app_module, "get_auth_configuration"),
+                        patch.object(app_module, "check_data_store_ready") as data_ready,
+                        patch.object(app_module, "check_identity_store_ready") as identity_ready,
+                        patch.object(
+                            app_module,
+                            "check_provider_secret_store_ready",
+                        ) as provider_secrets_ready,
+                        patch.object(app_module, "check_object_store_ready") as object_ready,
+                    ):
+                        selected = {
+                            (id(app_module.config), "validate_runtime_configuration"): runtime_configuration,
+                            (id(app_module), "check_data_store_ready"): data_ready,
+                            (id(app_module), "check_identity_store_ready"): identity_ready,
+                            (id(app_module), "check_provider_secret_store_ready"): provider_secrets_ready,
+                            (id(app_module), "check_object_store_ready"): object_ready,
+                        }[(id(failed_owner), failed_name)]
+                        selected.side_effect = RuntimeError(secret)
+                        response = self.client.get("/health/ready")
+
+                    self.assertEqual(503, response.status_code)
+                    self.assertEqual(
+                        {"detail": "Service is not ready."},
+                        response.json(),
+                    )
+                    self.assertNotIn("secret", response.text)
+                    self.assertNotIn("private-database", response.text)
 
     def test_worker_entrypoint_validates_and_writes_a_privacy_safe_heartbeat(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
