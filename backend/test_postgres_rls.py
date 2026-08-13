@@ -31,6 +31,7 @@ import stored_objects as stored_objects_module
 from base_resumes import BaseResumeNotFound, LastBaseResumeError
 from profile_repository import PostgreSQLProfileRepository
 from discovery_repository import PostgreSQLDiscoveryRepository
+from lifecycle_repository import PostgreSQLLifecycleRepository
 from job_suppressions import job_url_fingerprint
 
 from postgres_database import (
@@ -930,6 +931,140 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                     ),
                     {"owner": self.user_one, "other_job": self.job_two},
                 )
+
+    def test_lifecycle_writes_are_owner_scoped_atomic_reversible_and_indexed(self) -> None:
+        owner_one = PostgreSQLLifecycleRepository(self.user_one, engine=self.runtime_engine)
+        owner_two = PostgreSQLLifecycleRepository(self.user_two, engine=self.runtime_engine)
+        applied_on = date(2026, 8, 13)
+        applied = owner_one.update_lifecycle(
+            self.job_one,
+            "applied",
+            applied_on=applied_on,
+            method="referral",
+            notes="Synthetic referral",
+            follow_up_on=date(2026, 8, 20),
+        )
+        self.assertEqual("matched", applied["previous_status"])
+        self.assertEqual("applied", applied["status"])
+        self.assertEqual(applied_on.isoformat(), applied["date_applied"])
+        self.assertNotIn("owner_user_id", applied)
+
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            job_status = connection.scalar(
+                text("SELECT status FROM careertrellis.jobs WHERE id = :job_id"),
+                {"job_id": self.job_one},
+            )
+            application = connection.execute(
+                text(
+                    "SELECT status, date_applied, application_method, submission_evidence, "
+                    "notes, follow_up_date FROM careertrellis.applications "
+                    "WHERE job_id = :job_id"
+                ),
+                {"job_id": self.job_one},
+            ).mappings().one()
+            history = connection.execute(
+                text(
+                    "SELECT from_status, to_status, source, undone_at "
+                    "FROM careertrellis.application_status_history "
+                    "WHERE job_id = :job_id ORDER BY id"
+                ),
+                {"job_id": self.job_one},
+            ).mappings().all()
+        self.assertEqual("applied", job_status)
+        self.assertEqual("applied", application["status"])
+        self.assertEqual(applied_on, application["date_applied"])
+        self.assertEqual("manual:referral", application["application_method"])
+        self.assertTrue(json.loads(application["submission_evidence"])["confirmed_by_user"])
+        self.assertEqual("Synthetic referral", application["notes"])
+        self.assertEqual(date(2026, 8, 20), application["follow_up_date"])
+        self.assertEqual(
+            [{"from_status": "matched", "to_status": "applied", "source": "manual", "undone_at": None}],
+            [dict(row) for row in history],
+        )
+
+        with self.assertRaisesRegex(LookupError, "Job not found"):
+            owner_two.update_lifecycle(self.job_one, "interview")
+        with self.assertRaisesRegex(LookupError, "Job not found"):
+            owner_two.undo_latest_lifecycle_change(self.job_one)
+
+        undone = owner_one.undo_latest_lifecycle_change(self.job_one)
+        self.assertEqual("matched", undone["status"])
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            self.assertEqual(
+                "matched",
+                connection.scalar(
+                    text("SELECT status FROM careertrellis.jobs WHERE id = :job_id"),
+                    {"job_id": self.job_one},
+                ),
+            )
+            self.assertEqual(
+                0,
+                connection.scalar(
+                    text("SELECT count(*) FROM careertrellis.applications WHERE job_id = :job_id"),
+                    {"job_id": self.job_one},
+                ),
+            )
+            self.assertIsNotNone(
+                connection.scalar(
+                    text(
+                        "SELECT undone_at FROM careertrellis.application_status_history "
+                        "WHERE job_id = :job_id"
+                    ),
+                    {"job_id": self.job_one},
+                )
+            )
+
+        with self.admin_engine.begin() as connection:
+            index = connection.execute(
+                text(
+                    "SELECT pg_get_indexdef(i.indexrelid), i.indisvalid, i.indisready "
+                    "FROM pg_index AS i "
+                    "JOIN pg_class AS c ON c.oid = i.indexrelid "
+                    "JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = 'careertrellis' "
+                    "AND c.relname = 'idx_application_status_history_owner_job_active'"
+                )
+            ).one()
+        self.assertIn("(owner_user_id, job_id, id DESC)", index[0])
+        self.assertIn("WHERE (undone_at IS NULL)", index[0])
+        self.assertTrue(index.indisvalid)
+        self.assertTrue(index.indisready)
+
+    def test_concurrent_lifecycle_writes_serialize_one_consistent_history(self) -> None:
+        repository = PostgreSQLLifecycleRepository(self.user_one, engine=self.runtime_engine)
+        barrier = Barrier(2)
+
+        def update(status: str) -> dict:
+            barrier.wait(timeout=5)
+            return repository.update_lifecycle(self.job_one, status)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(update, ("applied", "interview")))
+        self.assertEqual({"applied", "interview"}, {result["status"] for result in results})
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            job_status = connection.scalar(
+                text("SELECT status FROM careertrellis.jobs WHERE id = :job_id"),
+                {"job_id": self.job_one},
+            )
+            application_status = connection.scalar(
+                text("SELECT status FROM careertrellis.applications WHERE job_id = :job_id"),
+                {"job_id": self.job_one},
+            )
+            history = connection.execute(
+                text(
+                    "SELECT from_status, to_status FROM careertrellis.application_status_history "
+                    "WHERE job_id = :job_id ORDER BY id"
+                ),
+                {"job_id": self.job_one},
+            ).all()
+        self.assertEqual(job_status, application_status)
+        self.assertEqual(2, len(history))
+        self.assertEqual("matched", history[0].from_status)
+        self.assertEqual(history[0].to_status, history[1].from_status)
+        self.assertEqual(job_status, history[1].to_status)
+
+        reverted = repository.undo_latest_lifecycle_change(self.job_one)
+        self.assertEqual(history[1].from_status, reverted["status"])
 
     def test_context_is_transaction_local_and_cleared_before_pool_reuse(self) -> None:
         with tenant_transaction(self.runtime_engine, self.user_one) as connection:

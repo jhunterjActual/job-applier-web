@@ -69,14 +69,19 @@ The job-catalog write slice adds owner-scoped manual/discovery job creation and
 initial score completion. Its bounded transaction contract is in
 `STAGE_3_POSTGRES_JOB_CATALOG_WRITES.md`.
 
+The lifecycle write slice adds atomic owner-scoped job/application lifecycle
+transitions and latest-change undo. Its bounded transaction contract is in
+`STAGE_3_POSTGRES_LIFECYCLE_WRITES.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
-- job-status transitions after initial score completion, verification, cleanup,
-  archive/restore, and permanent deletion;
+- posting verification, expiry changes, cleanup, archive/restore, and permanent
+  deletion after initial score completion;
 - durable saved-search claiming, retry, and background-worker execution;
 - suppression creation coupled to permanent job deletion;
-- applications, engagements, interview preparation, and follow-up data;
+- application operations outside the converted lifecycle transition, plus
+  engagements, interview preparation, and follow-up management;
 - headquarters cache entries and any unconverted job-domain reads;
 - all user export and account-deletion reads and writes;
 - generated-material creation, replacement, and deletion through encrypted

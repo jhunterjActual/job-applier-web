@@ -83,6 +83,10 @@ handled by the next bounded slice documented in
 `STAGE_3_POSTGRES_JOB_CATALOG_WRITES.md`; its inclusion does not expand this
 saved-search transaction or authorize lifecycle operations.
 
+Lifecycle transitions and undo are handled by the later bounded slice in
+`STAGE_3_POSTGRES_LIFECYCLE_WRITES.md`; they do not expand this saved-search
+transaction.
+
 ## Verification gates
 
 - [ ] Clean local SQLite tests prove create, conflict update, re-enable,
@@ -90,7 +94,7 @@ saved-search transaction or authorize lifecycle operations.
       rejection without touching the user's workspace.
 - [ ] Route tests prove both write branches use the configured repository and
       enqueue no work after failed authorization.
-- [ ] Alembic reports one head at `20260812_0004`; upgrade is idempotent and the
+- [ ] Alembic reports one head at `20260813_0005`; upgrade is idempotent and the
       validated frequency constraint rejects unsupported values.
 - [ ] Disposable PostgreSQL 18 tests prove same-query isolation between two
       owners, owner-scoped conflict updates, cross-owner advance denial,
