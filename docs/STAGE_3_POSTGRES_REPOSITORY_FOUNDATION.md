@@ -97,6 +97,12 @@ owner's existing profile and encrypted-secret boundaries. Its transaction and
 data-minimization contract is in
 `STAGE_3_POSTGRES_PROVIDER_CONTEXT_READS.md`.
 
+The readiness slice routes the public `/health/ready` database probe through
+the explicitly selected local or shared data store without a SQLite fallback.
+It remains ownerless, returns only fixed health responses, and does not weaken
+the final cutover gate. Its operational and privacy contract is in
+`STAGE_3_POSTGRES_READINESS.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 

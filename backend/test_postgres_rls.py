@@ -26,6 +26,7 @@ from sqlalchemy.exc import DBAPIError
 
 from sqlite_postgres_import import import_sqlite_workspace
 import object_store as object_store_module
+import postgres_database as postgres_database_module
 import provider_secrets as provider_secrets_module
 import stored_objects as stored_objects_module
 from base_resumes import BaseResumeNotFound, LastBaseResumeError
@@ -365,6 +366,31 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         with self.runtime_engine.begin() as connection:
             self.assertEqual(0, connection.scalar(text("SELECT count(*) FROM careertrellis.jobs")))
             self.assertEqual(0, connection.scalar(text("SELECT count(*) FROM careertrellis.profiles")))
+
+    def test_runtime_readiness_probe_requires_no_owner_or_tenant_context(self) -> None:
+        postgres_database_module.check_postgres_ready(self.runtime_engine)
+
+        with self.runtime_engine.connect() as connection:
+            self.assertEqual(
+                1,
+                connection.scalar(text("SELECT 1")),
+            )
+            self.assertIn(
+                connection.scalar(
+                    text("SELECT current_setting('careertrellis.user_id', true)")
+                ),
+                (None, ""),
+            )
+            self.assertIn(
+                connection.scalar(
+                    text("SELECT current_setting('careertrellis.workos_user_id', true)")
+                ),
+                (None, ""),
+            )
+            self.assertEqual(
+                0,
+                connection.scalar(text("SELECT count(*) FROM careertrellis.jobs")),
+            )
 
     def test_identity_context_exposes_only_the_matching_user_mapping(self) -> None:
         with identity_transaction(self.runtime_engine, "user_tenant_one") as connection:

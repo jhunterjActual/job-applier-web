@@ -8,10 +8,18 @@ transaction.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import os
+from typing import Any
+
+from sqlalchemy import Engine
 
 import config
-from postgres_database import PostgreSQLConfigurationError, database_url_from_environment
+from postgres_database import (
+    PostgreSQLConfigurationError,
+    check_postgres_ready,
+    database_url_from_environment,
+)
 
 
 DATA_STORE_ENVIRONMENT_VARIABLE = "CAREERTRELLIS_DATA_STORE"
@@ -61,3 +69,22 @@ def validate_data_store_configuration(*, fail_on_incomplete: bool = True) -> str
             "Shared-host PostgreSQL repositories are not fully converted."
         )
     return selected
+
+
+def check_data_store_ready(
+    sqlite_connection_factory: Callable[[], Any],
+    *,
+    postgres_engine: Engine | None = None,
+) -> None:
+    """Check only the configured primary store, preserving the cutover guard."""
+    selected = validate_data_store_configuration()
+    if selected == LOCAL_DATA_STORE:
+        connection = sqlite_connection_factory()
+        try:
+            row = connection.execute("SELECT 1").fetchone()
+            if row is None or row[0] != 1:
+                raise RuntimeError("The SQLite runtime database is not ready.")
+        finally:
+            connection.close()
+        return
+    check_postgres_ready(postgres_engine)

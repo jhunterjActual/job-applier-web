@@ -46,7 +46,11 @@ from application_workspace_repository import (
 )
 from data_export import build_user_data_export
 from database import get_db_connection, init_db
-from data_store import LOCAL_DATA_STORE, validate_data_store_configuration
+from data_store import (
+    LOCAL_DATA_STORE,
+    check_data_store_ready,
+    validate_data_store_configuration,
+)
 from local_users import (
     LocalUserAuthorizationError,
     authorized_local_owner,
@@ -374,7 +378,7 @@ async def protect_local_browser_boundary(request: Request, call_next):
             return JSONResponse({"detail": "Request origin does not match this app."}, status_code=403)
 
     auth_settings = None
-    if request.url.path != "/health/live":
+    if request.url.path not in {"/health/live", "/health/ready"}:
         try:
             auth_settings = get_auth_configuration()
         except AuthenticationConfigurationError:
@@ -684,11 +688,7 @@ def get_readiness() -> dict:
             for directory in (config.DATA_DIR, config.UPLOAD_DIR, config.OUTPUT_DIR)
         ):
             raise RuntimeError("Runtime storage is not accessible.")
-        connection = get_db_connection()
-        try:
-            connection.execute("SELECT 1").fetchone()
-        finally:
-            connection.close()
+        check_data_store_ready(get_db_connection)
         check_identity_store_ready()
         check_provider_secret_store_ready()
         check_object_store_ready()
