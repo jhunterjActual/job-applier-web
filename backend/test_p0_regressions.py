@@ -5,6 +5,8 @@ import io
 import os
 import re
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -1449,6 +1451,42 @@ class DependencyLockTests(unittest.TestCase):
         self.assertNotIn("Start-ThreadJob", powershell_source)
         self.assertIn("[int]::TryParse", batch_source)
         self.assertIn("SERVER_EXIT", batch_source)
+
+    @unittest.skipUnless(os.name == "nt", "Windows cmd.exe launcher regression")
+    def test_batch_launcher_discovers_bootstrap_python_with_quoted_paths(self) -> None:
+        batch_source = (self.project_dir() / "run.bat").read_text(encoding="utf-8")
+        discovery = batch_source.split(
+            "rem BEGIN_BOOTSTRAP_PYTHON_DISCOVERY", 1
+        )[1].split("rem END_BOOTSTRAP_PYTHON_DISCOVERY", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="careertrellis launcher ") as temp_dir:
+            probe = Path(temp_dir) / "bootstrap discovery.bat"
+            probe.write_text(
+                "@echo off\n"
+                "setlocal\n"
+                f'set "VENV_PYTHON={sys.executable}"\n'
+                "set \"BOOTSTRAP_PYTHON=\"\n"
+                f"{discovery.strip()}\n"
+                "if not defined BOOTSTRAP_PYTHON exit /b 1\n"
+                'if /i not "%BOOTSTRAP_PYTHON%"=="%EXPECTED_BASE_PYTHON%" exit /b 2\n'
+                "exit /b 0\n",
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment["TEMP"] = temp_dir
+            environment["EXPECTED_BASE_PYTHON"] = sys._base_executable
+            completed = subprocess.run(
+                ["cmd.exe", "/d", "/q", "/c", str(probe)],
+                capture_output=True,
+                text=True,
+                env=environment,
+                check=False,
+            )
+
+        self.assertEqual(
+            0,
+            completed.returncode,
+            f"stdout={completed.stdout!r} stderr={completed.stderr!r}",
+        )
 
     def test_environment_manifest_rejects_unlocked_or_wrong_packages(self) -> None:
         _, lock = self.dependency_files()

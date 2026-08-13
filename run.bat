@@ -23,7 +23,9 @@ if errorlevel 1 goto repair_venv
 if not errorlevel 1 goto environment_ready
 echo The dependency lock or installed environment changed. Rebuilding it...
 set "BOOTSTRAP_PYTHON="
-for /f "usebackq delims=" %%P in (`"%VENV_PYTHON%" -c "import sys; print(sys._base_executable)"`) do set "BOOTSTRAP_PYTHON=%%P"
+rem BEGIN_BOOTSTRAP_PYTHON_DISCOVERY
+for /f "usebackq delims=" %%P in (`^""%VENV_PYTHON%" -c "import sys; print(sys._base_executable)"^"`) do set "BOOTSTRAP_PYTHON=%%P"
+rem END_BOOTSTRAP_PYTHON_DISCOVERY
 goto find_bootstrap
 
 :repair_venv
