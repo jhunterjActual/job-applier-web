@@ -87,15 +87,18 @@ interview-preparation workspace, including conflict-safe persistence around an
 explicit AI-provider call. Its two-phase transaction contract is in
 `STAGE_3_POSTGRES_APPLICATION_OPERATIONS.md`.
 
+The application-read slice adds the owner-scoped Application Logs projection
+and private in-process outcome insight aggregation. Its response-minimization
+contract is in `STAGE_3_POSTGRES_APPLICATION_READS.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
 - deletion of jobs with applications, lifecycle history, generated materials,
   stored objects, or other protected dependent records;
 - durable saved-search claiming, retry, and background-worker execution;
-- the application record list, application-insight aggregation, and any
-  application operation outside the converted lifecycle, engagement, and
-  interview-preparation repository boundaries;
+- any application operation outside the converted lifecycle, engagement,
+  interview-preparation, record-list, and insight repository boundaries;
 - headquarters cache entries and any unconverted job-domain reads;
 - all user export and account-deletion reads and writes;
 - generated-material creation, replacement, and deletion through encrypted

@@ -69,8 +69,8 @@ This slice does not convert or authorize:
   state, durable work claiming, retries, leases, or worker scheduling;
 - job creation, lifecycle, verification, archive/restore, cleanup, permanent
   deletion, or coupled suppression creation;
-- the application record list and application-insight aggregation, plus
-  application operations outside separately converted repository boundaries;
+- application operations outside separately converted lifecycle, workspace,
+  record-list, and insight repository boundaries;
 - generated materials, headquarters cache, export/account deletion, or hosted
   backup/restore; or
 - deployment activation, permanent import, repository authority transition,

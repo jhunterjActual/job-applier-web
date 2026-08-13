@@ -49,6 +49,7 @@ from application_workspace_repository import (
     ApplicationWorkspaceNotFound,
     PostgreSQLApplicationWorkspaceRepository,
 )
+from application_read_repository import PostgreSQLApplicationReadRepository
 from application_engagements import EngagementLimitError, MAX_ENGAGEMENTS_PER_JOB
 from job_suppressions import job_url_fingerprint
 
@@ -1756,6 +1757,134 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         self.assertEqual("closed", application_status)
         self.assertEqual("matched", other_job.status)
         self.assertFalse(other_job.is_expired)
+
+    def test_application_reads_and_insights_are_owner_scoped_and_minimized(self) -> None:
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            connection.execute(
+                text(
+                    """
+                    UPDATE careertrellis.jobs
+                    SET company = 'Tenant One Company', source = 'lever',
+                        location = 'Remote'
+                    WHERE id = :job_id AND owner_user_id = :owner_user_id
+                    """
+                ),
+                {"job_id": self.job_one, "owner_user_id": self.user_one},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO careertrellis.applications (
+                        owner_user_id, job_id, company, position, date_applied,
+                        tailored_resume_text, cover_letter, status, confirmed_at,
+                        application_method, submission_evidence, notes,
+                        base_resume_name, base_resume_version, interview_prep,
+                        interview_prep_updated_at
+                    ) VALUES (
+                        :owner_user_id, :job_id, 'Tenant One Company',
+                        'One Job', DATE '2026-08-10', 'private resume source',
+                        'private cover letter', 'interview',
+                        TIMESTAMPTZ '2026-08-10 09:00:00+00',
+                        'manual:referral', 'private evidence', 'private notes',
+                        'Executive', 2, '# Private prep',
+                        TIMESTAMPTZ '2026-08-11 10:00:00+00'
+                    )
+                    """
+                ),
+                {"owner_user_id": self.user_one, "job_id": self.job_one},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO careertrellis.application_status_history (
+                        owner_user_id, job_id, from_status, to_status,
+                        changed_at, source
+                    ) VALUES (
+                        :owner_user_id, :job_id, 'applied', 'interview',
+                        TIMESTAMPTZ '2026-08-12 09:00:00+00', 'manual'
+                    )
+                    """
+                ),
+                {"owner_user_id": self.user_one, "job_id": self.job_one},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO careertrellis.application_engagements (
+                        owner_user_id, job_id, engagement_type, name
+                    ) VALUES (
+                        :owner_user_id, :job_id, 'recruiter', 'Private Person'
+                    )
+                    """
+                ),
+                {"owner_user_id": self.user_one, "job_id": self.job_one},
+            )
+        with tenant_transaction(self.runtime_engine, self.user_two) as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO careertrellis.applications (
+                        owner_user_id, job_id, company, position, date_applied,
+                        status, confirmed_at, notes
+                    ) VALUES (
+                        :owner_user_id, :job_id, 'Tenant Two Company',
+                        'Two Job', DATE '2026-08-09', 'rejected',
+                        TIMESTAMPTZ '2026-08-09 09:00:00+00',
+                        'other tenant private notes'
+                    )
+                    """
+                ),
+                {"owner_user_id": self.user_two, "job_id": self.job_two},
+            )
+
+        with self.runtime_engine.begin() as connection:
+            for table in (
+                "applications",
+                "application_status_history",
+                "application_engagements",
+            ):
+                with self.subTest(table=table):
+                    self.assertEqual(
+                        0,
+                        connection.scalar(
+                            text(f"SELECT COUNT(*) FROM careertrellis.{table}")
+                        ),
+                    )
+
+        owner_one = PostgreSQLApplicationReadRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        owner_two = PostgreSQLApplicationReadRepository(
+            self.user_two, engine=self.runtime_engine
+        )
+        one_records = owner_one.list_applications()
+        two_records = owner_two.list_applications()
+
+        self.assertEqual([self.job_one], [row["job_id"] for row in one_records])
+        self.assertEqual([self.job_two], [row["job_id"] for row in two_records])
+        self.assertEqual(1, one_records[0]["engagement_count"])
+        self.assertTrue(one_records[0]["interview_prep_available"])
+        self.assertFalse(one_records[0]["resume_download_available"])
+        self.assertFalse(one_records[0]["cover_letter_download_available"])
+        for private_field in (
+            "owner_user_id",
+            "tailored_resume_text",
+            "cover_letter",
+            "interview_prep",
+            "tailored_resume_object_id",
+            "cover_letter_object_id",
+            "submission_evidence",
+            "notes",
+        ):
+            self.assertNotIn(private_field, one_records[0])
+        self.assertNotIn("Tenant Two", json.dumps(one_records))
+
+        one_insights = owner_one.application_insights()
+        two_insights = owner_two.application_insights()
+        self.assertEqual(1, one_insights["summary"]["applications"])
+        self.assertEqual(1, one_insights["summary"]["interviews"])
+        self.assertEqual(0, one_insights["summary"]["rejections"])
+        self.assertEqual(1, two_insights["summary"]["rejections"])
 
     def test_verification_rejects_a_changed_target_and_serializes_with_lifecycle(self) -> None:
         verification = PostgreSQLVerificationRepository(

@@ -3202,7 +3202,7 @@ async function loadLogs() {
             tr.appendChild(statusCell);
 
             const fileCell = createElement("td");
-            if (log.tailored_resume_path && log.job_id) {
+            if (log.resume_download_available && log.job_id) {
                 const fileActions = createElement("div", "file-actions");
                 const resumeLink = createElement("a", "btn btn-secondary btn-sm");
                 resumeLink.href = `${API_URL}/api/jobs/${log.job_id}/materials/resume`;
@@ -3214,7 +3214,7 @@ async function loadLogs() {
                 resumeDocxLink.download = "";
                 resumeDocxLink.append(createElement("i", "fa-solid fa-file-word"), document.createTextNode(" Accessible DOCX"));
                 fileActions.appendChild(resumeDocxLink);
-                if (log.cover_letter || log.cover_letter_path) {
+                if (log.cover_letter_download_available) {
                     const coverLetterLink = createElement("a", "btn btn-secondary btn-sm");
                     coverLetterLink.href = `${API_URL}/api/jobs/${log.job_id}/materials/cover-letter`;
                     coverLetterLink.download = "";
@@ -3230,7 +3230,7 @@ async function loadLogs() {
             const prepCell = createElement("td");
             if (log.job_id) {
                 const prepActions = createElement("div", "file-actions");
-                const prepLabel = log.interview_prep ? "Open Prep" : "Interview Prep";
+                const prepLabel = log.interview_prep_available ? "Open Prep" : "Interview Prep";
                 prepActions.appendChild(createActionButton(
                     prepLabel,
                     "fa-solid fa-comments",

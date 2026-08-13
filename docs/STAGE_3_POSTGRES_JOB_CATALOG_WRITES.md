@@ -56,8 +56,8 @@ This slice does not convert or authorize:
 
 - deletion of jobs with applications, history, generated materials, stored
   objects, or other protected dependent records;
-- the application record list and application-insight aggregation, plus
-  application operations outside separately converted repository boundaries;
+- application operations outside separately converted lifecycle, workspace,
+  record-list, and insight repository boundaries;
 - tailoring, generated-material creation/replacement/download/deletion, or
   private-object operations;
 - saved-search claiming, retries, leases, durable work, or worker execution;

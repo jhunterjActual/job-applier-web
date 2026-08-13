@@ -17,6 +17,7 @@ from uuid import uuid4
 
 import app as app_module
 import application_engagements as application_engagements_module
+import application_read_repository as application_read_repository_module
 import application_workspace_repository as application_workspace_repository_module
 import ai_providers as ai_providers_module
 import backup_restore as backup_restore_module
@@ -47,6 +48,7 @@ from application_workspace_repository import (
     ApplicationWorkspaceNotFound,
     SQLiteApplicationWorkspaceRepository,
 )
+from application_read_repository import SQLiteApplicationReadRepository
 from data_export import EXPORT_FORMAT, EXPORT_SCHEMA_VERSION, build_user_data_export
 from backup_restore import (
     BackupAuthenticationError,
@@ -1146,6 +1148,25 @@ class FrontendStartupTests(unittest.TestCase):
         ]
         self.assertNotIn("innerHTML", tracker_source)
         self.assertIn("textContent", tracker_source)
+
+    def test_application_logs_use_bounded_availability_flags(self) -> None:
+        script_source = (Path(__file__).parent / "static" / "app.js").read_text(
+            encoding="utf-8"
+        )
+        logs_source = script_source[
+            script_source.index("async function loadLogs"):
+            script_source.index("const APPLICATION_INSIGHT_DIMENSION_LABELS")
+        ]
+        for availability_field in (
+            "resume_download_available",
+            "cover_letter_download_available",
+            "interview_prep_available",
+        ):
+            self.assertIn(availability_field, logs_source)
+        self.assertNotIn("tailored_resume_path", logs_source)
+        self.assertNotIn("cover_letter_path", logs_source)
+        self.assertNotIn("log.cover_letter ||", logs_source)
+        self.assertNotIn("log.interview_prep ?", logs_source)
 
     def test_launchers_use_the_configurable_default_port(self) -> None:
         project_dir = Path(__file__).parent.parent
@@ -5239,7 +5260,16 @@ class ApplicationEngagementTests(unittest.TestCase):
             );
             CREATE TABLE applications (
                 id INTEGER PRIMARY KEY, job_id INTEGER, company TEXT, position TEXT,
-                date_applied TEXT, created_at TEXT, status TEXT
+                date_applied TEXT, us_hq TEXT, tailored_resume_path TEXT,
+                cover_letter_path TEXT, tailored_resume_text TEXT,
+                cover_letter TEXT, status TEXT, created_at TEXT,
+                tailored_at TEXT, form_filled_at TEXT, submitted_at TEXT,
+                confirmed_at TEXT, application_method TEXT,
+                submission_evidence TEXT, notes TEXT, follow_up_date TEXT,
+                headquarters_source TEXT, headquarters_attribution TEXT,
+                base_resume_id INTEGER, base_resume_name TEXT,
+                base_resume_version INTEGER, interview_prep TEXT,
+                interview_prep_updated_at TEXT
             );
             CREATE TABLE application_engagements (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5257,7 +5287,12 @@ class ApplicationEngagementTests(unittest.TestCase):
                 FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
             );
             INSERT INTO jobs VALUES (7, 'Example Co', 'Data Leader', 'https://jobs.example.test/7');
-            INSERT INTO applications VALUES (1, 7, 'Example Co', 'Data Leader', '2026-08-08', '2026-08-08', 'applied');
+            INSERT INTO applications (
+                id, job_id, company, position, date_applied, status, created_at
+            ) VALUES (
+                1, 7, 'Example Co', 'Data Leader', '2026-08-08',
+                'applied', '2026-08-08'
+            );
         """)
         connection.commit()
         connection.close()
@@ -5454,6 +5489,197 @@ class ApplicationEngagementTests(unittest.TestCase):
             "Engagement identifier must be a positive integer.",
             delete_error.exception.detail,
         )
+
+
+class ApplicationReadRepositoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "application-reads.db"
+        connection = sqlite3.connect(self.db_path)
+        connection.executescript("""
+            CREATE TABLE jobs (
+                id INTEGER PRIMARY KEY, url TEXT, source TEXT, location TEXT
+            );
+            CREATE TABLE applications (
+                id INTEGER PRIMARY KEY, job_id INTEGER, company TEXT,
+                position TEXT, date_applied TEXT, us_hq TEXT,
+                tailored_resume_path TEXT, cover_letter_path TEXT,
+                tailored_resume_text TEXT, cover_letter TEXT, status TEXT,
+                created_at TEXT, tailored_at TEXT, form_filled_at TEXT,
+                submitted_at TEXT, confirmed_at TEXT, application_method TEXT,
+                submission_evidence TEXT, notes TEXT, follow_up_date TEXT,
+                headquarters_source TEXT, headquarters_attribution TEXT,
+                base_resume_id INTEGER, base_resume_name TEXT,
+                base_resume_version INTEGER, interview_prep TEXT,
+                interview_prep_updated_at TEXT
+            );
+            CREATE TABLE application_engagements (
+                id INTEGER PRIMARY KEY, job_id INTEGER
+            );
+            CREATE TABLE application_status_history (
+                id INTEGER PRIMARY KEY, job_id INTEGER, to_status TEXT,
+                changed_at TEXT, undone_at TEXT
+            );
+            INSERT INTO jobs VALUES
+                (1, 'https://example.test/one', 'lever', 'Remote'),
+                (2, 'https://example.test/two', 'greenhouse', 'Dayton, OH');
+            INSERT INTO applications VALUES
+                (1, 1, 'Example One', 'Data Architect', '2026-08-10',
+                 'New York, NY', 'C:/private/resume.pdf',
+                 'C:/private/letter.txt', 'private resume source',
+                 'private cover letter', 'interview', '2026-08-09', NULL,
+                 NULL, NULL, '2026-08-10T09:00:00', 'manual:referral',
+                 'private evidence', 'private notes', '2026-08-20',
+                 'openstreetmap', '© OpenStreetMap contributors', 4,
+                 'Executive', 2, '# Reviewed prep', '2026-08-11T10:00:00'),
+                (2, 2, 'Example Two', 'Security Lead', NULL, NULL, NULL,
+                 NULL, NULL, NULL, 'tailored', '2026-08-12',
+                 '2026-08-12T12:00:00', NULL, NULL, NULL, NULL, NULL, NULL,
+                 NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+            INSERT INTO application_engagements VALUES (1, 1), (2, 1);
+            INSERT INTO application_status_history VALUES
+                (1, 1, 'interview', '2026-08-12T09:00:00', NULL);
+        """)
+        connection.commit()
+        connection.close()
+        self.repository = SQLiteApplicationReadRepository(self.connection_factory)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def connection_factory(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.db_path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def test_list_preserves_display_metadata_without_generated_content_or_paths(self) -> None:
+        records = self.repository.list_applications()
+
+        self.assertEqual([1, 2], [record["id"] for record in records])
+        first = records[0]
+        self.assertEqual(2, first["engagement_count"])
+        self.assertTrue(first["resume_download_available"])
+        self.assertTrue(first["cover_letter_download_available"])
+        self.assertTrue(first["interview_prep_available"])
+        self.assertEqual("https://example.test/one", first["url"])
+        for private_field in (
+            "tailored_resume_path",
+            "cover_letter_path",
+            "tailored_resume_text",
+            "cover_letter",
+            "interview_prep",
+            "submission_evidence",
+            "notes",
+        ):
+            self.assertNotIn(private_field, first)
+        serialized = json.dumps(records)
+        for private_value in (
+            "C:/private",
+            "private resume source",
+            "private cover letter",
+            "# Reviewed prep",
+            "private evidence",
+            "private notes",
+        ):
+            self.assertNotIn(private_value, serialized)
+        self.assertFalse(records[1]["resume_download_available"])
+
+    def test_repository_insights_preserve_standalone_outcomes(self) -> None:
+        insights = self.repository.application_insights()
+
+        self.assertEqual(1, insights["summary"]["applications"])
+        self.assertEqual(1, insights["summary"]["responses"])
+        self.assertEqual(1, insights["summary"]["interviews"])
+        by_source = {
+            item["label"]: item for item in insights["groups"]["source"]
+        }
+        self.assertEqual(1, by_source["Lever"]["applications"])
+
+    def test_routes_dispatch_and_fail_with_bounded_private_errors(self) -> None:
+        repository = Mock()
+        repository.list_applications.return_value = [{"id": 7}]
+        repository.application_insights.return_value = {"summary": {"applications": 1}}
+        with patch.object(
+            app_module, "runtime_application_read_repository", return_value=repository
+        ) as factory:
+            self.assertEqual([{"id": 7}], app_module.get_applications())
+            self.assertEqual(
+                {"summary": {"applications": 1}},
+                app_module.get_application_insights(),
+            )
+
+        self.assertEqual(2, factory.call_count)
+        for call in factory.call_args_list:
+            self.assertIs(
+                app_module.get_db_connection,
+                call.kwargs["sqlite_connection_factory"],
+            )
+
+        repository.list_applications.side_effect = RuntimeError(
+            "postgresql://runtime:secret@private-database.test/careertrellis"
+        )
+        with (
+            patch.object(
+                app_module,
+                "runtime_application_read_repository",
+                return_value=repository,
+            ),
+            self.assertRaises(app_module.HTTPException) as raised,
+        ):
+            app_module.get_applications()
+        self.assertEqual(500, raised.exception.status_code)
+        self.assertEqual(
+            "CareerTrellis could not load application records.",
+            raised.exception.detail,
+        )
+
+        repository.list_applications.side_effect = None
+        repository.application_insights.side_effect = RuntimeError(
+            "postgresql://runtime:secret@private-database.test/careertrellis"
+        )
+        with (
+            patch.object(
+                app_module,
+                "runtime_application_read_repository",
+                return_value=repository,
+            ),
+            self.assertRaises(app_module.HTTPException) as raised,
+        ):
+            app_module.get_application_insights()
+        self.assertEqual(500, raised.exception.status_code)
+        self.assertEqual(
+            "CareerTrellis could not load application insights.",
+            raised.exception.detail,
+        )
+
+    def test_shared_factory_uses_authenticated_owner_without_sqlite_fallback(self) -> None:
+        selected = Mock()
+        sqlite_factory = Mock(side_effect=AssertionError("SQLite fallback used"))
+        with (
+            patch.object(
+                application_read_repository_module,
+                "data_store_kind",
+                return_value=data_store_module.SHARED_DATA_STORE,
+            ),
+            patch.object(
+                application_read_repository_module,
+                "current_owner_user_id",
+                return_value=71,
+            ),
+            patch.object(
+                application_read_repository_module,
+                "PostgreSQLApplicationReadRepository",
+                return_value=selected,
+            ) as postgres_repository,
+        ):
+            result = application_read_repository_module.runtime_application_read_repository(
+                sqlite_connection_factory=sqlite_factory,
+                engine="synthetic-engine",
+            )
+
+        self.assertIs(selected, result)
+        postgres_repository.assert_called_once_with(71, engine="synthetic-engine")
+        sqlite_factory.assert_not_called()
 
 
 class ApplicationInsightsTests(unittest.TestCase):
