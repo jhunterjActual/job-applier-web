@@ -36,8 +36,6 @@ jobs:
       - name: Exercise staging worker entrypoint
         env:
           CAREERTRELLIS_ENVIRONMENT: staging
-          CAREERTRELLIS_ALLOWED_HOSTS: staging-app.jhunterj.com
-          CAREERTRELLIS_TRUSTED_PROXY_TOKEN: ci-only-origin-token-00000000000000000000000000000000
           CAREERTRELLIS_DATA_DIR: ${{ runner.temp }}/careertrellis-worker
         run: python worker.py --once
       - name: Check deployment shell syntax

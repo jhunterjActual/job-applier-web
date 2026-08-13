@@ -2045,6 +2045,27 @@ class DependencyLockTests(unittest.TestCase):
         )
         self.assertIn('chmod -R u=rwX,g=rX,o= "${browser_path}"', deploy)
 
+        workflow = (
+            project_dir / ".github" / "workflows" / "web-foundation.yml"
+        ).read_text(encoding="utf-8")
+        worker_step = workflow.split(
+            "- name: Exercise staging worker entrypoint", 1
+        )[1].split("- name: Check deployment shell syntax", 1)[0]
+        worker_env = worker_step.split("env:", 1)[1].split("run:", 1)[0]
+        self.assertEqual(
+            {"CAREERTRELLIS_ENVIRONMENT", "CAREERTRELLIS_DATA_DIR"},
+            {
+                line.strip().split(":", 1)[0]
+                for line in worker_env.splitlines()
+                if ":" in line
+            },
+        )
+        self.assertIn("CAREERTRELLIS_ENVIRONMENT: staging", worker_env)
+        self.assertIn(
+            "CAREERTRELLIS_DATA_DIR: ${{ runner.temp }}/careertrellis-worker",
+            worker_env,
+        )
+
     def test_import_and_rotation_wrappers_require_reviewed_release_and_root_owned_envs(self) -> None:
         scripts = self.project_dir() / "deploy" / "scripts"
         import_source = (scripts / "import-sqlite-postgres.sh").read_text(encoding="utf-8")
