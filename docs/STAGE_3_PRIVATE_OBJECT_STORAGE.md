@@ -234,3 +234,8 @@ authoritative data directory.
 The next profile/base-resume repository slice and its explicit no-activation,
 data-authority, and split-brain rollback boundary are documented in
 `STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md`.
+
+The later generated-material repository consumer, including verified upload,
+atomic application-reference replacement, tombstoned cleanup, and fixed-error
+download behavior, is documented in
+`STAGE_3_POSTGRES_GENERATED_MATERIALS.md`.
