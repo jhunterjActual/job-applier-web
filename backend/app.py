@@ -13,6 +13,7 @@ from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Back
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from typing import Literal, Optional
@@ -69,6 +70,7 @@ from provider_secrets import (
     SHARED_SECRET_STORE,
     check_provider_secret_store_ready,
     current_provider_secret_configured,
+    current_owner_user_id,
     provider_secret_store_kind,
     reset_current_owner_user_id,
     set_current_owner_user_id,
@@ -77,11 +79,18 @@ from provider_secrets import (
 )
 from object_store import (
     ObjectStoreBackendError,
+    ObjectStoreConfigurationError,
     ObjectStoreIntegrityError,
     check_object_store_ready,
     validate_object_store_configuration,
 )
 from stored_objects import StoredObjectNotFound, download_stored_object
+from generated_material_repository import (
+    GeneratedMaterialChanged,
+    GeneratedMaterialNotFound,
+    GeneratedMaterialUnavailable,
+    runtime_generated_material_repository,
+)
 from discovery_repository import runtime_discovery_repository
 from headquarters_cache_repository import (
     HeadquartersCacheUnavailable,
@@ -517,8 +526,8 @@ class LifecycleUpdateRequest(BaseModel):
 
 
 class MaterialsUpdateRequest(BaseModel):
-    tailored_resume: str
-    cover_letter: str
+    tailored_resume: str = Field(max_length=MAX_BASE_RESUME_CHARS)
+    cover_letter: str = Field(max_length=MAX_BASE_RESUME_CHARS)
 
 
 class InterviewPrepUpdateRequest(BaseModel):
@@ -1923,40 +1932,66 @@ def tailor_resume_endpoint(
 def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
     started_at = time.monotonic()
     operation.checkpoint()
-    conn = get_db_connection()
-    job = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-    profile = conn.execute("SELECT * FROM profile LIMIT 1").fetchone()
-    
-    if not job:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if not profile or not profile["base_resume_text"]:
-        conn.close()
-        raise HTTPException(status_code=400, detail="Base resume text is missing. Please setup your profile.")
+    shared_materials = data_store_kind() == SHARED_DATA_STORE
+    material_repository = None
+    material_context_token = None
+    if shared_materials:
+        try:
+            material_repository = runtime_generated_material_repository()
+            material_context = material_repository.generation_context(job_id)
+        except GeneratedMaterialNotFound as exc:
+            detail = str(exc)
+            status_code = 400 if "Base resume" in detail else 404
+            raise HTTPException(status_code=status_code, detail=detail) from exc
+        except GeneratedMaterialUnavailable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Generated application materials are temporarily unavailable.",
+            ) from exc
+        job = material_context["job"]
+        profile = material_context["profile"]
+        source_resume_id = material_context["source_resume_id"]
+        source_resume_name = material_context["source_resume_name"]
+        source_resume_version = material_context["source_resume_version"]
+        source_professional_evidence = professional_evidence_markdown(
+            material_context["source_professional_evidence"]
+        )
+        material_context_token = material_context["context_token"]
+    else:
+        conn = get_db_connection()
+        job = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        profile = conn.execute("SELECT * FROM profile LIMIT 1").fetchone()
 
-    source_resume_id = profile["active_base_resume_id"] if "active_base_resume_id" in profile.keys() else None
-    source_resume_name = None
-    source_resume_version = None
-    source_professional_evidence = ""
-    if source_resume_id:
-        source_resume = conn.execute(
-            """
-            SELECT r.name, COALESCE(MAX(v.version_number), 0) AS version_number
-            FROM base_resumes r
-            LEFT JOIN base_resume_versions v ON v.base_resume_id = r.id
-            WHERE r.id = ?
-            GROUP BY r.id
-            """,
-            (source_resume_id,),
-        ).fetchone()
-        if source_resume:
-            source_resume_name = source_resume["name"]
-            source_resume_version = source_resume["version_number"]
-            source_professional_evidence = professional_evidence_markdown(
-                get_base_resume(conn, source_resume_id)["professional_evidence"]
-            )
+        if not job:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Job not found.")
+        if not profile or not profile["base_resume_text"]:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Base resume text is missing. Please setup your profile.")
 
-    conn.close()
+        source_resume_id = profile["active_base_resume_id"] if "active_base_resume_id" in profile.keys() else None
+        source_resume_name = None
+        source_resume_version = None
+        source_professional_evidence = ""
+        if source_resume_id:
+            source_resume = conn.execute(
+                """
+                SELECT r.name, COALESCE(MAX(v.version_number), 0) AS version_number
+                FROM base_resumes r
+                LEFT JOIN base_resume_versions v ON v.base_resume_id = r.id
+                WHERE r.id = ?
+                GROUP BY r.id
+                """,
+                (source_resume_id,),
+            ).fetchone()
+            if source_resume:
+                source_resume_name = source_resume["name"]
+                source_resume_version = source_resume["version_number"]
+                source_professional_evidence = professional_evidence_markdown(
+                    get_base_resume(conn, source_resume_id)["professional_evidence"]
+                )
+
+        conn.close()
     
     ai_settings = settings_from_profile(profile)
     maps_settings = maps_settings_from_profile(profile)
@@ -1978,10 +2013,15 @@ def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
         
     # Generate HTML/PDF file paths
     output_root = Path(config.OUTPUT_DIR)
-    output_root.mkdir(parents=True, exist_ok=True)
+    if not shared_materials:
+        output_root.mkdir(parents=True, exist_ok=True)
     resume_pdf_path = output_root / f"tailored_resume_{job_id}.pdf"
     cover_letter_path = cover_letter_output_path(job_id, output_root)
-    with tempfile.NamedTemporaryFile(delete=False, dir=output_root, suffix=".pdf") as temporary_pdf:
+    with tempfile.NamedTemporaryFile(
+        delete=False,
+        dir=None if shared_materials else output_root,
+        suffix=".pdf",
+    ) as temporary_pdf:
         temporary_resume_path = Path(temporary_pdf.name)
     operation.track_temporary_file(temporary_resume_path)
     
@@ -2001,24 +2041,26 @@ def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
     
     # Persist both artifacts before exposing this job as ready for manual application.
     cover_letter_text = res["cover_letter"]
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        delete=False,
-        dir=output_root,
-        suffix=".txt",
-    ) as temporary_letter:
-        temporary_letter.write(cover_letter_text.strip() + "\n")
-        temporary_cover_letter_path = Path(temporary_letter.name)
-    operation.track_temporary_file(temporary_cover_letter_path)
+    temporary_cover_letter_path = None
+    if not shared_materials:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            delete=False,
+            dir=output_root,
+            suffix=".txt",
+        ) as temporary_letter:
+            temporary_letter.write(cover_letter_text.strip() + "\n")
+            temporary_cover_letter_path = Path(temporary_letter.name)
+        operation.track_temporary_file(temporary_cover_letter_path)
     operation.checkpoint()
-    
-    # Update application log or store inside job metadata
-    # (For convenience we will store tailored details in the applications table with a tailored/pending status)
-    conn = get_db_connection()
-    # Check if application record already exists for this job
-    existing = conn.execute("SELECT id FROM applications WHERE job_id = ?", (job_id,)).fetchone()
-    conn.close()
+
+    existing = None
+    if not shared_materials:
+        # Check if application record already exists for this job.
+        conn = get_db_connection()
+        existing = conn.execute("SELECT id FROM applications WHERE job_id = ?", (job_id,)).fetchone()
+        conn.close()
 
     # Headquarters lookups are cached by provider and bounded identity context.
     prefer_us_headquarters = bool(profile["prefer_us_headquarters"])
@@ -2043,52 +2085,91 @@ def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
         _cache_headquarters(headquarters_cache_key, headquarters, maps_settings.provider)
     operation.checkpoint()
 
-    # The two file replacements and database update below are the short commit
-    # boundary. There are intentionally no cancellation checkpoints inside it.
-    os.replace(temporary_resume_path, resume_pdf_path)
-    operation.commit_temporary_file(temporary_resume_path)
-    os.replace(temporary_cover_letter_path, cover_letter_path)
-    operation.commit_temporary_file(temporary_cover_letter_path)
-    conn = get_db_connection()
-    now = datetime.now().isoformat(timespec="seconds")
-    if existing:
-        conn.execute("""
-        UPDATE applications
-        SET company = ?, position = ?, us_hq = ?, headquarters_source = ?, headquarters_attribution = ?,
-            tailored_resume_path = ?, cover_letter_path = ?, tailored_resume_text = ?, cover_letter = ?,
-            created_at = COALESCE(created_at, ?), tailored_at = ?, base_resume_id = ?,
-            base_resume_name = ?, base_resume_version = ?,
-            status = CASE WHEN status IN ('applied', 'interview', 'offer') THEN status ELSE 'tailored' END
-        WHERE job_id = ?
-        """, (
-            job["company"], job["title"], headquarters.address, headquarters.source,
-            headquarters.attribution, str(resume_pdf_path.resolve()), str(cover_letter_path.resolve()),
-            res["tailored_resume"], cover_letter_text, now, now, source_resume_id,
-            source_resume_name, source_resume_version, job_id,
-        ))
+    # Object upload and the following short metadata/reference transaction are
+    # separated from all provider/PDF work. No old object is deleted first.
+    if shared_materials:
+        try:
+            material_repository.replace_materials(
+                job_id,
+                material_context_token,
+                temporary_resume_path.read_bytes(),
+                cover_letter_text,
+                {
+                    "company": job["company"],
+                    "position": job["title"],
+                    "us_hq": headquarters.address,
+                    "headquarters_source": headquarters.source,
+                    "headquarters_attribution": headquarters.attribution,
+                    "resume_text": res["tailored_resume"],
+                    "cover_letter": cover_letter_text,
+                    "base_resume_id": source_resume_id,
+                    "base_resume_name": source_resume_name,
+                    "base_resume_version": source_resume_version,
+                },
+            )
+        except GeneratedMaterialChanged as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="The job or profile changed while materials were generated. Review it and generate again.",
+            ) from exc
+        except GeneratedMaterialNotFound as exc:
+            raise HTTPException(status_code=404, detail="Job not found.") from exc
+        except (
+            GeneratedMaterialUnavailable,
+            ObjectStoreBackendError,
+            ObjectStoreIntegrityError,
+            ValueError,
+        ) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Generated application materials are temporarily unavailable.",
+            ) from exc
     else:
+        # The two file replacements and database update below are the local
+        # short commit boundary. There are no cancellation checkpoints inside it.
+        os.replace(temporary_resume_path, resume_pdf_path)
+        operation.commit_temporary_file(temporary_resume_path)
+        os.replace(temporary_cover_letter_path, cover_letter_path)
+        operation.commit_temporary_file(temporary_cover_letter_path)
+        conn = get_db_connection()
+        now = datetime.now().isoformat(timespec="seconds")
+        if existing:
+            conn.execute("""
+            UPDATE applications
+            SET company = ?, position = ?, us_hq = ?, headquarters_source = ?, headquarters_attribution = ?,
+                tailored_resume_path = ?, cover_letter_path = ?, tailored_resume_text = ?, cover_letter = ?,
+                created_at = COALESCE(created_at, ?), tailored_at = ?, base_resume_id = ?,
+                base_resume_name = ?, base_resume_version = ?,
+                status = CASE WHEN status IN ('applied', 'interview', 'offer') THEN status ELSE 'tailored' END
+            WHERE job_id = ?
+            """, (
+                job["company"], job["title"], headquarters.address, headquarters.source,
+                headquarters.attribution, str(resume_pdf_path.resolve()), str(cover_letter_path.resolve()),
+                res["tailored_resume"], cover_letter_text, now, now, source_resume_id,
+                source_resume_name, source_resume_version, job_id,
+            ))
+        else:
+            conn.execute("""
+            INSERT INTO applications (
+                job_id, company, position, date_applied, us_hq, headquarters_source,
+                headquarters_attribution, tailored_resume_path, cover_letter_path,
+                tailored_resume_text, cover_letter, status, created_at, tailored_at,
+                base_resume_id, base_resume_name, base_resume_version
+            ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'tailored', ?, ?, ?, ?, ?)
+            """, (
+                job_id, job["company"], job["title"], headquarters.address, headquarters.source,
+                headquarters.attribution, str(resume_pdf_path.resolve()), str(cover_letter_path.resolve()),
+                res["tailored_resume"], cover_letter_text, now, now, source_resume_id,
+                source_resume_name, source_resume_version,
+            ))
+
         conn.execute("""
-        INSERT INTO applications (
-            job_id, company, position, date_applied, us_hq, headquarters_source,
-            headquarters_attribution, tailored_resume_path, cover_letter_path,
-            tailored_resume_text, cover_letter, status, created_at, tailored_at,
-            base_resume_id, base_resume_name, base_resume_version
-        ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'tailored', ?, ?, ?, ?, ?)
-        """, (
-            job_id, job["company"], job["title"], headquarters.address, headquarters.source,
-            headquarters.attribution, str(resume_pdf_path.resolve()), str(cover_letter_path.resolve()),
-            res["tailored_resume"], cover_letter_text, now, now, source_resume_id,
-            source_resume_name, source_resume_version,
-        ))
-        
-    # Update job status to tailored
-    conn.execute("""
-        UPDATE jobs
-        SET status = CASE WHEN status IN ('applied', 'interview', 'offer') THEN status ELSE 'tailored' END
-        WHERE id = ?
-    """, (job_id,))
-    conn.commit()
-    conn.close()
+            UPDATE jobs
+            SET status = CASE WHEN status IN ('applied', 'interview', 'offer') THEN status ELSE 'tailored' END
+            WHERE id = ?
+        """, (job_id,))
+        conn.commit()
+        conn.close()
     capture_event(
         "resume_tailored",
         {
@@ -2128,6 +2209,35 @@ def get_tailored_details(job_id: int) -> dict:
     Returns:
         dict: Tailored details or error message.
     """
+    if data_store_kind() == SHARED_DATA_STORE:
+        try:
+            app_row = runtime_generated_material_repository().materials(job_id)
+        except GeneratedMaterialNotFound:
+            return {"success": False, "message": "No tailored details found for this job."}
+        except GeneratedMaterialUnavailable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Generated application materials are temporarily unavailable.",
+            ) from exc
+        return {
+            "success": True,
+            "cover_letter": app_row["cover_letter"],
+            "tailored_resume": app_row["tailored_resume_text"] or "",
+            "tailored_resume_path": None,
+            "cover_letter_path": None,
+            "us_hq": app_row["us_hq"],
+            "headquarters_source": app_row["headquarters_source"],
+            "headquarters_attribution": app_row["headquarters_attribution"],
+            "status": app_row["status"],
+            "base_resume_id": app_row["base_resume_id"],
+            "base_resume_name": app_row["base_resume_name"],
+            "base_resume_version": app_row["base_resume_version"],
+            "resume_download_url": f"/api/jobs/{job_id}/materials/resume",
+            "resume_docx_download_url": f"/api/jobs/{job_id}/materials/resume.docx",
+            "cover_letter_download_url": f"/api/jobs/{job_id}/materials/cover-letter",
+            "manual_application_url": f"/api/jobs/{job_id}/apply-manually",
+        }
+
     conn = get_db_connection()
     app_row = conn.execute("SELECT * FROM applications WHERE job_id = ?", (job_id,)).fetchone()
     conn.close()
@@ -2195,16 +2305,41 @@ def _update_tailored_details(job_id: int, req: MaterialsUpdateRequest, operation
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    conn = get_db_connection()
-    application = conn.execute("SELECT * FROM applications WHERE job_id = ?", (job_id,)).fetchone()
-    profile = conn.execute("SELECT name, resume_mode FROM profile LIMIT 1").fetchone()
-    conn.close()
-    if not application:
-        raise HTTPException(status_code=404, detail="No tailored materials found for this job.")
+    shared_materials = data_store_kind() == SHARED_DATA_STORE
+    material_repository = None
+    material_context_token = None
+    if shared_materials:
+        try:
+            material_repository = runtime_generated_material_repository()
+            edit_context = material_repository.edit_context(job_id)
+        except GeneratedMaterialNotFound as exc:
+            raise HTTPException(status_code=404, detail="No tailored materials found for this job.") from exc
+        except GeneratedMaterialUnavailable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Generated application materials are temporarily unavailable.",
+            ) from exc
+        application = edit_context["application"]
+        profile = edit_context["profile"]
+        material_context_token = edit_context["context_token"]
+    else:
+        conn = get_db_connection()
+        application = conn.execute("SELECT * FROM applications WHERE job_id = ?", (job_id,)).fetchone()
+        profile = conn.execute("SELECT name, resume_mode FROM profile LIMIT 1").fetchone()
+        conn.close()
+        if not application:
+            raise HTTPException(status_code=404, detail="No tailored materials found for this job.")
 
-    output_path = Path(application["tailored_resume_path"] or os.path.join(config.OUTPUT_DIR, f"tailored_resume_{job_id}.pdf"))
     output_root = Path(config.OUTPUT_DIR)
-    output_root.mkdir(parents=True, exist_ok=True)
+    if not shared_materials:
+        output_root.mkdir(parents=True, exist_ok=True)
+    output_path = Path(
+        application.get("tailored_resume_path")
+        or os.path.join(config.OUTPUT_DIR, f"tailored_resume_{job_id}.pdf")
+    ) if isinstance(application, dict) else Path(
+        application["tailored_resume_path"]
+        or os.path.join(config.OUTPUT_DIR, f"tailored_resume_{job_id}.pdf")
+    )
     cover_letter_path = cover_letter_output_path(job_id, output_root)
     resume_mode = profile["resume_mode"] if profile and profile["resume_mode"] else "general_professional"
     try:
@@ -2212,7 +2347,11 @@ def _update_tailored_details(job_id: int, req: MaterialsUpdateRequest, operation
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     page_limit = 6 if resume_mode == "academic_cv" else 2
-    with tempfile.NamedTemporaryFile(delete=False, dir=output_root, suffix=".pdf") as temporary_pdf:
+    with tempfile.NamedTemporaryFile(
+        delete=False,
+        dir=None if shared_materials else output_root,
+        suffix=".pdf",
+    ) as temporary_pdf:
         temporary_resume_path = Path(temporary_pdf.name)
     operation.track_temporary_file(temporary_resume_path)
     try:
@@ -2230,30 +2369,71 @@ def _update_tailored_details(job_id: int, req: MaterialsUpdateRequest, operation
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        delete=False,
-        dir=output_root,
-        suffix=".txt",
-    ) as temporary_letter:
-        temporary_letter.write(cover_letter.strip() + "\n")
-        temporary_cover_letter_path = Path(temporary_letter.name)
-    operation.track_temporary_file(temporary_cover_letter_path)
+    temporary_cover_letter_path = None
+    if not shared_materials:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            delete=False,
+            dir=output_root,
+            suffix=".txt",
+        ) as temporary_letter:
+            temporary_letter.write(cover_letter.strip() + "\n")
+            temporary_cover_letter_path = Path(temporary_letter.name)
+        operation.track_temporary_file(temporary_cover_letter_path)
     operation.checkpoint()
 
-    os.replace(temporary_resume_path, output_path)
-    operation.commit_temporary_file(temporary_resume_path)
-    os.replace(temporary_cover_letter_path, cover_letter_path)
-    operation.commit_temporary_file(temporary_cover_letter_path)
-    conn = get_db_connection()
-    conn.execute("""
-        UPDATE applications
-        SET tailored_resume_text = ?, tailored_resume_path = ?, cover_letter_path = ?, cover_letter = ?
-        WHERE job_id = ?
-    """, (resume_text, str(output_path.resolve()), str(cover_letter_path.resolve()), cover_letter, job_id))
-    conn.commit()
-    conn.close()
+    if shared_materials:
+        try:
+            material_repository.replace_materials(
+                job_id,
+                material_context_token,
+                temporary_resume_path.read_bytes(),
+                cover_letter,
+                {
+                    "company": application["company"],
+                    "position": application["position"],
+                    "us_hq": application["us_hq"],
+                    "headquarters_source": application["headquarters_source"],
+                    "headquarters_attribution": application["headquarters_attribution"],
+                    "resume_text": resume_text,
+                    "cover_letter": cover_letter,
+                    "base_resume_id": application["base_resume_id"],
+                    "base_resume_name": application["base_resume_name"],
+                    "base_resume_version": application["base_resume_version"],
+                },
+                require_application=True,
+            )
+        except GeneratedMaterialChanged as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="The application materials changed while the PDF was generated. Review them and try again.",
+            ) from exc
+        except GeneratedMaterialNotFound as exc:
+            raise HTTPException(status_code=404, detail="No tailored materials found for this job.") from exc
+        except (
+            GeneratedMaterialUnavailable,
+            ObjectStoreBackendError,
+            ObjectStoreIntegrityError,
+            ValueError,
+        ) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Generated application materials are temporarily unavailable.",
+            ) from exc
+    else:
+        os.replace(temporary_resume_path, output_path)
+        operation.commit_temporary_file(temporary_resume_path)
+        os.replace(temporary_cover_letter_path, cover_letter_path)
+        operation.commit_temporary_file(temporary_cover_letter_path)
+        conn = get_db_connection()
+        conn.execute("""
+            UPDATE applications
+            SET tailored_resume_text = ?, tailored_resume_path = ?, cover_letter_path = ?, cover_letter = ?
+            WHERE job_id = ?
+        """, (resume_text, str(output_path.resolve()), str(cover_letter_path.resolve()), cover_letter, job_id))
+        conn.commit()
+        conn.close()
     return {
         "success": True,
         "pdf_page_count": pdf_result["page_count"],
@@ -2265,6 +2445,19 @@ def _update_tailored_details(job_id: int, req: MaterialsUpdateRequest, operation
 
 def _application_materials(job_id: int):
     """Load a job and its generated materials for a guided manual application."""
+    if data_store_kind() == SHARED_DATA_STORE:
+        try:
+            return runtime_generated_material_repository().materials(job_id)
+        except GeneratedMaterialNotFound as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Generated application materials were not found.",
+            ) from exc
+        except GeneratedMaterialUnavailable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Generated application materials are temporarily unavailable.",
+            ) from exc
     conn = get_db_connection()
     row = conn.execute(
         """
@@ -2284,9 +2477,45 @@ def _application_materials(job_id: int):
 
 
 @app.get("/api/jobs/{job_id}/materials/resume")
-def download_tailored_resume(job_id: int) -> FileResponse:
+def download_tailored_resume(job_id: int) -> Response:
     """Download the generated resume using a readable, filesystem-safe name."""
     material = _application_materials(job_id)
+    if data_store_kind() == SHARED_DATA_STORE:
+        object_id = material["tailored_resume_object_id"]
+        if not object_id:
+            raise HTTPException(status_code=404, detail="The generated resume PDF is unavailable.")
+        try:
+            download = download_stored_object(current_owner_user_id(), object_id)
+        except StoredObjectNotFound as exc:
+            raise HTTPException(status_code=404, detail="The generated resume PDF is unavailable.") from exc
+        except (
+            ObjectStoreBackendError,
+            ObjectStoreConfigurationError,
+            ObjectStoreIntegrityError,
+            SQLAlchemyError,
+        ) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="The generated resume PDF is temporarily unavailable.",
+            ) from exc
+        capture_event(
+            "material_downloaded",
+            {
+                "result": "success",
+                "source_category": source_category(material["job_source"]),
+                "material_type": "resume",
+            },
+        )
+        return Response(
+            content=download.content,
+            media_type="application/pdf",
+            headers={
+                "Cache-Control": "private, no-store, max-age=0",
+                "Content-Disposition": (
+                    f'attachment; filename="{material_download_name(material["company"], material["position"], "resume", ".pdf", candidate_name=material["candidate_name"])}"'
+                ),
+            },
+        )
     try:
         path = resolve_output_file(material["tailored_resume_path"], ".pdf")
     except (ValueError, FileNotFoundError) as exc:
@@ -2313,6 +2542,12 @@ def download_tailored_resume(job_id: int) -> FileResponse:
 def download_tailored_resume_docx(job_id: int) -> Response:
     """Build an accessible, editable DOCX from the reviewed tailored source."""
     material = _application_materials(job_id)
+    if data_store_kind() == SHARED_DATA_STORE:
+        company = material["company"]
+        position = material["position"]
+    else:
+        company = material["job_company"]
+        position = material["job_title"]
     resume_text = (material["tailored_resume_text"] or "").strip()
     if not resume_text:
         raise HTTPException(status_code=404, detail="The editable tailored resume source is unavailable.")
@@ -2321,12 +2556,12 @@ def download_tailored_resume_docx(job_id: int) -> Response:
         content = build_accessible_resume_docx(
             resume_text,
             candidate_name=candidate_name,
-            title=f"{candidate_name or 'Candidate'} - {material['job_title']} Resume",
+            title=f"{candidate_name or 'Candidate'} - {position} Resume",
         )
     except ResumeDocumentError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     filename = material_download_name(
-        material["job_company"], material["job_title"], "resume-accessible", ".docx",
+        company, position, "resume-accessible", ".docx",
         candidate_name=candidate_name,
     )
     capture_event(
@@ -2345,9 +2580,45 @@ def download_tailored_resume_docx(job_id: int) -> Response:
 
 
 @app.get("/api/jobs/{job_id}/materials/cover-letter")
-def download_cover_letter(job_id: int) -> FileResponse:
+def download_cover_letter(job_id: int) -> Response:
     """Download the generated cover letter as a plain-text attachment."""
     material = _application_materials(job_id)
+    if data_store_kind() == SHARED_DATA_STORE:
+        object_id = material["cover_letter_object_id"]
+        if not object_id:
+            raise HTTPException(status_code=404, detail="The generated cover letter is unavailable.")
+        try:
+            download = download_stored_object(current_owner_user_id(), object_id)
+        except StoredObjectNotFound as exc:
+            raise HTTPException(status_code=404, detail="The generated cover letter is unavailable.") from exc
+        except (
+            ObjectStoreBackendError,
+            ObjectStoreConfigurationError,
+            ObjectStoreIntegrityError,
+            SQLAlchemyError,
+        ) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="The generated cover letter is temporarily unavailable.",
+            ) from exc
+        capture_event(
+            "material_downloaded",
+            {
+                "result": "success",
+                "source_category": source_category(material["job_source"]),
+                "material_type": "cover_letter",
+            },
+        )
+        return Response(
+            content=download.content,
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Cache-Control": "private, no-store, max-age=0",
+                "Content-Disposition": (
+                    f'attachment; filename="{material_download_name(material["company"], material["position"], "cover-letter", ".txt", candidate_name=material["candidate_name"])}"'
+                ),
+            },
+        )
     cover_letter_path = material["cover_letter_path"]
     try:
         path = resolve_output_file(cover_letter_path, ".txt")
@@ -2385,10 +2656,14 @@ def download_cover_letter(job_id: int) -> FileResponse:
 def open_manual_application(job_id: int) -> RedirectResponse:
     """Open a verified employer URL after confirming required materials exist."""
     material = _application_materials(job_id)
-    try:
-        resolve_output_file(material["tailored_resume_path"], ".pdf")
-    except (ValueError, FileNotFoundError) as exc:
-        raise HTTPException(status_code=400, detail="Downloadable application materials are not ready.") from exc
+    if data_store_kind() == SHARED_DATA_STORE:
+        if not material["tailored_resume_object_id"] or not material["cover_letter_object_id"]:
+            raise HTTPException(status_code=400, detail="Downloadable application materials are not ready.")
+    else:
+        try:
+            resolve_output_file(material["tailored_resume_path"], ".pdf")
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail="Downloadable application materials are not ready.") from exc
     if not material["cover_letter"]:
         raise HTTPException(status_code=400, detail="Downloadable application materials are not ready.")
 

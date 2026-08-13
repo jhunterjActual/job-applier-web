@@ -121,6 +121,14 @@ cancellation, leases, retry/crash recovery, and a worker-only least-privilege
 claim broker. Its no-activation and rollback contract is in
 `STAGE_3_POSTGRES_SEARCH_RUNS.md`.
 
+Generated tailoring materials now use the existing owner-scoped application
+and stored-object schema in selected shared mode. AI, PDF, and encrypted upload
+work occurs outside database transactions; a short stale-safe transaction
+atomically swaps both verified object references and tombstones replaced
+metadata for retryable reconciliation. Local mode retains SQLite/filesystem
+behavior. The boundary is documented in
+`STAGE_3_POSTGRES_GENERATED_MATERIALS.md`.
+
 The shared backup/restore policy now fails both encrypted-workspace endpoints
 closed when PostgreSQL is the selected data store. The HTTP boundary rejects a
 restore after normal shared authentication but before multipart parsing, and
@@ -147,8 +155,8 @@ converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
   interview-preparation, record-list, and insight repository boundaries;
 - any unconverted job-domain reads;
 - account-deletion reads and writes;
-- generated-material creation, replacement, and deletion through encrypted
-  private object storage rather than authoritative local filesystem paths;
+- protected application/job/account deletion across PostgreSQL metadata and
+  encrypted private objects, including durable deletion orchestration;
 
 Provider secrets and stored-object metadata already have PostgreSQL/RLS
 boundaries. The four provider-context consumers use the encrypted secret
