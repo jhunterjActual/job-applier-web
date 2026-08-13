@@ -13,7 +13,7 @@ import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier
 from unittest.mock import Mock, patch
@@ -634,6 +634,141 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         self.assertNotIn("private-error", serialized)
         self.assertEqual(1, owner_one.clear_source_diagnostics())
         self.assertEqual(1, owner_two.list_source_diagnostics()["count"])
+
+    def test_job_catalog_creation_is_suppression_aware_owner_scoped_and_atomic(self) -> None:
+        owner_one = PostgreSQLDiscoveryRepository(self.user_one, engine=self.runtime_engine)
+        owner_two = PostgreSQLDiscoveryRepository(self.user_two, engine=self.runtime_engine)
+        checked_at = datetime(2026, 8, 12, 18, 30, tzinfo=timezone.utc)
+
+        def values(url: str, title: str = "Catalog job") -> dict:
+            return {
+                "title": title,
+                "company": "Synthetic Employer",
+                "description": "Synthetic job description for repository integration testing.",
+                "url": url,
+                "match_score": None,
+                "match_analysis": "Awaiting initial analysis.",
+                "date_found": "2026-08-12",
+                "location": "Remote",
+                "work_arrangement": "remote",
+                "employment_type": "full-time",
+                "compensation": "$100,000",
+                "source": "manual",
+                "last_checked_at": checked_at,
+            }
+
+        suppressed_url = "https://catalog.example.test/suppressed"
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO careertrellis.job_suppressions
+                        (owner_user_id, url_fingerprint, hostname, deletion_source)
+                    VALUES (:owner, :fingerprint, 'catalog.example.test', 'manual')
+                    """
+                ),
+                {
+                    "owner": self.user_one,
+                    "fingerprint": job_url_fingerprint(suppressed_url),
+                },
+            )
+        self.assertEqual(
+            {"outcome": "suppressed"},
+            owner_one.create_job_if_available(**values(suppressed_url)),
+        )
+        other_created = owner_two.create_job_if_available(**values(suppressed_url))
+        self.assertEqual("created", other_created["outcome"])
+
+        shared_url = "HTTPS://catalog.example.test/shared/"
+        one = owner_one.create_job_if_available(**values(shared_url, "Owner one"))
+        two = owner_two.create_job_if_available(**values(shared_url, "Owner two"))
+        self.assertEqual("created", one["outcome"])
+        self.assertEqual("created", two["outcome"])
+        self.assertNotEqual(one["job"]["id"], two["job"]["id"])
+        self.assertEqual("https://catalog.example.test/shared", one["job"]["url"])
+        self.assertNotIn("owner_user_id", one["job"])
+
+        concurrent_url = "https://catalog.example.test/concurrent"
+        barrier = Barrier(2)
+
+        def create(title: str) -> dict:
+            barrier.wait(timeout=5)
+            return owner_one.create_job_if_available(**values(concurrent_url, title))
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(create, ("First contender", "Second contender")))
+        self.assertCountEqual(
+            ["created", "duplicate"], [result["outcome"] for result in results]
+        )
+        self.assertEqual(1, len({result["job"]["id"] for result in results}))
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            self.assertEqual(
+                1,
+                connection.scalar(
+                    text(
+                        "SELECT COUNT(*) FROM careertrellis.jobs "
+                        "WHERE owner_user_id = :owner AND url = :url"
+                    ),
+                    {
+                        "owner": self.user_one,
+                        "url": "https://catalog.example.test/concurrent",
+                    },
+                ),
+            )
+
+    def test_initial_job_score_completion_is_owner_scoped_compare_and_set(self) -> None:
+        owner_one = PostgreSQLDiscoveryRepository(self.user_one, engine=self.runtime_engine)
+        owner_two = PostgreSQLDiscoveryRepository(self.user_two, engine=self.runtime_engine)
+        created = owner_one.create_job_if_available(
+            title="Unscored role",
+            company="Synthetic Employer",
+            description="Synthetic job description for score completion testing.",
+            url="https://catalog.example.test/unscored",
+            match_score=None,
+            match_analysis="Awaiting initial analysis.",
+            date_found=date(2026, 8, 12),
+            location="Remote",
+            work_arrangement="remote",
+            employment_type="full-time",
+            compensation="",
+            source="manual",
+            last_checked_at=datetime(2026, 8, 12, 19, 0, tzinfo=timezone.utc),
+        )
+        job_id = created["job"]["id"]
+        self.assertIsNone(owner_two.complete_initial_job_match(job_id, 99, "Foreign score"))
+
+        barrier = Barrier(2)
+
+        def complete(arguments: tuple[int, str]) -> dict | None:
+            barrier.wait(timeout=5)
+            return owner_one.complete_initial_job_match(job_id, *arguments)
+
+        contenders = ((71, "First analysis"), (89, "Second analysis"))
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(complete, contenders))
+        accepted = [result for result in results if result is not None]
+        self.assertEqual(1, len(accepted))
+        self.assertNotIn("owner_user_id", accepted[0])
+        self.assertIn(
+            (accepted[0]["match_score"], accepted[0]["match_analysis"]), contenders
+        )
+        self.assertIsNone(
+            owner_one.complete_initial_job_match(job_id, 100, "Stale completion")
+        )
+        with self.assertRaises(ValueError):
+            owner_one.complete_initial_job_match(job_id, 101, "Invalid score")
+
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            stored = connection.execute(
+                text(
+                    "SELECT match_score, match_analysis FROM careertrellis.jobs "
+                    "WHERE owner_user_id = :owner AND id = :job_id"
+                ),
+                {"owner": self.user_one, "job_id": job_id},
+            ).one()
+        self.assertEqual(
+            (accepted[0]["match_score"], accepted[0]["match_analysis"]), tuple(stored)
+        )
 
     def test_discovery_repository_indexes_are_owner_first(self) -> None:
         expected = {

@@ -3020,6 +3020,7 @@ class ManualJobImportTests(unittest.TestCase):
                 id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, company TEXT,
                 description TEXT, url TEXT UNIQUE, match_score INTEGER,
                 match_analysis TEXT, date_found TEXT, status TEXT, location TEXT,
+                archived_at TEXT, archived_from_status TEXT,
                 work_arrangement TEXT, employment_type TEXT, compensation TEXT,
                 source TEXT, last_checked_at TEXT, is_expired INTEGER,
                 expiration_reason TEXT
@@ -3109,6 +3110,78 @@ class ManualJobImportTests(unittest.TestCase):
         self.assertEqual("https://example.test/jobs/123", stored["url"])
         self.assertEqual("example.test", stored["source"])
         self.assertEqual("matched", stored["status"])
+
+    def test_save_delegates_create_and_match_completion_to_repository(self) -> None:
+        repository = Mock()
+        repository.create_job_if_available.return_value = {
+            "outcome": "created",
+            "job": {"id": 41},
+        }
+        repository.complete_initial_job_match.return_value = {
+            "id": 41,
+            "match_score": 91,
+        }
+        request = app_module.ManualJobSaveRequest(
+            url="https://example.test/jobs/repository",
+            title="Data Director",
+            company="Example Health",
+            description="Lead enterprise data strategy and analytics. " * 3,
+        )
+        with (
+            patch.object(app_module, "get_db_connection", side_effect=self.connection_factory),
+            patch.object(app_module, "runtime_discovery_repository", return_value=repository),
+            patch.object(app_module, "validate_public_http_url", return_value=(True, "")),
+            patch.object(app_module, "analyze_job_match", return_value={
+                "success": True,
+                "match_score": 91,
+                "match_analysis": "Excellent match.",
+            }),
+        ):
+            result = app_module.save_manual_job(request)
+
+        self.assertEqual(41, result["job_id"])
+        self.assertEqual(91, result["match_score"])
+        create_values = repository.create_job_if_available.call_args.kwargs
+        self.assertEqual("https://example.test/jobs/repository", create_values["url"])
+        self.assertIsNone(create_values["match_score"])
+        self.assertIsInstance(create_values["date_found"], date)
+        self.assertEqual(timezone.utc, create_values["last_checked_at"].tzinfo)
+        repository.complete_initial_job_match.assert_called_once_with(
+            41,
+            match_score=91,
+            match_analysis="Excellent match.",
+        )
+
+    def test_save_maps_repository_duplicate_and_suppression_to_conflict(self) -> None:
+        request = app_module.ManualJobSaveRequest(
+            url="https://example.test/jobs/conflict",
+            title="Data Director",
+            company="Example Health",
+            description="Lead enterprise data strategy and analytics. " * 3,
+        )
+        for outcome, job, expected_message in (
+            ("duplicate", {"id": 17}, "already saved as job #17"),
+            ("suppressed", None, "previously deleted"),
+        ):
+            with self.subTest(outcome=outcome):
+                repository = Mock()
+                repository.create_job_if_available.return_value = {
+                    "outcome": outcome,
+                    "job": job,
+                }
+                matcher = Mock()
+                with (
+                    patch.object(app_module, "get_db_connection", side_effect=self.connection_factory),
+                    patch.object(app_module, "runtime_discovery_repository", return_value=repository),
+                    patch.object(app_module, "validate_public_http_url", return_value=(True, "")),
+                    patch.object(app_module, "analyze_job_match", matcher),
+                    self.assertRaises(app_module.HTTPException) as raised,
+                ):
+                    app_module.save_manual_job(request)
+                self.assertEqual(409, raised.exception.status_code)
+                self.assertIn(expected_message, raised.exception.detail)
+                matcher.assert_not_called()
+                repository.complete_initial_job_match.assert_not_called()
 
     def test_stopped_post_save_analysis_preserves_unscored_job(self) -> None:
         operation_id = str(uuid4())
@@ -3630,6 +3703,81 @@ class SearchQualityTests(unittest.TestCase):
         self.assertEqual(1, result["provider_health"]["lever"]["skipped_suppressed"])
         scraper.assert_not_called()
         matcher.assert_not_called()
+
+    def test_search_delegates_accepted_result_creation_to_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "repository-search.db"
+            connection = sqlite3.connect(database_path)
+            connection.executescript("""
+                CREATE TABLE profile (
+                    id INTEGER PRIMARY KEY, base_resume_text TEXT,
+                    gemini_api_key TEXT, suggested_keywords TEXT
+                );
+                CREATE TABLE jobs (id INTEGER PRIMARY KEY, url TEXT, status TEXT);
+                CREATE TABLE job_suppressions (
+                    id INTEGER PRIMARY KEY, url_fingerprint TEXT UNIQUE,
+                    hostname TEXT, company TEXT, title TEXT,
+                    deleted_at TEXT, deletion_source TEXT
+                );
+                INSERT INTO profile VALUES (1, 'Experienced data leader', 'test-key', '');
+            """)
+            connection.close()
+
+            def connection_factory():
+                test_connection = sqlite3.connect(database_path)
+                test_connection.row_factory = sqlite3.Row
+                return test_connection
+
+            repository = Mock()
+            repository.create_job_if_available.return_value = {
+                "outcome": "created",
+                "job": {"id": 72},
+            }
+            url = "https://jobs.lever.co/example/repository-role"
+            with (
+                patch.object(searcher_module, "get_db_connection", side_effect=connection_factory),
+                patch.object(searcher_module, "search_yahoo_jobs", return_value=[{"url": url}]),
+                patch.object(searcher_module, "inspect_job_posting", return_value={
+                    "status": "ok",
+                    "details": {
+                        "url": url,
+                        "title": "Data Director",
+                        "company": "Example Health",
+                        "description": "Lead enterprise data strategy and analytics.",
+                        "source": "lever",
+                    },
+                }),
+                patch.object(searcher_module, "analyze_job_matches_batch", return_value={
+                    "success": True,
+                    "matches": [{
+                        "index": 0,
+                        "match_score": 88,
+                        "match_analysis": "Strong match.",
+                    }],
+                }),
+            ):
+                result = searcher_module.run_job_search_and_matching(
+                    "data leader",
+                    job_repository=repository,
+                )
+
+                repository.create_job_if_available.return_value = {
+                    "outcome": "duplicate",
+                    "job": {"id": 72},
+                }
+                duplicate_result = searcher_module.run_job_search_and_matching(
+                    "data leader",
+                    job_repository=repository,
+                )
+
+        self.assertEqual(1, result["jobs_added"])
+        self.assertEqual(0, duplicate_result["jobs_added"])
+        create_values = repository.create_job_if_available.call_args.kwargs
+        self.assertEqual(url, create_values["url"])
+        self.assertEqual(88, create_values["match_score"])
+        self.assertEqual("Strong match.", create_values["match_analysis"])
+        self.assertIsInstance(create_values["date_found"], date)
+        self.assertEqual(timezone.utc, create_values["last_checked_at"].tzinfo)
 
     def test_url_fingerprint_ignores_tracking_variants(self) -> None:
         self.assertEqual(

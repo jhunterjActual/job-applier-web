@@ -111,7 +111,7 @@ from searcher import (
 from utils import generate_resume_pdf, resume_pdf_metadata
 from lifecycle import undo_latest_lifecycle_change, update_lifecycle
 from job_cleanup import apply_cleanup, cleanup_preview
-from job_suppressions import is_job_suppressed, record_job_suppression
+from job_suppressions import record_job_suppression
 from job_filters import derive_job_filter_facets
 from interview_prep import (
     MAX_INTERVIEW_PREP_CHARS,
@@ -1223,51 +1223,46 @@ def _save_manual_job(req: ManualJobSaveRequest, operation: OperationToken) -> di
     try:
         profile = conn.execute("SELECT * FROM profile LIMIT 1").fetchone()
         operation.checkpoint()
-
-        # Save the reviewed posting first so a later Stop request can preserve
-        # it as explicitly unscored. The duplicate check and insert remain one
-        # short atomic transaction.
-        conn.execute("BEGIN IMMEDIATE")
-        if is_job_suppressed(conn, canonical_url):
-            conn.rollback()
-            raise HTTPException(
-                status_code=409,
-                detail="This posting was previously deleted. Clear its suppression in Clean Up before importing it again.",
-            )
-        existing = conn.execute(
-            "SELECT id, title, company, status FROM jobs WHERE url = ?",
-            (canonical_url,),
-        ).fetchone()
-        if existing:
-            conn.rollback()
-            raise HTTPException(
-                status_code=409,
-                detail=f"This posting is already saved as job #{existing['id']}.",
-            )
-
-        now = datetime.now().isoformat(timespec="seconds")
-        match_score = None
-        match_analysis = "Manual import saved; match analysis has not been completed."
-        cursor = conn.execute("""
-            INSERT INTO jobs (
-                title, company, description, url, match_score, match_analysis,
-                date_found, status, location, work_arrangement, employment_type,
-                compensation, source, last_checked_at, is_expired
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'matched', ?, ?, ?, ?, ?, ?, 0)
-        """, (
-            title, company, description, canonical_url, match_score, match_analysis,
-            date.today().isoformat(), location, req.work_arrangement,
-            req.employment_type, compensation, source, now,
-        ))
-        job_id = cursor.lastrowid
-        conn.commit()
-    except HTTPException:
-        raise
-    except Exception:
-        conn.rollback()
-        raise
     finally:
         conn.close()
+
+    # Save the reviewed posting first so a later Stop request can preserve it
+    # as explicitly unscored. The repository owns the atomic suppression,
+    # duplicate, and insert transaction for the authenticated owner.
+    match_score = None
+    match_analysis = "Manual import saved; match analysis has not been completed."
+    created = runtime_discovery_repository(
+        sqlite_connection_factory=get_db_connection
+    ).create_job_if_available(
+        title=title,
+        company=company,
+        description=description,
+        url=canonical_url,
+        match_score=match_score,
+        match_analysis=match_analysis,
+        date_found=date.today(),
+        location=location,
+        work_arrangement=req.work_arrangement,
+        employment_type=req.employment_type,
+        compensation=compensation,
+        source=source,
+        last_checked_at=datetime.now(timezone.utc),
+    )
+    if created["outcome"] == "suppressed":
+        raise HTTPException(
+            status_code=409,
+            detail="This posting was previously deleted. Clear its suppression in Clean Up before importing it again.",
+        )
+    if created["outcome"] == "duplicate":
+        existing = created.get("job") or {}
+        duplicate_suffix = f" as job #{existing['id']}" if existing.get("id") else ""
+        raise HTTPException(
+            status_code=409,
+            detail=f"This posting is already saved{duplicate_suffix}.",
+        )
+    if created["outcome"] != "created" or not created.get("job"):
+        raise RuntimeError("Job repository returned an invalid create result.")
+    job_id = created["job"]["id"]
 
     match_error = None
     try:
@@ -1288,15 +1283,15 @@ def _save_manual_job(req: ManualJobSaveRequest, operation: OperationToken) -> di
             if match.get("success"):
                 match_score = max(0, min(100, int(match["match_score"])))
                 match_analysis = str(match.get("match_analysis") or "Matched successfully.")
-                conn = get_db_connection()
-                try:
-                    conn.execute(
-                        "UPDATE jobs SET match_score = ?, match_analysis = ? WHERE id = ?",
-                        (match_score, match_analysis, job_id),
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
+                completed = runtime_discovery_repository(
+                    sqlite_connection_factory=get_db_connection
+                ).complete_initial_job_match(
+                    job_id,
+                    match_score=match_score,
+                    match_analysis=match_analysis,
+                )
+                if completed is None:
+                    raise RuntimeError("The saved job could not accept its initial match result.")
             else:
                 match_error = match.get("error") or "Match analysis was unavailable."
     except OperationCancelled:

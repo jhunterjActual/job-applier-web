@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from datetime import date, datetime, timedelta, timezone
 import json
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, TypedDict
 
 from sqlalchemy import Engine, text
 
@@ -19,6 +19,7 @@ from database import get_db_connection
 from job_suppressions import job_url_fingerprint
 from postgres_database import runtime_postgres_engine, tenant_transaction
 from provider_secrets import current_owner_user_id
+from searcher import canonicalize_job_url
 from source_diagnostics import (
     ALLOWED_CODES,
     ALLOWED_PROVIDERS,
@@ -35,9 +36,34 @@ from source_diagnostics import (
 )
 
 
+class JobCreateResult(TypedDict, total=False):
+    outcome: Literal["created", "duplicate", "suppressed"]
+    job: dict[str, Any]
+
+
 class DiscoveryRepository(Protocol):
     def list_jobs(self, include_archived: bool = False) -> list[dict[str, Any]]: ...
     def job_identity(self, canonical_url: str) -> dict[str, Any]: ...
+    def create_job_if_available(
+        self,
+        *,
+        title: str,
+        company: str,
+        description: str,
+        url: str,
+        match_score: int | None,
+        match_analysis: str | None,
+        date_found: date | str,
+        location: str,
+        work_arrangement: str,
+        employment_type: str,
+        compensation: str,
+        source: str,
+        last_checked_at: datetime | str,
+    ) -> JobCreateResult: ...
+    def complete_initial_job_match(
+        self, job_id: int, match_score: int, match_analysis: str
+    ) -> dict[str, Any] | None: ...
     def list_job_suppressions(self) -> dict[str, Any]: ...
     def clear_job_suppression(self, suppression_id: int) -> int: ...
     def clear_all_job_suppressions(self) -> int: ...
@@ -78,6 +104,140 @@ SAVED_SEARCH_FREQUENCIES = frozenset({"none", "daily", "weekly"})
 MAX_SAVED_SEARCH_NAME_CHARS = 80
 MAX_SAVED_SEARCH_KEYWORDS_CHARS = 500
 MAX_SAVED_SEARCH_LOCATION_CHARS = 240
+
+MAX_JOB_TITLE_CHARS = 500
+MAX_JOB_COMPANY_CHARS = 500
+MAX_JOB_DESCRIPTION_CHARS = 2_000_000
+MAX_JOB_URL_CHARS = 4096
+MAX_JOB_ANALYSIS_CHARS = 100_000
+MAX_JOB_LOCATION_CHARS = 1000
+MAX_JOB_ATTRIBUTE_CHARS = 500
+MAX_JOB_SOURCE_CHARS = 500
+
+JOB_COLUMNS = """
+    id, title, company, description, url, match_score, match_analysis,
+    date_found, status, archived_at, archived_from_status, last_checked_at,
+    is_expired, expiration_reason, location, work_arrangement,
+    employment_type, compensation, source
+"""
+
+
+def _job_text(
+    value: str | None, *, field: str, maximum: int, required: bool = False
+) -> str:
+    if value is not None and not isinstance(value, str):
+        raise TypeError(f"Job {field} must be text.")
+    normalized = (value or "").strip()
+    if required and not normalized:
+        raise ValueError(f"Job {field} is required.")
+    if len(normalized) > maximum:
+        raise ValueError(f"Job {field} is too long.")
+    return normalized
+
+
+def _job_score(value: int | None, *, required: bool = False) -> int | None:
+    if value is None and not required:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("Job match score must be an integer.")
+    if not 0 <= value <= 100:
+        raise ValueError("Job match score must be between 0 and 100.")
+    return value
+
+
+def _job_analysis(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _job_text(
+        value, field="match analysis", maximum=MAX_JOB_ANALYSIS_CHARS
+    )
+
+
+def _job_date_found(value: date | str) -> date:
+    if isinstance(value, datetime):
+        raise TypeError("Job date found must be a date, not a datetime.")
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str):
+        raise TypeError("Job date found must be a date or ISO date string.")
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError as exc:
+        raise ValueError("Job date found must be an ISO date.") from exc
+
+
+def _job_checked_at(value: datetime | str) -> datetime:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Job last-checked timestamp must be ISO formatted.") from exc
+    if not isinstance(value, datetime):
+        raise TypeError("Job last-checked timestamp must be a datetime or ISO string.")
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("Job last-checked timestamp must include a timezone.")
+    return value.astimezone(timezone.utc)
+
+
+def _sqlite_job_timestamp(value: datetime) -> str:
+    return value.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+
+
+def _job_values(
+    *,
+    title: str,
+    company: str,
+    description: str,
+    url: str,
+    match_score: int | None,
+    match_analysis: str | None,
+    date_found: date | str,
+    location: str,
+    work_arrangement: str,
+    employment_type: str,
+    compensation: str,
+    source: str,
+    last_checked_at: datetime | str,
+) -> dict[str, Any]:
+    canonical_url = canonicalize_job_url(_job_text(
+        url, field="URL", maximum=MAX_JOB_URL_CHARS, required=True
+    ))
+    if not canonical_url:
+        raise ValueError("Job URL must be a public HTTP or HTTPS URL.")
+    return {
+        "title": _job_text(
+            title, field="title", maximum=MAX_JOB_TITLE_CHARS, required=True
+        ),
+        "company": _job_text(
+            company, field="company", maximum=MAX_JOB_COMPANY_CHARS, required=True
+        ),
+        "description": _job_text(
+            description, field="description", maximum=MAX_JOB_DESCRIPTION_CHARS
+        ),
+        "url": canonical_url,
+        "url_fingerprint": job_url_fingerprint(canonical_url),
+        "match_score": _job_score(match_score),
+        "match_analysis": _job_analysis(match_analysis),
+        "date_found": _job_date_found(date_found),
+        "location": _job_text(
+            location, field="location", maximum=MAX_JOB_LOCATION_CHARS
+        ),
+        "work_arrangement": _job_text(
+            work_arrangement,
+            field="work arrangement",
+            maximum=MAX_JOB_ATTRIBUTE_CHARS,
+        ),
+        "employment_type": _job_text(
+            employment_type,
+            field="employment type",
+            maximum=MAX_JOB_ATTRIBUTE_CHARS,
+        ),
+        "compensation": _job_text(
+            compensation, field="compensation", maximum=MAX_JOB_ATTRIBUTE_CHARS
+        ),
+        "source": _job_text(source, field="source", maximum=MAX_JOB_SOURCE_CHARS),
+        "last_checked_at": _job_checked_at(last_checked_at),
+    }
 
 
 def _saved_search_run_at(run_at: datetime) -> datetime:
@@ -193,9 +353,17 @@ class SQLiteDiscoveryRepository:
     def __init__(self, connection_factory: Callable[[], Any] = get_db_connection):
         self._connection_factory = connection_factory
 
-    def _run(self, action: Callable[[Any], Any], *, write: bool = False) -> Any:
+    def _run(
+        self,
+        action: Callable[[Any], Any],
+        *,
+        write: bool = False,
+        immediate: bool = False,
+    ) -> Any:
         connection = self._connection_factory()
         try:
+            if immediate:
+                connection.execute("BEGIN IMMEDIATE")
             result = action(connection)
             if write:
                 connection.commit()
@@ -240,6 +408,112 @@ class SQLiteDiscoveryRepository:
             }
 
         return self._run(load)
+
+    def create_job_if_available(
+        self,
+        *,
+        title: str,
+        company: str,
+        description: str,
+        url: str,
+        match_score: int | None,
+        match_analysis: str | None,
+        date_found: date | str,
+        location: str,
+        work_arrangement: str,
+        employment_type: str,
+        compensation: str,
+        source: str,
+        last_checked_at: datetime | str,
+    ) -> JobCreateResult:
+        values = _job_values(
+            title=title,
+            company=company,
+            description=description,
+            url=url,
+            match_score=match_score,
+            match_analysis=match_analysis,
+            date_found=date_found,
+            location=location,
+            work_arrangement=work_arrangement,
+            employment_type=employment_type,
+            compensation=compensation,
+            source=source,
+            last_checked_at=last_checked_at,
+        )
+
+        def create(connection: Any) -> JobCreateResult:
+            suppressed = connection.execute(
+                "SELECT 1 FROM job_suppressions WHERE url_fingerprint = ?",
+                (values["url_fingerprint"],),
+            ).fetchone()
+            if suppressed:
+                return {"outcome": "suppressed"}
+            cursor = connection.execute(
+                """
+                INSERT INTO jobs (
+                    title, company, description, url, match_score, match_analysis,
+                    date_found, status, location, work_arrangement, employment_type,
+                    compensation, source, last_checked_at, is_expired
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'matched', ?, ?, ?, ?, ?, ?, 0)
+                ON CONFLICT(url) DO NOTHING
+                """,
+                (
+                    values["title"],
+                    values["company"],
+                    values["description"],
+                    values["url"],
+                    values["match_score"],
+                    values["match_analysis"],
+                    values["date_found"].isoformat(),
+                    values["location"],
+                    values["work_arrangement"],
+                    values["employment_type"],
+                    values["compensation"],
+                    values["source"],
+                    _sqlite_job_timestamp(values["last_checked_at"]),
+                ),
+            )
+            outcome = "created" if cursor.rowcount else "duplicate"
+            row = connection.execute(
+                f"SELECT {JOB_COLUMNS} FROM jobs WHERE url = ?",
+                (values["url"],),
+            ).fetchone()
+            if not row:
+                raise RuntimeError("Job create outcome could not be loaded.")
+            return {"outcome": outcome, "job": _api_row(dict(row))}
+
+        return self._run(create, write=True, immediate=True)
+
+    def complete_initial_job_match(
+        self, job_id: int, match_score: int, match_analysis: str
+    ) -> dict[str, Any] | None:
+        if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
+            return None
+        score = _job_score(match_score, required=True)
+        analysis = _job_text(
+            match_analysis,
+            field="match analysis",
+            maximum=MAX_JOB_ANALYSIS_CHARS,
+        )
+
+        def complete(connection: Any) -> dict[str, Any] | None:
+            cursor = connection.execute(
+                """
+                UPDATE jobs SET match_score = ?, match_analysis = ?
+                WHERE id = ? AND match_score IS NULL
+                """,
+                (score, analysis, job_id),
+            )
+            if not cursor.rowcount:
+                return None
+            row = connection.execute(
+                f"SELECT {JOB_COLUMNS} FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            return _api_row(dict(row)) if row else None
+
+        return self._run(complete, write=True, immediate=True)
 
     def list_job_suppressions(self) -> dict[str, Any]:
         def load(connection: Any) -> dict[str, Any]:
@@ -489,6 +763,142 @@ class PostgreSQLDiscoveryRepository:
             }
 
         return self._run(load)
+
+    def create_job_if_available(
+        self,
+        *,
+        title: str,
+        company: str,
+        description: str,
+        url: str,
+        match_score: int | None,
+        match_analysis: str | None,
+        date_found: date | str,
+        location: str,
+        work_arrangement: str,
+        employment_type: str,
+        compensation: str,
+        source: str,
+        last_checked_at: datetime | str,
+    ) -> JobCreateResult:
+        values = _job_values(
+            title=title,
+            company=company,
+            description=description,
+            url=url,
+            match_score=match_score,
+            match_analysis=match_analysis,
+            date_found=date_found,
+            location=location,
+            work_arrangement=work_arrangement,
+            employment_type=employment_type,
+            compensation=compensation,
+            source=source,
+            last_checked_at=last_checked_at,
+        )
+
+        def create(connection: Any) -> JobCreateResult:
+            connection.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtextextended(:catalog_lock_name, 0))"
+                ),
+                {
+                    "catalog_lock_name": (
+                        f"careertrellis-job-catalog:{self._owner_user_id}"
+                    )
+                },
+            )
+            suppressed = connection.scalar(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM careertrellis.job_suppressions
+                        WHERE owner_user_id = :owner_user_id
+                          AND url_fingerprint = :url_fingerprint
+                    )
+                    """
+                ),
+                {
+                    "owner_user_id": self._owner_user_id,
+                    "url_fingerprint": values["url_fingerprint"],
+                },
+            )
+            if suppressed:
+                return {"outcome": "suppressed"}
+            parameters = {"owner_user_id": self._owner_user_id, **values}
+            row = connection.execute(
+                text(
+                    f"""
+                    INSERT INTO careertrellis.jobs (
+                        owner_user_id, title, company, description, url,
+                        match_score, match_analysis, date_found, status, location,
+                        work_arrangement, employment_type, compensation, source,
+                        last_checked_at, is_expired
+                    ) VALUES (
+                        :owner_user_id, :title, :company, :description, :url,
+                        :match_score, :match_analysis, :date_found, 'matched', :location,
+                        :work_arrangement, :employment_type, :compensation, :source,
+                        :last_checked_at, FALSE
+                    )
+                    ON CONFLICT (owner_user_id, url) DO NOTHING
+                    RETURNING {JOB_COLUMNS}
+                    """
+                ),
+                parameters,
+            ).mappings().one_or_none()
+            if row:
+                return {"outcome": "created", "job": _api_row(row)}
+            row = connection.execute(
+                text(
+                    f"""
+                    SELECT {JOB_COLUMNS}
+                    FROM careertrellis.jobs
+                    WHERE owner_user_id = :owner_user_id AND url = :url
+                    """
+                ),
+                {"owner_user_id": self._owner_user_id, "url": values["url"]},
+            ).mappings().one_or_none()
+            if not row:
+                raise RuntimeError("Job create outcome could not be loaded.")
+            return {"outcome": "duplicate", "job": _api_row(row)}
+
+        return self._run(create)
+
+    def complete_initial_job_match(
+        self, job_id: int, match_score: int, match_analysis: str
+    ) -> dict[str, Any] | None:
+        if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
+            return None
+        score = _job_score(match_score, required=True)
+        analysis = _job_text(
+            match_analysis,
+            field="match analysis",
+            maximum=MAX_JOB_ANALYSIS_CHARS,
+        )
+
+        def complete(connection: Any) -> dict[str, Any] | None:
+            row = connection.execute(
+                text(
+                    f"""
+                    UPDATE careertrellis.jobs
+                    SET match_score = :match_score, match_analysis = :match_analysis
+                    WHERE id = :job_id
+                      AND owner_user_id = :owner_user_id
+                      AND match_score IS NULL
+                    RETURNING {JOB_COLUMNS}
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "owner_user_id": self._owner_user_id,
+                    "match_score": score,
+                    "match_analysis": analysis,
+                },
+            ).mappings().one_or_none()
+            return _api_row(row) if row else None
+
+        return self._run(complete)
 
     def list_job_suppressions(self) -> dict[str, Any]:
         def load(connection: Any) -> dict[str, Any]:

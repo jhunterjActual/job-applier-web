@@ -78,6 +78,11 @@ Advancing reminder metadata before an in-process background search preserves
 the current standalone behavior but is not a durable claim. Crash-safe
 claim/retry semantics belong to the later worker aggregate.
 
+Owner-scoped manual/discovery job creation and initial score completion are
+handled by the next bounded slice documented in
+`STAGE_3_POSTGRES_JOB_CATALOG_WRITES.md`; its inclusion does not expand this
+saved-search transaction or authorize lifecycle operations.
+
 ## Verification gates
 
 - [ ] Clean local SQLite tests prove create, conflict update, re-enable,
