@@ -101,8 +101,9 @@ keyring or R2 credential in this slice.
       denial for application rows, engagement counts, and lifecycle history.
 - [ ] PostgreSQL and SQLite results preserve outcome definitions, active-history
       handling, group limits, date serialization, and explicit response shape.
-- [ ] Responses and errors contain no owner IDs, object IDs or keys, generated
-      content, local paths, credentials, database URLs, or unrelated tenant data.
+- [ ] Responses and errors contain no owner IDs, stored-object IDs or keys,
+      generated content, local paths, credentials, database URLs, or unrelated
+      tenant data.
 - [ ] Local tests, compilation, dependency and shell checks, exact-diff security
       review, required GitHub checks, and loopback build/dashboard/listener
       smoke pass.
