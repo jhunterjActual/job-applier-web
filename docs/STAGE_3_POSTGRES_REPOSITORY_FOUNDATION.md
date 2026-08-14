@@ -241,8 +241,10 @@ not waive the exact-release checks:
    independent destination, record the backup label, and pass an isolated
    restore with zero bad checksums.
 6. Retain the completed disposable no-omission import and three-surface
-   reconciliation receipts. Keep the rehearsal database and bucket until an
-   operator explicitly approves cleanup.
+   reconciliation receipts produced by the exact reviewed release's root-only
+   wrapper. Keep the rehearsal database and bucket until an operator explicitly
+   approves cleanup. See
+   `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.
 7. Verify the exact final code can roll back safely before data authority
    changes and fails closed against an incompatible post-cutover rollback.
 8. Keep Caddy's access restriction enabled and do not invite another user.
@@ -263,8 +265,11 @@ instruction to activate this foundation release:
 5. Run the read-only SQLite preflight from the exact release and compare its
    sanitized counts with the accepted rehearsal baseline.
 6. Import to the permanent PostgreSQL database and permanent private R2 bucket
-   with no omission flags while the services remain stopped.
-7. Reconcile the accepted source-file inventory, every owner-scoped PostgreSQL
+   with no omission flags while the services remain stopped. The wrapper must
+   automatically complete its independent read-only reconciliation before it
+   can report success.
+7. Review the sanitized reconciliation of the accepted source-file inventory,
+   every owner-scoped PostgreSQL
    table, `stored_objects` metadata, and all permanent-bucket object keys. Stop
    on any missing row/object, count or hash mismatch, duplicate reference, or
    orphan key.
@@ -311,3 +316,6 @@ recovery evidence is incomplete.
 - [ ] Final activation remains blocked until the remaining repositories, full
       no-omission import, recovery evidence, and end-to-end owner/isolation gates
       are reviewed together.
+- [ ] Import/reconciliation runs only from an immutable reviewed release while
+      services are inactive and authority is still `sqlite-pre-cutover`; the
+      reconciliation command cannot repair or change authority.

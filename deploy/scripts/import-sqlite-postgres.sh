@@ -14,15 +14,20 @@ if [[ -n ${1:-} && ${1} != --* ]]; then
     object_environment_file=$1
     shift
 fi
-if [[ -z ${release_dir} || ! -f ${release_dir}/backend/sqlite_postgres_import.py || -z ${target_environment_file} ]]; then
+if [[ -z ${release_dir} || -z ${target_environment_file} ]]; then
     echo "Usage: $0 /absolute/path/to/reviewed-release /root-owned/target-migration.env [/root-owned/target-object-storage.env] [--omit-provider-secrets] [--omit-generated-files]" >&2
     exit 1
 fi
+if [[ ! -d ${release_dir} ]]; then
+    echo "The reviewed release must be an immutable 40-character release containing the importer and reconciler." >&2
+    exit 1
+fi
 release_dir=$(realpath "${release_dir}")
-case "${release_dir}" in
-    /opt/careertrellis/staging/releases/*) ;;
-    *) echo "The reviewed release must be inside the staging release directory." >&2; exit 1 ;;
-esac
+release_revision=$(basename "${release_dir}")
+if [[ $(dirname "${release_dir}") != "/opt/careertrellis/staging/releases" || ! ${release_revision} =~ ^[0-9a-f]{40}$ || ! -f ${release_dir}/backend/sqlite_postgres_import.py || ! -f ${release_dir}/backend/sqlite_postgres_reconcile.py ]]; then
+    echo "The reviewed release must be an immutable 40-character release containing the importer and reconciler." >&2
+    exit 1
+fi
 
 staging_environment_file=/etc/careertrellis/staging.env
 secret_environment_file=/etc/careertrellis/provider-secrets.env
@@ -30,8 +35,12 @@ for environment_file in \
     "${staging_environment_file}" \
     "${target_environment_file}" \
     "${secret_environment_file}"; do
-    if [[ ! -f ${environment_file} || $(stat -c '%U:%G %a' "${environment_file}") != "root:root 600" ]]; then
-        echo "Every import environment file must be root:root mode 0600." >&2
+    if [[ ! -f ${environment_file} || -L ${environment_file} ]]; then
+        echo "Every import environment file must be a regular root:root mode 0600 file." >&2
+        exit 1
+    fi
+    if [[ $(stat -c '%U:%G %a' "${environment_file}") != "root:root 600" ]]; then
+        echo "Every import environment file must be a regular root:root mode 0600 file." >&2
         exit 1
     fi
 done
@@ -46,19 +55,25 @@ if [[ " $* " != *" --omit-generated-files "* && -z ${object_environment_file} ]]
     echo "A root-owned target object-storage environment file is required unless generated files are omitted." >&2
     exit 1
 fi
-if [[ -n ${object_environment_file} && (! -f ${object_environment_file} || $(stat -c '%U:%G %a' "${object_environment_file}") != "root:root 600") ]]; then
-    echo "Every import environment file must be root:root mode 0600." >&2
-    exit 1
+if [[ -n ${object_environment_file} ]]; then
+    if [[ ! -f ${object_environment_file} || -L ${object_environment_file} ]]; then
+        echo "Every import environment file must be a regular root:root mode 0600 file." >&2
+        exit 1
+    fi
+    if [[ $(stat -c '%U:%G %a' "${object_environment_file}") != "root:root 600" ]]; then
+        echo "Every import environment file must be a regular root:root mode 0600 file." >&2
+        exit 1
+    fi
 fi
 
 exec 8>/run/lock/careertrellis-maintenance.lock
 if ! flock -n 8; then
-    echo "Another deployment, rollback, or import operation is running." >&2
+    echo "Another deployment, rollback, import, or reconciliation operation is running." >&2
     exit 1
 fi
 exec 9>/run/lock/careertrellis-sqlite-import.lock
 if ! flock -n 9; then
-    echo "Another SQLite import operation is running." >&2
+    echo "Another SQLite import or reconciliation operation is running." >&2
     exit 1
 fi
 for service in careertrellis-web.service careertrellis-worker.service; do
@@ -93,6 +108,10 @@ if [[ -z ${CAREERTRELLIS_DATA_DIR:-} || -z ${CAREERTRELLIS_MIGRATION_DATABASE_UR
     echo "The source data directory and target migration URL are required." >&2
     exit 1
 fi
+if [[ ! -d ${CAREERTRELLIS_DATA_DIR} || ! -f ${CAREERTRELLIS_DATA_DIR}/jobapplier.db ]]; then
+    echo "The configured SQLite source is unavailable." >&2
+    exit 1
+fi
 data_directory=$(realpath "${CAREERTRELLIS_DATA_DIR}")
 source_database=$(realpath "${data_directory}/jobapplier.db")
 case "${source_database}" in
@@ -102,4 +121,8 @@ esac
 
 export CAREERTRELLIS_IMPORT_OWNER_WORKOS_USER_ID="${CAREERTRELLIS_STAGING_OWNER_WORKOS_USER_ID}"
 cd "${release_dir}/backend"
-./venv/bin/python sqlite_postgres_import.py "${source_database}" "$@"
+if ! ./venv/bin/python sqlite_postgres_import.py "${source_database}" "$@"; then
+    echo "The import outcome is not reconciled. Before any retry, run the reviewed reconcile-sqlite-postgres-import.sh with the same release, environment files, and options." >&2
+    exit 1
+fi
+./venv/bin/python sqlite_postgres_reconcile.py "${source_database}" "$@"

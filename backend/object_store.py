@@ -37,6 +37,13 @@ KEYRING_ENVIRONMENT_VARIABLE = "CAREERTRELLIS_OBJECT_STORE_KEYRING_B64"
 LOCAL_OBJECT_STORE = "filesystem"
 SHARED_OBJECT_STORE = "r2_encrypted"
 OBJECT_FORMAT_VERSION = 1
+OBJECT_KEY_PREFIX = "v1/"
+OBJECT_INVENTORY_FULL_PREFIX = ""
+# Retain the named v1 prefix for callers that intentionally request that view.
+OBJECT_INVENTORY_PREFIX = OBJECT_KEY_PREFIX
+OBJECT_INVENTORY_PAGE_LIMIT = 1000
+# One canonical v1 namespace directory plus the reconciler's 100,000-object ceiling.
+MAXIMUM_FILESYSTEM_INVENTORY_ENTRIES = 100_001
 MAXIMUM_OBJECT_BYTES = 10 * 1024 * 1024
 MAXIMUM_ENCRYPTED_BYTES = MAXIMUM_OBJECT_BYTES + 64
 MAXIMUM_WRAPPED_KEY_BYTES = 192
@@ -100,6 +107,14 @@ class R2ObjectStoreConfiguration:
     secret_access_key: str = field(repr=False)
 
 
+@dataclass(frozen=True)
+class ObjectInventoryPage:
+    """One bounded, opaque page from the dedicated private bucket."""
+
+    object_keys: tuple[str, ...]
+    next_cursor: str | None = None
+
+
 @runtime_checkable
 class ObjectBackend(Protocol):
     """Minimal private-blob interface; implementations must not create URLs."""
@@ -113,6 +128,14 @@ class ObjectBackend(Protocol):
     def head(self, object_key: str) -> int | None: ...
 
     def check_ready(self) -> None: ...
+
+    def list_object_keys(
+        self,
+        *,
+        prefix: str = OBJECT_INVENTORY_FULL_PREFIX,
+        cursor: str | None = None,
+        limit: int = OBJECT_INVENTORY_PAGE_LIMIT,
+    ) -> ObjectInventoryPage: ...
 
 
 def _configuration_error(message: str) -> ObjectStoreConfigurationError:
@@ -403,11 +426,49 @@ class InMemoryObjectBackend:
     def check_ready(self) -> None:
         return None
 
+    def list_object_keys(
+        self,
+        *,
+        prefix: str = OBJECT_INVENTORY_FULL_PREFIX,
+        cursor: str | None = None,
+        limit: int = OBJECT_INVENTORY_PAGE_LIMIT,
+    ) -> ObjectInventoryPage:
+        prefix, cursor, limit = _inventory_arguments(prefix, cursor, limit)
+        keys = sorted(
+            key for key in self.objects
+            if key.startswith(prefix) and (cursor is None or key > cursor)
+        )
+        page = tuple(_safe_object_key(key) for key in keys[:limit])
+        return ObjectInventoryPage(page, page[-1] if len(keys) > limit else None)
+
 
 def _safe_object_key(object_key: str) -> str:
     if not re.fullmatch(r"v1/[0-9a-f]{32}", object_key):
         raise ObjectStoreBackendError("The private object key is invalid.")
     return object_key
+
+
+def validated_object_key(object_key: str) -> str:
+    """Validate an opaque key without resolving or disclosing it."""
+    return _safe_object_key(object_key)
+
+
+def _inventory_arguments(
+    prefix: str,
+    cursor: str | None,
+    limit: int,
+) -> tuple[str, str | None, int]:
+    if prefix not in {OBJECT_INVENTORY_FULL_PREFIX, OBJECT_KEY_PREFIX}:
+        raise ObjectStoreBackendError("The private object inventory prefix is invalid.")
+    if (
+        not isinstance(limit, int)
+        or isinstance(limit, bool)
+        or not 1 <= limit <= OBJECT_INVENTORY_PAGE_LIMIT
+    ):
+        raise ObjectStoreBackendError("The private object inventory limit is invalid.")
+    if cursor is not None and (not isinstance(cursor, str) or not 1 <= len(cursor) <= 2048):
+        raise ObjectStoreBackendError("The private object inventory cursor is invalid.")
+    return prefix, cursor, limit
 
 
 class FilesystemObjectBackend:
@@ -455,6 +516,51 @@ class FilesystemObjectBackend:
         self.root.mkdir(parents=True, exist_ok=True)
         if not self.root.is_dir():
             raise ObjectStoreBackendError("The local private object store is unavailable.")
+
+    def list_object_keys(
+        self,
+        *,
+        prefix: str = OBJECT_INVENTORY_FULL_PREFIX,
+        cursor: str | None = None,
+        limit: int = OBJECT_INVENTORY_PAGE_LIMIT,
+    ) -> ObjectInventoryPage:
+        prefix, cursor, limit = _inventory_arguments(prefix, cursor, limit)
+        if not self.root.exists():
+            return ObjectInventoryPage(())
+        if self.root.is_symlink() or not self.root.is_dir():
+            raise ObjectStoreBackendError("The private object inventory is unavailable.")
+        keys: list[str] = []
+        pending = [self.root]
+        scanned_entries = 0
+        try:
+            while pending:
+                directory = pending.pop()
+                for entry in directory.iterdir():
+                    scanned_entries += 1
+                    if scanned_entries > MAXIMUM_FILESYSTEM_INVENTORY_ENTRIES:
+                        raise ObjectStoreBackendError(
+                            "The private object inventory is unavailable."
+                        )
+                    relative = entry.relative_to(self.root).as_posix()
+                    if entry.is_symlink():
+                        raise ObjectStoreBackendError(
+                            "The private object inventory is unavailable."
+                        )
+                    if entry.is_dir():
+                        pending.append(entry)
+                        continue
+                    if not entry.is_file():
+                        raise ObjectStoreBackendError(
+                            "The private object inventory is unavailable."
+                        )
+                    if relative.startswith(prefix):
+                        keys.append(_safe_object_key(relative))
+        except OSError as exc:
+            raise ObjectStoreBackendError("The private object inventory is unavailable.") from exc
+        keys.sort()
+        keys = [key for key in keys if cursor is None or key > cursor]
+        page = tuple(_safe_object_key(key) for key in keys[:limit])
+        return ObjectInventoryPage(page, page[-1] if len(keys) > limit else None)
 
 
 class R2ObjectBackend:
@@ -552,6 +658,41 @@ class R2ObjectBackend:
             raise
         except Exception as exc:
             raise ObjectStoreBackendError("The private object store is unavailable.") from exc
+
+    def list_object_keys(
+        self,
+        *,
+        prefix: str = OBJECT_INVENTORY_FULL_PREFIX,
+        cursor: str | None = None,
+        limit: int = OBJECT_INVENTORY_PAGE_LIMIT,
+    ) -> ObjectInventoryPage:
+        prefix, cursor, limit = _inventory_arguments(prefix, cursor, limit)
+        request: dict[str, object] = {
+            "Bucket": self.configuration.bucket,
+            "Prefix": prefix,
+            "MaxKeys": limit,
+        }
+        if cursor is not None:
+            request["ContinuationToken"] = cursor
+        try:
+            response = self._client().list_objects_v2(**request)
+            contents = response.get("Contents", [])
+            if not isinstance(contents, list) or len(contents) > limit:
+                raise ObjectStoreBackendError("The private object inventory is unavailable.")
+            keys = tuple(_safe_object_key(str(item.get("Key", ""))) for item in contents)
+            truncated = response.get("IsTruncated") is True
+            next_cursor = response.get("NextContinuationToken") if truncated else None
+            if truncated and (
+                not isinstance(next_cursor, str)
+                or not 1 <= len(next_cursor) <= 2048
+                or next_cursor == cursor
+            ):
+                raise ObjectStoreBackendError("The private object inventory is unavailable.")
+            return ObjectInventoryPage(keys, next_cursor)
+        except (ObjectStoreConfigurationError, ObjectStoreBackendError):
+            raise
+        except Exception as exc:
+            raise ObjectStoreBackendError("The private object inventory is unavailable.") from exc
 
 
 def stage_object(

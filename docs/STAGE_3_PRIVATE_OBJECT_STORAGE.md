@@ -161,6 +161,17 @@ Perform the following only after the exact PR is reviewed and merged.
      /etc/careertrellis/object-storage-rehearsal.env
    ```
 
+   A successful wrapper import immediately runs the read-only reconciler with
+   those same arguments. For an interrupted or ambiguous import, run it
+   explicitly before retrying:
+
+   ```bash
+   sudo /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT/deploy/scripts/reconcile-sqlite-postgres-import.sh \
+     /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT \
+     /etc/careertrellis/postgres-rehearsal.env \
+     /etc/careertrellis/object-storage-rehearsal.env
+   ```
+
    The reviewed deploy, rollback, and import wrappers share an exclusive
    maintenance lock. Do not manually start either application service while an
    import is running; the importer also rechecks that both are inactive after
@@ -212,6 +223,10 @@ by inference. Remove disposable database/bucket resources only after the
 operator reviews the sanitized reconciliation receipt and explicitly approves
 that cleanup; never apply rehearsal cleanup to the pgBackRest bucket or an
 authoritative data directory.
+
+The root-only command, its read-only PostgreSQL/object behavior, service and
+authority checks, fixed failure boundary, and sanitized receipt are specified
+in `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.
 
 ## Acceptance checklist
 
