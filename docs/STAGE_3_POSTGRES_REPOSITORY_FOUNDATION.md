@@ -263,7 +263,8 @@ not waive the exact-release checks:
    reconciliation receipts produced by the exact reviewed release's root-only
    wrapper. Keep the rehearsal database and bucket until an operator explicitly
    approves cleanup. See
-   `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.
+   `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md` and
+   `STAGE_3_POSTGRES_R2_CUTOVER_REHEARSAL.md`.
 7. Verify the exact final code can roll back safely before data authority
    changes and fails closed against an incompatible post-cutover rollback.
 8. Keep Caddy's access restriction enabled and do not invite another user.

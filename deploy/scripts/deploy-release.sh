@@ -75,7 +75,7 @@ if [[ ! -d ${release_dir} ]]; then
         CAREERTRELLIS_TRUSTED_PROXY_TOKEN= \
         CAREERTRELLIS_DATA_DIR="${test_data}" \
         PYTHONDONTWRITEBYTECODE=1 \
-        ./venv/bin/python -m unittest test_p0_regressions.py test_search_runs.py test_scheduled_search_dispatch.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_analytics.py test_observability.py
+        ./venv/bin/python -m unittest test_p0_regressions.py test_search_runs.py test_scheduled_search_dispatch.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_cutover_rehearsal.py test_analytics.py test_observability.py
         CAREERTRELLIS_ENVIRONMENT=staging \
         CAREERTRELLIS_DATA_DIR="${test_data}/account-erasure" \
         CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=false \
@@ -85,6 +85,7 @@ if [[ ! -d ${release_dir} ]]; then
     chmod 0755 \
         "${temporary_release}/deploy/scripts/bootstrap-erasure-worker-role.sh" \
         "${temporary_release}/deploy/scripts/install-erasure-worker-credential.sh" \
+        "${temporary_release}/deploy/scripts/rehearse-postgres-r2-cutover.sh" \
         "${temporary_release}/deploy/scripts/reconcile-sqlite-postgres-import.sh"
     chown -R root:careertrellis "${temporary_release}"
     chmod -R u=rwX,g=rX,o= "${temporary_release}"

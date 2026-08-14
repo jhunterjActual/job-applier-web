@@ -153,6 +153,8 @@ web, search worker, and erasure worker all to be inactive. They do not enable,
 cancel, repair, or consume an erasure request. This PR does not run a migration,
 import a workspace, start or enable a service, change an environment file, use
 R2/PostgreSQL/WorkOS, or perform an account deletion.
+The disposable wrapper in `STAGE_3_POSTGRES_R2_CUTOVER_REHEARSAL.md` enforces
+the same inactive-worker boundary without changing the worker's enablement.
 
 ## Explicit exclusions
 
@@ -168,6 +170,6 @@ Acceptance requires fixed-response route tests, worker retry/lease/idempotency
 tests, two-owner RLS and broker tests on disposable PostgreSQL, synthetic R2
 deletion tests, role/grant static checks, P0 and compile checks, shell and
 PowerShell parsing, one Alembic head at `20260814_0009`, build
-`20260813.22`, no protected-file changes, and confirmation that the erasure
+`20260813.23`, no protected-file changes, and confirmation that the erasure
 worker, shared cutover, live services, credentials, and external stores remain
 untouched.

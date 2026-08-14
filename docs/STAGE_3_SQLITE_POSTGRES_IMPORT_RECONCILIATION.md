@@ -97,11 +97,13 @@ has reviewed the sanitized receipt. A later permanent import must repeat the
 same no-omission command against its frozen source while the web, search-worker,
 and account-erasure-worker services remain stopped, then retain the receipt with
 backup, restore, RLS, object-integrity, readiness, and owner-flow evidence.
+`STAGE_3_POSTGRES_R2_CUTOVER_REHEARSAL.md` defines the exact-release wrapper
+that enforces target separation and emits the bounded disposable receipt.
 
 This PR does not authorize either run. It does not apply a migration, change a
 database or bucket, edit an environment file, restart a service, move a release
 symlink, mark PostgreSQL/R2 authoritative, expose staging, or invite another
-user. Build strings agree at `20260813.22`; local SQLite behavior is unchanged.
+user. Build strings agree at `20260813.23`; local SQLite behavior is unchanged.
 
 ## Acceptance checklist
 
