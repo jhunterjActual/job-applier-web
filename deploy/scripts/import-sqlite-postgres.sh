@@ -67,6 +67,11 @@ for service in careertrellis-web.service careertrellis-worker.service; do
         exit 1
     fi
 done
+if [[ ! -x /usr/local/sbin/careertrellis-authority ]]; then
+    echo "Hosted authority state is unavailable." >&2
+    exit 1
+fi
+/usr/local/sbin/careertrellis-authority assert-import-allowed
 
 set -a
 # shellcheck disable=SC1090

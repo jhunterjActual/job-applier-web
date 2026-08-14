@@ -49,10 +49,19 @@ fi
 
 target_revision=$(basename "${target_release}")
 
+if [[ ! -x /usr/local/sbin/careertrellis-authority ]]; then
+    echo "Hosted authority state is unavailable." >&2
+    exit 1
+fi
+/usr/local/sbin/careertrellis-authority assert-code-rollback-allowed
+/usr/local/sbin/careertrellis-authority assert-release-startable "${target_release}"
+
 activate_release() {
     local release=$1
     local revision activation_link environment_file
     revision=$(basename "${release}")
+
+    /usr/local/sbin/careertrellis-authority assert-release-startable "${release}" || return 1
 
     for environment_file in \
         /etc/careertrellis/staging.env \
@@ -61,7 +70,7 @@ activate_release() {
         /etc/careertrellis/postgres-worker.env \
         /etc/careertrellis/provider-secrets.env \
         /etc/careertrellis/object-storage.env; do
-        if [[ ! -f ${environment_file} || $(stat -c '%U:%G %a' "${environment_file}") != "root:root 600" ]]; then
+        if [[ ! -f ${environment_file} || -L ${environment_file} || $(stat -c '%U:%G %a' "${environment_file}") != "root:root 600" ]]; then
             echo "Every service runtime environment file must be root:root mode 0600." >&2
             return 1
         fi

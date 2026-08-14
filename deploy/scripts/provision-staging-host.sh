@@ -13,7 +13,7 @@ if [[ -z ${repository_root} || ! -f ${repository_root}/deploy/systemd/careertrel
 fi
 repository_root=$(realpath "${repository_root}")
 
-for command in caddy curl git python3 realpath systemctl tar; do
+for command in caddy curl flock git python3 realpath stat sync systemctl tar; do
     if ! command -v "${command}" >/dev/null 2>&1; then
         echo "Required command is missing: ${command}" >&2
         exit 1
@@ -43,11 +43,17 @@ fi
 
 install -o root -g root -m 0644 "${repository_root}/deploy/systemd/careertrellis-web.service" /etc/systemd/system/careertrellis-web.service
 install -o root -g root -m 0644 "${repository_root}/deploy/systemd/careertrellis-worker.service" /etc/systemd/system/careertrellis-worker.service
+install -d -o root -g root -m 0755 /etc/systemd/system/careertrellis-web.service.d
+install -d -o root -g root -m 0755 /etc/systemd/system/careertrellis-worker.service.d
+install -o root -g root -m 0644 "${repository_root}/deploy/systemd/careertrellis-web.service.d/hosted-authority.conf" /etc/systemd/system/careertrellis-web.service.d/hosted-authority.conf
+install -o root -g root -m 0644 "${repository_root}/deploy/systemd/careertrellis-worker.service.d/hosted-authority.conf" /etc/systemd/system/careertrellis-worker.service.d/hosted-authority.conf
 install -d -o root -g root -m 0755 /etc/systemd/system/caddy.service.d
 install -o root -g root -m 0644 "${repository_root}/deploy/systemd/caddy.service.d/careertrellis-staging.conf" /etc/systemd/system/caddy.service.d/careertrellis-staging.conf
 install -o root -g root -m 0644 "${repository_root}/deploy/caddy/Caddyfile.staging" /etc/caddy/Caddyfile.careertrellis-staging
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/deploy-release.sh" /usr/local/sbin/careertrellis-deploy
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/rollback-release.sh" /usr/local/sbin/careertrellis-rollback
+install -o root -g root -m 0755 "${repository_root}/deploy/scripts/hosted-authority.sh" /usr/local/sbin/careertrellis-authority
+/usr/local/sbin/careertrellis-authority initialize
 
 if [[ ! -e /etc/careertrellis/staging.env ]]; then
     install -o root -g root -m 0600 "${repository_root}/deploy/config/staging-app.environment.example" /etc/careertrellis/staging.env

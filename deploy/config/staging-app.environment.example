@@ -13,6 +13,9 @@ CAREERTRELLIS_IDENTITY_STORE=postgres
 # Required only by the completed PostgreSQL repository-cutover release. This
 # foundation remains an explicit no-activation stage; do not add this setting to
 # the live environment until every repository and rollback gate is reviewed.
+# The host authority marker does not enable this setting; the final release must
+# separately carry the exact reviewed compatibility declaration described in
+# docs/STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md.
 # CAREERTRELLIS_DATA_STORE=postgres
 WORKOS_API_KEY=replace-with-the-staging-workos-api-key
 WORKOS_CLIENT_ID=replace-with-the-staging-workos-client-id

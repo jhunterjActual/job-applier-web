@@ -34,6 +34,15 @@ From the repository checkout:
 sudo bash ./deploy/scripts/provision-staging-host.sh /srv/careertrellis/job-applier-web
 ```
 
+Provisioning initializes the non-secret durable authority state to
+`sqlite-pre-cutover` only when the entire authority directory is absent on a
+virgin host and installs persistent systemd pre-start guards. A rerun preserves
+a valid marker but fails closed if the directory exists without one; it never
+recreates missing authority state. It does not start either application service
+or change data authority. See `STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md`; existing
+staging hosts must rerun this no-start provisioning step before deploying that
+boundary.
+
 Generate the origin token without saving it in shell history:
 
 ```bash
@@ -69,7 +78,7 @@ sudo CAREERTRELLIS_SOURCE_DIR=/srv/careertrellis/job-applier-web \
   /usr/local/sbin/careertrellis-deploy 0123456789abcdef0123456789abcdef01234567
 ```
 
-The deployment creates an immutable release-specific virtual environment, installs the hash-locked dependencies and Chromium, runs every regression suite and syntax check, atomically changes the `current` symlink, restarts the supervised web and worker services, and rolls back the code symlink automatically if readiness fails. It does not fetch an unreviewed branch or delete older releases.
+The deployment creates an immutable release-specific virtual environment, installs the hash-locked dependencies and Chromium, runs every regression suite and syntax check, installs the durable hosted-authority guard, atomically changes the `current` symlink, and restarts the supervised web and worker services. Before data-authority cutover it rolls back the code symlink automatically if readiness fails. After PostgreSQL/R2 is marked authoritative it leaves failed services stopped for a reviewed forward correction. It does not fetch an unreviewed branch or delete older releases.
 
 The web and durable search worker use separate Unix accounts. The worker's
 private runtime directory is `/var/lib/careertrellis/worker`; the reviewed
@@ -93,4 +102,10 @@ Roll back to the recorded previous code release:
 sudo /usr/local/sbin/careertrellis-rollback
 ```
 
-Or name an already-installed exact release SHA. Stage 1 rollback changes application code only. It does not roll back SQLite data; only deploy schema-compatible code until the later Alembic expand/backfill/contract process is in place.
+Or name an already-installed exact release SHA. While the durable authority
+state is `sqlite-pre-cutover`, Stage 1 rollback changes application code only;
+it does not roll back SQLite data, so deploy only schema-compatible code. Once
+PostgreSQL/R2 is marked authoritative, the helper rejects manual and automatic
+code rollback and requires a reviewed forward correction. See
+`STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md` for the one-way marker, restart guard,
+and final-cutover prerequisites.
