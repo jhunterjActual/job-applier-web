@@ -143,6 +143,8 @@ from verification_repository import (
 from job_retention_repository import (
     CleanupBatchTooLarge,
     CleanupPreviewChanged,
+    DEPENDENT_DELETE_ACTION,
+    DependentCleanupUnavailable,
     JobRetentionNotFound,
     JobRetentionProtected,
     runtime_job_retention_repository,
@@ -509,7 +511,7 @@ class ManualJobSaveRequest(BaseModel):
     compensation: str = Field(default="", max_length=160)
 
 class CleanupRequest(BaseModel):
-    action: Literal["archive", "delete", "restore"]
+    action: Literal["archive", "delete", "restore", "delete_with_dependents"]
     preview_token: str = Field(
         min_length=64,
         max_length=64,
@@ -1388,18 +1390,33 @@ def cleanup_jobs(req: CleanupRequest) -> dict:
             status_code=409,
             detail="The cleanup selection is no longer safe to apply. Refresh the preview before continuing.",
         ) from exc
+    except DependentCleanupUnavailable as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Dependent bulk deletion is unavailable in standalone mode.",
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail="CareerTrellis could not complete the cleanup request.",
         ) from exc
 
-    verbs = {"archive": "archived", "delete": "permanently deleted", "restore": "restored"}
+    if req.action == DEPENDENT_DELETE_ACTION:
+        message = (
+            f"{affected} job(s) and their saved application work permanently deleted."
+        )
+    else:
+        verbs = {
+            "archive": "archived",
+            "delete": "permanently deleted",
+            "restore": "restored",
+        }
+        message = f"{affected} untouched job(s) {verbs[req.action]}."
     return {
         "success": True,
         "action": req.action,
         "affected": affected,
-        "message": f"{affected} untouched job(s) {verbs[req.action]}.",
+        "message": message,
     }
 
 

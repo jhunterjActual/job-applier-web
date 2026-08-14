@@ -220,6 +220,7 @@ const closeCleanupModalBtns = [
 ].filter(Boolean);
 const archiveUntouchedBtn = document.getElementById("archive-untouched-btn");
 const deleteUntouchedBtn = document.getElementById("delete-untouched-btn");
+const deleteDependentBtn = document.getElementById("delete-dependent-btn");
 const restoreArchivedBtn = document.getElementById("restore-archived-btn");
 const suppressionCount = document.getElementById("suppression-count");
 const suppressionList = document.getElementById("suppression-list");
@@ -381,6 +382,7 @@ document.addEventListener("DOMContentLoaded", () => {
     closeCleanupModalBtns.forEach(btn => btn.addEventListener("click", hideCleanupModal));
     bindEvent(archiveUntouchedBtn, "click", () => runCleanupAction("archive"));
     bindEvent(deleteUntouchedBtn, "click", () => runCleanupAction("delete"));
+    bindEvent(deleteDependentBtn, "click", () => runCleanupAction("delete_with_dependents"));
     bindEvent(restoreArchivedBtn, "click", () => runCleanupAction("restore"));
     bindEvent(clearAllSuppressionsBtn, "click", clearAllJobSuppressions);
     bindEvent(openSourceDiagnosticsBtn, "click", showSourceDiagnostics);
@@ -1231,12 +1233,21 @@ async function showCleanupPreview() {
         document.getElementById("cleanup-delete-count").innerText = result.actions.delete.count;
         document.getElementById("cleanup-protected-count").innerText = result.protected_count;
         document.getElementById("cleanup-restore-count").innerText = result.actions.restore.count;
+        const dependentDelete = result.actions.delete_with_dependents;
+        const dependentDeleteAvailable = dependentDelete?.available === true;
+        const dependentDeleteStat = document.getElementById("cleanup-dependent-delete-stat");
+        dependentDeleteStat.hidden = !dependentDeleteAvailable;
+        deleteDependentBtn.hidden = !dependentDeleteAvailable;
+        if (dependentDeleteAvailable) {
+            document.getElementById("cleanup-dependent-delete-count").innerText = dependentDelete.count;
+        }
 
         // Keep action buttons inert while the modal opens. This prevents the
         // click that opened the preview from landing on a newly overlaid action.
         cleanupActionsReady = false;
         archiveUntouchedBtn.disabled = true;
         deleteUntouchedBtn.disabled = true;
+        deleteDependentBtn.disabled = true;
         restoreArchivedBtn.disabled = true;
 
         const sampleList = document.getElementById("cleanup-sample-list");
@@ -1255,6 +1266,7 @@ async function showCleanupPreview() {
             cleanupActionsReady = true;
             archiveUntouchedBtn.disabled = result.actions.archive.count === 0;
             deleteUntouchedBtn.disabled = result.actions.delete.count === 0;
+            deleteDependentBtn.disabled = !dependentDeleteAvailable || dependentDelete.count === 0;
             restoreArchivedBtn.disabled = result.actions.restore.count === 0;
         }, 500);
     } catch (error) {
@@ -1311,9 +1323,18 @@ async function runCleanupAction(action) {
     const preview = cleanupPreview.actions[action];
     if (!preview || preview.count === 0) return;
 
-    const labels = { archive: "archive", delete: "permanently delete", restore: "restore" };
-    if (!confirm(`This will ${labels[action]} exactly ${preview.count} untouched job(s). Continue?`)) return;
-    if (action === "delete" && !confirm("Final confirmation: permanent deletion cannot be undone. Delete the previewed records?")) return;
+    const labels = {
+        archive: "archive",
+        delete: "permanently delete",
+        restore: "restore",
+        delete_with_dependents: "permanently delete"
+    };
+    const scope = action === "delete_with_dependents"
+        ? "job(s) with saved application work"
+        : "untouched job(s)";
+    if (!confirm(`This will ${labels[action]} exactly ${preview.count} ${scope}. Continue?`)) return;
+    if (action === "delete_with_dependents" && !confirm("This also deletes application records, lifecycle history, engagements, and unshared generated materials for the previewed jobs. Continue?")) return;
+    if (action.startsWith("delete") && !confirm("Final confirmation: permanent deletion cannot be undone. Delete the previewed records?")) return;
 
     hideCleanupModal();
     showLoading(`${labels[action][0].toUpperCase()}${labels[action].slice(1)} Jobs...`, "Applying the previously previewed candidate set in one transaction.");
@@ -1328,7 +1349,7 @@ async function runCleanupAction(action) {
 
         hideLoading();
         cleanupPreview = null;
-        logActivity("Job Cleanup Complete", result.message, action === "delete" ? "warning" : "success");
+        logActivity("Job Cleanup Complete", result.message, action.startsWith("delete") ? "warning" : "success");
         await loadJobs();
         await loadLogs();
         await updateDashboardStats();
