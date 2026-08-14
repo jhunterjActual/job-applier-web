@@ -114,6 +114,10 @@ generated-materials directory.
 ## Reviewed-release rehearsal
 
 Perform the following only after the exact PR is reviewed and merged.
+`STAGE_3_POSTGRES_R2_CUTOVER_REHEARSAL.md` supplies the bounded wrapper for the
+preflight, no-omission import, independent reconciliation, target-separation
+checks, and sanitized receipt described below; backup and restore checks remain
+separate operator steps.
 
 1. Fetch that exact 40-character merge commit into the root-owned application
    checkout. Prepare the immutable release without activating it:

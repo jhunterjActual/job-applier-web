@@ -118,9 +118,10 @@ an absent marker must not be treated as permission to start.
 
 This bounded authority PR added only the host-local marker helper, persistent
 systemd guards, deploy/rollback/import enforcement, synthetic tests,
-documentation, and build metadata. The later import-reconciliation slice adds a
-read-only command under the same pre-cutover assertion; it does not weaken or
-rewrite this boundary. Those two slices did not:
+documentation, and build metadata. The later import-reconciliation and
+disposable-rehearsal wrappers run under the same pre-cutover assertion; neither
+weakens or rewrites this boundary. See
+`STAGE_3_POSTGRES_R2_CUTOVER_REHEARSAL.md`. Those slices did not:
 
 - flip `HOSTED_REPOSITORY_CUTOVER_COMPLETE` or add the compatibility file;
 - activate a release, restart a service, import or modify any database/object,
@@ -137,7 +138,7 @@ service. Its boundary is documented in
 
 Acceptance for the combined tree requires shell syntax, marker transition/fixed-
 error and import-reconciliation tests, the P0 suite, compile checks, dependency-
-lock checks, a single `20260814_0009` Alembic head, build `20260813.22`, no
+lock checks, a single `20260814_0009` Alembic head, build `20260813.23`, no
 protected-file changes, and confirmation that the cutover flag and live/external
 state remain untouched. The reconciliation boundary is documented in
 `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.
