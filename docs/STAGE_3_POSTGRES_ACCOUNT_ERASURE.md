@@ -98,12 +98,15 @@ search worker:
   lease, object, WorkOS, credential, or exception data.
 
 Provisioning installs the unit and root-owned mode-`0600` example files but
-does not enable or start it. This release requires
+does not enable or start it. The installed template keeps
 `CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=false`; a later reviewed hosted
-activation must deliberately change that flag, select
+activation must deliberately change that flag to the exact value `true`, select
 `CAREERTRELLIS_DATA_STORE=postgres`, satisfy the one-way authority/cutover
-guards, and enable the unit. Web UI or an API request cannot activate the
-worker.
+guards, and enable and start the unit as an explicit operator action. Web UI,
+an API request, deployment, and rollback cannot perform that initial
+activation. After activation, forward deployment and rollback accept the exact
+values `true` or `false`; they restart the erasure worker only when it was
+already active, so an inactive worker is never started implicitly.
 
 ## Role, migration, and grant order
 
@@ -140,7 +143,10 @@ migration rather than downgrading a shared database. Before the erasure worker
 has ever been enabled, code rollback may target a pre-erasure release while
 hosted authority remains `sqlite-pre-cutover`. Once the worker is active, deploy
 and rollback refuse a target without the erasure entrypoint and unit so durable
-work is not stranded under incompatible code.
+work is not stranded under incompatible code. They also validate that the
+persisted enablement value is exactly `true` or `false` and restart an active
+worker against the selected compatible release without changing its operator-
+controlled activation state.
 
 Import, reconciliation, and the one-way hosted-authority transition require the
 web, search worker, and erasure worker all to be inactive. They do not enable,
@@ -162,6 +168,6 @@ Acceptance requires fixed-response route tests, worker retry/lease/idempotency
 tests, two-owner RLS and broker tests on disposable PostgreSQL, synthetic R2
 deletion tests, role/grant static checks, P0 and compile checks, shell and
 PowerShell parsing, one Alembic head at `20260814_0009`, build
-`20260813.19`, no protected-file changes, and confirmation that the erasure
+`20260813.21`, no protected-file changes, and confirmation that the erasure
 worker, shared cutover, live services, credentials, and external stores remain
 untouched.

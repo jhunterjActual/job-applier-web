@@ -141,7 +141,7 @@ validate_release() {
        [[ ${erasure_data_store_count} -gt 1 ]] || \
        [[ ${erasure_data_store_count} -eq 1 && $(grep -Fxc "CAREERTRELLIS_DATA_STORE=postgres" /etc/careertrellis/account-erasure-worker.env) -ne 1 ]] || \
        [[ $(grep -Ec '^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=' /etc/careertrellis/account-erasure-worker.env) -ne 1 ]] || \
-       [[ $(grep -Fxc "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=false" /etc/careertrellis/account-erasure-worker.env) -ne 1 ]] || \
+       [[ $(grep -Ec '^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=(true|false)$' /etc/careertrellis/account-erasure-worker.env) -ne 1 ]] || \
        [[ $(grep -Ec '^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_POLL_SECONDS=' /etc/careertrellis/account-erasure-worker.env) -ne 1 ]] || \
        [[ ! ${erasure_poll_seconds} =~ ^(0|[1-9][0-9]{0,2})$ || ${erasure_poll_seconds} -lt 5 || ${erasure_poll_seconds} -gt 300 ]] || \
        [[ $(grep -Ec '^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_BATCH_SIZE=' /etc/careertrellis/account-erasure-worker.env) -ne 1 ]] || \
@@ -150,7 +150,7 @@ validate_release() {
        [[ $(grep -Ec '^CAREERTRELLIS_DATABASE_URL=postgresql\+psycopg://careertrellis_erasure_worker:' /etc/careertrellis/postgres-erasure-worker.env) -ne 1 ]] || \
        [[ $(grep -Ec '^CAREERTRELLIS_OBJECT_STORE=' /etc/careertrellis/account-erasure-object-storage.env) -ne 1 ]] || \
        [[ $(grep -Fxc "CAREERTRELLIS_OBJECT_STORE=r2_encrypted" /etc/careertrellis/account-erasure-object-storage.env) -ne 1 ]]; then
-        echo "The account-erasure worker must retain its reviewed disabled settings, dedicated database, and object-store selections." >&2
+        echo "The account-erasure worker must retain its reviewed exact enablement flag, dedicated database, and object-store selections." >&2
         return 1
     fi
     for environment_file in \
