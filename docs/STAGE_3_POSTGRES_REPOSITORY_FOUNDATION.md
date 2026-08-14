@@ -144,6 +144,15 @@ best-effort deletion afterward and retains tombstones for retry. Local behavior
 is unchanged. See
 `STAGE_3_POSTGRES_DEPENDENT_JOB_DELETION.md`.
 
+Selected shared mode now also exposes an explicit dependent bulk-cleanup
+action. It is limited to a separately previewed, bounded set of matched or
+archived-from-matched jobs with saved application work. Its token binds the
+job, dependent-row, target-object, and survivor-reference graph; the apply
+transaction locks and revalidates that graph before reusing the single-job
+suppression, exclusive tombstone, cascade, and post-commit reconciliation
+contract. Existing untouched cleanup and all local SQLite behavior remain
+unchanged. See `STAGE_3_POSTGRES_DEPENDENT_BULK_CLEANUP.md`.
+
 The shared backup/restore policy now fails both encrypted-workspace endpoints
 closed when PostgreSQL is the selected data store. The HTTP boundary rejects a
 restore after normal shared authentication but before multipart parsing, and
@@ -163,8 +172,6 @@ contract is in `STAGE_3_POSTGRES_USER_DATA_EXPORT.md`.
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
-- bulk cleanup of jobs with applications, lifecycle history, generated
-  materials, stored objects, or other protected dependent records;
 - any general-purpose background queue beyond the bounded search-run and
   scheduled saved-search dispatch brokers;
 - any application operation outside the converted lifecycle, engagement,

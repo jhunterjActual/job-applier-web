@@ -90,11 +90,14 @@ This slice does not convert or authorize:
   public signup, or additional users.
 
 The later single-job dependent-deletion slice adds that bounded cross-store
-contract without expanding bulk cleanup: it atomically records suppression,
+contract: it atomically records suppression,
 tombstones object metadata exclusive to the deleted application, preserves any
 same-owner survivor reference, and removes PostgreSQL dependents, then invokes
 the existing reconciler only after commit. See
-`STAGE_3_POSTGRES_DEPENDENT_JOB_DELETION.md`. Account deletion remains a
+`STAGE_3_POSTGRES_DEPENDENT_JOB_DELETION.md`. The still later explicit
+PostgreSQL-only dependent cleanup action reuses that atomic contract without
+widening the original untouched action or changing local SQLite behavior; see
+`STAGE_3_POSTGRES_DEPENDENT_BULK_CLEANUP.md`. Account deletion remains a
 separate privacy workflow.
 
 ## Verification gates

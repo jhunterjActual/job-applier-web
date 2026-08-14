@@ -22,8 +22,11 @@ from provider_secrets import current_owner_user_id
 
 
 MAX_RETENTION_BATCH = 500
+MAX_RETENTION_DEPENDENT_ITEMS = 5000
+DEPENDENT_DELETE_ACTION = "delete_with_dependents"
 _PREVIEW_HMAC_KEY = secrets.token_bytes(32)
-_ACTIONS = frozenset({"archive", "delete", "restore"})
+_LOCAL_ACTIONS = frozenset({"archive", "delete", "restore"})
+_ACTIONS = frozenset({*_LOCAL_ACTIONS, DEPENDENT_DELETE_ACTION})
 
 _ACTIVE_SQL = """
     jobs.status = 'matched'
@@ -78,6 +81,29 @@ _POSTGRES_ARCHIVED_SQL = """
         WHERE e.job_id = j.id AND e.owner_user_id = :owner_user_id
     )
 """
+_POSTGRES_DEPENDENT_SQL = """
+    (
+        j.status = 'matched'
+        OR (
+            j.status = 'archived'
+            AND COALESCE(j.archived_from_status, 'matched') = 'matched'
+        )
+    )
+    AND (
+        EXISTS (
+            SELECT 1 FROM careertrellis.applications a
+            WHERE a.job_id = j.id AND a.owner_user_id = :owner_user_id
+        )
+        OR EXISTS (
+            SELECT 1 FROM careertrellis.application_status_history h
+            WHERE h.job_id = j.id AND h.owner_user_id = :owner_user_id
+        )
+        OR EXISTS (
+            SELECT 1 FROM careertrellis.application_engagements e
+            WHERE e.job_id = j.id AND e.owner_user_id = :owner_user_id
+        )
+    )
+"""
 
 
 class JobRetentionNotFound(LookupError):
@@ -94,6 +120,10 @@ class CleanupPreviewChanged(ValueError):
 
 class CleanupBatchTooLarge(ValueError):
     """Raised before an unbounded cleanup mutation can acquire row locks."""
+
+
+class DependentCleanupUnavailable(ValueError):
+    """Raised when standalone mode is asked to delete protected work in bulk."""
 
 
 class JobRetentionRepository(Protocol):
@@ -118,6 +148,13 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _stable_list(value: Any) -> list[Any]:
+    """Return JSON-stable scalar identities without exposing them in responses."""
+    if value is None:
+        return []
+    return [item if isinstance(item, (int, float, bool)) else str(item) for item in value]
+
+
 def _snapshot_rows(action: str, rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     snapshot = []
     for row in rows:
@@ -126,8 +163,18 @@ def _snapshot_rows(action: str, rows: list[Mapping[str, Any]]) -> list[dict[str,
             "status": str(row["status"]),
             "archived_from_status": row["archived_from_status"],
         }
-        if action == "delete":
+        if action in {"delete", DEPENDENT_DELETE_ACTION}:
             item["url_fingerprint"] = job_url_fingerprint(str(row["url"]))
+        if action == DEPENDENT_DELETE_ACTION:
+            for key in (
+                "application_ids",
+                "history_ids",
+                "engagement_ids",
+                "application_object_refs",
+                "object_ids",
+                "survivor_object_refs",
+            ):
+                item[key] = _stable_list(row[key])
         snapshot.append(item)
     return snapshot
 
@@ -168,6 +215,27 @@ def _require_bounded(rows: list[Mapping[str, Any]]) -> None:
         )
 
 
+def _require_dependent_work_bounded(rows: list[Mapping[str, Any]]) -> None:
+    row_items = sum(
+        len(row[key] or ())
+        for row in rows
+        for key in ("application_ids", "history_ids", "engagement_ids")
+    )
+    object_refs = sum(
+        1
+        for row in rows
+        for key in ("application_object_refs", "survivor_object_refs")
+        for encoded in (row[key] or ())
+        for object_id in str(encoded).split(":")[1:]
+        if object_id
+    )
+    total = row_items + object_refs
+    if total > MAX_RETENTION_DEPENDENT_ITEMS:
+        raise CleanupBatchTooLarge(
+            "The dependent cleanup contains too much saved work for one transaction."
+        )
+
+
 def _sqlite_where(action: str) -> str:
     if action == "archive":
         return _ACTIVE_SQL
@@ -181,6 +249,8 @@ def _postgres_where(action: str) -> str:
         return _POSTGRES_ACTIVE_SQL
     if action == "restore":
         return _POSTGRES_ARCHIVED_SQL
+    if action == DEPENDENT_DELETE_ACTION:
+        return _POSTGRES_DEPENDENT_SQL
     return f"({_POSTGRES_ACTIVE_SQL}) OR ({_POSTGRES_ARCHIVED_SQL})"
 
 
@@ -241,11 +311,22 @@ class SQLiteJobRetentionRepository:
             return {
                 "definition": "Matched jobs with no application record or related progress.",
                 "actions": {
-                    action: {
-                        "count": action_counts[action],
-                        "preview_token": _preview_token(self._MODE_OWNER, action, rows),
-                    }
-                    for action, rows in action_rows.items()
+                    **{
+                        action: {
+                            "count": action_counts[action],
+                            "preview_token": _preview_token(
+                                self._MODE_OWNER, action, rows
+                            ),
+                        }
+                        for action, rows in action_rows.items()
+                    },
+                    DEPENDENT_DELETE_ACTION: {
+                        "available": False,
+                        "count": 0,
+                        "preview_token": _preview_token(
+                            self._MODE_OWNER, DEPENDENT_DELETE_ACTION, []
+                        ),
+                    },
                 },
                 "protected_count": total - action_counts["delete"],
                 "sample": [dict(row) for row in sample],
@@ -255,6 +336,10 @@ class SQLiteJobRetentionRepository:
 
     def apply_cleanup(self, action: str, preview_token: str) -> int:
         safe_action = _action(action)
+        if safe_action not in _LOCAL_ACTIONS:
+            raise DependentCleanupUnavailable(
+                "Dependent bulk deletion is unavailable in standalone mode."
+            )
         connection = self._connection_factory()
         try:
             # Bound the set before SQLite's database-wide write reservation,
@@ -356,6 +441,8 @@ class PostgreSQLJobRetentionRepository:
         self._mode_owner = f"postgres:{owner_user_id}"
 
     def _candidate_rows(self, connection: Any, action: str) -> list[Mapping[str, Any]]:
+        if action == DEPENDENT_DELETE_ACTION:
+            return self._dependent_candidate_rows(connection)
         return connection.execute(
             text(
                 f"""
@@ -364,6 +451,97 @@ class PostgreSQLJobRetentionRepository:
                 FROM careertrellis.jobs j
                 WHERE j.owner_user_id = :owner_user_id
                   AND ({_postgres_where(action)})
+                ORDER BY j.id
+                LIMIT {MAX_RETENTION_BATCH + 1}
+                """
+            ),
+            {"owner_user_id": self._owner_user_id},
+        ).mappings().all()
+
+    def _dependent_candidate_rows(self, connection: Any) -> list[Mapping[str, Any]]:
+        """Snapshot the exact protected graph used to authorize a bulk deletion."""
+        return connection.execute(
+            text(
+                f"""
+                SELECT j.id, j.status, j.archived_from_status, j.url,
+                       j.company, j.title,
+                       ARRAY(
+                           SELECT a.id FROM careertrellis.applications a
+                           WHERE a.owner_user_id = :owner_user_id
+                             AND a.job_id = j.id
+                           ORDER BY a.id
+                           LIMIT {MAX_RETENTION_DEPENDENT_ITEMS + 1}
+                       ) AS application_ids,
+                       ARRAY(
+                           SELECT h.id FROM careertrellis.application_status_history h
+                           WHERE h.owner_user_id = :owner_user_id
+                             AND h.job_id = j.id
+                           ORDER BY h.id
+                           LIMIT {MAX_RETENTION_DEPENDENT_ITEMS + 1}
+                       ) AS history_ids,
+                       ARRAY(
+                           SELECT e.id FROM careertrellis.application_engagements e
+                           WHERE e.owner_user_id = :owner_user_id
+                             AND e.job_id = j.id
+                           ORDER BY e.id
+                           LIMIT {MAX_RETENTION_DEPENDENT_ITEMS + 1}
+                       ) AS engagement_ids,
+                       ARRAY(
+                           SELECT pg_catalog.concat_ws(
+                               ':', a.id::text,
+                               COALESCE(a.tailored_resume_object_id::text, ''),
+                               COALESCE(a.cover_letter_object_id::text, '')
+                           )
+                           FROM careertrellis.applications a
+                           WHERE a.owner_user_id = :owner_user_id
+                             AND a.job_id = j.id
+                           ORDER BY a.id
+                           LIMIT {MAX_RETENTION_DEPENDENT_ITEMS + 1}
+                       ) AS application_object_refs,
+                       ARRAY(
+                           SELECT DISTINCT object_id
+                           FROM careertrellis.applications target
+                           CROSS JOIN LATERAL pg_catalog.unnest(ARRAY[
+                               target.tailored_resume_object_id,
+                               target.cover_letter_object_id
+                           ]) AS object_ref(object_id)
+                           WHERE target.owner_user_id = :owner_user_id
+                             AND target.job_id = j.id
+                             AND object_id IS NOT NULL
+                           ORDER BY object_id
+                           LIMIT {MAX_RETENTION_DEPENDENT_ITEMS + 1}
+                       ) AS object_ids,
+                       ARRAY(
+                           SELECT pg_catalog.concat_ws(
+                               ':', survivor.id::text,
+                               COALESCE(survivor.tailored_resume_object_id::text, ''),
+                               COALESCE(survivor.cover_letter_object_id::text, '')
+                           )
+                           FROM careertrellis.applications survivor
+                           WHERE survivor.owner_user_id = :owner_user_id
+                             AND survivor.job_id <> j.id
+                             AND EXISTS (
+                                 SELECT 1
+                                 FROM careertrellis.applications target
+                                 WHERE target.owner_user_id = :owner_user_id
+                                   AND target.job_id = j.id
+                                   AND (
+                                       survivor.tailored_resume_object_id IN (
+                                           target.tailored_resume_object_id,
+                                           target.cover_letter_object_id
+                                       )
+                                       OR survivor.cover_letter_object_id IN (
+                                           target.tailored_resume_object_id,
+                                           target.cover_letter_object_id
+                                       )
+                                   )
+                           )
+                           ORDER BY survivor.id
+                           LIMIT {MAX_RETENTION_DEPENDENT_ITEMS + 1}
+                       ) AS survivor_object_refs
+                FROM careertrellis.jobs j
+                WHERE j.owner_user_id = :owner_user_id
+                  AND ({_POSTGRES_DEPENDENT_SQL})
                 ORDER BY j.id
                 LIMIT {MAX_RETENTION_BATCH + 1}
                 """
@@ -421,15 +599,178 @@ class PostgreSQLJobRetentionRepository:
             {"owner_user_id": self._owner_user_id, **values},
         )
 
+    def _lock_batch_deletion_graph(
+        self,
+        connection: Any,
+        job_ids: list[int],
+    ) -> list[Any]:
+        """Lock applications, survivor references, then object metadata."""
+        if not job_ids:
+            return []
+        parameters = {"owner_user_id": self._owner_user_id, "job_ids": job_ids}
+        applications = connection.execute(
+            text(
+                """
+                SELECT id, job_id, tailored_resume_object_id,
+                       cover_letter_object_id
+                FROM careertrellis.applications
+                WHERE owner_user_id = :owner_user_id
+                  AND job_id = ANY(CAST(:job_ids AS BIGINT[]))
+                ORDER BY job_id, id
+                FOR UPDATE
+                """
+            ),
+            parameters,
+        ).mappings().all()
+        object_ids = list(dict.fromkeys(
+            object_id
+            for application in applications
+            for object_id in (
+                application["tailored_resume_object_id"],
+                application["cover_letter_object_id"],
+            )
+            if object_id is not None
+        ))
+        if not object_ids:
+            return []
+        object_ids.sort(key=str)
+        graph_parameters = {**parameters, "object_ids": object_ids}
+        survivors = connection.execute(
+            text(
+                """
+                SELECT id, tailored_resume_object_id, cover_letter_object_id
+                FROM careertrellis.applications
+                WHERE owner_user_id = :owner_user_id
+                  AND NOT (job_id = ANY(CAST(:job_ids AS BIGINT[])))
+                  AND (
+                      tailored_resume_object_id = ANY(CAST(:object_ids AS uuid[]))
+                      OR cover_letter_object_id = ANY(CAST(:object_ids AS uuid[]))
+                  )
+                ORDER BY id
+                FOR UPDATE
+                """
+            ),
+            graph_parameters,
+        ).mappings().all()
+        shared_object_ids = {
+            object_id
+            for row in survivors
+            for object_id in (
+                row["tailored_resume_object_id"],
+                row["cover_letter_object_id"],
+            )
+            if object_id in object_ids
+        }
+        locked_objects = connection.execute(
+            text(
+                """
+                SELECT id FROM careertrellis.stored_objects
+                WHERE owner_user_id = :owner_user_id
+                  AND id = ANY(CAST(:object_ids AS uuid[]))
+                ORDER BY id
+                FOR UPDATE
+                """
+            ),
+            graph_parameters,
+        ).scalars().all()
+        if {str(item) for item in locked_objects} != {str(item) for item in object_ids}:
+            raise RuntimeError("Generated-material metadata is unavailable.")
+        return [
+            object_id for object_id in object_ids if object_id not in shared_object_ids
+        ]
+
+    def _delete_locked_rows(
+        self,
+        connection: Any,
+        rows: list[Mapping[str, Any]],
+        *,
+        exclusive_object_ids: list[Any],
+        deletion_source: str,
+        single_job_id: int | None = None,
+    ) -> bool:
+        """Atomically suppress, tombstone, and delete an already locked graph."""
+        now = _utc_now()
+        for row in rows:
+            self._upsert_suppression(
+                connection,
+                row,
+                deleted_at=now,
+                deletion_source=deletion_source,
+            )
+        if exclusive_object_ids:
+            tombstoned = connection.execute(
+                text(
+                    """
+                    UPDATE careertrellis.stored_objects
+                    SET deleted_at = CURRENT_TIMESTAMP
+                    WHERE owner_user_id = :owner_user_id
+                      AND id = ANY(CAST(:object_ids AS uuid[]))
+                    """
+                ),
+                {
+                    "owner_user_id": self._owner_user_id,
+                    "object_ids": exclusive_object_ids,
+                },
+            ).rowcount
+            if tombstoned != len(exclusive_object_ids):
+                raise RuntimeError("Generated-material metadata is unavailable.")
+        if single_job_id is not None:
+            cursor = connection.execute(
+                text(
+                    "DELETE FROM careertrellis.jobs "
+                    "WHERE id = :job_id AND owner_user_id = :owner_user_id"
+                ),
+                {"job_id": single_job_id, "owner_user_id": self._owner_user_id},
+            )
+        else:
+            cursor = connection.execute(
+                text(
+                    """
+                    DELETE FROM careertrellis.jobs
+                    WHERE owner_user_id = :owner_user_id
+                      AND id = ANY(CAST(:job_ids AS BIGINT[]))
+                    """
+                ),
+                {
+                    "owner_user_id": self._owner_user_id,
+                    "job_ids": [int(row["id"]) for row in rows],
+                },
+            )
+        if single_job_id is not None and cursor.rowcount != 1:
+            raise JobRetentionNotFound("Job not found.")
+        if single_job_id is None and cursor.rowcount != len(rows):
+            raise CleanupPreviewChanged("The job list changed during cleanup.")
+        return bool(exclusive_object_ids)
+
+    def _reconcile_deleted_objects(self) -> None:
+        """Start ordinary grace-preserving blob reconciliation after commit only."""
+        try:
+            PostgreSQLGeneratedMaterialRepository(
+                self._owner_user_id,
+                engine=self._engine,
+            ).reconcile_deleted_objects()
+        except Exception:
+            pass
+
     def cleanup_preview(self) -> dict[str, Any]:
         with tenant_transaction(self._engine, self._owner_user_id) as connection:
             action_rows = {
                 action: self._candidate_rows(connection, action)
-                for action in ("archive", "delete", "restore")
+                for action in (
+                    "archive",
+                    "delete",
+                    "restore",
+                    DEPENDENT_DELETE_ACTION,
+                )
             }
             action_counts = {
                 action: self._candidate_count(connection, action)
-                for action in ("archive", "delete", "restore")
+                for action in (
+                    "archive",
+                    "delete",
+                    "restore",
+                    DEPENDENT_DELETE_ACTION,
+                )
             }
             total = int(connection.scalar(text(
                 "SELECT COUNT(*) FROM careertrellis.jobs "
@@ -451,6 +792,11 @@ class PostgreSQLJobRetentionRepository:
                 "definition": "Matched jobs with no application record or related progress.",
                 "actions": {
                     action: {
+                        **(
+                            {"available": True}
+                            if action == DEPENDENT_DELETE_ACTION
+                            else {}
+                        ),
                         "count": action_counts[action],
                         "preview_token": _preview_token(self._mode_owner, action, rows),
                     }
@@ -462,10 +808,14 @@ class PostgreSQLJobRetentionRepository:
 
     def apply_cleanup(self, action: str, preview_token: str) -> int:
         safe_action = _action(action)
+        has_material_objects = False
+        affected = 0
         with tenant_transaction(self._engine, self._owner_user_id) as connection:
             self._set_write_timeouts(connection)
             preliminary = self._candidate_rows(connection, safe_action)
             _require_bounded(preliminary)
+            if safe_action == DEPENDENT_DELETE_ACTION:
+                _require_dependent_work_bounded(preliminary)
             acquire_owner_job_catalog_lock(connection, self._owner_user_id)
             ids = [int(row["id"]) for row in preliminary]
             if ids:
@@ -480,8 +830,15 @@ class PostgreSQLJobRetentionRepository:
                     ),
                     {"owner_user_id": self._owner_user_id, "job_ids": ids},
                 ).all()
+            exclusive_object_ids = []
+            if safe_action == DEPENDENT_DELETE_ACTION:
+                exclusive_object_ids = self._lock_batch_deletion_graph(
+                    connection, ids
+                )
             rows = self._candidate_rows(connection, safe_action)
             _require_bounded(rows)
+            if safe_action == DEPENDENT_DELETE_ACTION:
+                _require_dependent_work_bounded(rows)
             if [int(row["id"]) for row in rows] != ids:
                 raise CleanupPreviewChanged(
                     "The job list changed after preview. Refresh the preview before continuing."
@@ -490,57 +847,69 @@ class PostgreSQLJobRetentionRepository:
                 self._mode_owner, safe_action, rows, preview_token
             )
             if not rows:
-                return 0
-            ids = [int(row["id"]) for row in rows]
-            parameters = {"owner_user_id": self._owner_user_id, "job_ids": ids}
-            now = _utc_now()
-            if safe_action == "archive":
-                cursor = connection.execute(
-                    text(
-                        """
-                        UPDATE careertrellis.jobs
-                        SET archived_from_status = status, status = 'archived',
-                            archived_at = :now
-                        WHERE owner_user_id = :owner_user_id
-                          AND id = ANY(CAST(:job_ids AS BIGINT[]))
-                        """
-                    ),
-                    {**parameters, "now": now},
+                affected = 0
+            elif safe_action == DEPENDENT_DELETE_ACTION:
+                has_material_objects = self._delete_locked_rows(
+                    connection,
+                    rows,
+                    exclusive_object_ids=exclusive_object_ids,
+                    deletion_source="dependent_bulk_cleanup",
                 )
-            elif safe_action == "restore":
-                cursor = connection.execute(
-                    text(
-                        """
-                        UPDATE careertrellis.jobs
-                        SET status = COALESCE(archived_from_status, 'matched'),
-                            archived_from_status = NULL, archived_at = NULL
-                        WHERE owner_user_id = :owner_user_id
-                          AND id = ANY(CAST(:job_ids AS BIGINT[]))
-                        """
-                    ),
-                    parameters,
-                )
+                affected = len(rows)
             else:
-                for row in rows:
-                    self._upsert_suppression(
-                        connection,
-                        row,
-                        deleted_at=now,
-                        deletion_source="bulk_cleanup",
+                ids = [int(row["id"]) for row in rows]
+                parameters = {"owner_user_id": self._owner_user_id, "job_ids": ids}
+                now = _utc_now()
+                if safe_action == "archive":
+                    cursor = connection.execute(
+                        text(
+                            """
+                            UPDATE careertrellis.jobs
+                            SET archived_from_status = status, status = 'archived',
+                                archived_at = :now
+                            WHERE owner_user_id = :owner_user_id
+                              AND id = ANY(CAST(:job_ids AS BIGINT[]))
+                            """
+                        ),
+                        {**parameters, "now": now},
                     )
-                cursor = connection.execute(
-                    text(
-                        """
-                        DELETE FROM careertrellis.jobs
-                        WHERE owner_user_id = :owner_user_id
-                          AND id = ANY(CAST(:job_ids AS BIGINT[]))
-                        """
-                    ),
-                    parameters,
-                )
-            if cursor.rowcount != len(ids):
-                raise CleanupPreviewChanged("The job list changed during cleanup.")
-            return len(ids)
+                elif safe_action == "restore":
+                    cursor = connection.execute(
+                        text(
+                            """
+                            UPDATE careertrellis.jobs
+                            SET status = COALESCE(archived_from_status, 'matched'),
+                                archived_from_status = NULL, archived_at = NULL
+                            WHERE owner_user_id = :owner_user_id
+                              AND id = ANY(CAST(:job_ids AS BIGINT[]))
+                            """
+                        ),
+                        parameters,
+                    )
+                else:
+                    for row in rows:
+                        self._upsert_suppression(
+                            connection,
+                            row,
+                            deleted_at=now,
+                            deletion_source="bulk_cleanup",
+                        )
+                    cursor = connection.execute(
+                        text(
+                            """
+                            DELETE FROM careertrellis.jobs
+                            WHERE owner_user_id = :owner_user_id
+                              AND id = ANY(CAST(:job_ids AS BIGINT[]))
+                            """
+                        ),
+                        parameters,
+                    )
+                if cursor.rowcount != len(ids):
+                    raise CleanupPreviewChanged("The job list changed during cleanup.")
+                affected = len(ids)
+        if has_material_objects:
+            self._reconcile_deleted_objects()
+        return affected
 
     def delete_job(self, job_id: int) -> None:
         safe_job_id = _positive_job_id(job_id)
@@ -639,36 +1008,13 @@ class PostgreSQLJobRetentionRepository:
                 ).scalars().all()
                 if len(locked_objects) != len(object_ids):
                     raise RuntimeError("Generated-material metadata is unavailable.")
-            self._upsert_suppression(
+            has_material_objects = self._delete_locked_rows(
                 connection,
-                job,
-                deleted_at=_utc_now(),
+                [job],
+                exclusive_object_ids=exclusive_object_ids,
                 deletion_source="manual",
+                single_job_id=safe_job_id,
             )
-            if exclusive_object_ids:
-                tombstoned = connection.execute(
-                    text(
-                        """
-                        UPDATE careertrellis.stored_objects
-                        SET deleted_at = CURRENT_TIMESTAMP
-                        WHERE owner_user_id = :owner_user_id
-                          AND id = ANY(CAST(:object_ids AS uuid[]))
-                        """
-                    ),
-                    {**parameters, "object_ids": exclusive_object_ids},
-                ).rowcount
-                if tombstoned != len(exclusive_object_ids):
-                    raise RuntimeError("Generated-material metadata is unavailable.")
-                has_material_objects = True
-            cursor = connection.execute(
-                text(
-                    "DELETE FROM careertrellis.jobs "
-                    "WHERE id = :job_id AND owner_user_id = :owner_user_id"
-                ),
-                parameters,
-            )
-            if cursor.rowcount != 1:
-                raise JobRetentionNotFound("Job not found.")
 
         # The owner-scoped database deletion is already committed. Blob
         # cleanup is best effort: ordinary reconciliation preserves the
@@ -676,13 +1022,7 @@ class PostgreSQLJobRetentionRepository:
         # failure leaves durable tombstones for a later pass and must not turn
         # a successful delete into an error response.
         if has_material_objects:
-            try:
-                PostgreSQLGeneratedMaterialRepository(
-                    self._owner_user_id,
-                    engine=self._engine,
-                ).reconcile_deleted_objects()
-            except Exception:
-                pass
+            self._reconcile_deleted_objects()
 
 
 def runtime_job_retention_repository(
