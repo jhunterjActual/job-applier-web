@@ -210,9 +210,11 @@ would create split-brain data and can lose user changes. Therefore:
 - never run an Alembic downgrade on staging or infer ownership for an orphaned
   R2 object.
 
-The final deployment helper must encode or require an operator-confirmed data-
-authority state so its automatic code rollback cannot silently cross that
-boundary.
+The release-independent helper and systemd guards in
+`STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md` encode an operator-confirmed, one-way
+data-authority state so automatic rollback and service restart cannot silently
+cross that boundary. This foundation release remains incompatible with hosted
+authority while `HOSTED_REPOSITORY_CUTOVER_COMPLETE` is false.
 
 ## Operator gates before the eventual final cutover
 
@@ -266,8 +268,10 @@ instruction to activate this foundation release:
    table, `stored_objects` metadata, and all permanent-bucket object keys. Stop
    on any missing row/object, count or hash mismatch, duplicate reference, or
    orphan key.
-8. Mark PostgreSQL/R2 authoritative, activate only the exact reviewed release,
-   and verify its build, local liveness/readiness, service state, and HTTPS path.
+8. Confirm the exact reviewed release carries the hosted-authority capability,
+   mark PostgreSQL/R2 authoritative while both services remain stopped, activate
+   only that release, and verify its build, local liveness/readiness, service
+   state, and HTTPS path. The marker must precede the first hosted write.
 9. Verify owner login and logout, representative profile/resume/job/application
    reads and writes, provider capability, export/deletion scope, and authorized
    generated-object download. Repeat missing-context and cross-tenant negative

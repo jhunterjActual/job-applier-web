@@ -1977,6 +1977,208 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn(prepare_check, script)
         self.assertLess(script.index(prepare_check), script.index(activation))
 
+    def test_hosted_authority_guard_is_release_independent_and_no_activation(self) -> None:
+        project_dir = self.project_dir()
+        authority = (
+            project_dir / "deploy" / "scripts" / "hosted-authority.sh"
+        ).read_text(encoding="utf-8")
+        deploy = (
+            project_dir / "deploy" / "scripts" / "deploy-release.sh"
+        ).read_text(encoding="utf-8")
+        rollback = (
+            project_dir / "deploy" / "scripts" / "rollback-release.sh"
+        ).read_text(encoding="utf-8")
+        importer = (
+            project_dir / "deploy" / "scripts" / "import-sqlite-postgres.sh"
+        ).read_text(encoding="utf-8")
+        provision = (
+            project_dir / "deploy" / "scripts" / "provision-staging-host.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("sqlite-pre-cutover", authority)
+        self.assertIn("postgres-r2-authoritative", authority)
+        self.assertIn("I_UNDERSTAND_SQLITE_WRITES_WILL_BE_DISABLED", authority)
+        self.assertIn("CAREERTRELLIS_DATA_STORE:-} != \"postgres\"", authority)
+        self.assertIn("CAREERTRELLIS_OBJECT_STORE:-} != \"r2_encrypted\"", authority)
+        self.assertIn("deploy/hosted-authority.compatibility", authority)
+        self.assertIn("authority_directory=/etc/careertrellis/authority", authority)
+        self.assertIn("-L ${state_file}", authority)
+        self.assertIn("root:root 644", authority)
+        self.assertIn("-x ${capability_file}", authority)
+        self.assertIn("validate_release_target_path", authority)
+        initialize_guard = authority[
+            authority.index("initialize_authority_state() {"):
+            authority.index("validate_release_target_path() {")
+        ]
+        self.assertIn(
+            "if [[ -e ${authority_directory} || -L ${authority_directory} ]]",
+            initialize_guard,
+        )
+        self.assertIn("fixed_state_error", initialize_guard)
+        self.assertLess(
+            initialize_guard.index("fixed_state_error"),
+            initialize_guard.index('write_authority_state "${pre_cutover_state}"'),
+        )
+        self.assertFalse((project_dir / "deploy" / "hosted-authority.compatibility").exists())
+        self.assertFalse(data_store_module.HOSTED_REPOSITORY_CUTOVER_COMPLETE)
+
+        for service_name, check_name in (
+            ("careertrellis-web", "check-web-runtime"),
+            ("careertrellis-worker", "check-worker-runtime"),
+        ):
+            drop_in = (
+                project_dir
+                / "deploy"
+                / "systemd"
+                / f"{service_name}.service.d"
+                / "hosted-authority.conf"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                f"ExecStartPre=/usr/local/sbin/careertrellis-authority {check_name}",
+                drop_in,
+            )
+            self.assertIn(f"{service_name}.service.d/hosted-authority.conf", deploy)
+            self.assertIn(f"{service_name}.service.d/hosted-authority.conf", provision)
+
+        self.assertNotIn("careertrellis-authority initialize", deploy)
+        self.assertNotIn("careertrellis-authority initialize", rollback)
+        self.assertIn("careertrellis-authority initialize", provision)
+        self.assertLess(
+            deploy.index('validate_release "${release_dir}"'),
+            deploy.index('install -o root -g root -m 0755 "${release_dir}/deploy/scripts/hosted-authority.sh"'),
+        )
+        self.assertLess(
+            rollback.index('assert-release-startable "${target_release}"'),
+            rollback.index("activate_release()"),
+        )
+        self.assertIn("assert-code-rollback-allowed", deploy)
+        self.assertIn("assert-code-rollback-allowed", rollback)
+        self.assertIn("assert-import-allowed", importer)
+        self.assertIn("services remain stopped", deploy)
+
+    @unittest.skipIf(os.name == "nt", "POSIX hosted-authority shell regression")
+    def test_hosted_authority_marker_is_one_way_and_runtime_checks_fail_closed(self) -> None:
+        authority = self.project_dir() / "deploy" / "scripts" / "hosted-authority.sh"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_root = Path(temp_dir)
+            environment = os.environ.copy()
+            environment["CAREERTRELLIS_AUTHORITY_TESTING"] = "true"
+
+            def run_authority(*arguments: str, **environment_overrides: str) -> subprocess.CompletedProcess[str]:
+                command_environment = environment | environment_overrides
+                return subprocess.run(
+                    ["bash", str(authority), "--test-root", temp_dir, *arguments],
+                    capture_output=True,
+                    text=True,
+                    env=command_environment,
+                    check=False,
+                )
+
+            authority_directory = test_root / "authority"
+            authority_directory.mkdir()
+            markerless_initialize = run_authority("initialize")
+            self.assertNotEqual(0, markerless_initialize.returncode)
+            self.assertEqual(
+                "Hosted authority state is unavailable.\n",
+                markerless_initialize.stderr,
+            )
+            self.assertFalse((authority_directory / "data-authority").exists())
+            authority_directory.rmdir()
+
+            authority_target = test_root / "authority-target"
+            authority_target.mkdir()
+            authority_directory.symlink_to(authority_target, target_is_directory=True)
+            symlinked_initialize = run_authority("initialize")
+            self.assertNotEqual(0, symlinked_initialize.returncode)
+            self.assertEqual(
+                "Hosted authority state is unavailable.\n",
+                symlinked_initialize.stderr,
+            )
+            self.assertFalse((authority_target / "data-authority").exists())
+            authority_directory.unlink()
+            authority_target.rmdir()
+
+            self.assertEqual(0, run_authority("initialize").returncode)
+            self.assertEqual(0, run_authority("initialize").returncode)
+            self.assertEqual("sqlite-pre-cutover", run_authority("status").stdout.strip())
+            self.assertEqual(0, run_authority("assert-code-rollback-allowed").returncode)
+            self.assertEqual(0, run_authority("assert-import-allowed").returncode)
+            outside_release = test_root / ("b" * 40)
+            outside_release.mkdir()
+            invalid_target = run_authority(
+                "assert-release-startable",
+                str(outside_release),
+            )
+            self.assertEqual("Hosted authority release validation failed.\n", invalid_target.stderr)
+            self.assertNotEqual(
+                0,
+                run_authority("mark-postgres-r2-authoritative", "missing", "wrong").returncode,
+            )
+
+            release = test_root / "staging" / "releases" / ("a" * 40)
+            (release / "deploy").mkdir(parents=True)
+            premature_transition = run_authority(
+                "mark-postgres-r2-authoritative",
+                str(release),
+                "I_UNDERSTAND_SQLITE_WRITES_WILL_BE_DISABLED",
+            )
+            self.assertEqual("Hosted authority release validation failed.\n", premature_transition.stderr)
+
+            (release / "deploy" / "hosted-authority.compatibility").write_text(
+                "postgres-r2-authoritative-v1\n",
+                encoding="utf-8",
+            )
+            (test_root / "etc").mkdir()
+            (test_root / "etc" / "staging.env").write_text(
+                "CAREERTRELLIS_DATA_STORE=postgres\n",
+                encoding="utf-8",
+            )
+            (test_root / "etc" / "object-storage.env").write_text(
+                "CAREERTRELLIS_OBJECT_STORE=r2_encrypted\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                0,
+                run_authority(
+                    "mark-postgres-r2-authoritative",
+                    str(release),
+                    "I_UNDERSTAND_SQLITE_WRITES_WILL_BE_DISABLED",
+                ).returncode,
+            )
+            self.assertEqual(0, run_authority("initialize").returncode)
+            self.assertEqual("postgres-r2-authoritative", run_authority("status").stdout.strip())
+
+            rollback_denied = run_authority("assert-code-rollback-allowed")
+            import_denied = run_authority("assert-import-allowed")
+            self.assertEqual("Hosted authority prevents code rollback.\n", rollback_denied.stderr)
+            self.assertEqual("Hosted authority prevents SQLite import.\n", import_denied.stderr)
+            self.assertEqual(0, run_authority("assert-release-startable", str(release)).returncode)
+
+            (test_root / "staging" / "current").symlink_to(release, target_is_directory=True)
+            self.assertEqual(
+                0,
+                run_authority(
+                    "check-web-runtime",
+                    CAREERTRELLIS_DATA_STORE="postgres",
+                    CAREERTRELLIS_OBJECT_STORE="r2_encrypted",
+                ).returncode,
+            )
+            wrong_store = run_authority(
+                "check-web-runtime",
+                CAREERTRELLIS_DATA_STORE="sqlite",
+                CAREERTRELLIS_OBJECT_STORE="filesystem",
+            )
+            self.assertEqual("Hosted authority runtime validation failed.\n", wrong_store.stderr)
+            self.assertEqual(0, run_authority("check-worker-runtime").returncode)
+            self.assertEqual(
+                0,
+                run_authority(
+                    "mark-postgres-r2-authoritative",
+                    str(release),
+                    "I_UNDERSTAND_SQLITE_WRITES_WILL_BE_DISABLED",
+                ).returncode,
+            )
+
     def test_shared_web_service_loads_only_runtime_web_credentials(self) -> None:
         project_dir = self.project_dir()
         web_service = (project_dir / "deploy" / "systemd" / "careertrellis-web.service").read_text(

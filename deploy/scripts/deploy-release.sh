@@ -89,16 +89,16 @@ if [[ ${prepare_only} == true ]]; then
     exit 0
 fi
 
-old_release=""
-if [[ -L ${current_link} ]]; then
-    old_release=$(readlink -f "${current_link}")
+if [[ ! -x /usr/local/sbin/careertrellis-authority ]]; then
+    echo "Hosted authority state is unavailable; rerun reviewed host provisioning before deployment." >&2
+    exit 1
 fi
 
-activate_release() {
+validate_release() {
     local target_release=$1
-    local target_revision activation_link environment_file
-    target_revision=$(basename "${target_release}")
+    local environment_file
 
+    /usr/local/sbin/careertrellis-authority assert-release-startable "${target_release}" || return 1
     for environment_file in \
         /etc/careertrellis/staging.env \
         /etc/careertrellis/search-worker.env \
@@ -106,7 +106,7 @@ activate_release() {
         /etc/careertrellis/postgres-worker.env \
         /etc/careertrellis/provider-secrets.env \
         /etc/careertrellis/object-storage.env; do
-        if [[ ! -f ${environment_file} || $(stat -c '%U:%G %a' "${environment_file}") != "root:root 600" ]]; then
+        if [[ ! -f ${environment_file} || -L ${environment_file} || $(stat -c '%U:%G %a' "${environment_file}") != "root:root 600" ]]; then
             echo "Every service runtime environment file must be root:root mode 0600." >&2
             return 1
         fi
@@ -119,10 +119,29 @@ activate_release() {
             return 1
         fi
     done
-
     caddy validate \
         --config "${target_release}/deploy/caddy/Caddyfile.staging" \
-        --envfile /etc/caddy/careertrellis-staging.env || return 1
+        --envfile /etc/caddy/careertrellis-staging.env
+}
+
+validate_release "${release_dir}"
+install -o root -g root -m 0755 "${release_dir}/deploy/scripts/hosted-authority.sh" /usr/local/sbin/careertrellis-authority
+install -d -o root -g root -m 0755 /etc/systemd/system/careertrellis-web.service.d
+install -d -o root -g root -m 0755 /etc/systemd/system/careertrellis-worker.service.d
+install -o root -g root -m 0644 "${release_dir}/deploy/systemd/careertrellis-web.service.d/hosted-authority.conf" /etc/systemd/system/careertrellis-web.service.d/hosted-authority.conf
+install -o root -g root -m 0644 "${release_dir}/deploy/systemd/careertrellis-worker.service.d/hosted-authority.conf" /etc/systemd/system/careertrellis-worker.service.d/hosted-authority.conf
+
+old_release=""
+if [[ -L ${current_link} ]]; then
+    old_release=$(readlink -f "${current_link}")
+fi
+
+activate_release() {
+    local target_release=$1
+    local target_revision activation_link
+    target_revision=$(basename "${target_release}")
+
+    validate_release "${target_release}" || return 1
 
     activation_link=${release_root}/.activate-${target_revision}-$$
     rm -f -- "${activation_link}"
@@ -154,14 +173,19 @@ activate_release() {
 }
 
 if ! activate_release "${release_dir}"; then
-    echo "New release did not become ready; restoring the prior code release." >&2
-    if [[ -n ${old_release} ]]; then
+    echo "New release did not become ready." >&2
+    if [[ -n ${old_release} ]] && /usr/local/sbin/careertrellis-authority assert-code-rollback-allowed; then
+        echo "Restoring the prior code release." >&2
         if ! activate_release "${old_release}"; then
             echo "Critical: the prior release also failed readiness after restoration." >&2
         fi
     else
-        rm -f -- "${current_link}"
         systemctl stop careertrellis-worker.service careertrellis-web.service
+        if [[ -z ${old_release} ]]; then
+            rm -f -- "${current_link}"
+        else
+            echo "Hosted authority requires a reviewed forward correction; services remain stopped." >&2
+        fi
     fi
     exit 1
 fi

@@ -31,6 +31,7 @@ See [docs/STAGE_3_SHARED_BACKUP_RESTORE_POLICY.md](docs/STAGE_3_SHARED_BACKUP_RE
 See [docs/STAGE_3_POSTGRES_GENERATED_MATERIALS.md](docs/STAGE_3_POSTGRES_GENERATED_MATERIALS.md) for the owner-scoped PostgreSQL/private-object tailoring persistence slice, atomic encrypted-object replacement contract, and explicit no-activation boundary.
 See [docs/STAGE_3_POSTGRES_DEPENDENT_JOB_DELETION.md](docs/STAGE_3_POSTGRES_DEPENDENT_JOB_DELETION.md) for owner-scoped single-job deletion with atomic dependent-row removal, private-object tombstones, and post-commit reconciliation under the continuing no-activation boundary.
 See [docs/STAGE_3_POSTGRES_DEPENDENT_BULK_CLEANUP.md](docs/STAGE_3_POSTGRES_DEPENDENT_BULK_CLEANUP.md) for the explicit shared-host action that can delete a bounded preview of matched or archived jobs with saved application work without changing standalone cleanup behavior.
+See [docs/STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md](docs/STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md) for the durable one-way hosted-authority marker, release-independent restart/rollback guards, and continuing no-activation boundary.
 
 A self-contained, privacy-first workspace designed to streamline job discovery, resume tailoring, guided-manual applications, progress tracking, and interview preparation.
 
