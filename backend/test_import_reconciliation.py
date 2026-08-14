@@ -550,8 +550,15 @@ class ImportReconciliationTests(unittest.TestCase):
             / "scripts"
             / "reconcile-sqlite-postgres-import.sh"
         ).read_text(encoding="utf-8")
+        maintenance_helper = (
+            Path(__file__).parents[1]
+            / "deploy"
+            / "scripts"
+            / "maintenance-lock.sh"
+        ).read_text(encoding="utf-8")
         for invariant in (
-            "flock -n 8",
+            "maintenance-lock.sh",
+            "acquire_careertrellis_maintenance_lock",
             "flock -n 9",
             "careertrellis-web.service careertrellis-worker.service",
             "assert-import-allowed",
@@ -559,6 +566,7 @@ class ImportReconciliationTests(unittest.TestCase):
         ):
             with self.subTest(invariant=invariant):
                 self.assertIn(invariant, wrapper)
+        self.assertIn("flock -n 8", maintenance_helper)
 
 
 if __name__ == "__main__":
