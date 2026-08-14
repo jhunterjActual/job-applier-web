@@ -123,6 +123,8 @@ def identity(value):
         hide_password=False
     )
     parameters = conninfo_to_dict(native_url)
+    if parameters.get("service"):
+        raise ValueError
     host = parameters.get("host", "")
     database = parameters.get("dbname", "")
     if not host or not database:
@@ -138,6 +140,8 @@ def identity(value):
         else (),
         ports,
         database,
+        parameters.get("target_session_attrs", "any"),
+        parameters.get("load_balance_hosts", "disable"),
     )
 
 try:

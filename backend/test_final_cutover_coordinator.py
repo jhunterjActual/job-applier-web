@@ -188,6 +188,26 @@ class FinalCutoverStaticContractTests(unittest.TestCase):
         self.assertEqual("", malformed.stdout)
         self.assertEqual("", malformed.stderr)
 
+        service_indirection = run_identity_check(
+            f"{common_visible_target}?service=private-service",
+            common_visible_target,
+        )
+        self.assertNotEqual(0, service_indirection.returncode)
+        self.assertEqual("", service_indirection.stdout)
+        self.assertEqual("", service_indirection.stderr)
+
+        primary_only = run_identity_check(
+            f"{common_visible_target}?target_session_attrs=primary",
+            common_visible_target,
+        )
+        self.assertNotEqual(0, primary_only.returncode)
+
+        load_balanced = run_identity_check(
+            f"{common_visible_target}?load_balance_hosts=random",
+            common_visible_target,
+        )
+        self.assertNotEqual(0, load_balanced.returncode)
+
     def test_coordinator_requires_future_approved_release_before_lock_or_mutation(self) -> None:
         _path, source = _coordinator()
         lock_position = source.index("exec 10>")
