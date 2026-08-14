@@ -122,8 +122,7 @@ if ! rehearsal_database_url=$(read_exact_setting "${rehearsal_database_environme
     exit 1
 fi
 
-if ! env \
-    CAREERTRELLIS_REHEARSAL_DATABASE_URL="${rehearsal_database_url}" \
+if ! CAREERTRELLIS_REHEARSAL_DATABASE_URL="${rehearsal_database_url}" \
     CAREERTRELLIS_LIVE_MIGRATION_DATABASE_URL="${live_migration_database_url}" \
     CAREERTRELLIS_LIVE_RUNTIME_DATABASE_URL="${live_runtime_database_url}" \
     CAREERTRELLIS_REHEARSAL_OBJECT_ENDPOINT="${rehearsal_object_endpoint}" \

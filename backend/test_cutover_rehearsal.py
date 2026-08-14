@@ -42,6 +42,7 @@ class CutoverRehearsalSourceContractTests(unittest.TestCase):
         self.assertNotIn("systemctl enable", source)
         self.assertNotIn("systemctl stop", source)
         self.assertNotIn("rm -", source)
+        self.assertNotIn("if ! env", source)
 
     def test_release_preparation_and_ci_run_the_rehearsal_contract(self):
         project_dir = self.project_dir()
