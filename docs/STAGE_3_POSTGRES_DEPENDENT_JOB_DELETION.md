@@ -80,7 +80,9 @@ not open the SQLite database or resolve an authoritative local material path.
 
 No schema, RLS policy, grant, index, trigger, or broker change is required.
 Alembic retains one head at `20260813_0008`; the slice neither migrates user
-data nor changes import behavior. Build strings agree at `20260813.16`.
+data nor changes import behavior. The later dependent bulk-cleanup slice reuses
+this contract without changing the single-job route. Build strings agree at
+`20260813.17`.
 
 Before activation, rollback is code-only because PostgreSQL/R2 remain
 disposable rehearsal targets. After any future authoritative PostgreSQL/R2
@@ -93,7 +95,8 @@ This slice does not add or authorize:
 
 - account deletion, identity-provider deletion, session revocation, or
   account-wide cross-store erasure;
-- bulk deletion of protected cleanup candidates;
+- account-wide erasure or deletion of active lifecycle jobs outside an explicit
+  bounded cleanup preview;
 - a separate application-deletion route or generated-material history;
 - bucket-wide enumeration, adoption, or deletion of orphan objects;
 - a new queue, tombstone schema, migration, import, or reconciliation broker;
@@ -124,5 +127,5 @@ This slice does not add or authorize:
       syntax, dependency-lock, launcher, protected-file, and exact-diff review
       pass without network calls or real user data.
 - [ ] Alembic reports exactly one head at `20260813_0008`, build strings agree
-      at `20260813.16`, `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains false, and
+      at `20260813.17`, `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains false, and
       no live import, migration, deployment, or external mutation occurred.
