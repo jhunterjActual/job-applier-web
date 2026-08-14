@@ -176,6 +176,14 @@ WorkOS identity remains outside this boundary. The worker is installed disabled
 and final shared activation remains blocked. See
 `STAGE_3_POSTGRES_ACCOUNT_ERASURE.md`.
 
+The cutover-route qualification slice keeps activation blocked while assigning
+every API route to an explicit shared-host authority policy. Its disposable
+PostgreSQL gate executes representative reads across every repository family,
+asserts owner-distinct payloads for private data-bearing surfaces, denies
+missing and cross-owner context, forbids SQLite fallback, and uses mocked
+provider calls plus an in-memory encrypted-object backend. See
+`STAGE_3_POSTGRES_CUTOVER_ROUTE_QUALIFICATION.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
