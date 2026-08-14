@@ -271,6 +271,12 @@ not waive the exact-release checks:
 
 ## Eventual final cutover sequence
 
+The later dormant coordinator encodes this sequence under one inherited
+maintenance lock, requires the snapshot/backup/mirror/restore receipts before
+mutation, leaves all services stopped after a pre-marker failure, and permits
+only a reviewed forward correction after the marker. It remains a no-activation
+slice; see `STAGE_3_POSTGRES_R2_FINAL_CUTOVER_COORDINATOR.md`.
+
 This sequence is documentation for the later complete transition, not an
 instruction to activate this foundation release:
 

@@ -2310,6 +2310,9 @@ class DependencyLockTests(unittest.TestCase):
             encoding="utf-8"
         )
         rotation_source = (scripts / "rotate-provider-secrets.sh").read_text(encoding="utf-8")
+        maintenance_helper = (scripts / "maintenance-lock.sh").read_text(
+            encoding="utf-8"
+        )
         for source in (import_source, reconcile_source):
             self.assertIn(
                 '$(dirname "${release_dir}") != "/opt/careertrellis/staging/releases"',
@@ -2320,14 +2323,21 @@ class DependencyLockTests(unittest.TestCase):
                 '! -f ${release_dir}/backend/sqlite_postgres_reconcile.py', source
             )
             self.assertIn("root:root 600", source)
-            self.assertIn("flock -n", source)
+            self.assertIn("maintenance-lock.sh", source)
+            self.assertIn("acquire_careertrellis_maintenance_lock", source)
             self.assertIn("systemctl is-active", source)
+        self.assertIn("/run/lock/careertrellis-maintenance.lock", maintenance_helper)
+        self.assertIn("flock -n 8", maintenance_helper)
         self.assertIn(
             '! -f ${release_dir}/backend/sqlite_postgres_import.py', import_source
         )
         self.assertIn("/opt/careertrellis/staging/releases/*", rotation_source)
         self.assertIn("root:root 600", rotation_source)
-        self.assertIn("flock -n", rotation_source)
+        self.assertIn(
+            "/run/lock/careertrellis-provider-secret-rotation.lock",
+            rotation_source,
+        )
+        self.assertIn("flock -n 9", rotation_source)
         self.assertIn("CAREERTRELLIS_MIGRATION_DATABASE_URL", import_source)
         self.assertIn("CAREERTRELLIS_DATA_DIR", import_source)
         self.assertIn("target-object-storage.env", import_source)
@@ -2348,16 +2358,24 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("root:root 600", script)
         self.assertLess(script.index("root:root 600"), script.index("mv -Tf"))
 
-    def test_deploy_rollback_and_import_share_the_maintenance_lock(self) -> None:
+    def test_mutating_wrappers_share_the_maintenance_lock_helper(self) -> None:
         scripts = self.project_dir() / "deploy" / "scripts"
+        helper = (scripts / "maintenance-lock.sh").read_text(encoding="utf-8")
+        self.assertIn("/run/lock/careertrellis-maintenance.lock", helper)
+        self.assertIn("flock -n 8", helper)
         for name in (
             "deploy-release.sh",
             "rollback-release.sh",
+            "migrate-postgres.sh",
             "import-sqlite-postgres.sh",
+            "reconcile-sqlite-postgres-import.sh",
+            "hosted-authority.sh",
+            "apply-postgres-runtime-grants.sh",
+            "finalize-postgres-r2-cutover.sh",
         ):
             source = (scripts / name).read_text(encoding="utf-8")
-            self.assertIn("/run/lock/careertrellis-maintenance.lock", source)
-            self.assertIn("flock -n 8", source)
+            self.assertIn("maintenance-lock.sh", source)
+            self.assertIn("acquire_careertrellis_maintenance_lock", source)
 
     def test_provisioning_keeps_the_caddy_access_log_service_writable(self) -> None:
         script = (self.project_dir() / "deploy" / "scripts" / "provision-staging-host.sh").read_text(encoding="utf-8")

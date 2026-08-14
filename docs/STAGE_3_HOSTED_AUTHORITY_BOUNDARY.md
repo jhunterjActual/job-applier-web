@@ -85,6 +85,14 @@ rewrite the marker.
 
 ## Eventual operator transition (not for this PR)
 
+The later dormant coordinator keeps the maintenance lock inherited across the
+complete preflight, migration/grant, no-omission import/reconciliation, marker,
+and activation sequence. It also deliberately leaves all services stopped on
+every pre-marker failure and requires a forward correction after the marker.
+Its manual receipt and ordering contract is documented in
+`STAGE_3_POSTGRES_R2_FINAL_CUTOVER_COORDINATOR.md`; that slice does not add the
+capability or perform this transition.
+
 The final cutover must keep the maintenance lock held and the web, search-
 worker, and account-erasure-worker services stopped through snapshot,
 migration, no-omission import, and

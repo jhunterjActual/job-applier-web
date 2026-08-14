@@ -6,6 +6,11 @@ if [[ ${EUID} -ne 0 ]]; then
     exit 1
 fi
 
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+# shellcheck source=maintenance-lock.sh
+source "${script_dir}/maintenance-lock.sh"
+acquire_careertrellis_maintenance_lock
+
 release_dir=${1:-}
 environment_file=${2:-/etc/careertrellis/postgres-migration.env}
 if [[ -z ${release_dir} || ! -f ${release_dir}/backend/alembic.ini ]]; then

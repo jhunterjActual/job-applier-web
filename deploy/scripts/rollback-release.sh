@@ -6,11 +6,18 @@ if [[ ${EUID} -ne 0 ]]; then
     exit 1
 fi
 
-exec 8>/run/lock/careertrellis-maintenance.lock
-if ! flock -n 8; then
-    echo "Another deployment, rollback, or import operation is running." >&2
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+maintenance_lock_helper=${script_dir}/maintenance-lock.sh
+if [[ ! -f ${maintenance_lock_helper} ]]; then
+    maintenance_lock_helper=/usr/local/libexec/careertrellis/maintenance-lock.sh
+fi
+if [[ ! -f ${maintenance_lock_helper} || -L ${maintenance_lock_helper} ]]; then
+    echo "The reviewed maintenance-lock helper is unavailable." >&2
     exit 1
 fi
+# shellcheck source=maintenance-lock.sh
+source "${maintenance_lock_helper}"
+acquire_careertrellis_maintenance_lock
 
 release_root=${CAREERTRELLIS_RELEASE_ROOT:-/opt/careertrellis/staging}
 browser_path=/var/lib/careertrellis/shared/ms-playwright
