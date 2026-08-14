@@ -1,7 +1,7 @@
 # Stage 3 shared-route cutover qualification
 
 This slice adds evidence for the later PostgreSQL/private-object authority
-decision. It does not perform that decision. Build `20260813.20` still leaves
+decision. It does not perform that decision. Build `20260813.22` still leaves
 `HOSTED_REPOSITORY_CUTOVER_COMPLETE` false, adds no hosted-authority capability
 file, changes no production route behavior, and starts no service.
 
