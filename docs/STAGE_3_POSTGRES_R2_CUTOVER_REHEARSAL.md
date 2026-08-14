@@ -12,8 +12,15 @@ another user. SQLite and local generated files remain authoritative,
 
 Prepare the exact reviewed 40-character release without activating it. Create
 separate root-owned mode-`0600` rehearsal database and object-storage
-environment files that select an empty disposable PostgreSQL database and a
-dedicated private disposable R2 bucket. Keep the live migration, runtime, and
+environment files that select a disposable PostgreSQL database and a dedicated
+private disposable R2 bucket. Before running the wrapper, provision the
+required non-`BYPASSRLS` roles on that disposable target, apply this exact
+release's Alembic head, and reapply this exact release's
+`deploy/postgres/grant-runtime.sql`. Confirm head
+`20260814_0009_account_erasure` and confirm the migrated target contains no
+tenant data, search runs, erasure requests, or stored-object metadata. In this
+contract, "empty" means schema-only and fully migrated; the rehearsal wrapper
+does not migrate or grant the target. Keep the live migration, runtime, and
 object-storage environment files installed so the wrapper can compare target
 identities without printing them.
 

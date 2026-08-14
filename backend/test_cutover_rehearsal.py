@@ -247,6 +247,35 @@ class CutoverRehearsalShellTests(unittest.TestCase):
         self.assertNotIn("live-materials", object_failure.stderr)
         self.assertEqual("", self.command_log.read_text(encoding="utf-8"))
 
+    def test_live_object_identity_normalizes_default_port_and_terminal_dot(self):
+        self._write_environment(
+            self.rehearsal_object_environment,
+            "CAREERTRELLIS_OBJECT_STORE=r2_encrypted\n"
+            "CAREERTRELLIS_OBJECT_STORE_ENDPOINT=https://ACCOUNT.r2.example.:443/\n"
+            "CAREERTRELLIS_OBJECT_STORE_BUCKET=live-materials\n",
+        )
+
+        completed = self.run_wrapper()
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("Rehearsal targets must differ from live targets.", completed.stderr)
+        self.assertNotIn("live-materials", completed.stderr)
+        self.assertEqual("", self.command_log.read_text(encoding="utf-8"))
+
+    def test_live_database_identity_normalizes_terminal_dot(self):
+        self._write_environment(
+            self.rehearsal_database_environment,
+            "CAREERTRELLIS_MIGRATION_DATABASE_URL="
+            "postgresql+psycopg://different-user:different-secret@db.example.:5432/live\n",
+        )
+
+        completed = self.run_wrapper()
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("Rehearsal targets must differ from live targets.", completed.stderr)
+        self.assertNotIn("different-secret", completed.stderr)
+        self.assertEqual("", self.command_log.read_text(encoding="utf-8"))
+
     def test_bad_mode_wrong_confirmation_and_extra_argument_fail_closed(self):
         self.rehearsal_database_environment.chmod(0o640)
         mode_failure = self.run_wrapper()

@@ -141,16 +141,20 @@ def database_identity(value):
     database = unquote(parsed.path.lstrip("/"))
     if not parsed.hostname or not database:
         raise ValueError
-    return parsed.hostname.casefold(), parsed.port or 5432, database
+    return parsed.hostname.casefold().rstrip("."), parsed.port or 5432, database
 
 def object_identity(endpoint, bucket):
     parsed = urlsplit(endpoint)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or not bucket:
         raise ValueError
+    scheme = parsed.scheme.casefold()
+    port = parsed.port
+    if port is None:
+        port = 443 if scheme == "https" else 80
     return (
-        parsed.scheme.casefold(),
-        parsed.hostname.casefold(),
-        parsed.port,
+        scheme,
+        parsed.hostname.casefold().rstrip("."),
+        port,
         parsed.path.rstrip("/"),
         bucket,
     )

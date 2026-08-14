@@ -140,10 +140,15 @@ separate operator steps.
    Record only backup labels, times, sanitized counts, and success receipts.
    Never record the pgBackRest cipher passphrase or repository credentials.
 
-3. Create an empty disposable PostgreSQL database and a disposable private R2
-   object bucket with the same permissions and public-access controls as the
-   proposed staging bucket. Point root-owned rehearsal environment files at
-   those targets. Do not use the live staging database or backup bucket.
+3. Create a disposable PostgreSQL database and a disposable private R2 object
+   bucket with the same permissions and public-access controls as the proposed
+   staging bucket. Provision the required disposable database roles, migrate
+   the database to this exact release's Alembic head, reapply this exact
+   release's `deploy/postgres/grant-runtime.sql`, and verify the target is
+   schema-only with no tenant, search-run, erasure-request, or stored-object
+   rows. The rehearsal wrapper does not perform that preparation. Point
+   root-owned rehearsal environment files at those targets. Do not use the
+   live staging database or backup bucket.
 
 4. Run the read-only SQLite preflight from the exact release and retain its
    sanitized table, provider-secret, and generated-file counts:
