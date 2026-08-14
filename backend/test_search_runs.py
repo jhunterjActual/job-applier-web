@@ -282,6 +282,11 @@ class SQLiteSearchRunTests(unittest.TestCase):
             patch.object(worker_module, "runtime_postgres_engine", return_value=engine),
             patch.object(
                 worker_module,
+                "dispatch_due_postgres_saved_searches",
+                return_value=[],
+            ) as dispatch_due,
+            patch.object(
+                worker_module,
                 "claim_next_postgres_search_run",
                 return_value=None,
             ) as claim_next,
@@ -292,6 +297,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
         worker_runtime_configuration.assert_called_once_with()
         common_runtime_configuration.assert_not_called()
         provider_secret_configuration.assert_called_once_with()
+        dispatch_due.assert_called_once_with(engine=engine)
         claim_next.assert_called_once_with(ANY, engine=engine)
         heartbeat = json.loads(
             (Path(self.temporary_directory.name) / "worker-heartbeat.json").read_text(

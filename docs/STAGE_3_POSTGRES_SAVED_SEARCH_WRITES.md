@@ -80,6 +80,10 @@ Advancing reminder metadata before an in-process background search preserves
 the current standalone behavior but is not a durable claim. Crash-safe
 claim/retry semantics belong to the later worker aggregate.
 
+The bounded follow-up in `STAGE_3_POSTGRES_SCHEDULED_SEARCH_DISPATCH.md` now
+publishes due hosted occurrences and advances the schedule atomically. This
+historical write slice still does not independently activate that worker.
+
 Owner-scoped manual/discovery job creation and initial score completion are
 handled by the next bounded slice documented in
 `STAGE_3_POSTGRES_JOB_CATALOG_WRITES.md`; its inclusion does not expand this

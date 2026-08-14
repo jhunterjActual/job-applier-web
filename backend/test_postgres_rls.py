@@ -293,6 +293,18 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 f"FROM {RUNTIME_ROLE}"
             )
             connection.exec_driver_sql(
+                "REVOKE ALL ON careertrellis.scheduled_search_dispatch_queue "
+                f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}"
+            )
+            connection.exec_driver_sql(
+                "REVOKE ALL ON FUNCTION careertrellis.sync_scheduled_search_dispatch_queue() "
+                f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}"
+            )
+            connection.exec_driver_sql(
+                "REVOKE ALL ON FUNCTION careertrellis.dispatch_due_saved_searches(integer) "
+                f"FROM {RUNTIME_ROLE}"
+            )
+            connection.exec_driver_sql(
                 "REVOKE INSERT, UPDATE ON careertrellis.app_users "
                 f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}"
             )
@@ -2682,7 +2694,9 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                     "SELECT relname, relrowsecurity, relforcerowsecurity "
                     "FROM pg_class JOIN pg_namespace ON pg_namespace.oid = pg_class.relnamespace "
                     "WHERE nspname = 'careertrellis' AND relkind = 'r' "
-                    "AND relname NOT IN ('alembic_version', 'search_run_claim_queue')"
+                    "AND relname NOT IN ("
+                    "'alembic_version', 'search_run_claim_queue', "
+                    "'scheduled_search_dispatch_queue')"
                 )
             ).all()
             self.assertGreaterEqual(len(table_rows), 14)
