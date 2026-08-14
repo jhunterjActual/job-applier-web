@@ -96,21 +96,54 @@ if ! migration_database_url=$(read_exact_setting "${migration_environment_file}"
         CAREERTRELLIS_CUTOVER_RUNTIME_DATABASE_URL="${runtime_database_url}" \
         "${release_dir}/backend/venv/bin/python" -c '
 import os
-from urllib.parse import unquote, urlsplit
+from psycopg.conninfo import conninfo_to_dict
+from sqlalchemy.engine import make_url
+
+
+def normalized_hosts(value):
+    items = value.split(",")
+    if not items or any(not item for item in items):
+        raise ValueError
+    return tuple(
+        item if item.startswith("/") else item.casefold().rstrip(".")
+        for item in items
+    )
+
+def normalized_list(value):
+    items = value.split(",")
+    if not items or any(not item for item in items):
+        raise ValueError
+    return tuple(items)
 
 def identity(value):
-    parsed = urlsplit(value)
-    if parsed.scheme not in {"postgresql", "postgresql+psycopg"}:
+    url = make_url(value)
+    if url.drivername not in {"postgresql", "postgresql+psycopg"}:
         raise ValueError
-    database = unquote(parsed.path.lstrip("/"))
-    if not parsed.hostname or not database:
+    native_url = url.set(drivername="postgresql").render_as_string(
+        hide_password=False
+    )
+    parameters = conninfo_to_dict(native_url)
+    host = parameters.get("host", "")
+    database = parameters.get("dbname", "")
+    if not host or not database:
         raise ValueError
-    return parsed.hostname.casefold(), parsed.port or 5432, database
+    ports = tuple(
+        int(item or "5432")
+        for item in parameters.get("port", "5432").split(",")
+    )
+    return (
+        normalized_hosts(host),
+        normalized_list(parameters["hostaddr"])
+        if parameters.get("hostaddr")
+        else (),
+        ports,
+        database,
+    )
 
 try:
     migration = identity(os.environ["CAREERTRELLIS_CUTOVER_MIGRATION_DATABASE_URL"])
     runtime = identity(os.environ["CAREERTRELLIS_CUTOVER_RUNTIME_DATABASE_URL"])
-except (KeyError, TypeError, ValueError):
+except Exception:
     raise SystemExit(1)
 if migration != runtime:
     raise SystemExit(1)

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -116,6 +117,76 @@ class FinalCutoverStaticContractTests(unittest.TestCase):
         self.assertIn("CAREERTRELLIS_DATA_STORE=postgres", source)
         self.assertIn("CAREERTRELLIS_OBJECT_STORE=r2_encrypted", source)
         self.assertNotIn("if ! env", source)
+
+    def test_coordinator_compares_effective_libpq_targets(self) -> None:
+        _path, source = _coordinator()
+        match = re.search(
+            r'"\$\{release_dir\}/backend/venv/bin/python" -c \'\n(.*?)\n\'; then',
+            source,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        identity_code = match.group(1)
+        common_visible_target = (
+            "postgresql+psycopg://role@expected.example/appdb"
+        )
+
+        def run_identity_check(
+            migration_url: str, runtime_url: str
+        ) -> subprocess.CompletedProcess[str]:
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "CAREERTRELLIS_CUTOVER_MIGRATION_DATABASE_URL": migration_url,
+                    "CAREERTRELLIS_CUTOVER_RUNTIME_DATABASE_URL": runtime_url,
+                }
+            )
+            return subprocess.run(
+                [sys.executable, "-c", identity_code],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        migration_url = (
+            f"{common_visible_target}?host=migration.example&port=6543&"
+            "dbname=migrationdb"
+        )
+        runtime_url = (
+            f"{common_visible_target}?host=runtime.example&port=6543&"
+            "dbname=runtimedb"
+        )
+        self.assertNotEqual(
+            0,
+            run_identity_check(migration_url, runtime_url).returncode,
+        )
+
+        same_effective_target = (
+            f"{common_visible_target}?host=database.example.&port=6543&"
+            "dbname=careertrellis"
+        )
+        normalized_equivalent = (
+            f"{common_visible_target}?host=DATABASE.EXAMPLE&port=6543&"
+            "dbname=careertrellis"
+        )
+        self.assertEqual(
+            0,
+            run_identity_check(
+                same_effective_target, normalized_equivalent
+            ).returncode,
+        )
+
+        private_detail = "private-database-password"
+        malformed = run_identity_check(
+            f"postgresql+psycopg://role:{private_detail}@expected.example/%",
+            normalized_equivalent,
+        )
+        self.assertNotEqual(0, malformed.returncode)
+        self.assertNotIn(private_detail, malformed.stdout)
+        self.assertNotIn(private_detail, malformed.stderr)
+        self.assertEqual("", malformed.stdout)
+        self.assertEqual("", malformed.stderr)
 
     def test_coordinator_requires_future_approved_release_before_lock_or_mutation(self) -> None:
         _path, source = _coordinator()
