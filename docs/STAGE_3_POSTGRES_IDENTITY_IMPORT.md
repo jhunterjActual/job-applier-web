@@ -74,6 +74,16 @@ database and data directories remain the authoritative copy until those
 migrations, repository conversion, negative cross-user tests, and rollback
 rehearsal are reviewed.
 
+Every successful wrapped import is now followed, under the same maintenance
+boundary, by the independent read-only reconciliation implemented by
+`reconcile-sqlite-postgres-import.sh`. The reconciler reopens the frozen source,
+owner-scoped target, and private-object inventory without repairing either side.
+If import exits unsuccessfully or its commit outcome is ambiguous, do not retry:
+run that named reconciliation command with the identical release, environment
+files, and omission flags first. Its bounded operator contract and sanitized
+receipt are documented in
+`STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.
+
 ## Deployment sequence after review
 
 1. Fetch the exact merge commit into the root-owned application-host checkout.
@@ -83,7 +93,8 @@ rehearsal are reviewed.
 4. Apply Alembic through `/etc/careertrellis/postgres-migration.env` and run the
    reviewed runtime grants.
 5. Run the SQLite import preflight and retain only its sanitized counts.
-6. Seed/import into a disposable database and repeat the tenant-isolation suite.
+6. Seed/import into a disposable database, retain the automatic no-omission
+   reconciliation receipt, and repeat the tenant-isolation suite.
 7. Activate the identity transition only after PostgreSQL owner authorization,
    readiness, login, logout, and rollback checks pass.
 

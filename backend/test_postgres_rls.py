@@ -25,6 +25,7 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError
 
 from sqlite_postgres_import import import_sqlite_workspace
+import sqlite_postgres_reconcile as reconciliation_module
 import object_store as object_store_module
 import postgres_database as postgres_database_module
 import provider_secrets as provider_secrets_module
@@ -606,6 +607,42 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         with self.runtime_engine.begin() as connection:
             self.assertEqual(0, connection.scalar(text("SELECT count(*) FROM careertrellis.jobs")))
             self.assertEqual(0, connection.scalar(text("SELECT count(*) FROM careertrellis.profiles")))
+
+    def test_reconciliation_reads_are_two_owner_isolated_and_hidden_without_context(self) -> None:
+        with self.admin_engine.begin() as connection:
+            connection.execute(
+                text("UPDATE careertrellis.app_users SET role = 'owner' WHERE id = :owner"),
+                {"owner": self.user_two},
+            )
+
+        with tenant_transaction(
+            self.runtime_engine, self.user_one, "user_tenant_one"
+        ) as connection:
+            owner_one = reconciliation_module._target_rows(
+                connection, self.user_one, "jobs", ("id", "title")
+            )
+            cross_owner = reconciliation_module._target_rows(
+                connection, self.user_two, "jobs", ("id", "title")
+            )
+        with tenant_transaction(
+            self.runtime_engine, self.user_two, "user_tenant_two"
+        ) as connection:
+            owner_two = reconciliation_module._target_rows(
+                connection, self.user_two, "jobs", ("id", "title")
+            )
+            reverse_cross_owner = reconciliation_module._target_rows(
+                connection, self.user_one, "jobs", ("id", "title")
+            )
+        with self.runtime_engine.begin() as connection:
+            no_context = reconciliation_module._target_rows(
+                connection, self.user_one, "jobs", ("id", "title")
+            )
+
+        self.assertEqual(["One Job"], [row["title"] for row in owner_one])
+        self.assertEqual(["Two Job"], [row["title"] for row in owner_two])
+        self.assertEqual([], cross_owner)
+        self.assertEqual([], reverse_cross_owner)
+        self.assertEqual([], no_context)
 
     def test_runtime_readiness_probe_requires_no_owner_or_tenant_context(self) -> None:
         postgres_database_module.check_postgres_ready(self.runtime_engine)
@@ -2955,6 +2992,9 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                         id INTEGER PRIMARY KEY, name TEXT, keywords TEXT, location TEXT,
                         created_at TEXT, last_run_at TEXT, schedule_frequency TEXT,
                         next_alert_at TEXT, enabled INTEGER
+                    );
+                    CREATE TABLE search_runs (
+                        status TEXT
                     );
                     CREATE TABLE applications (
                         id INTEGER PRIMARY KEY, job_id INTEGER, company TEXT, position TEXT,

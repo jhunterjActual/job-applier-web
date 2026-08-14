@@ -74,7 +74,9 @@ only in `sqlite-pre-cutover`. After hosted authority is marked, the rollback
 helper refuses before changing the release symlink. A failed hosted deployment
 leaves the application services stopped and requires a reviewed forward
 correction. The permanent SQLite import wrapper is also denied after the
-transition, while its read-only preflight remains available.
+transition. The root-only read-only reconciliation wrapper is likewise allowed
+only in `sqlite-pre-cutover`; preflight remains available. Neither wrapper can
+rewrite the marker.
 
 ## Eventual operator transition (not for this PR)
 
@@ -108,9 +110,11 @@ an absent marker must not be treated as permission to start.
 
 ## Explicit exclusions and acceptance
 
-This bounded PR adds only the host-local marker helper, persistent systemd
-guards, deploy/rollback/import enforcement, synthetic tests, documentation, and
-build metadata. It does not:
+This bounded authority PR added only the host-local marker helper, persistent
+systemd guards, deploy/rollback/import enforcement, synthetic tests,
+documentation, and build metadata. The later import-reconciliation slice adds a
+read-only command under the same pre-cutover assertion; it does not weaken or
+rewrite this boundary. Neither slice:
 
 - flip `HOSTED_REPOSITORY_CUTOVER_COMPLETE` or add the compatibility file;
 - activate a release, restart a service, import or modify any database/object,
@@ -120,7 +124,9 @@ build metadata. It does not:
 - make root-host compromise recoverable. Root remains the trusted operator
   boundary, and deletion or corruption of the marker fails service startup.
 
-Acceptance requires shell syntax, marker transition/fixed-error tests, the P0
-suite, compile checks, dependency-lock checks, a single `20260813_0008` Alembic
-head, build `20260813.17`, no protected-file changes, and confirmation that the
-cutover flag and live/external state remain untouched.
+Acceptance for the combined tree requires shell syntax, marker transition/fixed-
+error and import-reconciliation tests, the P0 suite, compile checks, dependency-
+lock checks, a single `20260813_0008` Alembic head, build `20260813.18`, no
+protected-file changes, and confirmation that the cutover flag and live/external
+state remain untouched. The reconciliation boundary is documented in
+`STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.

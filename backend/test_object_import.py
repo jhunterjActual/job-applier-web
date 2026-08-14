@@ -2,11 +2,20 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+import sqlite3
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from object_store import InMemoryObjectBackend, ObjectKeyring, stage_object
+from object_store import (
+    FilesystemObjectBackend,
+    InMemoryObjectBackend,
+    ObjectKeyring,
+    ObjectStoreBackendError,
+    R2ObjectBackend,
+    R2ObjectStoreConfiguration,
+    stage_object,
+)
 import sqlite_postgres_import as importer
 
 
@@ -20,6 +29,30 @@ class GeneratedObjectImportTests(unittest.TestCase):
         output_path = Path(root) / "output"
         output_path.mkdir()
         return database_path, output_path
+
+    def _source_with_search_run(self, status: str) -> sqlite3.Connection:
+        source = sqlite3.connect(":memory:")
+        source.row_factory = sqlite3.Row
+        for table in importer.SOURCE_TABLES:
+            if table == "profile":
+                source.execute(
+                    "CREATE TABLE profile (id INTEGER, gemini_api_key TEXT, "
+                    "openai_api_key TEXT, google_maps_api_key TEXT)"
+                )
+            elif table == "applications":
+                source.execute(
+                    "CREATE TABLE applications (id INTEGER, job_id INTEGER, "
+                    "tailored_resume_path TEXT, cover_letter_path TEXT)"
+                )
+            else:
+                source.execute(f'CREATE TABLE "{table}" (id INTEGER)')
+        source.execute(
+            "CREATE TABLE app_users (workos_user_id TEXT, role TEXT, disabled_at TEXT)"
+        )
+        source.execute("CREATE TABLE search_runs (status TEXT)")
+        source.execute("INSERT INTO search_runs (status) VALUES (?)", (status,))
+        source.commit()
+        return source
 
     def test_generated_paths_are_direct_bounded_typed_output_children(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -163,15 +196,358 @@ class GeneratedObjectImportTests(unittest.TestCase):
         for source_table, target_table in importer.SOURCE_TO_TARGET.items():
             self.assertEqual(manifest.counts[source_table], imported[target_table])
 
+    def test_object_inventory_is_bounded_sorted_and_paginated(self) -> None:
+        backend = InMemoryObjectBackend()
+        keys = tuple(f"v1/{index:032x}" for index in (3, 1, 2))
+        backend.objects.update({key: b"synthetic" for key in keys})
+
+        first = backend.list_object_keys(limit=2)
+        second = backend.list_object_keys(cursor=first.next_cursor, limit=2)
+
+        self.assertEqual(tuple(sorted(keys)[:2]), first.object_keys)
+        self.assertEqual(first.object_keys[-1], first.next_cursor)
+        self.assertEqual((sorted(keys)[-1],), second.object_keys)
+        self.assertIsNone(second.next_cursor)
+
+    def test_filesystem_and_r2_inventory_paginate_the_full_bucket(self) -> None:
+        keys = tuple(f"v1/{index:032x}" for index in (1, 2, 3))
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            backend = FilesystemObjectBackend(Path(temporary_directory))
+            for key in reversed(keys):
+                backend.put(key, b"synthetic")
+            first = backend.list_object_keys(limit=2)
+            second = backend.list_object_keys(cursor=first.next_cursor, limit=2)
+        self.assertEqual(keys[:2], first.object_keys)
+        self.assertEqual(first.object_keys[-1], first.next_cursor)
+        self.assertEqual(keys[2:], second.object_keys)
+        self.assertIsNone(second.next_cursor)
+
+        r2 = R2ObjectBackend(
+            R2ObjectStoreConfiguration(
+                endpoint="https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com",
+                bucket="synthetic-private",
+                access_key_id="synthetic-access",
+                secret_access_key="synthetic-secret",
+            )
+        )
+        client = Mock()
+        r2._s3_client = client
+        client.list_objects_v2.side_effect = [
+            {
+                "Contents": [{"Key": keys[0]}, {"Key": keys[1]}],
+                "IsTruncated": True,
+                "NextContinuationToken": "opaque-next",
+            },
+            {"Contents": [{"Key": keys[2]}], "IsTruncated": False},
+        ]
+        first = r2.list_object_keys(limit=2)
+        second = r2.list_object_keys(cursor=first.next_cursor, limit=2)
+        self.assertEqual(keys[:2], first.object_keys)
+        self.assertEqual(keys[2:], second.object_keys)
+        self.assertEqual("", client.list_objects_v2.call_args_list[0].kwargs["Prefix"])
+        self.assertEqual(
+            "opaque-next",
+            client.list_objects_v2.call_args_list[1].kwargs["ContinuationToken"],
+        )
+
+    def test_full_bucket_inventory_rejects_top_level_and_nested_noncanonical_keys(self) -> None:
+        for key in ("unexpected-object", "legacy/nested-object"):
+            with self.subTest(backend="memory", key_shape=key.split("/", 1)[0]):
+                backend = InMemoryObjectBackend()
+                backend.objects[key] = b"synthetic"
+                with self.assertRaises(ObjectStoreBackendError):
+                    backend.list_object_keys()
+
+            with self.subTest(backend="filesystem", key_shape=key.split("/", 1)[0]):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    path = root / key
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"synthetic")
+                    with self.assertRaises(ObjectStoreBackendError):
+                        FilesystemObjectBackend(root).list_object_keys()
+
+            with self.subTest(backend="r2", key_shape=key.split("/", 1)[0]):
+                backend = R2ObjectBackend(
+                    R2ObjectStoreConfiguration(
+                        endpoint="https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com",
+                        bucket="synthetic-private",
+                        access_key_id="synthetic-access",
+                        secret_access_key="synthetic-secret",
+                    )
+                )
+                client = Mock()
+                backend._s3_client = client
+                client.list_objects_v2.return_value = {
+                    "Contents": [{"Key": key}],
+                    "IsTruncated": False,
+                }
+                with self.assertRaises(ObjectStoreBackendError):
+                    backend.list_object_keys()
+                self.assertEqual("", client.list_objects_v2.call_args.kwargs["Prefix"])
+
+    def test_filesystem_inventory_bounds_total_directory_and_file_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            namespace = root / "v1"
+            namespace.mkdir()
+            (namespace / "00000000000000000000000000000001").write_bytes(b"synthetic")
+            (namespace / "00000000000000000000000000000002").write_bytes(b"synthetic")
+            with (
+                # One namespace entry plus one object is allowed; the second
+                # object must cross this patched work ceiling.
+                patch("object_store.MAXIMUM_FILESYSTEM_INVENTORY_ENTRIES", 2),
+                self.assertRaisesRegex(
+                    ObjectStoreBackendError,
+                    "^The private object inventory is unavailable\\.$",
+                ) as caught,
+            ):
+                FilesystemObjectBackend(root).list_object_keys()
+
+        self.assertNotIn(str(root), str(caught.exception))
+        self.assertNotIn("00000000000000000000000000000001", str(caught.exception))
+        self.assertNotIn("00000000000000000000000000000002", str(caught.exception))
+
+    def test_object_inventory_rejects_unbounded_or_unsafe_arguments(self) -> None:
+        backend = InMemoryObjectBackend()
+        for arguments in (
+            {"prefix": "private/"},
+            {"limit": 0},
+            {"limit": 1001},
+            {"limit": True},
+            {"cursor": "x" * 2049},
+            {"cursor": 7},
+        ):
+            with self.subTest(arguments=arguments):
+                with self.assertRaises(ObjectStoreBackendError):
+                    backend.list_object_keys(**arguments)
+
+    def test_active_source_search_run_fails_before_target_or_object_mutation(self) -> None:
+        source = self._source_with_search_run("running")
+        target_engine = Mock()
+        object_backend = Mock()
+        with (
+            patch.object(importer, "_open_source", return_value=source),
+            self.assertRaisesRegex(importer.SQLiteImportError, "active search work"),
+        ):
+            importer.import_sqlite_workspace(
+                Path("synthetic.db"),
+                "user_synthetic_owner",
+                engine=target_engine,
+                object_backend=object_backend,
+            )
+
+        target_engine.connect.assert_not_called()
+        object_backend.put.assert_not_called()
+        object_backend.delete.assert_not_called()
+        object_backend.list_object_keys.assert_not_called()
+
+    def test_nonempty_object_inventory_fails_before_target_connection_or_upload(self) -> None:
+        source = Mock()
+        target_engine = Mock()
+        backend = InMemoryObjectBackend()
+        backend.objects["v1/00000000000000000000000000000001"] = b"synthetic"
+        manifest = importer.ImportManifest(
+            counts={table: 0 for table in importer.SOURCE_TABLES},
+            provider_secret_fields=0,
+            generated_file_paths=1,
+        )
+        with (
+            patch.object(importer, "_open_source", return_value=source),
+            patch.object(importer, "inspect_sqlite_workspace", return_value=manifest),
+            patch.object(backend, "put", wraps=backend.put) as backend_put,
+            patch.object(backend, "delete", wraps=backend.delete) as backend_delete,
+            self.assertRaisesRegex(
+                importer.SQLiteImportError, "bucket is not empty"
+            ),
+        ):
+            importer.import_sqlite_workspace(
+                Path("synthetic.db"),
+                "user_synthetic_owner",
+                engine=target_engine,
+                object_backend=backend,
+            )
+
+        target_engine.connect.assert_not_called()
+        backend_put.assert_not_called()
+        backend_delete.assert_not_called()
+
+    def test_nonempty_bucket_fails_even_when_source_has_no_generated_files(self) -> None:
+        source = Mock()
+        target_engine = Mock()
+        backend = InMemoryObjectBackend()
+        backend.objects["v1/00000000000000000000000000000001"] = b"synthetic"
+        manifest = importer.ImportManifest(
+            counts={table: 0 for table in importer.SOURCE_TABLES},
+            provider_secret_fields=0,
+            generated_file_paths=0,
+        )
+        before = dict(backend.objects)
+        with (
+            patch.object(importer, "_open_source", return_value=source),
+            patch.object(importer, "inspect_sqlite_workspace", return_value=manifest),
+            self.assertRaisesRegex(
+                importer.SQLiteImportError, "bucket is not empty"
+            ),
+        ):
+            importer.import_sqlite_workspace(
+                Path("synthetic.db"),
+                "user_synthetic_owner",
+                engine=target_engine,
+                object_backend=backend,
+            )
+
+        self.assertEqual(before, backend.objects)
+        target_engine.connect.assert_not_called()
+
+    def test_advisory_lock_precedes_authoritative_bucket_recheck(self) -> None:
+        events: list[str] = []
+        backend = InMemoryObjectBackend()
+        raced_key = "v1/00000000000000000000000000000001"
+
+        class Source:
+            def execute(self, _statement):
+                return None
+
+            def rollback(self):
+                return None
+
+            def close(self):
+                return None
+
+        class Transaction:
+            is_active = True
+
+            def rollback(self):
+                events.append("rollback")
+                self.is_active = False
+
+            def commit(self):
+                raise AssertionError("A failed authoritative bucket check must not commit.")
+
+        class Target:
+            def __init__(self):
+                self.transaction = Transaction()
+
+            def begin(self):
+                return self.transaction
+
+            def exec_driver_sql(self, statement):
+                events.append(str(statement))
+
+            def execute(self, statement, *_args, **_kwargs):
+                if "pg_advisory_xact_lock" in str(statement):
+                    events.append("advisory_lock")
+                return None
+
+            def commit(self):
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class Engine:
+            def connect(self):
+                return Target()
+
+        manifest = importer.ImportManifest(
+            counts={table: 0 for table in importer.SOURCE_TABLES},
+            provider_secret_fields=0,
+            generated_file_paths=0,
+        )
+        original_check = importer.require_empty_object_inventory
+
+        def race_bucket_check(selected_backend):
+            check_number = sum(event.startswith("bucket_check_") for event in events) + 1
+            events.append(f"bucket_check_{check_number}")
+            if check_number == 2:
+                selected_backend.objects[raced_key] = b"synthetic-racer"
+            return original_check(selected_backend)
+
+        seed_owner = Mock(return_value=73)
+        target_empty = Mock()
+        import_rows = Mock()
+        set_context = Mock()
+        with (
+            patch.object(importer, "_open_source", return_value=Source()),
+            patch.object(importer, "inspect_sqlite_workspace", return_value=manifest),
+            patch.object(
+                importer,
+                "require_empty_object_inventory",
+                side_effect=race_bucket_check,
+            ),
+            patch.object(importer, "_seed_owner", new=seed_owner),
+            patch.object(importer, "_target_must_be_empty", new=target_empty),
+            patch.object(importer, "set_tenant_context", new=set_context),
+            patch.object(importer, "_import_rows", new=import_rows),
+            patch.object(backend, "put", wraps=backend.put) as backend_put,
+            patch.object(backend, "delete", wraps=backend.delete) as backend_delete,
+            self.assertRaisesRegex(importer.SQLiteImportError, "bucket is not empty"),
+        ):
+            importer.import_sqlite_workspace(
+                Path("synthetic.db"),
+                "user_01SYNTHETICOWNER",
+                engine=Engine(),
+                object_backend=backend,
+                object_keyring=self.keyring,
+            )
+
+        self.assertEqual(2, sum(event.startswith("bucket_check_") for event in events))
+        self.assertLess(events.index("bucket_check_1"), events.index("advisory_lock"))
+        self.assertLess(events.index("advisory_lock"), events.index("bucket_check_2"))
+        self.assertIn("rollback", events)
+        self.assertEqual({raced_key: b"synthetic-racer"}, backend.objects)
+        seed_owner.assert_not_called()
+        target_empty.assert_not_called()
+        set_context.assert_not_called()
+        import_rows.assert_not_called()
+        backend_put.assert_not_called()
+        backend_delete.assert_not_called()
+
+    def test_non_v1_object_fails_import_preflight_before_target_or_object_mutation(self) -> None:
+        for unexpected_key in ("unexpected-object", "legacy/nested-object"):
+            with self.subTest(key_shape=unexpected_key.split("/", 1)[0]):
+                source = Mock()
+                target_engine = Mock()
+                backend = InMemoryObjectBackend()
+                backend.objects[unexpected_key] = b"synthetic"
+                manifest = importer.ImportManifest(
+                    counts={table: 0 for table in importer.SOURCE_TABLES},
+                    provider_secret_fields=0,
+                    generated_file_paths=1,
+                )
+                before = dict(backend.objects)
+                with (
+                    patch.object(importer, "_open_source", return_value=source),
+                    patch.object(
+                        importer, "inspect_sqlite_workspace", return_value=manifest
+                    ),
+                    self.assertRaises((importer.SQLiteImportError, ObjectStoreBackendError)),
+                ):
+                    importer.import_sqlite_workspace(
+                        Path("synthetic.db"),
+                        "user_synthetic_owner",
+                        engine=target_engine,
+                        object_backend=backend,
+                    )
+                self.assertEqual(before, backend.objects)
+                target_engine.connect.assert_not_called()
+
+    def test_target_search_run_is_part_of_the_empty_owner_precondition(self) -> None:
+        connection = Mock()
+        connection.scalar.side_effect = [0] * len(importer.TARGET_TABLES) + [1]
+
+        with self.assertRaisesRegex(importer.SQLiteImportError, "search-run data"):
+            importer._target_must_be_empty(connection)
+
+        self.assertEqual(len(importer.TARGET_TABLES) + 1, connection.scalar.call_count)
+        connection.execute.assert_not_called()
+
     def test_import_failure_rolls_back_and_discards_uploaded_objects(self) -> None:
         backend = InMemoryObjectBackend()
-        staged = stage_object(
-            backend,
-            73,
-            b"%PDF-synthetic",
-            "application/pdf",
-            keyring=self.keyring,
-        )
 
         class Source:
             def execute(self, _statement):
@@ -226,6 +602,13 @@ class GeneratedObjectImportTests(unittest.TestCase):
         )
 
         def fail_after_upload(*_args, staged_objects, **_kwargs):
+            staged = stage_object(
+                backend,
+                73,
+                b"%PDF-synthetic",
+                "application/pdf",
+                keyring=self.keyring,
+            )
             staged_objects.append(staged)
             raise RuntimeError("synthetic database failure")
 
@@ -251,9 +634,7 @@ class GeneratedObjectImportTests(unittest.TestCase):
 
     def test_ambiguous_commit_retains_objects_for_reconciliation(self) -> None:
         backend = InMemoryObjectBackend()
-        staged = stage_object(
-            backend, 73, b"%PDF-synthetic", "application/pdf", keyring=self.keyring
-        )
+        imported_objects = []
 
         class Source:
             def execute(self, _statement): return None
@@ -286,7 +667,11 @@ class GeneratedObjectImportTests(unittest.TestCase):
         )
 
         def import_one(*_args, staged_objects, **_kwargs):
+            staged = stage_object(
+                backend, 73, b"%PDF-synthetic", "application/pdf", keyring=self.keyring
+            )
             staged_objects.append(staged)
+            imported_objects.append(staged)
             return importer._expected_target_counts(
                 manifest,
                 omit_provider_secrets=False,
@@ -312,7 +697,7 @@ class GeneratedObjectImportTests(unittest.TestCase):
                     object_backend=backend,
                     object_keyring=self.keyring,
                 )
-        self.assertIsNotNone(backend.head(staged.metadata.object_key))
+        self.assertIsNotNone(backend.head(imported_objects[0].metadata.object_key))
 
     def test_failed_compensation_is_reported_without_object_keys(self) -> None:
         class FailingDeleteBackend(InMemoryObjectBackend):
@@ -327,9 +712,6 @@ class GeneratedObjectImportTests(unittest.TestCase):
 
     def test_rollback_and_cleanup_failure_require_reconciliation(self) -> None:
         backend = InMemoryObjectBackend()
-        staged = stage_object(
-            backend, 73, b"%PDF-synthetic", "application/pdf", keyring=self.keyring
-        )
         backend.delete = lambda _key: (_ for _ in ()).throw(RuntimeError("delete failed"))
 
         class Source:
@@ -364,6 +746,9 @@ class GeneratedObjectImportTests(unittest.TestCase):
         )
 
         def fail_after_upload(*_args, staged_objects, **_kwargs):
+            staged = stage_object(
+                backend, 73, b"%PDF-synthetic", "application/pdf", keyring=self.keyring
+            )
             staged_objects.append(staged)
             raise RuntimeError("synthetic database failure")
 

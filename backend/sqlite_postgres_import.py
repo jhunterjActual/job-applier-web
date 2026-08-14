@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import sqlite3
 import stat
+import sys
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -29,12 +30,20 @@ from postgres_database import (
     validated_workos_user_id,
 )
 from provider_secrets import encrypt_provider_secret
-from object_store import discard_staged_object, runtime_object_backend, stage_object
+from object_store import (
+    OBJECT_INVENTORY_PAGE_LIMIT,
+    OBJECT_INVENTORY_FULL_PREFIX,
+    discard_staged_object,
+    runtime_object_backend,
+    stage_object,
+)
 
 
 OWNER_ID_ENVIRONMENT_VARIABLE = "CAREERTRELLIS_IMPORT_OWNER_WORKOS_USER_ID"
 SOURCE_TIME_ZONE_ENVIRONMENT_VARIABLE = "CAREERTRELLIS_IMPORT_SOURCE_TIME_ZONE"
 IMPORT_LOCK_NAME = "careertrellis.sqlite-owner-import.v1"
+ACTIVE_SEARCH_RUN_STATUSES = ("preparing", "queued", "running", "cancel_requested")
+TERMINAL_SEARCH_RUN_STATUSES = ("succeeded", "failed", "cancelled")
 SOURCE_TABLES = (
     "profile",
     "base_resumes",
@@ -108,6 +117,7 @@ class ImportManifest:
     counts: dict[str, int]
     provider_secret_fields: int
     generated_file_paths: int
+    nonportable_terminal_search_runs: int = 0
     generated_file_snapshots: dict[tuple[int, str], GeneratedFileSnapshot] = field(
         default_factory=dict,
         repr=False,
@@ -120,13 +130,15 @@ class ImportManifest:
             "counts": dict(self.counts),
             "provider_secret_fields": self.provider_secret_fields,
             "generated_file_paths": self.generated_file_paths,
+            "nonportable_terminal_search_runs": self.nonportable_terminal_search_runs,
         }
         if self.verified_target_counts:
             summary["verified_target_counts"] = dict(self.verified_target_counts)
         return summary
 
 
-def _open_source(path: Path) -> sqlite3.Connection:
+def open_sqlite_snapshot(path: Path) -> sqlite3.Connection:
+    """Open a caller-owned, immutable SQLite source connection."""
     resolved = path.expanduser().resolve(strict=True)
     if not resolved.is_file():
         raise SQLiteImportError("The SQLite source must be a regular file.")
@@ -135,6 +147,10 @@ def _open_source(path: Path) -> sqlite3.Connection:
     connection.execute("PRAGMA query_only = ON")
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
+
+
+def _open_source(path: Path) -> sqlite3.Connection:
+    return open_sqlite_snapshot(path)
 
 
 def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -249,6 +265,16 @@ def _read_generated_file(
     return content
 
 
+def read_generated_snapshot(
+    source_path: Path,
+    raw_path: Any,
+    column: str,
+    expected: GeneratedFileSnapshot,
+) -> bytes:
+    """Read one preflight-captured generated file without following links."""
+    return _read_generated_file(source_path, raw_path, column, expected)
+
+
 def _validate_generated_files(
     source_path: Path,
     connection: sqlite3.Connection,
@@ -279,7 +305,11 @@ def inspect_sqlite_workspace(
     owns_connection = _connection is None
     connection = _connection or _open_source(path)
     try:
-        missing = [table for table in SOURCE_TABLES if not _table_columns(connection, table)]
+        missing = [
+            table
+            for table in (*SOURCE_TABLES, "app_users", "search_runs")
+            if not _table_columns(connection, table)
+        ]
         if missing:
             raise SQLiteImportError(
                 "The SQLite source is missing required tables: " + ", ".join(missing)
@@ -304,11 +334,38 @@ def inspect_sqlite_workspace(
         if connection.execute("SELECT COUNT(*) FROM profile").fetchone()[0] > 1:
             raise SQLiteImportError("The SQLite source contains multiple profile rows.")
 
+        active_search_runs = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM search_runs WHERE status IN (?, ?, ?, ?)",
+                ACTIVE_SEARCH_RUN_STATUSES,
+            ).fetchone()[0]
+        )
+        if active_search_runs:
+            raise SQLiteImportError(
+                "The SQLite source contains active search work; finish or cancel it before import."
+            )
+        terminal_search_runs = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM search_runs WHERE status IN (?, ?, ?)",
+                TERMINAL_SEARCH_RUN_STATUSES,
+            ).fetchone()[0]
+        )
+        invalid_search_runs = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM search_runs WHERE status NOT IN (?, ?, ?, ?, ?, ?, ?)",
+                (*ACTIVE_SEARCH_RUN_STATUSES, *TERMINAL_SEARCH_RUN_STATUSES),
+            ).fetchone()[0]
+        )
+        if invalid_search_runs:
+            raise SQLiteImportError("The SQLite source contains invalid search-run state.")
+
         orphan_checks = {
             "applications": "SELECT COUNT(*) FROM applications a LEFT JOIN jobs j ON j.id = a.job_id WHERE a.job_id IS NULL OR j.id IS NULL",
+            "application_base_resumes": "SELECT COUNT(*) FROM applications a LEFT JOIN base_resumes r ON r.id = a.base_resume_id WHERE a.base_resume_id IS NOT NULL AND r.id IS NULL",
             "application_status_history": "SELECT COUNT(*) FROM application_status_history h LEFT JOIN jobs j ON j.id = h.job_id WHERE j.id IS NULL",
             "application_engagements": "SELECT COUNT(*) FROM application_engagements e LEFT JOIN jobs j ON j.id = e.job_id WHERE j.id IS NULL",
             "base_resume_versions": "SELECT COUNT(*) FROM base_resume_versions v LEFT JOIN base_resumes r ON r.id = v.base_resume_id WHERE r.id IS NULL",
+            "profile_active_resume": "SELECT COUNT(*) FROM profile p LEFT JOIN base_resumes r ON r.id = p.active_base_resume_id WHERE p.active_base_resume_id IS NOT NULL AND r.id IS NULL",
         }
         invalid_links = [
             name for name, query in orphan_checks.items()
@@ -319,6 +376,10 @@ def inspect_sqlite_workspace(
                 "The SQLite source contains orphaned relationships in: "
                 + ", ".join(invalid_links)
             )
+        if connection.execute(
+            "SELECT COUNT(*) FROM (SELECT job_id FROM applications GROUP BY job_id HAVING COUNT(*) > 1)"
+        ).fetchone()[0]:
+            raise SQLiteImportError("The SQLite source contains duplicate job applications.")
 
         null_job_urls = connection.execute(
             "SELECT COUNT(*) FROM jobs WHERE url IS NULL OR TRIM(url) = ''"
@@ -372,6 +433,7 @@ def inspect_sqlite_workspace(
             counts,
             provider_secret_fields,
             generated_file_paths,
+            nonportable_terminal_search_runs=terminal_search_runs,
             generated_file_snapshots=snapshots,
         )
     finally:
@@ -387,6 +449,11 @@ def _source_zone() -> ZoneInfo:
         raise SQLiteImportError(
             f"{SOURCE_TIME_ZONE_ENVIRONMENT_VARIABLE} must name an installed IANA time zone."
         ) from exc
+
+
+def source_time_zone() -> ZoneInfo:
+    """Return the configured legacy timestamp zone used by import and reconciliation."""
+    return _source_zone()
 
 
 def _timestamp(value: Any, source_zone: ZoneInfo) -> datetime | None:
@@ -417,6 +484,18 @@ def _json_object(value: Any) -> str:
     return json.dumps(parsed, separators=(",", ":"), sort_keys=True)
 
 
+def normalize_import_timestamp(value: Any, source_zone: ZoneInfo) -> datetime | None:
+    return _timestamp(value, source_zone)
+
+
+def normalize_import_date(value: Any) -> date | None:
+    return _date(value)
+
+
+def normalize_import_json_object(value: Any) -> dict[str, Any]:
+    return json.loads(_json_object(value))
+
+
 def _target_must_be_empty(connection: Connection) -> None:
     populated = []
     for table in TARGET_TABLES:
@@ -427,6 +506,23 @@ def _target_must_be_empty(connection: Connection) -> None:
         raise SQLiteImportError(
             "The target owner already has data in: " + ", ".join(populated)
         )
+    if connection.scalar(text("SELECT COUNT(*) FROM careertrellis.search_runs")):
+        raise SQLiteImportError("The target owner already has search-run data.")
+
+
+def require_empty_object_inventory(object_backend: Any) -> None:
+    """Fail before staging when the dedicated private bucket is not empty."""
+    try:
+        page = object_backend.list_object_keys(
+            prefix=OBJECT_INVENTORY_FULL_PREFIX,
+            limit=OBJECT_INVENTORY_PAGE_LIMIT,
+        )
+    except Exception:
+        raise SQLiteImportError(
+            "The target private object bucket could not be verified."
+        ) from None
+    if page.object_keys or page.next_cursor is not None:
+        raise SQLiteImportError("The target private object bucket is not empty.")
 
 
 def _seed_owner(connection: Connection, workos_user_id: str) -> int:
@@ -463,6 +559,13 @@ def _returning_id(connection: Connection, statement: str, values: dict[str, Any]
 
 def _rows(source: sqlite3.Connection, table: str) -> list[sqlite3.Row]:
     return source.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
+
+
+def sqlite_table_rows(source: sqlite3.Connection, table: str) -> list[sqlite3.Row]:
+    """Return stable source rows for one allowlisted imported table."""
+    if table not in SOURCE_TABLES and table not in {"app_users", "search_runs"}:
+        raise SQLiteImportError("The requested SQLite snapshot table is not importable.")
+    return _rows(source, table)
 
 
 def _insert_stored_object(target: Connection, staged: Any) -> None:
@@ -897,6 +1000,20 @@ def _expected_target_counts(
     return {table: expected[table] for table in TARGET_TABLES}
 
 
+def expected_target_counts(
+    manifest: ImportManifest,
+    *,
+    omit_provider_secrets: bool,
+    omit_generated_files: bool,
+) -> dict[str, int]:
+    """Return the exact owner-scoped target counts expected after import."""
+    return _expected_target_counts(
+        manifest,
+        omit_provider_secrets=omit_provider_secrets,
+        omit_generated_files=omit_generated_files,
+    )
+
+
 def import_sqlite_workspace(
     source_path: Path,
     owner_workos_user_id: str,
@@ -921,8 +1038,9 @@ def import_sqlite_workspace(
             validate_generated_files=not omit_generated_files,
             _connection=source,
         )
-        if manifest.generated_file_paths and not omit_generated_files:
+        if not omit_generated_files:
             resolved_object_backend = resolved_object_backend or runtime_object_backend()
+            require_empty_object_inventory(resolved_object_backend)
 
         owned_engine = engine is None
         target_engine = engine or create_postgres_engine(
@@ -937,6 +1055,12 @@ def import_sqlite_workspace(
                     text("SELECT pg_advisory_xact_lock(hashtextextended(:name, 0))"),
                     {"name": IMPORT_LOCK_NAME},
                 )
+                if not omit_generated_files:
+                    # The early check avoids taking the database lock for an
+                    # already-dirty bucket. This authoritative check closes the
+                    # race between direct importers before either can create an
+                    # owner, stage an object, or write an imported row.
+                    require_empty_object_inventory(resolved_object_backend)
                 owner_id = _seed_owner(target, owner_workos_user_id)
                 set_tenant_context(target, owner_id, owner_workos_user_id)
                 _target_must_be_empty(target)
@@ -1049,4 +1173,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception:
+        print("SQLite/PostgreSQL import failed.", file=sys.stderr)
+        raise SystemExit(1)

@@ -2306,15 +2306,32 @@ class DependencyLockTests(unittest.TestCase):
     def test_import_and_rotation_wrappers_require_reviewed_release_and_root_owned_envs(self) -> None:
         scripts = self.project_dir() / "deploy" / "scripts"
         import_source = (scripts / "import-sqlite-postgres.sh").read_text(encoding="utf-8")
+        reconcile_source = (scripts / "reconcile-sqlite-postgres-import.sh").read_text(
+            encoding="utf-8"
+        )
         rotation_source = (scripts / "rotate-provider-secrets.sh").read_text(encoding="utf-8")
-        for source in (import_source, rotation_source):
-            self.assertIn("/opt/careertrellis/staging/releases/*", source)
+        for source in (import_source, reconcile_source):
+            self.assertIn(
+                '$(dirname "${release_dir}") != "/opt/careertrellis/staging/releases"',
+                source,
+            )
+            self.assertIn('! ${release_revision} =~ ^[0-9a-f]{40}$', source)
+            self.assertIn(
+                '! -f ${release_dir}/backend/sqlite_postgres_reconcile.py', source
+            )
             self.assertIn("root:root 600", source)
             self.assertIn("flock -n", source)
+            self.assertIn("systemctl is-active", source)
+        self.assertIn(
+            '! -f ${release_dir}/backend/sqlite_postgres_import.py', import_source
+        )
+        self.assertIn("/opt/careertrellis/staging/releases/*", rotation_source)
+        self.assertIn("root:root 600", rotation_source)
+        self.assertIn("flock -n", rotation_source)
         self.assertIn("CAREERTRELLIS_MIGRATION_DATABASE_URL", import_source)
         self.assertIn("CAREERTRELLIS_DATA_DIR", import_source)
         self.assertIn("target-object-storage.env", import_source)
-        self.assertIn("systemctl is-active", import_source)
+        self.assertIn("assert-import-allowed", reconcile_source)
         self.assertIn("CAREERTRELLIS_ROTATE_OWNER_USER_ID", rotation_source)
 
     def test_release_activation_requires_root_only_runtime_secret_files(self) -> None:
