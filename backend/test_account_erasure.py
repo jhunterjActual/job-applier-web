@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import re
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, Mock, patch
@@ -757,6 +758,46 @@ class AccountErasureDeploymentBoundaryTests(unittest.TestCase):
             for line in source.splitlines()
             if line and not line.startswith("#") and "=" in line
         }
+
+    def test_release_tools_accept_exact_boolean_without_activating_worker(self):
+        scripts = self.project_dir() / "deploy" / "scripts"
+        enablement_pattern = (
+            r"^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=(true|false)$"
+        )
+        for name in ("deploy-release.sh", "rollback-release.sh"):
+            with self.subTest(script=name):
+                source = (scripts / name).read_text(encoding="utf-8")
+                self.assertIn(f"grep -Ec '{enablement_pattern}'", source)
+                self.assertNotIn(
+                    'grep -Fxc "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=false"',
+                    source,
+                )
+                self.assertIn(
+                    "systemctl is-active --quiet careertrellis-erasure-worker.service",
+                    source,
+                )
+                self.assertIn(
+                    "systemctl restart careertrellis-erasure-worker.service",
+                    source,
+                )
+                self.assertNotIn(
+                    "systemctl enable --now careertrellis-erasure-worker.service",
+                    source,
+                )
+
+        exact_enablement = re.compile(enablement_pattern)
+        for value in ("true", "false"):
+            self.assertIsNotNone(
+                exact_enablement.fullmatch(
+                    f"CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED={value}"
+                )
+            )
+        for value in ("TRUE", "False", " true", "true ", "1", ""):
+            self.assertIsNone(
+                exact_enablement.fullmatch(
+                    f"CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED={value}"
+                )
+            )
 
     def test_shared_only_ui_uses_exact_irreversible_warning_and_request_contract(self):
         static = self.project_dir() / "backend" / "static"
