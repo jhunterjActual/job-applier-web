@@ -29,6 +29,30 @@ WORKER_FORBIDDEN_ENVIRONMENT_VARIABLES = frozenset({
     "WORKOS_REDIRECT_URI",
     "WORKOS_LOGOUT_RETURN_TO",
 })
+ACCOUNT_ERASURE_WORKER_FORBIDDEN_ENVIRONMENT_VARIABLES = frozenset({
+    "CAREERTRELLIS_ALLOWED_HOSTS",
+    "CAREERTRELLIS_TRUSTED_PROXY_TOKEN",
+    "CAREERTRELLIS_AUTH_MODE",
+    "CAREERTRELLIS_IDENTITY_STORE",
+    "CAREERTRELLIS_STAGING_OWNER_WORKOS_USER_ID",
+    "CAREERTRELLIS_MIGRATION_DATABASE_URL",
+    "CAREERTRELLIS_SEARCH_WORKER_ENABLED",
+    "CAREERTRELLIS_WORKER_HEARTBEAT_SECONDS",
+    "CAREERTRELLIS_OBJECT_STORE_ACTIVE_KEY_ID",
+    "CAREERTRELLIS_OBJECT_STORE_KEYRING_B64",
+    "CAREERTRELLIS_PROVIDER_SECRET_STORE",
+    "CAREERTRELLIS_PROVIDER_SECRET_ACTIVE_KEY_ID",
+    "CAREERTRELLIS_PROVIDER_SECRET_KEYRING_B64",
+    "PLAYWRIGHT_BROWSERS_PATH",
+    "GEMINI_API_KEY",
+    "OPENAI_API_KEY",
+    "GOOGLE_MAPS_API_KEY",
+    "WORKOS_API_KEY",
+    "WORKOS_CLIENT_ID",
+    "WORKOS_COOKIE_PASSWORD",
+    "WORKOS_REDIRECT_URI",
+    "WORKOS_LOGOUT_RETURN_TO",
+})
 
 # Paths
 BASE_DIR = Path(__file__).resolve().parent
@@ -104,6 +128,91 @@ def search_worker_enabled() -> bool:
             "CAREERTRELLIS_SEARCH_WORKER_ENABLED must be true or false."
         )
     return raw_value == "true"
+
+
+def account_erasure_worker_enabled() -> bool:
+    """Require explicit activation before irreversible erasure work is claimed."""
+    raw_value = os.environ.get(
+        "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED", "false"
+    ).strip().lower()
+    if raw_value not in {"true", "false"}:
+        raise RuntimeConfigurationError(
+            "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED must be true or false."
+        )
+    return raw_value == "true"
+
+
+def get_account_erasure_poll_seconds() -> int:
+    """Return the bounded idle poll interval for the erasure worker."""
+    raw_value = os.environ.get(
+        "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_POLL_SECONDS", "15"
+    ).strip()
+    try:
+        interval = int(raw_value)
+    except ValueError as exc:
+        raise RuntimeConfigurationError(
+            "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_POLL_SECONDS must be an integer from 5 through 300."
+        ) from exc
+    if interval < 5 or interval > 300:
+        raise RuntimeConfigurationError(
+            "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_POLL_SECONDS must be an integer from 5 through 300."
+        )
+    return interval
+
+
+def get_account_erasure_batch_size() -> int:
+    """Return a bounded number of blob deletions for one durable claim."""
+    raw_value = os.environ.get(
+        "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_BATCH_SIZE", "10"
+    ).strip()
+    try:
+        size = int(raw_value)
+    except ValueError as exc:
+        raise RuntimeConfigurationError(
+            "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_BATCH_SIZE must be an integer from 1 through 500."
+        ) from exc
+    if size < 1 or size > 500:
+        raise RuntimeConfigurationError(
+            "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_BATCH_SIZE must be an integer from 1 through 500."
+        )
+    return size
+
+
+def validate_account_erasure_worker_configuration() -> dict[str, object]:
+    """Validate only settings required by the delete-only erasure process."""
+    if any(
+        os.environ.get(name, "").strip()
+        for name in ACCOUNT_ERASURE_WORKER_FORBIDDEN_ENVIRONMENT_VARIABLES
+    ):
+        raise RuntimeConfigurationError(
+            "The account-erasure worker environment contains a credential or setting outside its delete-only boundary."
+        )
+    environment = get_runtime_environment()
+    if environment == "local":
+        raise RuntimeConfigurationError(
+            "The account-erasure worker requires a shared-host environment."
+        )
+    enabled = account_erasure_worker_enabled()
+    get_account_erasure_poll_seconds()
+    get_account_erasure_batch_size()
+    if enabled and os.environ.get("CAREERTRELLIS_OBJECT_STORE", "").strip().lower() != "r2_encrypted":
+        raise RuntimeConfigurationError(
+            "The account-erasure worker requires CAREERTRELLIS_OBJECT_STORE=r2_encrypted."
+        )
+    if enabled:
+        try:
+            from postgres_database import database_url_from_environment
+
+            database_url = database_url_from_environment()
+        except Exception as exc:
+            raise RuntimeConfigurationError(
+                "The account-erasure worker requires its dedicated PostgreSQL role."
+            ) from exc
+        if database_url.username != "careertrellis_erasure_worker":
+            raise RuntimeConfigurationError(
+                "The account-erasure worker requires its dedicated PostgreSQL role."
+            )
+    return {"environment": environment, "enabled": enabled}
 
 
 def validate_worker_runtime_configuration() -> dict[str, object]:

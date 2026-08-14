@@ -38,7 +38,9 @@ The generated role passwords and pgBackRest cipher passphrase must remain in the
 
 - PostgreSQL major version 18 is pinned for this stage.
 - Alembic runs only through the dedicated migration role, which explicitly assumes the non-login schema-owner role.
-- Runtime and worker roles do not own tables, are not superusers, and do not have `BYPASSRLS`.
+- Runtime, search-worker, and account-erasure-worker roles do not own tables,
+  are not superusers, and do not have `BYPASSRLS`. The erasure role receives
+  only its exact SECURITY DEFINER broker functions, never general table access.
 - The database and application schema grant no privileges to `PUBLIC`; runtime access is explicit and authentication-controlled authorization fields cannot be selected on insert or changed later.
 - Every protected row has a non-null `owner_user_id`.
 - Parent/child relationships use composite ownership foreign keys so records from different users cannot be joined accidentally.
@@ -56,7 +58,7 @@ The schema is a clean PostgreSQL target for a later rehearsed import. This PR do
 3. Bind PostgreSQL only to loopback and the WireGuard address. Block port 5432 on the public interface at both firewalls.
 4. Install PostgreSQL 18 from a reviewed repository and record the exact minor version.
 5. Create the `careertrellis` database as a cluster administrator.
-6. Generate independent random passwords for the migration, runtime, and worker roles. Store them in the password manager and root-owned environment files, not shell history or Git.
+6. Generate independent random passwords for the migration, runtime, and search-worker roles. Add the account-erasure role later only through its separate additive bootstrap so existing credentials are never rotated implicitly. Store every password in the password manager and root-owned environment files, not shell history or Git.
 7. Take a PostgreSQL-native backup before every migration after the database begins accepting real data.
 
 All seven host prerequisites are complete for staging. Before applying this draft schema, review and merge the exact PR, deploy that exact commit to a non-active release directory, take another full pgBackRest backup, and record its successful label. Do not run a working-tree checkout or an unreviewed commit against the staging database.
@@ -72,6 +74,16 @@ psql --host 10.70.0.2 --username postgres --dbname careertrellis \
   --set worker_password='REPLACE' \
   --file deploy/postgres/bootstrap-roles.sql
 ```
+
+For migration `20260814_0009`, first run the exact release's separate
+`bootstrap-erasure-worker-role.sh` on the database host and install its encrypted
+bundle on the application host with
+`careertrellis-install-erasure-worker-credential`. This additive path creates
+only `careertrellis_erasure_worker`; it does not consume or rotate the original
+three-role bundle. The role must exist before Alembic applies migration 0009.
+After the migration, reapply `grant-runtime.sql` so broad table, sequence, and
+function access is revoked before only the exact erasure broker functions are
+granted.
 
 Install `deploy/config/postgres-migration.environment.example` as `/etc/careertrellis/postgres-migration.env`, replace its placeholder, set owner `root:root`, and set mode `0600`. Then apply an exact reviewed release:
 

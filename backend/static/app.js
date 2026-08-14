@@ -313,6 +313,13 @@ const fullRestoreForm = document.getElementById("full-restore-form");
 const fullRestoreFile = document.getElementById("full-restore-file");
 const fullRestorePassword = document.getElementById("full-restore-password");
 const fullRestoreConfirmReplace = document.getElementById("full-restore-confirm-replace");
+const openAccountErasureBtn = document.getElementById("open-account-erasure-btn");
+const accountErasureModal = document.getElementById("account-erasure-modal");
+const accountErasureForm = document.getElementById("account-erasure-form");
+const accountErasureConfirmation = document.getElementById("account-erasure-confirmation");
+const accountErasureAcknowledgement = document.getElementById("account-erasure-acknowledgement");
+const accountErasureStatus = document.getElementById("account-erasure-status");
+const requestAccountErasureBtn = document.getElementById("request-account-erasure-btn");
 
 // Initialize on Load
 document.addEventListener("DOMContentLoaded", () => {
@@ -373,6 +380,10 @@ document.addEventListener("DOMContentLoaded", () => {
     bindEvent(fullRestoreForm, "submit", restoreFullBackup);
     bindEvent(document.getElementById("close-full-restore-modal"), "click", hideFullRestoreModal);
     bindEvent(document.getElementById("cancel-full-restore-btn"), "click", hideFullRestoreModal);
+    bindEvent(openAccountErasureBtn, "click", showAccountErasureModal);
+    bindEvent(accountErasureForm, "submit", requestAccountErasure);
+    bindEvent(document.getElementById("close-account-erasure-modal"), "click", hideAccountErasureModal);
+    bindEvent(document.getElementById("cancel-account-erasure-btn"), "click", hideAccountErasureModal);
     window.addEventListener("afterprint", finishInterviewPrepPrint);
     
     // Modal controls
@@ -428,6 +439,11 @@ async function configureSessionControls() {
         if (!response.ok) return;
         const session = await response.json();
         sessionSignout.hidden = session.authentication !== "workos" || !session.authenticated;
+        if (openAccountErasureBtn) {
+            openAccountErasureBtn.hidden = session.authentication !== "workos"
+                || !session.authenticated
+                || session.account_erasure_available !== true;
+        }
     } catch (error) {
         console.warn("Session controls are unavailable.");
     }
@@ -960,6 +976,62 @@ function showFullRestoreModal() {
 function hideFullRestoreModal() {
     closeAccessibleModal(fullRestoreModal);
     fullRestoreForm.reset();
+}
+
+function showAccountErasureModal() {
+    accountErasureForm.reset();
+    accountErasureStatus.hidden = true;
+    accountErasureStatus.textContent = "";
+    requestAccountErasureBtn.disabled = false;
+    openAccessibleModal(accountErasureModal, accountErasureConfirmation);
+}
+
+function hideAccountErasureModal() {
+    closeAccessibleModal(accountErasureModal);
+    accountErasureForm.reset();
+    accountErasureStatus.hidden = true;
+    accountErasureStatus.textContent = "";
+}
+
+async function requestAccountErasure(event) {
+    event.preventDefault();
+    if (accountErasureConfirmation.value !== "DELETE MY CAREERTRELLIS DATA") {
+        alert("Type the confirmation phrase exactly as shown.");
+        accountErasureConfirmation.focus();
+        return;
+    }
+    if (!accountErasureAcknowledgement.checked) {
+        alert("Confirm that you understand this request is irreversible.");
+        accountErasureAcknowledgement.focus();
+        return;
+    }
+    if (!confirm("Final confirmation: disable this workspace now and permanently erase its CareerTrellis data?")) return;
+
+    requestAccountErasureBtn.disabled = true;
+    accountErasureStatus.hidden = false;
+    accountErasureStatus.textContent = "Submitting the irreversible erasure request...";
+    try {
+        const response = await fetch(`${API_URL}/api/account/erasure`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                confirmation: accountErasureConfirmation.value,
+                acknowledge_irreversible: true
+            })
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || "The erasure request could not be accepted.");
+
+        document.querySelector(".app-container")?.setAttribute("inert", "");
+        accountErasureConfirmation.disabled = true;
+        accountErasureAcknowledgement.disabled = true;
+        document.getElementById("cancel-account-erasure-btn").hidden = true;
+        document.getElementById("close-account-erasure-modal").hidden = true;
+        accountErasureStatus.textContent = "Request accepted. This CareerTrellis session has ended, deletion will continue asynchronously, and the request cannot be cancelled. You may close this tab.";
+    } catch (error) {
+        requestAccountErasureBtn.disabled = false;
+        accountErasureStatus.textContent = error.message || "The erasure request could not be accepted.";
+    }
 }
 
 async function backupResponseMessage(response, fallback) {

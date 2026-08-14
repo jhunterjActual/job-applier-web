@@ -169,18 +169,24 @@ predicates on every protected relation. Both repository scopes close before
 serialization or response streaming begins. Its privacy and consistency
 contract is in `STAGE_3_POSTGRES_USER_DATA_EXPORT.md`.
 
+The account-erasure slice adds irreversible owner-only acceptance and durable,
+idempotent PostgreSQL/private-object cleanup through a dedicated least-
+privilege erasure worker. It deletes CareerTrellis application data only; the
+WorkOS identity remains outside this boundary. The worker is installed disabled
+and final shared activation remains blocked. See
+`STAGE_3_POSTGRES_ACCOUNT_ERASURE.md`.
+
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
-- any general-purpose background queue beyond the bounded search-run and
-  scheduled saved-search dispatch brokers;
+- any general-purpose background queue beyond the bounded search-run,
+  scheduled saved-search dispatch, and account-erasure brokers;
 - any application operation outside the converted lifecycle, engagement,
   interview-preparation, record-list, and insight repository boundaries;
 - any unconverted job-domain reads;
-- account-deletion reads and writes;
-- direct protected application deletion and account deletion across PostgreSQL
-  metadata and encrypted private objects, including account-wide durable
-  deletion orchestration;
+- any standalone direct protected application deletion outside the converted
+  job-deletion and account-erasure aggregates; and
+- final no-omission rehearsal, recovery, activation, and post-cutover evidence.
 
 Provider secrets and stored-object metadata already have PostgreSQL/RLS
 boundaries. The four provider-context consumers use the encrypted secret
@@ -189,6 +195,9 @@ repository implementation. The bounded search worker described in
 `STAGE_3_POSTGRES_SEARCH_RUNS.md` uses only its dedicated database credential
 and the owner-scoped provider-secret keyring; do not give it the web runtime,
 migration, object-storage, or R2 credentials merely for symmetry.
+The account-erasure worker is a separate Unix and PostgreSQL principal. It gets
+only its bounded broker functions and a separate delete-only private-bucket
+credential; it receives no provider-secret or object-decryption keyring.
 
 ## Data authority and rollback contract
 
@@ -230,10 +239,12 @@ not waive the exact-release checks:
    local automated-test, object-integrity, and syntax receipts but does not
    substitute for the configured PostgreSQL CI job.
 3. Confirm `/etc/careertrellis/staging.env`, `search-worker.env`,
-   `postgres-runtime.env`, `postgres-worker.env`, `provider-secrets.env`, and
-   `object-storage.env` are `root:root` mode `0600`; confirm both complete
-   keyrings can be retrieved independently. Confirm the worker unit loads the
-   dedicated worker files, not `staging.env` or any WorkOS/web-cookie values.
+   `account-erasure-worker.env`, `postgres-runtime.env`, `postgres-worker.env`,
+   `postgres-erasure-worker.env`, `provider-secrets.env`, `object-storage.env`,
+   and `account-erasure-object-storage.env` are `root:root` mode `0600`;
+   confirm both complete keyrings can be retrieved independently. Confirm each
+   worker unit loads only its dedicated files. The erasure worker must have no
+   WorkOS, provider-secret, web-cookie, upload, or decryption-keyring value.
 4. Confirm WireGuard, the runtime database role, the permanent private R2
    bucket, its bucket-only credential, and its application-egress `/32`
    restriction are ready without printing secrets.
@@ -254,8 +265,9 @@ not waive the exact-release checks:
 This sequence is documentation for the later complete transition, not an
 instruction to activate this foundation release:
 
-1. Enter maintenance mode, stop both web and worker services, and prove they are
-   inactive so SQLite and generated files form one quiescent source snapshot.
+1. Enter maintenance mode, stop the web, search-worker, and erasure-worker
+   services, and prove they are inactive so SQLite and generated files form one
+   quiescent source snapshot.
 2. Create and verify a recoverable SQLite/generated-files snapshot. Record only
    sanitized inventory counts and hashes.
 3. Take and verify the immediately pre-import PostgreSQL backup and independent
@@ -274,9 +286,9 @@ instruction to activate this foundation release:
    on any missing row/object, count or hash mismatch, duplicate reference, or
    orphan key.
 8. Confirm the exact reviewed release carries the hosted-authority capability,
-   mark PostgreSQL/R2 authoritative while both services remain stopped, activate
-   only that release, and verify its build, local liveness/readiness, service
-   state, and HTTPS path. The marker must precede the first hosted write.
+   mark PostgreSQL/R2 authoritative while all three services remain stopped,
+   activate only that release, and verify its build, local liveness/readiness,
+   service state, and HTTPS path. The marker must precede the first hosted write.
 9. Verify owner login and logout, representative profile/resume/job/application
    reads and writes, provider capability, export/deletion scope, and authorized
    generated-object download. Repeat missing-context and cross-tenant negative

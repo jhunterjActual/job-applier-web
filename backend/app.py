@@ -50,6 +50,12 @@ from user_data_export_repository import (
     EXPORT_UNAVAILABLE_MESSAGE,
     runtime_user_data_export_repository,
 )
+from account_erasure_repository import (
+    ACCOUNT_ERASURE_RECEIPT_RETENTION_DAYS,
+    ACCOUNT_ERASURE_UNAVAILABLE_MESSAGE,
+    AccountErasureUnavailable,
+    runtime_account_erasure_repository,
+)
 from database import get_db_connection, init_db
 from data_store import (
     LOCAL_DATA_STORE,
@@ -207,6 +213,9 @@ FULL_BACKUP_PATHS = frozenset({"/api/full-backup", "/api/full-backup/restore"})
 SHARED_BACKUP_RESTORE_DETAIL = (
     "In-app full backup and restore are unavailable in shared mode."
 )
+LOCAL_ACCOUNT_ERASURE_DETAIL = (
+    "Account erasure is available only in shared-host mode."
+)
 
 initialize_sentry(APP_BUILD)
 
@@ -315,6 +324,7 @@ def _secured_response(request: Request, response: Response) -> Response:
         or request.url.path.startswith("/static/")
         or request.url.path.startswith("/auth/")
         or request.url.path == "/api/session"
+        or request.url.path == "/api/account/erasure"
     ):
         response.headers["Cache-Control"] = "no-store, max-age=0"
     if request.url.path.startswith("/auth/"):
@@ -442,7 +452,7 @@ async def protect_local_browser_boundary(request: Request, call_next):
         if owner_context_token is not None:
             reset_current_owner_user_id(owner_context_token)
     refreshed_session = getattr(request.state, "refreshed_session", None)
-    if refreshed_session:
+    if refreshed_session and not getattr(request.state, "suppress_refreshed_session", False):
         response.set_cookie(
             SESSION_COOKIE_NAME,
             refreshed_session,
@@ -551,6 +561,11 @@ class FullBackupRequest(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+class AccountErasureRequest(BaseModel):
+    confirmation: Literal["DELETE MY CAREERTRELLIS DATA"]
+    acknowledge_irreversible: Literal[True]
+
+
 @app.get("/auth/login", include_in_schema=False)
 async def auth_login() -> Response:
     """Redirect a shared-host browser to the hosted WorkOS AuthKit UI."""
@@ -652,10 +667,19 @@ def auth_logout(request: Request) -> Response:
 def get_session_summary(request: Request) -> dict[str, object]:
     """Expose only the authentication mode needed to render session controls."""
     if get_auth_configuration() is None:
-        return {"authentication": "local", "authenticated": True}
+        return {
+            "authentication": "local",
+            "authenticated": True,
+            "account_erasure_available": False,
+        }
+    try:
+        account_erasure_available = data_store_kind() == SHARED_DATA_STORE
+    except config.RuntimeConfigurationError:
+        account_erasure_available = False
     return {
         "authentication": "workos",
         "authenticated": bool(getattr(request.state, "local_user_id", None)),
+        "account_erasure_available": account_erasure_available,
     }
 
 
@@ -1541,6 +1565,58 @@ def export_user_data() -> StreamingResponse:
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+@app.post("/api/account/erasure", status_code=202)
+def request_account_erasure(
+    erasure: AccountErasureRequest,
+    request: Request,
+) -> JSONResponse:
+    """Disable the shared workspace and durably queue irreversible owner-data erasure."""
+    if data_store_kind() != SHARED_DATA_STORE:
+        raise HTTPException(status_code=409, detail=LOCAL_ACCOUNT_ERASURE_DETAIL)
+    if not getattr(request.state, "local_user_id", None):
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    try:
+        receipt = runtime_account_erasure_repository().request_erasure()
+    except AccountErasureUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=ACCOUNT_ERASURE_UNAVAILABLE_MESSAGE,
+        ) from exc
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail=ACCOUNT_ERASURE_UNAVAILABLE_MESSAGE,
+        ) from None
+
+    try:
+        accepted_at_text = receipt["accepted_at"]
+        if not isinstance(accepted_at_text, str) or len(accepted_at_text) > 64:
+            raise ValueError("The account erasure receipt is invalid.")
+        accepted_at = datetime.fromisoformat(accepted_at_text)
+        if receipt["status"] != "accepted" or accepted_at.tzinfo is None:
+            raise ValueError("The account erasure receipt is invalid.")
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=503,
+            detail=ACCOUNT_ERASURE_UNAVAILABLE_MESSAGE,
+        ) from None
+
+    response = JSONResponse(
+        {
+            "status": "accepted",
+            "accepted_at": accepted_at.isoformat(),
+            "receipt_retention_days": ACCOUNT_ERASURE_RECEIPT_RETENTION_DAYS,
+        },
+        status_code=202,
+        headers={"Cache-Control": "no-store"},
+    )
+    # Do not let an authentication refresh restore the cookie after the local
+    # account row has been disabled by the acceptance transaction.
+    request.state.suppress_refreshed_session = True
+    _delete_auth_cookie(response, SESSION_COOKIE_NAME)
+    return response
 
 
 def _remove_temporary_download(path: Path) -> None:

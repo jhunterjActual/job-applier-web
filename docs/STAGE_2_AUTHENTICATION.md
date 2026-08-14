@@ -91,3 +91,9 @@ Keep the Basic Authentication gate until these checks pass and a separate Caddy-
 - A rollback does not remove the additive `app_users` table and does not need to.
 - Disabling or deleting the owner in WorkOS terminates future authentication after existing session validation/refresh reflects that state. For immediate containment, restore the outer Basic Authentication gate if it was removed and revoke the WorkOS session in the WorkOS dashboard.
 - Changing the configured immutable owner ID does not silently reassign the workspace. The existing owner mapping causes the callback to fail closed; an owner-account migration requires an explicit reviewed database procedure.
+
+The later shared-host account-erasure boundary deletes CareerTrellis application
+data only. Its accepted `202` response clears the local CareerTrellis cookie and
+the disabled owner mapping rejects subsequent application authorization, but it
+does not delete the WorkOS identity or claim global WorkOS session revocation.
+See `STAGE_3_POSTGRES_ACCOUNT_ERASURE.md`.

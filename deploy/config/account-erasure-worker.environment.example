@@ -1,0 +1,15 @@
+# Root-owned systemd EnvironmentFile for the account-erasure worker.
+# Install as /etc/careertrellis/account-erasure-worker.env with root:root mode 0600.
+# Do not add web, WorkOS, provider-secret, object-keyring, migration, or search-worker values.
+CAREERTRELLIS_ENVIRONMENT=staging
+CAREERTRELLIS_DATA_DIR=/var/lib/careertrellis/account-erasure
+
+# This remains false until a separately reviewed hosted activation explicitly
+# enables asynchronous account erasure. Installing this release does not start
+# or enable the service.
+CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=false
+# CAREERTRELLIS_DATA_STORE=postgres
+
+# Both values are parsed through fixed bounds by account_erasure_worker.py.
+CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_POLL_SECONDS=15
+CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_BATCH_SIZE=10

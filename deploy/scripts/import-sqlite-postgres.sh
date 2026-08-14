@@ -76,9 +76,9 @@ if ! flock -n 9; then
     echo "Another SQLite import or reconciliation operation is running." >&2
     exit 1
 fi
-for service in careertrellis-web.service careertrellis-worker.service; do
+for service in careertrellis-web.service careertrellis-worker.service careertrellis-erasure-worker.service; do
     if systemctl is-active --quiet "${service}"; then
-        echo "Stop the web and worker services before importing a SQLite snapshot." >&2
+        echo "Stop the web, search-worker, and erasure-worker services before importing a SQLite snapshot." >&2
         exit 1
     fi
 done

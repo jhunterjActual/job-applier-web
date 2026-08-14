@@ -1,7 +1,7 @@
 """PostgreSQL migration and row-level isolation integration tests.
 
 Set CAREERTRELLIS_POSTGRES_TEST_ADMIN_URL to an isolated PostgreSQL 18 server.
-The test creates and removes one dedicated database and four fixed test roles.
+The test creates and removes one dedicated database and five fixed test roles.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier
 from unittest.mock import Mock, patch
+from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
@@ -66,6 +67,12 @@ from generated_material_repository import (
     PostgreSQLGeneratedMaterialRepository,
 )
 from application_engagements import EngagementLimitError, MAX_ENGAGEMENTS_PER_JOB
+from account_erasure_repository import (
+    AccountErasureLeaseLost,
+    PostgreSQLAccountErasureRepository,
+    PostgreSQLAccountErasureWorkerRepository,
+    claim_next_account_erasure,
+)
 from job_suppressions import job_url_fingerprint
 from maps_providers import HeadquartersResult
 
@@ -87,9 +94,11 @@ SCHEMA_OWNER = "careertrellis_schema_owner"
 MIGRATION_ROLE = "careertrellis_migration"
 RUNTIME_ROLE = "careertrellis_runtime"
 WORKER_ROLE = "careertrellis_worker"
+ERASURE_WORKER_ROLE = "careertrellis_erasure_worker"
 MIGRATION_PASSWORD = "migration-test-only"
 RUNTIME_PASSWORD = "runtime-test-only"
 WORKER_PASSWORD = "worker-test-only"
+ERASURE_WORKER_PASSWORD = "erasure-worker-test-only"
 
 
 def _provider_secret_environment(active_key_id: str = "kek-test-a") -> dict[str, str]:
@@ -213,6 +222,12 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             max_overflow=0,
             pool_reset_on_return="rollback",
         )
+        cls.erasure_worker_engine = create_engine(
+            cls._role_url(ERASURE_WORKER_ROLE, ERASURE_WORKER_PASSWORD),
+            pool_size=2,
+            max_overflow=0,
+            pool_reset_on_return="rollback",
+        )
 
     @classmethod
     def _role_url(cls, role: str, password: str) -> URL:
@@ -231,7 +246,13 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 f"WHERE datname = '{DATABASE_NAME}' AND pid <> pg_backend_pid()"
             )
             connection.exec_driver_sql(f'DROP DATABASE IF EXISTS "{DATABASE_NAME}"')
-            for role in (MIGRATION_ROLE, RUNTIME_ROLE, WORKER_ROLE, SCHEMA_OWNER):
+            for role in (
+                MIGRATION_ROLE,
+                RUNTIME_ROLE,
+                WORKER_ROLE,
+                ERASURE_WORKER_ROLE,
+                SCHEMA_OWNER,
+            ):
                 connection.exec_driver_sql(f'DROP ROLE IF EXISTS "{role}"')
 
     @classmethod
@@ -253,12 +274,17 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 f"CREATE ROLE {WORKER_ROLE} LOGIN NOSUPERUSER NOCREATEDB "
                 f"NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '{WORKER_PASSWORD}'"
             )
+            connection.exec_driver_sql(
+                f"CREATE ROLE {ERASURE_WORKER_ROLE} LOGIN NOSUPERUSER NOCREATEDB "
+                "NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS "
+                f"PASSWORD '{ERASURE_WORKER_PASSWORD}'"
+            )
             connection.exec_driver_sql(f"GRANT {SCHEMA_OWNER} TO {MIGRATION_ROLE}")
             connection.exec_driver_sql(f'CREATE DATABASE "{DATABASE_NAME}"')
             connection.exec_driver_sql(f'REVOKE ALL ON DATABASE "{DATABASE_NAME}" FROM PUBLIC')
             connection.exec_driver_sql(
                 f"GRANT CONNECT ON DATABASE \"{DATABASE_NAME}\" TO "
-                f"{MIGRATION_ROLE}, {RUNTIME_ROLE}, {WORKER_ROLE}"
+                f"{MIGRATION_ROLE}, {RUNTIME_ROLE}, {WORKER_ROLE}, {ERASURE_WORKER_ROLE}"
             )
 
     @classmethod
@@ -280,6 +306,39 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA careertrellis "
                 f"TO {RUNTIME_ROLE}, {WORKER_ROLE}"
             )
+            connection.exec_driver_sql(
+                "REVOKE ALL ON careertrellis.account_erasure_requests, "
+                "careertrellis.account_erasure_claim_queue "
+                f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}, {ERASURE_WORKER_ROLE}"
+            )
+            account_erasure_signatures = (
+                "sync_account_erasure_claim_queue()",
+                "request_account_erasure()",
+                "claim_next_account_erasure(uuid, integer)",
+                "account_erasure_object_batch(uuid, bigint, uuid, integer)",
+                "confirm_account_erasure_object_deleted(uuid, bigint, uuid, uuid)",
+                "renew_account_erasure_lease(uuid, bigint, uuid, integer)",
+                "retry_account_erasure(uuid, bigint, uuid, text)",
+                "finalize_account_erasure(uuid, bigint, uuid)",
+                "purge_expired_account_erasures(integer)",
+            )
+            for signature in account_erasure_signatures:
+                connection.exec_driver_sql(
+                    f"REVOKE ALL ON FUNCTION careertrellis.{signature} "
+                    f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}, {ERASURE_WORKER_ROLE}"
+                )
+            connection.exec_driver_sql(
+                "GRANT USAGE ON SCHEMA careertrellis TO careertrellis_erasure_worker"
+            )
+            connection.exec_driver_sql(
+                "GRANT EXECUTE ON FUNCTION careertrellis.request_account_erasure() "
+                f"TO {RUNTIME_ROLE}"
+            )
+            for signature in account_erasure_signatures[2:]:
+                connection.exec_driver_sql(
+                    f"GRANT EXECUTE ON FUNCTION careertrellis.{signature} "
+                    f"TO {ERASURE_WORKER_ROLE}"
+                )
             connection.exec_driver_sql(
                 "REVOKE ALL ON careertrellis.search_run_claim_queue "
                 f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}"
@@ -320,7 +379,12 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        for name in ("runtime_engine", "worker_engine", "admin_engine"):
+        for name in (
+            "runtime_engine",
+            "worker_engine",
+            "erasure_worker_engine",
+            "admin_engine",
+        ):
             engine = getattr(cls, name, None)
             if engine is not None:
                 engine.dispose()
@@ -368,6 +432,203 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 ),
                 {"owner": self.user_two},
             )
+
+    def test_account_erasure_is_idempotent_owner_isolated_and_retains_only_receipt(self) -> None:
+        owner_one_object_id = uuid4()
+        owner_two_object_id = uuid4()
+        with self.admin_engine.begin() as connection:
+            for owner_id, object_id in (
+                (self.user_one, owner_one_object_id),
+                (self.user_two, owner_two_object_id),
+            ):
+                connection.execute(
+                    text(
+                        "INSERT INTO careertrellis.stored_objects "
+                        "(id, owner_user_id, object_key, content_type, plaintext_size, sha256, wrapped_data_key) "
+                        "VALUES (:id, :owner, :key, 'application/pdf', 1, :digest, :wrapped)"
+                    ),
+                    {
+                        "id": object_id,
+                        "owner": owner_id,
+                        "key": f"v1/{object_id.hex}",
+                        "digest": b"d" * 32,
+                        "wrapped": b"wrapped",
+                    },
+                )
+
+        owner_repository = PostgreSQLAccountErasureRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        first = owner_repository.request_erasure()
+        second = owner_repository.request_erasure()
+        self.assertEqual(first, second)
+        self.assertEqual("accepted", first["status"])
+        self.assertEqual({"status", "accepted_at"}, set(first))
+
+        with self.admin_engine.connect() as connection:
+            self.assertIsNotNone(
+                connection.scalar(
+                    text("SELECT disabled_at FROM careertrellis.app_users WHERE id = :owner"),
+                    {"owner": self.user_one},
+                )
+            )
+            self.assertIsNone(
+                connection.scalar(
+                    text("SELECT disabled_at FROM careertrellis.app_users WHERE id = :owner"),
+                    {"owner": self.user_two},
+                )
+            )
+            self.assertEqual(
+                1,
+                connection.scalar(
+                    text(
+                        "SELECT count(*) FROM careertrellis.account_erasure_requests "
+                        "WHERE owner_user_id = :owner"
+                    ),
+                    {"owner": self.user_one},
+                ),
+            )
+
+        claim = claim_next_account_erasure(
+            str(uuid4()), engine=self.erasure_worker_engine, lease_seconds=300
+        )
+        self.assertIsNotNone(claim)
+        self.assertEqual(self.user_one, claim.owner_user_id)
+        worker_repository = PostgreSQLAccountErasureWorkerRepository(
+            engine=self.erasure_worker_engine
+        )
+        targets = worker_repository.object_batch(claim, limit=20)
+        self.assertEqual((f"v1/{owner_one_object_id.hex}",), tuple(t.object_key for t in targets))
+        synthetic_bucket = {target.object_key for target in targets}
+        for target in targets:
+            synthetic_bucket.remove(target.object_key)
+            worker_repository.confirm_object_deleted(claim, target)
+        self.assertTrue(worker_repository.finalize(claim))
+        self.assertEqual(set(), synthetic_bucket)
+
+        with self.admin_engine.connect() as connection:
+            self.assertEqual(
+                0,
+                connection.scalar(
+                    text("SELECT count(*) FROM careertrellis.app_users WHERE id = :owner"),
+                    {"owner": self.user_one},
+                ),
+            )
+            self.assertEqual(
+                1,
+                connection.scalar(
+                    text("SELECT count(*) FROM careertrellis.app_users WHERE id = :owner"),
+                    {"owner": self.user_two},
+                ),
+            )
+            self.assertEqual(
+                0,
+                connection.scalar(
+                    text("SELECT count(*) FROM careertrellis.jobs WHERE owner_user_id = :owner"),
+                    {"owner": self.user_one},
+                ),
+            )
+            self.assertEqual(
+                0,
+                connection.scalar(
+                    text("SELECT count(*) FROM careertrellis.profiles WHERE owner_user_id = :owner"),
+                    {"owner": self.user_one},
+                ),
+            )
+            self.assertEqual(
+                1,
+                connection.scalar(
+                    text("SELECT count(*) FROM careertrellis.jobs WHERE owner_user_id = :owner"),
+                    {"owner": self.user_two},
+                ),
+            )
+            self.assertEqual(
+                1,
+                connection.scalar(
+                    text("SELECT count(*) FROM careertrellis.profiles WHERE owner_user_id = :owner"),
+                    {"owner": self.user_two},
+                ),
+            )
+            self.assertEqual(
+                1,
+                connection.scalar(
+                    text("SELECT count(*) FROM careertrellis.stored_objects WHERE id = :id"),
+                    {"id": owner_two_object_id},
+                ),
+            )
+            receipt = connection.execute(
+                text(
+                    "SELECT owner_user_id, status, completed_at, receipt_expires_at "
+                    "FROM careertrellis.account_erasure_requests"
+                )
+            ).mappings().one()
+            self.assertIsNone(receipt["owner_user_id"])
+            self.assertEqual("completed", receipt["status"])
+            self.assertEqual(
+                receipt["completed_at"] + timedelta(days=30),
+                receipt["receipt_expires_at"],
+            )
+
+        with self.admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE careertrellis.account_erasure_requests "
+                    "SET receipt_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second', "
+                    "completed_at = CURRENT_TIMESTAMP - INTERVAL '30 days 1 second'"
+                )
+            )
+        self.assertEqual(1, worker_repository.purge_expired(limit=10))
+
+    def test_account_erasure_claim_is_single_consumer_and_stale_lease_fails_closed(self) -> None:
+        PostgreSQLAccountErasureRepository(
+            self.user_one, engine=self.runtime_engine
+        ).request_erasure()
+        barrier = Barrier(2)
+
+        def claim_once():
+            barrier.wait()
+            return claim_next_account_erasure(
+                str(uuid4()), engine=self.erasure_worker_engine, lease_seconds=300
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            claims = tuple(executor.map(lambda _index: claim_once(), range(2)))
+        claimed = [claim for claim in claims if claim is not None]
+        self.assertEqual(1, len(claimed))
+        claim = claimed[0]
+
+        with self.admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE careertrellis.account_erasure_requests "
+                    "SET lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' "
+                    "WHERE id = CAST(:request_id AS uuid)"
+                ),
+                {"request_id": claim.request_id},
+            )
+        worker_repository = PostgreSQLAccountErasureWorkerRepository(
+            engine=self.erasure_worker_engine
+        )
+        with self.assertRaises(AccountErasureLeaseLost):
+            worker_repository.renew(claim, lease_seconds=300)
+
+        with self.assertRaises(DBAPIError):
+            with self.runtime_engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "SELECT * FROM careertrellis.claim_next_account_erasure("
+                        "CAST(:worker AS uuid), 300)"
+                    ),
+                    {"worker": str(uuid4())},
+                ).all()
+        with self.assertRaises(DBAPIError):
+            with self.runtime_engine.begin() as connection:
+                connection.execute(
+                    text("SELECT * FROM careertrellis.request_account_erasure()")
+                ).all()
+        with self.assertRaises(DBAPIError):
+            with self.erasure_worker_engine.begin() as connection:
+                connection.scalar(text("SELECT count(*) FROM careertrellis.account_erasure_requests"))
 
     def test_generated_material_replacement_is_owner_scoped_atomic_and_stale_safe(self) -> None:
         object_backend = object_store_module.InMemoryObjectBackend()
@@ -2761,7 +3022,8 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                     "WHERE nspname = 'careertrellis' AND relkind = 'r' "
                     "AND relname NOT IN ("
                     "'alembic_version', 'search_run_claim_queue', "
-                    "'scheduled_search_dispatch_queue')"
+                    "'scheduled_search_dispatch_queue', "
+                    "'account_erasure_requests', 'account_erasure_claim_queue')"
                 )
             ).all()
             self.assertGreaterEqual(len(table_rows), 14)
