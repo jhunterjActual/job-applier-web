@@ -448,6 +448,9 @@
                             <button type="button" class="btn btn-secondary" id="open-full-restore-btn">
                                 <i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i> Restore Full Backup
                             </button>
+                            <button type="button" class="btn btn-danger" id="open-account-erasure-btn" hidden>
+                                <i class="fa-solid fa-user-slash" aria-hidden="true"></i> Erase My CareerTrellis Data
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -742,6 +745,48 @@
                         <button type="button" class="btn btn-secondary" id="cancel-full-backup-btn">Cancel</button>
                         <button type="submit" class="btn btn-primary" id="create-full-backup-btn">
                             <i class="fa-solid fa-download" aria-hidden="true"></i> Create &amp; Download
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Irreversible shared-host account-data erasure -->
+    <div class="modal" id="account-erasure-modal" role="dialog" aria-modal="true" aria-labelledby="account-erasure-title" aria-hidden="true" inert>
+        <div class="modal-content modal-narrow-content">
+            <div class="modal-header">
+                <div>
+                    <h2 id="account-erasure-title">Erase My CareerTrellis Data</h2>
+                    <p class="text-muted">Permanently remove this CareerTrellis workspace</p>
+                </div>
+                <button type="button" class="close-modal-btn" id="close-account-erasure-modal" aria-label="Close account data erasure"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <form id="account-erasure-form">
+                <div class="modal-body">
+                    <div class="backup-security-notice destructive-notice">
+                        <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+                        <div>
+                            <strong>This request cannot be cancelled.</strong>
+                            <p>CareerTrellis will disable this workspace immediately, then permanently delete its profile, resumes, jobs, applications, searches, saved provider credentials, and encrypted generated files. Your WorkOS identity is not deleted.</p>
+                        </div>
+                    </div>
+                    <div class="form-group margin-top-md">
+                        <label for="account-erasure-confirmation">Type <strong>DELETE MY CAREERTRELLIS DATA</strong></label>
+                        <input type="text" id="account-erasure-confirmation" maxlength="32" autocomplete="off" required>
+                    </div>
+                    <label class="restore-confirmation margin-top-md" for="account-erasure-acknowledgement">
+                        <input type="checkbox" id="account-erasure-acknowledgement" required>
+                        <span>I understand that acceptance disables this workspace immediately and that deletion continues asynchronously.</span>
+                    </label>
+                    <p class="form-help margin-top-sm">A privacy-minimized operational completion receipt is retained for 30 days, then purged. No WorkOS account deletion is requested.</p>
+                    <p class="provider-alerts margin-top-sm" id="account-erasure-status" role="status" aria-live="assertive" aria-atomic="true" hidden></p>
+                </div>
+                <div class="modal-footer">
+                    <div class="modal-actions">
+                        <button type="button" class="btn btn-secondary" id="cancel-account-erasure-btn">Cancel</button>
+                        <button type="submit" class="btn btn-danger" id="request-account-erasure-btn">
+                            <i class="fa-solid fa-user-slash" aria-hidden="true"></i> Permanently Erase My Data
                         </button>
                     </div>
                 </div>

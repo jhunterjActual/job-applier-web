@@ -4,7 +4,7 @@ This slice adds the fail-closed reconciliation gate for a reviewed SQLite-to-
 PostgreSQL/private-object import. It does **not** import, repair, delete, activate,
 or change data authority. `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains false,
 no hosted-authority compatibility manifest is shipped, and the single Alembic
-head remains `20260813_0008`.
+head remains `20260814_0009`.
 
 ## Read-only boundary
 
@@ -29,7 +29,7 @@ the receipt.
 Before opening either source or target, the command:
 
 - takes the shared non-blocking maintenance lock and SQLite-import lock;
-- proves the web and worker services are inactive;
+- proves the web, search-worker, and erasure-worker services are inactive;
 - requires the installed hosted-authority helper to confirm the exact
   `sqlite-pre-cutover` state; and
 - confines execution to the reviewed release and configured SQLite data root.
@@ -77,9 +77,10 @@ no-omission rehearsal or final cutover gate.
 ## Import and ambiguous outcomes
 
 The root import wrapper now runs reconciliation immediately after a successful
-import while its maintenance/import locks remain held and both services remain
-inactive. Success therefore requires both the atomic import receipt and a fresh
-independent read-only reconciliation receipt.
+import while its maintenance/import locks remain held and the web, search-
+worker, and account-erasure-worker services remain inactive. Success therefore
+requires both the atomic import receipt and a fresh independent read-only
+reconciliation receipt.
 
 If the importer exits unsuccessfully—including an indeterminate PostgreSQL
 commit or object-compensation result—the wrapper does not retry. It names
@@ -93,14 +94,14 @@ safe. Reconciliation remains read-only even when it detects partial state.
 First use this command only against a disposable empty PostgreSQL target and a
 dedicated disposable private object bucket. Keep both targets until an operator
 has reviewed the sanitized receipt. A later permanent import must repeat the
-same no-omission command against its frozen source while both services remain
-stopped, then retain the receipt with backup, restore, RLS, object-integrity,
-readiness, and owner-flow evidence.
+same no-omission command against its frozen source while the web, search-worker,
+and account-erasure-worker services remain stopped, then retain the receipt with
+backup, restore, RLS, object-integrity, readiness, and owner-flow evidence.
 
 This PR does not authorize either run. It does not apply a migration, change a
 database or bucket, edit an environment file, restart a service, move a release
 symlink, mark PostgreSQL/R2 authoritative, expose staging, or invite another
-user. Build strings agree at `20260813.18`; local SQLite behavior is unchanged.
+user. Build strings agree at `20260813.19`; local SQLite behavior is unchanged.
 
 ## Acceptance checklist
 
@@ -116,5 +117,5 @@ user. Build strings agree at `20260813.18`; local SQLite behavior is unchanged.
 - [ ] Missing/extra/corrupt imported-owner data, ambiguous commit outcomes,
       active local search work, unexpected target search runs, and orphan
       objects fail closed without repair.
-- [ ] The Alembic head remains `20260813_0008`, cutover remains false, no
+- [ ] The Alembic head remains `20260814_0009`, cutover remains false, no
       compatibility manifest exists, and no live/external state changed.

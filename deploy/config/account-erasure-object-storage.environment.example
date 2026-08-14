@@ -1,0 +1,10 @@
+# Root-owned systemd EnvironmentFile for account-erasure object deletion.
+# Install as /etc/careertrellis/account-erasure-object-storage.env with root:root mode 0600.
+# Use a credential scoped to delete objects only from the private generated-
+# material bucket. Never add an object keyring: erasure deletes ciphertext and
+# must not be able to decrypt or upload user material.
+CAREERTRELLIS_OBJECT_STORE=r2_encrypted
+CAREERTRELLIS_OBJECT_STORE_ENDPOINT=https://replace-with-account-id.r2.cloudflarestorage.com
+CAREERTRELLIS_OBJECT_STORE_BUCKET=replace-with-private-object-bucket
+CAREERTRELLIS_OBJECT_STORE_ACCESS_KEY_ID=replace-with-delete-only-access-key-id
+CAREERTRELLIS_OBJECT_STORE_SECRET_ACCESS_KEY=replace-with-delete-only-secret-access-key

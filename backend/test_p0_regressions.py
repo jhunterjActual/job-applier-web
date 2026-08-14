@@ -3684,7 +3684,11 @@ class WebAuthenticationTests(unittest.TestCase):
         self.assertEqual(303, browser_response.status_code)
         self.assertEqual("/auth/login", browser_response.headers["location"])
         self.assertEqual(
-            {"authentication": "workos", "authenticated": True},
+            {
+                "authentication": "workos",
+                "authenticated": True,
+                "account_erasure_available": False,
+            },
             session_response.json(),
         )
         self.assertEqual(303, callback_response.status_code)

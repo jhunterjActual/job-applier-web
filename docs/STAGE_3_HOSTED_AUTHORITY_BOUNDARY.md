@@ -12,8 +12,10 @@ change PostgreSQL, R2, DNS, Caddy, credentials, or users for this PR.
 
 Reviewed host provisioning installs the root-owned helper as
 `/usr/local/sbin/careertrellis-authority`, installs release-independent systemd
-drop-ins for both application services, and initializes this file only when the
-entire authority directory is absent on a virgin host:
+drop-ins for the web and search-worker services, and initializes this file only
+when the entire authority directory is absent on a virgin host. The later
+account-erasure slice installs the same guard for its separately disabled
+worker:
 
 ```text
 /etc/careertrellis/authority/data-authority
@@ -41,17 +43,18 @@ existing host must rerun the reviewed no-start provisioning step once to install
 the helper/drop-ins and create the pre-cutover state before deploying this
 boundary release.
 
-The state is operational control data, not application or tenant data, so no
-Alembic change is needed. The single migration head remains
-`20260813_0008`.
+The state is operational control data, not application or tenant data, so the
+authority slice itself needed no Alembic change and its head remained
+`20260813_0008`. The later account-erasure slice advances the single head to
+`20260814_0009` without changing or activating this marker.
 
 ## Restart and rollback enforcement
 
 Before deploy or rollback mutates a release symlink, unit, installed helper, or
 service, the installed helper validates the selected immutable target. The
-systemd drop-ins then run the installed helper before every web or worker start;
-restoring an older unit file does not remove those drop-ins. In
-`postgres-r2-authoritative` state, both services require the current immutable
+systemd drop-ins then run the installed helper before every web, search-worker,
+or account-erasure-worker start; restoring an older unit file does not remove
+those drop-ins. In `postgres-r2-authoritative` state, all three services require the current immutable
 release to contain exactly this reviewed capability declaration:
 
 ```text
@@ -60,10 +63,12 @@ deploy/hosted-authority.compatibility: postgres-r2-authoritative-v1
 
 The pre-mutation deploy check and web guard also require the already root-owned
 runtime environment to select `CAREERTRELLIS_DATA_STORE=postgres` and
-`CAREERTRELLIS_OBJECT_STORE=r2_encrypted`. The worker deliberately receives no
-web, WorkOS, migration, or object-store credentials; it is covered by the same
-release capability and continues to use only its PostgreSQL worker and
-owner-scoped provider-secret settings.
+`CAREERTRELLIS_OBJECT_STORE=r2_encrypted`. The search worker deliberately
+receives no web, WorkOS, migration, or object-store credentials. The separate
+account-erasure worker receives only its broker database URL, bounded settings,
+and delete-only private-bucket credential—never WorkOS, provider-secret, web,
+upload, or object-decryption settings. Both workers are covered by the same
+release capability.
 
 This PR does not add that capability file because the repository cutover flag
 is still false. A later final cutover review must add it only to a release whose
@@ -80,8 +85,9 @@ rewrite the marker.
 
 ## Eventual operator transition (not for this PR)
 
-The final cutover must keep the maintenance lock held and both application
-services stopped through snapshot, migration, no-omission import, and
+The final cutover must keep the maintenance lock held and the web, search-
+worker, and account-erasure-worker services stopped through snapshot,
+migration, no-omission import, and
 reconciliation. Only after those receipts pass, and **before any service can
 accept the first PostgreSQL/R2 write**, an operator may run the one-way command:
 
@@ -114,7 +120,7 @@ This bounded authority PR added only the host-local marker helper, persistent
 systemd guards, deploy/rollback/import enforcement, synthetic tests,
 documentation, and build metadata. The later import-reconciliation slice adds a
 read-only command under the same pre-cutover assertion; it does not weaken or
-rewrite this boundary. Neither slice:
+rewrite this boundary. Those two slices did not:
 
 - flip `HOSTED_REPOSITORY_CUTOVER_COMPLETE` or add the compatibility file;
 - activate a release, restart a service, import or modify any database/object,
@@ -124,9 +130,14 @@ rewrite this boundary. Neither slice:
 - make root-host compromise recoverable. Root remains the trusted operator
   boundary, and deletion or corruption of the marker fails service startup.
 
+The later account-erasure slice adds migration 0009 and an isolated worker but
+still does not change authority, add the compatibility file, or activate a
+service. Its boundary is documented in
+`STAGE_3_POSTGRES_ACCOUNT_ERASURE.md`.
+
 Acceptance for the combined tree requires shell syntax, marker transition/fixed-
 error and import-reconciliation tests, the P0 suite, compile checks, dependency-
-lock checks, a single `20260813_0008` Alembic head, build `20260813.18`, no
+lock checks, a single `20260814_0009` Alembic head, build `20260813.19`, no
 protected-file changes, and confirmation that the cutover flag and live/external
 state remain untouched. The reconciliation boundary is documented in
 `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.

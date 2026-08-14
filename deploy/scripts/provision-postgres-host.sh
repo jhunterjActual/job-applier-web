@@ -27,7 +27,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl postgresql-common
+apt-get install -y age ca-certificates curl openssl postgresql-common
 
 . /etc/os-release
 if [[ ${VERSION_CODENAME:-} != noble ]]; then
@@ -106,6 +106,7 @@ host    all             all             ::1/128                 scram-sha-256
 host    ${database_name} careertrellis_migration ${application_address}/32 scram-sha-256
 host    ${database_name} careertrellis_runtime   ${application_address}/32 scram-sha-256
 host    ${database_name} careertrellis_worker    ${application_address}/32 scram-sha-256
+host    ${database_name} careertrellis_erasure_worker ${application_address}/32 scram-sha-256
 EOF
 chown root:postgres "${config_directory}/pg_hba.conf"
 chmod 0640 "${config_directory}/pg_hba.conf"
@@ -140,3 +141,5 @@ runuser -u postgres -- pg_isready --host=127.0.0.1 --port=5432 --dbname="${datab
 echo "PostgreSQL ${postgres_version} is ready on loopback and ${wireguard_address} only."
 printf 'Listeners:\n'
 printf '  %s\n' "${listeners[@]}"
+echo "Before migration 0009, run bootstrap-erasure-worker-role.sh from the exact reviewed release."
+echo "This provisioner did not create or rotate the additive account-erasure worker role."

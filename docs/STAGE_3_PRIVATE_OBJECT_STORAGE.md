@@ -28,7 +28,10 @@ subsequent repository transition has been reviewed.
 - The object key-encryption keyring is available only to the web process through
   a root-owned environment file. It is independent from the provider-secret
   keyring, the R2 S3 credential, the pgBackRest cipher passphrase, and database
-  credentials. Neither PostgreSQL, Caddy, nor the idle worker receives it.
+  credentials. Neither PostgreSQL, Caddy, the search worker, nor the account-
+  erasure worker receives it. The erasure worker later receives a distinct
+  bucket-scoped deletion credential and can delete only opaque ciphertext keys
+  supplied by its database broker; it cannot decrypt or serve an object.
 - Upload is not considered complete until the service can read the ciphertext
   back, authenticate and decrypt it, and verify the plaintext digest and size.
   Failed metadata insertion is compensated by deleting the just-uploaded
@@ -148,13 +151,14 @@ Perform the following only after the exact PR is reviewed and merged.
 
 5. Import into the disposable targets with **no omission switches**:
 
-   Stop the staging web and worker first so the SQLite database and generated
-   files are one quiescent source snapshot. Pass a separate root-owned mode-0600
+   Stop the staging web, search-worker, and erasure-worker services first so the
+   SQLite database and generated files are one quiescent source snapshot. Pass
+   a separate root-owned mode-0600
    object environment file that names only the disposable rehearsal bucket;
    never overwrite the staging web object's environment file for this test.
 
    ```bash
-   sudo systemctl stop careertrellis-web.service careertrellis-worker.service
+   sudo systemctl stop careertrellis-web.service careertrellis-worker.service careertrellis-erasure-worker.service
    sudo /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT/deploy/scripts/import-sqlite-postgres.sh \
      /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT \
      /etc/careertrellis/postgres-rehearsal.env \

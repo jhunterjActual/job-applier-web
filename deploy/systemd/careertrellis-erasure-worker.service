@@ -1,0 +1,40 @@
+[Unit]
+Description=CareerTrellis account-erasure worker
+After=network-online.target
+Wants=network-online.target
+ConditionPathIsSymbolicLink=/opt/careertrellis/staging/current
+
+[Service]
+Type=simple
+User=careertrellis-erasure-worker
+Group=careertrellis
+WorkingDirectory=/opt/careertrellis/staging/current/backend
+EnvironmentFile=/etc/careertrellis/account-erasure-worker.env
+EnvironmentFile=/etc/careertrellis/postgres-erasure-worker.env
+EnvironmentFile=/etc/careertrellis/account-erasure-object-storage.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/careertrellis/staging/current/backend/venv/bin/python account_erasure_worker.py
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/careertrellis/account-erasure
+TasksMax=64
+MemoryHigh=256M
+MemoryMax=384M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
