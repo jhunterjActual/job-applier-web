@@ -12,6 +12,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from data_store import SHARED_DATA_STORE, data_store_kind
+from discovery_repository import acquire_owner_job_catalog_lock
 from object_store import (
     EncryptedStagedObject,
     ObjectBackend,
@@ -305,6 +306,7 @@ class PostgreSQLGeneratedMaterialRepository:
         with tenant_transaction(self._engine, self._owner_user_id) as connection:
             connection.execute(text("SET LOCAL lock_timeout = '5s'"))
             connection.execute(text("SET LOCAL statement_timeout = '30s'"))
+            acquire_owner_job_catalog_lock(connection, self._owner_user_id)
             context = self._context_rows(connection, job_id, lock=True)
             if require_application and context["application"] is None:
                 raise GeneratedMaterialNotFound(

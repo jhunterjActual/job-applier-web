@@ -1433,7 +1433,7 @@ def clear_all_job_suppressions() -> dict:
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: int) -> dict:
     """
-    Delete a specific job posting from the database, along with its associated application record.
+    Delete one owner-authorized job and its dependent records.
     
     Args:
         job_id (int): The unique ID of the job posting to delete.

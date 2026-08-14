@@ -15,6 +15,7 @@ from sqlalchemy import Engine, text
 from data_store import LOCAL_DATA_STORE, data_store_kind
 from database import get_db_connection
 from discovery_repository import acquire_owner_job_catalog_lock
+from generated_material_repository import PostgreSQLGeneratedMaterialRepository
 from job_suppressions import job_url_fingerprint, record_job_suppression, suppression_values
 from postgres_database import runtime_postgres_engine, tenant_transaction
 from provider_secrets import current_owner_user_id
@@ -547,6 +548,7 @@ class PostgreSQLJobRetentionRepository:
             "owner_user_id": self._owner_user_id,
             "job_id": safe_job_id,
         }
+        has_material_objects = False
         with tenant_transaction(self._engine, self._owner_user_id) as connection:
             self._set_write_timeouts(connection)
             acquire_owner_job_catalog_lock(connection, self._owner_user_id)
@@ -562,30 +564,102 @@ class PostgreSQLJobRetentionRepository:
             ).mappings().one_or_none()
             if not job:
                 raise JobRetentionNotFound("Job not found.")
-            protected = connection.scalar(
+
+            application = connection.execute(
                 text(
                     """
-                    SELECT
-                      EXISTS(SELECT 1 FROM careertrellis.applications
-                             WHERE job_id = :job_id AND owner_user_id = :owner_user_id)
-                      OR EXISTS(SELECT 1 FROM careertrellis.application_status_history
-                                WHERE job_id = :job_id AND owner_user_id = :owner_user_id)
-                      OR EXISTS(SELECT 1 FROM careertrellis.application_engagements
-                                WHERE job_id = :job_id AND owner_user_id = :owner_user_id)
+                    SELECT id, tailored_resume_object_id, cover_letter_object_id
+                    FROM careertrellis.applications
+                    WHERE job_id = :job_id AND owner_user_id = :owner_user_id
+                    FOR UPDATE
                     """
                 ),
                 parameters,
-            )
-            if protected:
-                raise JobRetentionProtected(
-                    "Jobs with application activity or generated materials cannot be deleted."
+            ).mappings().one_or_none()
+            object_ids = []
+            if application is not None:
+                object_ids = list(
+                    dict.fromkeys(
+                        object_id
+                        for object_id in (
+                            application["tailored_resume_object_id"],
+                            application["cover_letter_object_id"],
+                        )
+                        if object_id is not None
+                    )
                 )
+            exclusive_object_ids = object_ids
+            if object_ids:
+                referencing_applications = connection.execute(
+                    text(
+                        """
+                        SELECT id, tailored_resume_object_id, cover_letter_object_id
+                        FROM careertrellis.applications
+                        WHERE owner_user_id = :owner_user_id
+                          AND id <> :application_id
+                          AND (
+                              tailored_resume_object_id = ANY(CAST(:object_ids AS uuid[]))
+                              OR cover_letter_object_id = ANY(CAST(:object_ids AS uuid[]))
+                          )
+                        ORDER BY id
+                        FOR UPDATE
+                        """
+                    ),
+                    {
+                        **parameters,
+                        "application_id": application["id"],
+                        "object_ids": object_ids,
+                    },
+                ).mappings().all()
+                shared_object_ids = {
+                    object_id
+                    for row in referencing_applications
+                    for object_id in (
+                        row["tailored_resume_object_id"],
+                        row["cover_letter_object_id"],
+                    )
+                    if object_id in object_ids
+                }
+                exclusive_object_ids = [
+                    object_id
+                    for object_id in object_ids
+                    if object_id not in shared_object_ids
+                ]
+                locked_objects = connection.execute(
+                    text(
+                        """
+                        SELECT id FROM careertrellis.stored_objects
+                        WHERE owner_user_id = :owner_user_id
+                          AND id = ANY(CAST(:object_ids AS uuid[]))
+                        ORDER BY id
+                        FOR UPDATE
+                        """
+                    ),
+                    {**parameters, "object_ids": object_ids},
+                ).scalars().all()
+                if len(locked_objects) != len(object_ids):
+                    raise RuntimeError("Generated-material metadata is unavailable.")
             self._upsert_suppression(
                 connection,
                 job,
                 deleted_at=_utc_now(),
                 deletion_source="manual",
             )
+            if exclusive_object_ids:
+                tombstoned = connection.execute(
+                    text(
+                        """
+                        UPDATE careertrellis.stored_objects
+                        SET deleted_at = CURRENT_TIMESTAMP
+                        WHERE owner_user_id = :owner_user_id
+                          AND id = ANY(CAST(:object_ids AS uuid[]))
+                        """
+                    ),
+                    {**parameters, "object_ids": exclusive_object_ids},
+                ).rowcount
+                if tombstoned != len(exclusive_object_ids):
+                    raise RuntimeError("Generated-material metadata is unavailable.")
+                has_material_objects = True
             cursor = connection.execute(
                 text(
                     "DELETE FROM careertrellis.jobs "
@@ -595,6 +669,20 @@ class PostgreSQLJobRetentionRepository:
             )
             if cursor.rowcount != 1:
                 raise JobRetentionNotFound("Job not found.")
+
+        # The owner-scoped database deletion is already committed. Blob
+        # cleanup is best effort: ordinary reconciliation preserves the
+        # authorized-download grace period, while any backend/configuration
+        # failure leaves durable tombstones for a later pass and must not turn
+        # a successful delete into an error response.
+        if has_material_objects:
+            try:
+                PostgreSQLGeneratedMaterialRepository(
+                    self._owner_user_id,
+                    engine=self._engine,
+                ).reconcile_deleted_objects()
+            except Exception:
+                pass
 
 
 def runtime_job_retention_repository(

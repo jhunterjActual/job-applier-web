@@ -29,6 +29,7 @@ See [docs/STAGE_3_POSTGRES_SEARCH_RUNS.md](docs/STAGE_3_POSTGRES_SEARCH_RUNS.md)
 See [docs/STAGE_3_POSTGRES_SCHEDULED_SEARCH_DISPATCH.md](docs/STAGE_3_POSTGRES_SCHEDULED_SEARCH_DISPATCH.md) for atomic worker-only due saved-search publication, occurrence idempotency, and schedule advancement under the continuing no-activation boundary.
 See [docs/STAGE_3_SHARED_BACKUP_RESTORE_POLICY.md](docs/STAGE_3_SHARED_BACKUP_RESTORE_POLICY.md) for the fail-closed shared-host backup/restore policy: encrypted workspace archives remain local-only, while PostgreSQL and private object-store recovery stay operator-managed.
 See [docs/STAGE_3_POSTGRES_GENERATED_MATERIALS.md](docs/STAGE_3_POSTGRES_GENERATED_MATERIALS.md) for the owner-scoped PostgreSQL/private-object tailoring persistence slice, atomic encrypted-object replacement contract, and explicit no-activation boundary.
+See [docs/STAGE_3_POSTGRES_DEPENDENT_JOB_DELETION.md](docs/STAGE_3_POSTGRES_DEPENDENT_JOB_DELETION.md) for owner-scoped single-job deletion with atomic dependent-row removal, private-object tombstones, and post-commit reconciliation under the continuing no-activation boundary.
 
 A self-contained, privacy-first workspace designed to streamline job discovery, resume tailoring, guided-manual applications, progress tracking, and interview preparation.
 
