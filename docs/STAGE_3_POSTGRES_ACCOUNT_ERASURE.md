@@ -162,6 +162,6 @@ Acceptance requires fixed-response route tests, worker retry/lease/idempotency
 tests, two-owner RLS and broker tests on disposable PostgreSQL, synthetic R2
 deletion tests, role/grant static checks, P0 and compile checks, shell and
 PowerShell parsing, one Alembic head at `20260814_0009`, build
-`20260813.19`, no protected-file changes, and confirmation that the erasure
+`20260813.20`, no protected-file changes, and confirmation that the erasure
 worker, shared cutover, live services, credentials, and external stores remain
 untouched.

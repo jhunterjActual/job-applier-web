@@ -137,7 +137,7 @@ service. Its boundary is documented in
 
 Acceptance for the combined tree requires shell syntax, marker transition/fixed-
 error and import-reconciliation tests, the P0 suite, compile checks, dependency-
-lock checks, a single `20260814_0009` Alembic head, build `20260813.19`, no
+lock checks, a single `20260814_0009` Alembic head, build `20260813.20`, no
 protected-file changes, and confirmation that the cutover flag and live/external
 state remain untouched. The reconciliation boundary is documented in
 `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.
