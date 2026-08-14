@@ -6,6 +6,11 @@ if [[ ${EUID} -ne 0 ]]; then
     exit 1
 fi
 
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+# shellcheck source=maintenance-lock.sh
+source "${script_dir}/maintenance-lock.sh"
+acquire_careertrellis_maintenance_lock
+
 release_dir=${1:-}
 target_environment_file=${2:-}
 shift $(( $# >= 2 ? 2 : $# ))
@@ -61,11 +66,6 @@ for environment_file in "${environment_files[@]}"; do
     fi
 done
 
-exec 8>/run/lock/careertrellis-maintenance.lock
-if ! flock -n 8; then
-    echo "Another deployment, rollback, import, or reconciliation operation is running." >&2
-    exit 1
-fi
 exec 9>/run/lock/careertrellis-sqlite-import.lock
 if ! flock -n 9; then
     echo "Another SQLite import or reconciliation operation is running." >&2

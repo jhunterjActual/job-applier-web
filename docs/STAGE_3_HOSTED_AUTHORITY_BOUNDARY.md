@@ -85,6 +85,14 @@ rewrite the marker.
 
 ## Eventual operator transition (not for this PR)
 
+The later dormant coordinator keeps the maintenance lock inherited across the
+complete preflight, migration/grant, no-omission import/reconciliation, marker,
+and activation sequence. It also deliberately leaves all services stopped on
+every pre-marker failure and requires a forward correction after the marker.
+Its manual receipt and ordering contract is documented in
+`STAGE_3_POSTGRES_R2_FINAL_CUTOVER_COORDINATOR.md`; that slice does not add the
+capability or perform this transition.
+
 The final cutover must keep the maintenance lock held and the web, search-
 worker, and account-erasure-worker services stopped through snapshot,
 migration, no-omission import, and
@@ -138,7 +146,7 @@ service. Its boundary is documented in
 
 Acceptance for the combined tree requires shell syntax, marker transition/fixed-
 error and import-reconciliation tests, the P0 suite, compile checks, dependency-
-lock checks, a single `20260814_0009` Alembic head, build `20260813.23`, no
+lock checks, a single `20260814_0009` Alembic head, build `20260813.24`, no
 protected-file changes, and confirmation that the cutover flag and live/external
 state remain untouched. The reconciliation boundary is documented in
 `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.

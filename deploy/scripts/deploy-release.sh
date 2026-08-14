@@ -6,11 +6,18 @@ if [[ ${EUID} -ne 0 ]]; then
     exit 1
 fi
 
-exec 8>/run/lock/careertrellis-maintenance.lock
-if ! flock -n 8; then
-    echo "Another deployment, rollback, import, or reconciliation operation is running." >&2
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+maintenance_lock_helper=${script_dir}/maintenance-lock.sh
+if [[ ! -f ${maintenance_lock_helper} ]]; then
+    maintenance_lock_helper=/usr/local/libexec/careertrellis/maintenance-lock.sh
+fi
+if [[ ! -f ${maintenance_lock_helper} || -L ${maintenance_lock_helper} ]]; then
+    echo "The reviewed maintenance-lock helper is unavailable." >&2
     exit 1
 fi
+# shellcheck source=maintenance-lock.sh
+source "${maintenance_lock_helper}"
+acquire_careertrellis_maintenance_lock
 
 prepare_only=false
 if [[ ${1:-} == "--prepare-only" ]]; then
@@ -75,7 +82,7 @@ if [[ ! -d ${release_dir} ]]; then
         CAREERTRELLIS_TRUSTED_PROXY_TOKEN= \
         CAREERTRELLIS_DATA_DIR="${test_data}" \
         PYTHONDONTWRITEBYTECODE=1 \
-        ./venv/bin/python -m unittest test_p0_regressions.py test_search_runs.py test_scheduled_search_dispatch.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_cutover_rehearsal.py test_analytics.py test_observability.py
+        ./venv/bin/python -m unittest test_p0_regressions.py test_search_runs.py test_scheduled_search_dispatch.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_cutover_rehearsal.py test_final_cutover_coordinator.py test_analytics.py test_observability.py
         CAREERTRELLIS_ENVIRONMENT=staging \
         CAREERTRELLIS_DATA_DIR="${test_data}/account-erasure" \
         CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=false \
@@ -83,6 +90,9 @@ if [[ ! -d ${release_dir} ]]; then
         ./venv/bin/python -m compileall -q .
     )
     chmod 0755 \
+        "${temporary_release}/deploy/scripts/maintenance-lock.sh" \
+        "${temporary_release}/deploy/scripts/apply-postgres-runtime-grants.sh" \
+        "${temporary_release}/deploy/scripts/finalize-postgres-r2-cutover.sh" \
         "${temporary_release}/deploy/scripts/bootstrap-erasure-worker-role.sh" \
         "${temporary_release}/deploy/scripts/install-erasure-worker-credential.sh" \
         "${temporary_release}/deploy/scripts/rehearse-postgres-r2-cutover.sh" \
@@ -168,6 +178,8 @@ validate_release() {
 }
 
 validate_release "${release_dir}"
+install -d -o root -g root -m 0755 /usr/local/libexec/careertrellis
+install -o root -g root -m 0755 "${release_dir}/deploy/scripts/maintenance-lock.sh" /usr/local/libexec/careertrellis/maintenance-lock.sh
 install -o root -g root -m 0755 "${release_dir}/deploy/scripts/hosted-authority.sh" /usr/local/sbin/careertrellis-authority
 install -d -o root -g root -m 0755 /etc/systemd/system/careertrellis-web.service.d
 install -d -o root -g root -m 0755 /etc/systemd/system/careertrellis-worker.service.d
@@ -212,6 +224,7 @@ activate_release() {
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/deploy-release.sh" /usr/local/sbin/careertrellis-deploy || return 1
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/rollback-release.sh" /usr/local/sbin/careertrellis-rollback || return 1
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/install-erasure-worker-credential.sh" /usr/local/sbin/careertrellis-install-erasure-worker-credential || return 1
+    install -o root -g root -m 0755 "${target_release}/deploy/scripts/finalize-postgres-r2-cutover.sh" /usr/local/sbin/careertrellis-finalize-cutover || return 1
     systemctl daemon-reload || return 1
     if systemctl is-active --quiet caddy; then
         systemctl reload caddy || return 1

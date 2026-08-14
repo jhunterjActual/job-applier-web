@@ -91,6 +91,13 @@ safe. Reconciliation remains read-only even when it detects partial state.
 
 ## Rehearsal and eventual cutover
 
+The later dormant final-cutover coordinator treats this successful read-only
+receipt as a mandatory gate inside one inherited maintenance lock. It cannot
+mark authority or activate a release after an omitted, failed, ambiguous, or
+unreviewed reconciliation, and it never repairs a mismatch. See
+`STAGE_3_POSTGRES_R2_FINAL_CUTOVER_COORDINATOR.md` for the exact ordering and
+failure boundary.
+
 First use this command only against a disposable empty PostgreSQL target and a
 dedicated disposable private object bucket. Keep both targets until an operator
 has reviewed the sanitized receipt. A later permanent import must repeat the
@@ -103,7 +110,7 @@ that enforces target separation and emits the bounded disposable receipt.
 This PR does not authorize either run. It does not apply a migration, change a
 database or bucket, edit an environment file, restart a service, move a release
 symlink, mark PostgreSQL/R2 authoritative, expose staging, or invite another
-user. Build strings agree at `20260813.23`; local SQLite behavior is unchanged.
+user. Build strings agree at `20260813.24`; local SQLite behavior is unchanged.
 
 ## Acceptance checklist
 

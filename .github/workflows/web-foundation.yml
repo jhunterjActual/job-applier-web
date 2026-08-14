@@ -30,7 +30,7 @@ jobs:
       - name: Verify packages
         run: python -m pip check
       - name: Run regressions
-        run: python -m unittest test_p0_regressions.py test_search_runs.py test_scheduled_search_dispatch.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_generated_materials.py test_dependent_job_deletion.py test_dependent_bulk_cleanup.py test_postgres_cutover_routes.py test_cutover_rehearsal.py test_analytics.py test_observability.py
+        run: python -m unittest test_p0_regressions.py test_search_runs.py test_scheduled_search_dispatch.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_generated_materials.py test_dependent_job_deletion.py test_dependent_bulk_cleanup.py test_postgres_cutover_routes.py test_cutover_rehearsal.py test_final_cutover_coordinator.py test_analytics.py test_observability.py
       - name: Check Python syntax
         run: python -m compileall -q .
       - name: Exercise staging worker entrypoint
@@ -80,4 +80,4 @@ jobs:
       - name: Verify PostgreSQL migrations and tenant isolation
         env:
           CAREERTRELLIS_POSTGRES_TEST_ADMIN_URL: postgresql+psycopg://postgres:ci-postgres-admin@127.0.0.1:5432/postgres
-        run: python -m unittest -v test_postgres_rls.py test_postgres_scheduled_search_dispatch.py test_account_erasure.py test_import_reconciliation.py test_generated_materials.py test_dependent_job_deletion.py test_dependent_bulk_cleanup.py test_postgres_cutover_routes.py test_cutover_rehearsal.py
+        run: python -m unittest -v test_postgres_rls.py test_postgres_scheduled_search_dispatch.py test_account_erasure.py test_import_reconciliation.py test_generated_materials.py test_dependent_job_deletion.py test_dependent_bulk_cleanup.py test_postgres_cutover_routes.py test_cutover_rehearsal.py test_final_cutover_coordinator.py

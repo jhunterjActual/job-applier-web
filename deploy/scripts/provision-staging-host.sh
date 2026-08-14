@@ -57,10 +57,13 @@ install -o root -g root -m 0644 "${repository_root}/deploy/systemd/careertrellis
 install -d -o root -g root -m 0755 /etc/systemd/system/caddy.service.d
 install -o root -g root -m 0644 "${repository_root}/deploy/systemd/caddy.service.d/careertrellis-staging.conf" /etc/systemd/system/caddy.service.d/careertrellis-staging.conf
 install -o root -g root -m 0644 "${repository_root}/deploy/caddy/Caddyfile.staging" /etc/caddy/Caddyfile.careertrellis-staging
+install -d -o root -g root -m 0755 /usr/local/libexec/careertrellis
+install -o root -g root -m 0755 "${repository_root}/deploy/scripts/maintenance-lock.sh" /usr/local/libexec/careertrellis/maintenance-lock.sh
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/deploy-release.sh" /usr/local/sbin/careertrellis-deploy
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/rollback-release.sh" /usr/local/sbin/careertrellis-rollback
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/hosted-authority.sh" /usr/local/sbin/careertrellis-authority
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/install-erasure-worker-credential.sh" /usr/local/sbin/careertrellis-install-erasure-worker-credential
+install -o root -g root -m 0755 "${repository_root}/deploy/scripts/finalize-postgres-r2-cutover.sh" /usr/local/sbin/careertrellis-finalize-cutover
 /usr/local/sbin/careertrellis-authority initialize
 
 if [[ ! -e /etc/careertrellis/staging.env ]]; then

@@ -31,6 +31,7 @@ import object_store as object_store_module
 import postgres_database as postgres_database_module
 import provider_secrets as provider_secrets_module
 import stored_objects as stored_objects_module
+import apply_postgres_runtime_grants as runtime_grants_module
 from base_resumes import BaseResumeNotFound, LastBaseResumeError
 from profile_repository import PostgreSQLProfileRepository
 from discovery_repository import PostgreSQLDiscoveryRepository
@@ -237,6 +238,24 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             password=password,
             database=DATABASE_NAME,
         )
+
+    def test_reviewed_runtime_grant_script_applies_with_migration_role(self) -> None:
+        grant_path = (
+            Path(__file__).resolve().parent.parent
+            / "deploy"
+            / "postgres"
+            / "grant-runtime.sql"
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "CAREERTRELLIS_MIGRATION_DATABASE_URL": self.migration_url.render_as_string(
+                    hide_password=False
+                )
+            },
+            clear=False,
+        ):
+            runtime_grants_module.apply_runtime_grants(grant_path)
 
     @classmethod
     def _drop_cluster_objects(cls) -> None:
