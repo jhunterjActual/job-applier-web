@@ -89,9 +89,13 @@ This slice does not convert or authorize:
 - deployment activation, permanent import, authority transition, R2 changes,
   public signup, or additional users.
 
-A later cross-store deletion slice must design object tombstones, retry and
-reconciliation before deletion of records that reference private objects can be
-considered. Account deletion remains a separate privacy workflow.
+The later single-job dependent-deletion slice adds that bounded cross-store
+contract without expanding bulk cleanup: it atomically records suppression,
+tombstones object metadata exclusive to the deleted application, preserves any
+same-owner survivor reference, and removes PostgreSQL dependents, then invokes
+the existing reconciler only after commit. See
+`STAGE_3_POSTGRES_DEPENDENT_JOB_DELETION.md`. Account deletion remains a
+separate privacy workflow.
 
 ## Verification gates
 
@@ -100,8 +104,9 @@ considered. Account deletion remains a separate privacy workflow.
       plus deletion, candidate limits, and complete rollback.
 - [ ] Route tests prove preview, bulk retention, and eligible single deletion use
       the configured repository and shared mode has no SQLite fallback.
-- [ ] Alembic reports exactly one head at `20260813_0006`; repeated upgrade is a
-      no-op and the concurrent cleanup-candidate index is valid and ready.
+- [ ] Alembic reports exactly one current head at `20260813_0008`; repeated
+      upgrade is a no-op and migration `20260813_0006`'s concurrent
+      cleanup-candidate index is valid and ready.
 - [ ] Disposable PostgreSQL 18 tests prove missing/cross-owner denial, owner-only
       counts and samples, protected-dependent denial, bounded batches, atomic
       suppression/deletion, and deterministic concurrent retention, lifecycle,

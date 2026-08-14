@@ -132,6 +132,18 @@ metadata for retryable reconciliation. Local mode retains SQLite/filesystem
 behavior. The boundary is documented in
 `STAGE_3_POSTGRES_GENERATED_MATERIALS.md`.
 
+Owner-requested single-job deletion now has a bounded cross-store contract in
+selected shared mode. One short owner-scoped transaction locks the job and its
+application object references, records the privacy-minimized suppression,
+tombstones only object metadata that is not referenced by any same-owner
+surviving application, and deletes the job so PostgreSQL foreign keys remove
+its application, lifecycle history, and engagements atomically. Shared
+same-owner references remain locked, active, and preserved. Private blobs are
+never deleted before commit; the existing owner-scoped reconciler performs
+best-effort deletion afterward and retains tombstones for retry. Local behavior
+is unchanged. See
+`STAGE_3_POSTGRES_DEPENDENT_JOB_DELETION.md`.
+
 The shared backup/restore policy now fails both encrypted-workspace endpoints
 closed when PostgreSQL is the selected data store. The HTTP boundary rejects a
 restore after normal shared authentication but before multipart parsing, and
@@ -151,16 +163,17 @@ contract is in `STAGE_3_POSTGRES_USER_DATA_EXPORT.md`.
 The following hosted operations remain outside these foundations and must be
 converted before `HOSTED_REPOSITORY_CUTOVER_COMPLETE` can become true:
 
-- deletion of jobs with applications, lifecycle history, generated materials,
-  stored objects, or other protected dependent records;
+- bulk cleanup of jobs with applications, lifecycle history, generated
+  materials, stored objects, or other protected dependent records;
 - any general-purpose background queue beyond the bounded search-run and
   scheduled saved-search dispatch brokers;
 - any application operation outside the converted lifecycle, engagement,
   interview-preparation, record-list, and insight repository boundaries;
 - any unconverted job-domain reads;
 - account-deletion reads and writes;
-- protected application/job/account deletion across PostgreSQL metadata and
-  encrypted private objects, including durable deletion orchestration;
+- direct protected application deletion and account deletion across PostgreSQL
+  metadata and encrypted private objects, including account-wide durable
+  deletion orchestration;
 
 Provider secrets and stored-object metadata already have PostgreSQL/RLS
 boundaries. The four provider-context consumers use the encrypted secret

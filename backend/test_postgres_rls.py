@@ -51,7 +51,6 @@ from job_retention_repository import (
     CleanupBatchTooLarge,
     CleanupPreviewChanged,
     JobRetentionNotFound,
-    JobRetentionProtected,
     PostgreSQLJobRetentionRepository,
 )
 from application_workspace_repository import (
@@ -1516,7 +1515,7 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         self.assertIn("INCLUDE (archived_from_status)", index[0])
         self.assertIn("WHERE (status = ANY (ARRAY['matched'::text, 'archived'::text]))", index[0])
 
-    def test_retention_preview_is_owner_isolated_bound_and_progress_protected(self) -> None:
+    def test_retention_preview_is_owner_isolated_bounded_and_dependent_delete_is_scoped(self) -> None:
         owner_one = PostgreSQLJobRetentionRepository(
             self.user_one, engine=self.runtime_engine
         )
@@ -1587,10 +1586,27 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 "delete", preview_one["actions"]["delete"]["preview_token"]
             )
 
-        for protected_job in (self.job_one, history_job, engagement_job):
-            with self.subTest(job_id=protected_job):
-                with self.assertRaises(JobRetentionProtected):
-                    owner_one.delete_job(protected_job)
+        dependent_job_ids = (self.job_one, history_job, engagement_job)
+        for dependent_job in dependent_job_ids:
+            owner_one.delete_job(dependent_job)
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            self.assertEqual(0, connection.scalar(text(
+                "SELECT COUNT(*) FROM careertrellis.jobs "
+                "WHERE id = ANY(CAST(:ids AS bigint[]))"
+            ), {"ids": list(dependent_job_ids)}))
+            for table in (
+                "applications",
+                "application_status_history",
+                "application_engagements",
+            ):
+                self.assertEqual(0, connection.scalar(text(
+                    f"SELECT COUNT(*) FROM careertrellis.{table} "
+                    "WHERE job_id = ANY(CAST(:ids AS bigint[]))"
+                ), {"ids": list(dependent_job_ids)}))
+        with tenant_transaction(self.runtime_engine, self.user_two) as connection:
+            self.assertEqual(1, connection.scalar(text(
+                "SELECT COUNT(*) FROM careertrellis.jobs WHERE id = :job_id"
+            ), {"job_id": self.job_two}))
         with self.assertRaises(JobRetentionNotFound):
             owner_two.delete_job(self.job_one)
         with self.assertRaises(JobRetentionNotFound):
@@ -1917,6 +1933,10 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         retention = PostgreSQLJobRetentionRepository(
             self.user_one, engine=self.runtime_engine
         )
+        with tenant_transaction(self.runtime_engine, self.user_two) as connection:
+            other_owner_job_count = connection.scalar(text(
+                "SELECT COUNT(*) FROM careertrellis.jobs WHERE id = :job_id"
+            ), {"job_id": self.job_two})
         barrier = Barrier(2)
 
         def retain() -> None:
@@ -1938,28 +1958,36 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                     retention_outcomes.append("ok")
                 except Exception as exc:
                     retention_outcomes.append(exc)
-        self.assertEqual(1, sum(item == "ok" for item in retention_outcomes))
-        self.assertTrue(any(isinstance(
-            item, (JobRetentionProtected, ApplicationWorkspaceNotFound)
-        ) for item in retention_outcomes))
+        self.assertEqual("ok", retention_outcomes[0])
+        self.assertTrue(all(
+            item == "ok" or isinstance(item, ApplicationWorkspaceNotFound)
+            for item in retention_outcomes
+        ))
         with tenant_transaction(self.runtime_engine, self.user_one) as connection:
             job_count = connection.scalar(text(
                 "SELECT COUNT(*) FROM careertrellis.jobs WHERE id = :job_id"
             ), {"job_id": retention_job})
-            engagement_count = connection.scalar(text(
-                "SELECT COUNT(*) FROM careertrellis.application_engagements "
+            dependent_counts = tuple(connection.scalar(text(
+                f"SELECT COUNT(*) FROM careertrellis.{table} "
                 "WHERE job_id = :job_id"
-            ), {"job_id": retention_job})
+            ), {"job_id": retention_job}) for table in (
+                "applications",
+                "application_status_history",
+                "application_engagements",
+            ))
             suppression_count = connection.scalar(text(
                 "SELECT COUNT(*) FROM careertrellis.job_suppressions "
                 "WHERE url_fingerprint = :fingerprint"
             ), {"fingerprint": job_url_fingerprint(
                 "https://workspace.example.test/retention-race"
             )})
-        self.assertIn(
-            (job_count, engagement_count, suppression_count),
-            {(1, 1, 0), (0, 0, 1)},
-        )
+        self.assertEqual((0, (0, 0, 0), 1), (
+            job_count, dependent_counts, suppression_count
+        ))
+        with tenant_transaction(self.runtime_engine, self.user_two) as connection:
+            self.assertEqual(other_owner_job_count, connection.scalar(text(
+                "SELECT COUNT(*) FROM careertrellis.jobs WHERE id = :job_id"
+            ), {"job_id": self.job_two}))
 
     def test_application_workspace_context_token_is_owner_bound_and_complete(self) -> None:
         owner_one = PostgreSQLApplicationWorkspaceRepository(

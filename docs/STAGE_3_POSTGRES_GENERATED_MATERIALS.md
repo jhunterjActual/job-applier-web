@@ -12,7 +12,8 @@ targets until every remaining repository and cutover gate is reviewed.
 
 ## Existing schema and ownership boundary
 
-No migration is required. Alembic retains one head at `20260813_0007`.
+This material-persistence slice required no migration. The repository now
+retains one Alembic head at `20260813_0008`.
 The existing `applications.tailored_resume_object_id` and
 `applications.cover_letter_object_id` composite foreign keys bind each object
 reference to the same `owner_user_id`. `applications`, `jobs`, `profiles`,
@@ -82,13 +83,16 @@ scratch files only, and are removed after the shared commit or failure.
 ## Explicit exclusions
 
 This slice does not add generated-material history, browser/R2 access, public
-object URLs, worker object credentials, scheduled dispatch, provider rate-limit
-coordination, account deletion, application/job deletion with dependent
-materials, bucket-wide orphan enumeration, permanent import, backup/restore
-activation, authority cutover, Caddy changes, public signup, or additional
-users. Existing retention policy continues to reject deletion of jobs that
-have application/material records; account erasure and cross-store deletion
-orchestration require a later independently reviewed slice.
+object URLs, worker object credentials, provider rate-limit coordination,
+account deletion, bucket-wide orphan enumeration, permanent import,
+backup/restore activation, authority cutover, Caddy changes, public signup, or
+additional users. The later single-job dependent-deletion slice reuses these
+owner-scoped tombstones and bounded reconciliation only for object references
+exclusive to the deleted application; same-owner references used by a
+surviving application remain active. It does not change material creation or
+download authority; see
+`STAGE_3_POSTGRES_DEPENDENT_JOB_DELETION.md`. Account erasure and bulk protected
+cleanup remain separately excluded.
 
 ## Verification gates
 
@@ -107,8 +111,8 @@ orchestration require a later independently reviewed slice.
 - [ ] P0, object-store/import/stored-object, focused material, syntax,
       dependency-lock, migration-head, launcher, protected-file, and diff checks
       pass.
-- [ ] Build strings agree at `20260813.14`, Alembic remains at the single
-      `20260813_0007` head, and `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains
+- [ ] Build strings agree at `20260813.16`, Alembic remains at the single
+      `20260813_0008` head, and `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains
       false.
 
 Rollback before activation is code-only because this slice has no migration and
