@@ -65,7 +65,7 @@ fi
 
 activate_release() {
     local release=$1
-    local revision activation_link environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds erasure_worker_active=false
+    local revision activation_link environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds erasure_worker_active=false recovery_helper recovery_helpers_available=false
     revision=$(basename "${release}")
 
     /usr/local/sbin/careertrellis-authority assert-release-startable "${release}" || return 1
@@ -93,6 +93,20 @@ activate_release() {
             return 1
         fi
     done
+    if [[ -e ${release}/deploy/scripts/mirror-generated-objects-onedrive.sh || \
+          -L ${release}/deploy/scripts/mirror-generated-objects-onedrive.sh || \
+          -e ${release}/deploy/scripts/test-generated-object-restore.sh || \
+          -L ${release}/deploy/scripts/test-generated-object-restore.sh ]]; then
+        for recovery_helper in \
+            "${release}/deploy/scripts/mirror-generated-objects-onedrive.sh" \
+            "${release}/deploy/scripts/test-generated-object-restore.sh"; do
+            if [[ ! -f ${recovery_helper} || -L ${recovery_helper} || ! -x ${recovery_helper} ]]; then
+                echo "Generated-object recovery helpers must be a complete reviewed executable pair." >&2
+                return 1
+            fi
+        done
+        recovery_helpers_available=true
+    fi
     if grep -Ev '^(#|[[:space:]]*$|CAREERTRELLIS_(ENVIRONMENT|DATA_DIR|DATA_STORE|ACCOUNT_ERASURE_WORKER_(ENABLED|POLL_SECONDS|BATCH_SIZE))=)' \
         /etc/careertrellis/account-erasure-worker.env >/dev/null || \
        grep -Ev '^(#|[[:space:]]*$|CAREERTRELLIS_DATABASE_URL=)' \
@@ -148,6 +162,10 @@ activate_release() {
     install -d -o root -g root -m 0755 /etc/systemd/system/caddy.service.d || return 1
     install -o root -g root -m 0644 "${release}/deploy/systemd/caddy.service.d/careertrellis-staging.conf" /etc/systemd/system/caddy.service.d/careertrellis-staging.conf || return 1
     install -o root -g root -m 0644 "${release}/deploy/caddy/Caddyfile.staging" /etc/caddy/Caddyfile.careertrellis-staging || return 1
+    if [[ ${recovery_helpers_available} == true ]]; then
+        install -o root -g root -m 0755 "${release}/deploy/scripts/mirror-generated-objects-onedrive.sh" /usr/local/sbin/careertrellis-mirror-generated-objects || return 1
+        install -o root -g root -m 0755 "${release}/deploy/scripts/test-generated-object-restore.sh" /usr/local/sbin/careertrellis-test-generated-object-restore || return 1
+    fi
     systemctl daemon-reload || return 1
     systemctl reload caddy || return 1
     systemctl restart careertrellis-worker.service careertrellis-web.service || return 1
@@ -156,6 +174,9 @@ activate_release() {
     fi
     for _attempt in $(seq 1 30); do
         if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:8001/health/ready >/dev/null; then
+            if [[ ${recovery_helpers_available} == false ]]; then
+                rm -f -- /usr/local/sbin/careertrellis-mirror-generated-objects /usr/local/sbin/careertrellis-test-generated-object-restore || return 1
+            fi
             return 0
         fi
         sleep 1

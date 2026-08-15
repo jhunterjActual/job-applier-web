@@ -13,7 +13,7 @@ if [[ -z ${repository_root} || ! -f ${repository_root}/deploy/systemd/careertrel
 fi
 repository_root=$(realpath "${repository_root}")
 
-for command in age caddy curl flock git python3 realpath stat sync systemctl tar; do
+for command in age caddy curl flock getent git python3 realpath stat sync systemctl tar; do
     if ! command -v "${command}" >/dev/null 2>&1; then
         echo "Required command is missing: ${command}" >&2
         exit 1
@@ -29,12 +29,42 @@ fi
 if ! id careertrellis-erasure-worker >/dev/null 2>&1; then
     useradd --system --gid careertrellis --home-dir /var/lib/careertrellis/account-erasure --shell /usr/sbin/nologin careertrellis-erasure-worker
 fi
+if ! id careertrellis-object-recovery >/dev/null 2>&1; then
+    useradd --system --user-group --home-dir /var/lib/careertrellis/generated-object-recovery --shell /usr/sbin/nologin careertrellis-object-recovery
+fi
+IFS=: read -r _ _ _ _ _ generated_object_recovery_home generated_object_recovery_shell < <(getent passwd careertrellis-object-recovery)
+if [[ $(id -gn careertrellis-object-recovery) != "careertrellis-object-recovery" || \
+      ${generated_object_recovery_home} != "/var/lib/careertrellis/generated-object-recovery" || \
+      ${generated_object_recovery_shell} != "/usr/sbin/nologin" ]]; then
+    echo "The dedicated generated-object recovery account is invalid." >&2
+    exit 1
+fi
 
 install -d -o root -g root -m 0755 /opt/careertrellis/staging/releases
 install -d -o careertrellis -g careertrellis -m 0700 /var/lib/careertrellis/staging
 install -d -o careertrellis-worker -g careertrellis -m 0700 /var/lib/careertrellis/worker
 install -d -o careertrellis-erasure-worker -g careertrellis -m 0700 /var/lib/careertrellis/account-erasure
 install -d -o root -g careertrellis -m 0750 /var/lib/careertrellis/shared
+generated_object_recovery_state=/var/lib/careertrellis/generated-object-recovery
+generated_object_recovery_work=${generated_object_recovery_state}/work
+for generated_object_recovery_directory in "${generated_object_recovery_state}" "${generated_object_recovery_work}"; do
+    if [[ (-e ${generated_object_recovery_directory} || -L ${generated_object_recovery_directory}) && \
+          (! -d ${generated_object_recovery_directory} || -L ${generated_object_recovery_directory}) ]]; then
+        echo "The dedicated generated-object recovery state is invalid." >&2
+        exit 1
+    fi
+done
+install -d -o careertrellis-object-recovery -g careertrellis-object-recovery -m 0700 "${generated_object_recovery_state}"
+install -d -o careertrellis-object-recovery -g careertrellis-object-recovery -m 0700 "${generated_object_recovery_work}"
+generated_object_rclone_config=/var/lib/careertrellis/generated-object-recovery/rclone.conf
+if [[ -e ${generated_object_rclone_config} || -L ${generated_object_rclone_config} ]]; then
+    if [[ ! -f ${generated_object_rclone_config} || -L ${generated_object_rclone_config} || $(stat -c '%U:%G %a' "${generated_object_rclone_config}") != "careertrellis-object-recovery:careertrellis-object-recovery 600" ]]; then
+        echo "The dedicated generated-object recovery rclone configuration is invalid." >&2
+        exit 1
+    fi
+else
+    install -o careertrellis-object-recovery -g careertrellis-object-recovery -m 0600 /dev/null "${generated_object_rclone_config}"
+fi
 install -d -o root -g root -m 0755 /etc/careertrellis
 install -d -o caddy -g caddy -m 0750 /var/log/caddy
 caddy_access_log=/var/log/caddy/careertrellis-staging-access.log
@@ -64,6 +94,8 @@ install -o root -g root -m 0755 "${repository_root}/deploy/scripts/rollback-rele
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/hosted-authority.sh" /usr/local/sbin/careertrellis-authority
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/install-erasure-worker-credential.sh" /usr/local/sbin/careertrellis-install-erasure-worker-credential
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/finalize-postgres-r2-cutover.sh" /usr/local/sbin/careertrellis-finalize-cutover
+install -o root -g root -m 0755 "${repository_root}/deploy/scripts/mirror-generated-objects-onedrive.sh" /usr/local/sbin/careertrellis-mirror-generated-objects
+install -o root -g root -m 0755 "${repository_root}/deploy/scripts/test-generated-object-restore.sh" /usr/local/sbin/careertrellis-test-generated-object-restore
 /usr/local/sbin/careertrellis-authority initialize
 
 if [[ ! -e /etc/careertrellis/staging.env ]]; then
@@ -78,6 +110,14 @@ fi
 if [[ ! -e /etc/careertrellis/account-erasure-object-storage.env ]]; then
     install -o root -g root -m 0600 "${repository_root}/deploy/config/account-erasure-object-storage.environment.example" /etc/careertrellis/account-erasure-object-storage.env
 fi
+if [[ -e /etc/careertrellis/generated-object-recovery.env || -L /etc/careertrellis/generated-object-recovery.env ]]; then
+    if [[ ! -f /etc/careertrellis/generated-object-recovery.env || -L /etc/careertrellis/generated-object-recovery.env || $(stat -c '%U:%G %a' /etc/careertrellis/generated-object-recovery.env) != "root:root 600" ]]; then
+        echo "The generated-object recovery environment is invalid." >&2
+        exit 1
+    fi
+else
+    install -o root -g root -m 0600 "${repository_root}/deploy/config/generated-object-recovery.environment.example" /etc/careertrellis/generated-object-recovery.env
+fi
 if [[ ! -e /etc/caddy/careertrellis-staging.env ]]; then
     install -o root -g root -m 0600 "${repository_root}/deploy/config/staging-caddy.environment.example" /etc/caddy/careertrellis-staging.env
 fi
@@ -88,6 +128,9 @@ echo "  /etc/careertrellis/staging.env"
 echo "  /etc/careertrellis/search-worker.env"
 echo "  /etc/careertrellis/account-erasure-worker.env"
 echo "  /etc/careertrellis/account-erasure-object-storage.env"
+echo "  /etc/careertrellis/generated-object-recovery.env"
 echo "  /etc/caddy/careertrellis-staging.env"
+echo "Configure the dedicated OneDrive remote in /var/lib/careertrellis/generated-object-recovery/rclone.conf."
 echo "Install the separate erasure-worker database credential, then validate Caddy and deploy an exact commit."
+echo "Generated-object snapshot and restore commands are manual only; no timer was installed or enabled."
 echo "The account-erasure worker remains disabled and no services were started."

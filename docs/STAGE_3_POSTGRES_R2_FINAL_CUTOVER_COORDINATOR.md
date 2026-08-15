@@ -2,7 +2,7 @@
 
 This slice adds a dormant, root-only coordinator for a later reviewed
 PostgreSQL/private-R2 authority transition. It does **not** authorize or perform
-that transition. Build `20260813.24` keeps
+that transition. Build `20260813.25` keeps
 `HOSTED_REPOSITORY_CUTOVER_COMPLETE` false, ships no
 `deploy/hosted-authority.compatibility` file, changes no live environment or
 credential, and does not migrate, import, reconcile, mark authority, move a
@@ -28,7 +28,9 @@ release and frozen source:
   independent encrypted-mirror receipt, and an isolated restore result with
   zero bad checksums;
 - the permanent private-bucket recovery/versioning and inventory receipt,
-  without object keys, document hashes, credentials, or tenant data;
+  including one immutable generated-object ciphertext generation paired with
+  the approved pgBackRest label and its successful disposable restore, without
+  object keys, document hashes, credentials, or tenant data;
 - the earlier disposable no-omission import and independent three-surface
   reconciliation receipts from the same reviewed implementation; and
 - confirmation that the provider-secret and object keyrings are independently
@@ -161,7 +163,7 @@ authority. The authority marker is not downgraded or recreated.
       keys, document hashes, owner identifiers, and tenant data are absent.
 - [ ] The P0, coordinator, import/reconciliation, PostgreSQL/RLS, route-
       qualification, dependency-lock, compilation, and shell-syntax checks
-      pass for build `20260813.24`.
+      pass for build `20260813.25`.
 - [ ] `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains false, the hosted-authority
       compatibility file remains absent, and no live release, service,
       authority marker, database, object, credential, environment, user, DNS,
@@ -171,4 +173,7 @@ The durable marker and restart boundary remain authoritative in
 `STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md`; import ambiguity and no-omission
 reconciliation remain authoritative in
 `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`; the complete repository and
-operator gate remains in `STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md`.
+operator gate remains in `STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md`; and the
+manual generated-object recovery and separate retention boundary remains in
+`STAGE_3_GENERATED_OBJECT_RECOVERY.md`. This coordinator neither creates nor
+purges a recovery generation.

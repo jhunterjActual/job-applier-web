@@ -237,6 +237,13 @@ operator reviews the sanitized reconciliation receipt and explicitly approves
 that cleanup; never apply rehearsal cleanup to the pgBackRest bucket or an
 authoritative data directory.
 
+The permanent encrypted-object recovery copy is intentionally separate from
+both the live bucket and the pgBackRest mirror. Its manual quiescent generation,
+manifest-integrity, paired-backup, disposable-restore, and exact retention
+requirements are defined in `STAGE_3_GENERATED_OBJECT_RECOVERY.md`. A passing
+copy receipt does not authorize cutover or permit OneDrive as a runtime
+fallback.
+
 The root-only command, its read-only PostgreSQL/object behavior, service and
 authority checks, fixed failure boundary, and sanitized receipt are specified
 in `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.
@@ -252,6 +259,9 @@ in `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.
 - [ ] Standalone local launch and filesystem storage still pass without hosted object configuration.
 - [ ] The exact reviewed merge commit is prepared with `--prepare-only`; the active release has not changed.
 - [ ] A fresh pgBackRest backup, OneDrive mirror, and isolated restore rehearsal succeeded immediately before migration rehearsal.
+- [ ] The generated-object ciphertext recovery generation paired with the
+      approved pgBackRest label passed its independent manifest and disposable
+      restore checks under `STAGE_3_GENERATED_OBJECT_RECOVERY.md`.
 - [ ] A disposable import with no omission flags reports exact source/target row and generated-object counts.
 - [ ] Readback, plaintext hash/size, tamper rejection, transaction compensation, and orphan reconciliation checks pass.
 - [ ] Missing-context and two-tenant negative tests prove metadata and object read/write/delete/download isolation.
