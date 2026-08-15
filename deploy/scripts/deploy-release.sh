@@ -75,7 +75,7 @@ if [[ ! -d ${release_dir} ]]; then
     test_data=$(mktemp -d /tmp/careertrellis-deploy-test-XXXXXX)
     (
         cd "${temporary_release}/backend"
-        export PLAYWRIGHT_BROWSERS_PATH="${browser_path}"
+        PLAYWRIGHT_BROWSERS_PATH="${browser_path}" \
         CAREERTRELLIS_ENVIRONMENT=local \
         CAREERTRELLIS_DATA_STORE=sqlite \
         CAREERTRELLIS_ALLOWED_HOSTS= \

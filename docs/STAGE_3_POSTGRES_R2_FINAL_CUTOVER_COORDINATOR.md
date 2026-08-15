@@ -2,7 +2,7 @@
 
 This slice adds a dormant, root-only coordinator for a later reviewed
 PostgreSQL/private-R2 authority transition. It does **not** authorize or perform
-that transition. Build `20260813.25` keeps
+that transition. Build `20260813.26` keeps
 `HOSTED_REPOSITORY_CUTOVER_COMPLETE` false, ships no
 `deploy/hosted-authority.compatibility` file, changes no live environment or
 credential, and does not migrate, import, reconcile, mark authority, move a
@@ -163,7 +163,7 @@ authority. The authority marker is not downgraded or recreated.
       keys, document hashes, owner identifiers, and tenant data are absent.
 - [ ] The P0, coordinator, import/reconciliation, PostgreSQL/RLS, route-
       qualification, dependency-lock, compilation, and shell-syntax checks
-      pass for build `20260813.25`.
+      pass for build `20260813.26`.
 - [ ] `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains false, the hosted-authority
       compatibility file remains absent, and no live release, service,
       authority marker, database, object, credential, environment, user, DNS,
