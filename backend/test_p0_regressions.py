@@ -1960,12 +1960,15 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("test_analytics.py", workflow)
         self.assertIn("test_observability.py", workflow)
 
-    def test_release_tests_use_the_shared_playwright_browser_path(self) -> None:
+    def test_release_tests_scope_the_shared_playwright_browser_path(self) -> None:
         script = (self.project_dir() / "deploy" / "scripts" / "deploy-release.sh").read_text(encoding="utf-8")
-        browser_export = 'export PLAYWRIGHT_BROWSERS_PATH="${browser_path}"'
+        browser_assignment = '        PLAYWRIGHT_BROWSERS_PATH="${browser_path}" \\'
         test_command = "./venv/bin/python -m unittest test_p0_regressions.py"
-        self.assertIn(browser_export, script)
-        self.assertLess(script.index(browser_export), script.index(test_command))
+        erasure_smoke = "./venv/bin/python account_erasure_worker.py --once"
+        self.assertNotIn('export PLAYWRIGHT_BROWSERS_PATH="${browser_path}"', script)
+        self.assertEqual(script.count(browser_assignment), 1)
+        self.assertLess(script.index(browser_assignment), script.index(test_command))
+        self.assertLess(script.index(test_command), script.index(erasure_smoke))
 
     def test_release_can_be_prepared_without_activating_it(self) -> None:
         script = (self.project_dir() / "deploy" / "scripts" / "deploy-release.sh").read_text(
