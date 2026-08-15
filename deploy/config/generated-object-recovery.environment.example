@@ -1,0 +1,30 @@
+# Root-owned input for manual generated-object recovery snapshots.
+# Install as /etc/careertrellis/generated-object-recovery.env with root:root
+# mode 0600. The wrappers reject symlinks, duplicate settings, and every
+# assignment not listed here. Never add object-wrapping keyrings, provider
+# secrets, database URLs, or writable live-bucket credentials to this file.
+
+# Use a dedicated bucket-scoped Cloudflare R2 credential that can list and
+# read objects but cannot create, overwrite, or delete them. This identity
+# must be different from the live application's writable R2 identity.
+CAREERTRELLIS_GENERATED_OBJECT_SOURCE_ENDPOINT=https://replace-with-account-id.r2.cloudflarestorage.com
+CAREERTRELLIS_GENERATED_OBJECT_SOURCE_BUCKET=replace-with-private-object-bucket
+CAREERTRELLIS_GENERATED_OBJECT_SOURCE_ACCESS_KEY_ID=replace-with-read-only-access-key-id
+CAREERTRELLIS_GENERATED_OBJECT_SOURCE_SECRET_ACCESS_KEY=replace-with-read-only-secret-access-key
+
+# Configure this OneDrive remote interactively in the dedicated
+# /var/lib/careertrellis/generated-object-recovery/rclone.conf. The remote
+# must have type=onedrive. Keep the root path private and dedicated to these
+# append-only snapshots; do not point it at an existing mutable backup tree.
+CAREERTRELLIS_GENERATED_OBJECT_ONEDRIVE_REMOTE=generated-object-onedrive
+CAREERTRELLIS_GENERATED_OBJECT_ONEDRIVE_ROOT=careertrellis/generated-objects
+
+# Restore rehearsals use a separate root:root 0600 file passed explicitly to
+# test-generated-object-restore.sh. That file may contain only these four
+# assignments and must name an empty, disposable R2 identity distinct from
+# the source above. It must not contain CAREERTRELLIS_OBJECT_STORE_KEYRING_B64.
+#
+# CAREERTRELLIS_GENERATED_OBJECT_RESTORE_ENDPOINT=https://replace-with-disposable-account-id.r2.cloudflarestorage.com
+# CAREERTRELLIS_GENERATED_OBJECT_RESTORE_BUCKET=replace-with-empty-disposable-bucket
+# CAREERTRELLIS_GENERATED_OBJECT_RESTORE_ACCESS_KEY_ID=replace-with-disposable-write-access-key-id
+# CAREERTRELLIS_GENERATED_OBJECT_RESTORE_SECRET_ACCESS_KEY=replace-with-disposable-write-secret-access-key

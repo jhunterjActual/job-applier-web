@@ -82,7 +82,7 @@ if [[ ! -d ${release_dir} ]]; then
         CAREERTRELLIS_TRUSTED_PROXY_TOKEN= \
         CAREERTRELLIS_DATA_DIR="${test_data}" \
         PYTHONDONTWRITEBYTECODE=1 \
-        ./venv/bin/python -m unittest test_p0_regressions.py test_search_runs.py test_scheduled_search_dispatch.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_cutover_rehearsal.py test_final_cutover_coordinator.py test_analytics.py test_observability.py
+        ./venv/bin/python -m unittest test_p0_regressions.py test_search_runs.py test_scheduled_search_dispatch.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_cutover_rehearsal.py test_final_cutover_coordinator.py test_generated_object_recovery.py test_analytics.py test_observability.py
         CAREERTRELLIS_ENVIRONMENT=staging \
         CAREERTRELLIS_DATA_DIR="${test_data}/account-erasure" \
         CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=false \
@@ -95,8 +95,10 @@ if [[ ! -d ${release_dir} ]]; then
         "${temporary_release}/deploy/scripts/finalize-postgres-r2-cutover.sh" \
         "${temporary_release}/deploy/scripts/bootstrap-erasure-worker-role.sh" \
         "${temporary_release}/deploy/scripts/install-erasure-worker-credential.sh" \
+        "${temporary_release}/deploy/scripts/mirror-generated-objects-onedrive.sh" \
         "${temporary_release}/deploy/scripts/rehearse-postgres-r2-cutover.sh" \
-        "${temporary_release}/deploy/scripts/reconcile-sqlite-postgres-import.sh"
+        "${temporary_release}/deploy/scripts/reconcile-sqlite-postgres-import.sh" \
+        "${temporary_release}/deploy/scripts/test-generated-object-restore.sh"
     chown -R root:careertrellis "${temporary_release}"
     chmod -R u=rwX,g=rX,o= "${temporary_release}"
     mv "${temporary_release}" "${release_dir}"
@@ -115,7 +117,7 @@ fi
 
 validate_release() {
     local target_release=$1
-    local environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds
+    local environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds recovery_helper
 
     /usr/local/sbin/careertrellis-authority assert-release-startable "${target_release}" || return 1
     for environment_file in \
@@ -133,6 +135,19 @@ validate_release() {
             return 1
         fi
     done
+    if [[ -e ${target_release}/deploy/scripts/mirror-generated-objects-onedrive.sh || \
+          -L ${target_release}/deploy/scripts/mirror-generated-objects-onedrive.sh || \
+          -e ${target_release}/deploy/scripts/test-generated-object-restore.sh || \
+          -L ${target_release}/deploy/scripts/test-generated-object-restore.sh ]]; then
+        for recovery_helper in \
+            "${target_release}/deploy/scripts/mirror-generated-objects-onedrive.sh" \
+            "${target_release}/deploy/scripts/test-generated-object-restore.sh"; do
+            if [[ ! -f ${recovery_helper} || -L ${recovery_helper} || ! -x ${recovery_helper} ]]; then
+                echo "Generated-object recovery helpers must be a complete reviewed executable pair." >&2
+                return 1
+            fi
+        done
+    fi
     if grep -Ev '^(#|[[:space:]]*$|CAREERTRELLIS_(ENVIRONMENT|DATA_DIR|DATA_STORE|ACCOUNT_ERASURE_WORKER_(ENABLED|POLL_SECONDS|BATCH_SIZE))=)' \
         /etc/careertrellis/account-erasure-worker.env >/dev/null || \
        grep -Ev '^(#|[[:space:]]*$|CAREERTRELLIS_DATABASE_URL=)' \
@@ -195,7 +210,7 @@ fi
 
 activate_release() {
     local target_release=$1
-    local target_revision activation_link erasure_worker_active=false
+    local target_revision activation_link erasure_worker_active=false recovery_helpers_available=false
     target_revision=$(basename "${target_release}")
 
     if systemctl is-active --quiet careertrellis-erasure-worker.service; then
@@ -207,6 +222,10 @@ activate_release() {
     fi
 
     validate_release "${target_release}" || return 1
+    if [[ -x ${target_release}/deploy/scripts/mirror-generated-objects-onedrive.sh && \
+          -x ${target_release}/deploy/scripts/test-generated-object-restore.sh ]]; then
+        recovery_helpers_available=true
+    fi
 
     activation_link=${release_root}/.activate-${target_revision}-$$
     rm -f -- "${activation_link}"
@@ -225,6 +244,10 @@ activate_release() {
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/rollback-release.sh" /usr/local/sbin/careertrellis-rollback || return 1
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/install-erasure-worker-credential.sh" /usr/local/sbin/careertrellis-install-erasure-worker-credential || return 1
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/finalize-postgres-r2-cutover.sh" /usr/local/sbin/careertrellis-finalize-cutover || return 1
+    if [[ ${recovery_helpers_available} == true ]]; then
+        install -o root -g root -m 0755 "${target_release}/deploy/scripts/mirror-generated-objects-onedrive.sh" /usr/local/sbin/careertrellis-mirror-generated-objects || return 1
+        install -o root -g root -m 0755 "${target_release}/deploy/scripts/test-generated-object-restore.sh" /usr/local/sbin/careertrellis-test-generated-object-restore || return 1
+    fi
     systemctl daemon-reload || return 1
     if systemctl is-active --quiet caddy; then
         systemctl reload caddy || return 1
@@ -238,6 +261,9 @@ activate_release() {
 
     for _attempt in $(seq 1 30); do
         if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:8001/health/ready >/dev/null; then
+            if [[ ${recovery_helpers_available} == false ]]; then
+                rm -f -- /usr/local/sbin/careertrellis-mirror-generated-objects /usr/local/sbin/careertrellis-test-generated-object-restore || return 1
+            fi
             return 0
         fi
         sleep 1

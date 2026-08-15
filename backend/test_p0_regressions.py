@@ -2384,6 +2384,182 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn('chmod 0600 "${caddy_access_log}"', script)
         self.assertIn('install -o caddy -g caddy -m 0600 /dev/null "${caddy_access_log}"', script)
 
+    def test_generated_object_recovery_is_manual_append_only_and_identity_bounded(self) -> None:
+        project_dir = self.project_dir()
+        scripts = project_dir / "deploy" / "scripts"
+        mirror = (scripts / "mirror-generated-objects-onedrive.sh").read_text(
+            encoding="utf-8"
+        )
+        restore = (scripts / "test-generated-object-restore.sh").read_text(
+            encoding="utf-8"
+        )
+        provision = (scripts / "provision-staging-host.sh").read_text(
+            encoding="utf-8"
+        )
+        deploy = (scripts / "deploy-release.sh").read_text(encoding="utf-8")
+        rollback = (scripts / "rollback-release.sh").read_text(encoding="utf-8")
+        environment = (
+            project_dir
+            / "deploy"
+            / "config"
+            / "generated-object-recovery.environment.example"
+        ).read_text(encoding="utf-8")
+
+        active_environment_names = {
+            line.split("=", 1)[0]
+            for line in environment.splitlines()
+            if line and not line.startswith("#") and "=" in line
+        }
+        self.assertEqual(
+            {
+                "CAREERTRELLIS_GENERATED_OBJECT_SOURCE_ENDPOINT",
+                "CAREERTRELLIS_GENERATED_OBJECT_SOURCE_BUCKET",
+                "CAREERTRELLIS_GENERATED_OBJECT_SOURCE_ACCESS_KEY_ID",
+                "CAREERTRELLIS_GENERATED_OBJECT_SOURCE_SECRET_ACCESS_KEY",
+                "CAREERTRELLIS_GENERATED_OBJECT_ONEDRIVE_REMOTE",
+                "CAREERTRELLIS_GENERATED_OBJECT_ONEDRIVE_ROOT",
+            },
+            active_environment_names,
+        )
+        for forbidden_name in (
+            "CAREERTRELLIS_OBJECT_STORE_KEYRING_B64=",
+            "CAREERTRELLIS_PROVIDER_SECRET_KEYRING_B64=",
+            "CAREERTRELLIS_DATABASE_URL=",
+        ):
+            self.assertNotIn(forbidden_name, environment)
+
+        self.assertIn(
+            "--home-dir /var/lib/careertrellis/generated-object-recovery --shell /usr/sbin/nologin careertrellis-object-recovery",
+            provision,
+        )
+        self.assertIn(
+            "careertrellis-object-recovery:careertrellis-object-recovery 600",
+            provision,
+        )
+        self.assertIn(
+            "/var/lib/careertrellis/generated-object-recovery/rclone.conf",
+            provision,
+        )
+        self.assertIn(
+            'generated-object-recovery.environment.example" /etc/careertrellis/generated-object-recovery.env',
+            provision,
+        )
+        self.assertIn(
+            'mirror-generated-objects-onedrive.sh" /usr/local/sbin/careertrellis-mirror-generated-objects',
+            provision,
+        )
+        self.assertIn(
+            'test-generated-object-restore.sh" /usr/local/sbin/careertrellis-test-generated-object-restore',
+            provision,
+        )
+        self.assertNotIn("systemctl enable", provision)
+        self.assertNotIn("systemctl start", provision)
+        self.assertFalse(
+            any(
+                "generated-object" in path.name
+                for path in (project_dir / "deploy" / "systemd").rglob("*")
+            )
+        )
+        for activation_source in (deploy, rollback):
+            self.assertIn(
+                "Generated-object recovery helpers must be a complete reviewed executable pair.",
+                activation_source,
+            )
+            self.assertIn(
+                "/usr/local/sbin/careertrellis-mirror-generated-objects",
+                activation_source,
+            )
+            self.assertIn(
+                "/usr/local/sbin/careertrellis-test-generated-object-restore",
+                activation_source,
+            )
+            self.assertIn("recovery_helpers_available", activation_source)
+
+        for source in (mirror, restore):
+            self.assertIn("root:root 600", source)
+            self.assertIn("! -L ${", source)
+            self.assertIn("careertrellis-object-recovery", source)
+            self.assertIn("/run/lock/careertrellis-maintenance.lock", (
+                scripts / "maintenance-lock.sh"
+            ).read_text(encoding="utf-8"))
+            self.assertIn("maintenance-lock.sh", source)
+            self.assertIn("acquire_careertrellis_maintenance_lock", source)
+            self.assertIn(
+                "/run/lock/careertrellis-generated-object-recovery.lock", source
+            )
+            self.assertIn("flock -n 9", source)
+            self.assertIn('! ${release_revision} =~ ^[0-9a-f]{40}$', source)
+            self.assertIn('^[0-9]{8}-[0-9]{6}F$', source)
+            self.assertIn("careertrellis-web.service", source)
+            self.assertIn("careertrellis-worker.service", source)
+            self.assertIn("careertrellis-erasure-worker.service", source)
+            self.assertIn('authority_before=$("${authority_helper}" status)', source)
+            self.assertIn('authority_after=$("${authority_helper}" status', source)
+            self.assertIn("runuser --preserve-environment", source)
+            self.assertIn("RCLONE_CONFIG=", source)
+            self.assertIn("rclone_fixed copy", source)
+            self.assertIn("--immutable", source)
+            self.assertIn("rclone_fixed check", source)
+            self.assertIn("--download", source)
+            self.assertNotIn("rclone_fixed delete", source)
+            self.assertNotIn("rclone_fixed purge", source)
+            self.assertNotIn("rclone_fixed move", source)
+            self.assertNotIn("rclone_fixed sync", source)
+            self.assertNotIn("--max-age", source)
+            self.assertNotIn("--min-age", source)
+            self.assertNotIn("systemctl start", source)
+            self.assertNotIn("systemctl enable", source)
+            runuser_commands = "\n".join(
+                line for line in source.splitlines() if "runuser" in line
+            )
+            self.assertNotIn("ACCESS_KEY", runuser_commands)
+            self.assertNotIn("SECRET_ACCESS_KEY", runuser_commands)
+
+        self.assertIn("I_HAVE_VERIFIED_SOURCE_R2_CREDENTIAL_IS_READ_ONLY", mirror)
+        self.assertIn(
+            "I_UNDERSTAND_THIS_APPENDS_AN_IMMUTABLE_ONEDRIVE_SNAPSHOT", mirror
+        )
+        self.assertIn("RCLONE_CONFIG_GENERATEDOBJECTSOURCE_ACCESS_KEY_ID", mirror)
+        self.assertIn('${onedrive_remote,,} == "generatedobjectsource"', mirror)
+        self.assertIn("create-manifest", mirror)
+        object_check = mirror.index(
+            'rclone_fixed check "${source_root}" "${destination}/objects"'
+        )
+        marker_copy = mirror.index(
+            'rclone_fixed copy "${marker_root}" "${destination}"'
+        )
+        self.assertLess(object_check, marker_copy)
+        self.assertEqual(marker_copy, mirror.rindex("rclone_fixed"))
+
+        self.assertIn(
+            "I_HAVE_VERIFIED_THE_R2_TARGET_IS_DISPOSABLE_AND_EMPTY", restore
+        )
+        self.assertIn(
+            "I_UNDERSTAND_THE_DISPOSABLE_R2_TARGET_WILL_BE_LEFT_INTACT", restore
+        )
+        self.assertIn("RCLONE_CONFIG_GENERATEDOBJECTRESTORE_ACCESS_KEY_ID", restore)
+        self.assertIn('${onedrive_remote,,} == "generatedobjectrestore"', restore)
+        self.assertIn("verify-manifest", restore)
+        self.assertIn('"release": os.environ["CAREERTRELLIS_EXPECTED_RELEASE"]', restore)
+        self.assertIn(
+            '"backup_label": os.environ["CAREERTRELLIS_EXPECTED_BACKUP_LABEL"]',
+            restore,
+        )
+        self.assertIn(
+            '"snapshot_id": os.environ["CAREERTRELLIS_EXPECTED_SNAPSHOT_ID"]',
+            restore,
+        )
+        receipt_validation = restore.index(
+            'if any(receipt.get(name) != value for name, value in expected.items())'
+        )
+        target_copy = restore.index(
+            'rclone_fixed copy "${source_root}" "generatedobjectrestore:${target_bucket}"'
+        )
+        self.assertLess(receipt_validation, target_copy)
+        self.assertNotIn(".careertrellis-recovery", restore)
+        self.assertIn("identity-distinct from the source", restore)
+        self.assertIn("The disposable R2 target must be empty.", restore)
+
     def test_auth_callback_material_is_excluded_from_host_access_logs(self) -> None:
         project_dir = self.project_dir()
         caddy_source = (project_dir / "deploy" / "caddy" / "Caddyfile.staging").read_text(

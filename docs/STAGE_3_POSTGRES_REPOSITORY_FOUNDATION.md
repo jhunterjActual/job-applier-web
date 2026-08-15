@@ -258,7 +258,10 @@ not waive the exact-release checks:
    restriction are ready without printing secrets.
 5. Take a fresh full pgBackRest backup, copy its encrypted repository to the
    independent destination, record the backup label, and pass an isolated
-   restore with zero bad checksums.
+   restore with zero bad checksums. While all three services remain quiescent,
+   create the separate immutable generated-object ciphertext generation paired
+   with that exact label and pass its manifest and disposable-restore gate from
+   `STAGE_3_GENERATED_OBJECT_RECOVERY.md`.
 6. Retain the completed disposable no-omission import and three-surface
    reconciliation receipts produced by the exact reviewed release's root-only
    wrapper. Keep the rehearsal database and bucket until an operator explicitly
@@ -309,8 +312,10 @@ instruction to activate this foundation release:
    generated-object download. Repeat missing-context and cross-tenant negative
    tests and inspect minimized logs for secret or personal-data leakage.
 10. Take a fresh post-import full PostgreSQL backup, mirror it independently,
-    record the permanent R2 inventory receipt, and retain the frozen SQLite
-    snapshot for the reviewed rollback window.
+    create and verify the separately paired generated-object recovery
+    generation, record the permanent R2 inventory receipt, and retain the
+    frozen SQLite snapshot for the reviewed rollback window. Generation purge
+    remains a separate exact operator action and is never part of cutover.
 
 Do not reopen web traffic if reconciliation, readiness, authorization, or
 recovery evidence is incomplete.

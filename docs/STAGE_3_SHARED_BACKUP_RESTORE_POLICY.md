@@ -41,7 +41,9 @@ A hosted backup must cover both authoritative systems independently:
    currently specifies pgBackRest plus an independent encrypted copy).
 2. Operators retain versioned or independently replicated recovery copies for
    the permanent private object store and verify object inventory and integrity
-   against database metadata.
+   against database metadata. The manual immutable-generation, paired-backup,
+   disposable-restore, and separate retention contract is specified in
+   `STAGE_3_GENERATED_OBJECT_RECOVERY.md`.
 3. Recovery is performed under a reviewed maintenance procedure that restores
    compatible PostgreSQL and object-store states, then runs readiness and
    reconciliation checks before traffic resumes.
@@ -63,4 +65,6 @@ object storage.
 
 This policy is fail-closed groundwork only. It does not flip
 `HOSTED_REPOSITORY_CUTOVER_COMPLETE`, perform a migration, enable another user,
-or change the final data-authority cutover and rollback rules.
+or change the final data-authority cutover and rollback rules. Generated-object
+recovery remains an operator-only manual process; it is not a web fallback,
+timer, deployment action, or substitute for a reconciled PostgreSQL/R2 cutover.
