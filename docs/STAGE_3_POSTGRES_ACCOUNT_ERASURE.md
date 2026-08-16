@@ -118,11 +118,15 @@ migration, web-runtime, or search-worker passwords:
    `bootstrap-erasure-worker-role.sh`. It creates only
    `careertrellis_erasure_worker`, encrypts its independently generated
    credential to the existing age recipient, and fails closed if role and
-   credential state disagree.
+   credential state disagree. The root-only wrapper reads the reviewed SQL and
+   streams it to `psql`; the `postgres` operating-system account is never
+   required to traverse the release or operator staging path.
 2. Transfer only that encrypted bundle and run
    `careertrellis-install-erasure-worker-credential` on the application host.
    The installer parses one exact non-executable credential line and creates
    `/etc/careertrellis/postgres-erasure-worker.env` as `root:root` mode `0600`.
+   It preserves `/etc/careertrellis` as `root:root` mode `0755`, as required by
+   the installed authority helper, while credential files remain mode `0600`.
 3. With all application workers inactive, apply migration
    `20260814_0009_account_erasure`. The role must exist first because the
    migration revokes broad access and grants its exact broker functions.

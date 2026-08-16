@@ -17,7 +17,7 @@ if [[ ! ${recipient} =~ ^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$ ]]; then
     echo "CAREERTRELLIS_CREDENTIAL_RECIPIENT must be an age X25519 public recipient." >&2
     exit 1
 fi
-if [[ ! -r ${bootstrap_sql} ]]; then
+if [[ ! -f ${bootstrap_sql} || -L ${bootstrap_sql} || ! -r ${bootstrap_sql} ]]; then
     echo "The reviewed erasure-worker role-bootstrap SQL file is missing." >&2
     exit 1
 fi
@@ -55,11 +55,11 @@ if [[ ! ${CAREERTRELLIS_ERASURE_WORKER_PASSWORD} =~ ^[A-Za-z0-9_-]{60,}$ ]]; the
     exit 1
 fi
 
-runuser -u postgres --preserve-environment -- \
-    psql --dbname="${database_name}" --no-psqlrc --set=ON_ERROR_STOP=1 <<EOF
-\getenv erasure_worker_password CAREERTRELLIS_ERASURE_WORKER_PASSWORD
-\i ${bootstrap_sql}
-EOF
+{
+    printf '\\getenv erasure_worker_password CAREERTRELLIS_ERASURE_WORKER_PASSWORD\n'
+    cat -- "${bootstrap_sql}"
+} | runuser -u postgres --preserve-environment -- \
+    psql --dbname="${database_name}" --no-psqlrc --set=ON_ERROR_STOP=1
 
 install -d -o root -g root -m 0700 "${output_directory}"
 plaintext=$(mktemp "${output_directory}/.erasure-worker-credential.XXXXXX")

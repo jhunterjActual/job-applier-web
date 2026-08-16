@@ -799,6 +799,77 @@ class AccountErasureDeploymentBoundaryTests(unittest.TestCase):
                 )
             )
 
+    def test_erasure_role_bootstrap_streams_root_read_sql_without_password_argv(self):
+        script = (
+            self.project_dir()
+            / "deploy"
+            / "scripts"
+            / "bootstrap-erasure-worker-role.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('cat -- "${bootstrap_sql}"', script)
+        self.assertNotIn(r"\i ${bootstrap_sql}", script)
+        self.assertIn(
+            r"\getenv erasure_worker_password CAREERTRELLIS_ERASURE_WORKER_PASSWORD",
+            script,
+        )
+        self.assertIn("--preserve-environment", script)
+        self.assertNotRegex(
+            script,
+            r"--(?:set|variable)(?:=|\s+)[^\n]*erasure_worker_password",
+        )
+        self.assertNotIn("set -x", script)
+
+        password_generation = script.index(
+            "export CAREERTRELLIS_ERASURE_WORKER_PASSWORD="
+        )
+        credential_file_write = script.index(
+            "printf 'CAREERTRELLIS_ERASURE_WORKER_PASSWORD=%s\\n'"
+        )
+        bootstrap_invocation = script[password_generation:credential_file_write]
+        self.assertIn('cat -- "${bootstrap_sql}"', bootstrap_invocation)
+        self.assertNotIn("sha256sum", bootstrap_invocation)
+        self.assertNotRegex(
+            bootstrap_invocation,
+            r"(?:echo|printf)[^\n]*\$\{CAREERTRELLIS_ERASURE_WORKER_PASSWORD\}",
+        )
+
+    def test_erasure_credential_installer_retains_permissions_and_no_activation(self):
+        script = (
+            self.project_dir()
+            / "deploy"
+            / "scripts"
+            / "install-erasure-worker-credential.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "install -d -o root -g root -m 0755 /etc/careertrellis",
+            script,
+        )
+        self.assertIn(
+            'install -o root -g root -m 0600 "${environment_temporary}" "${target_environment}"',
+            script,
+        )
+        self.assertIn(
+            'install -o root -g root -m 0600 "${encrypted_bundle}" "${retained_bundle}"',
+            script,
+        )
+        self.assertIn("chmod 0600 \"${plaintext}\"", script)
+        self.assertIn("chmod 0600 \"${environment_temporary}\"", script)
+        self.assertIn("careertrellis_erasure_worker:%s@%s:5432/%s", script)
+        self.assertIn('authenticated_role=$(PGPASSWORD="${password}" psql', script)
+        self.assertIn("--no-password", script)
+        self.assertNotRegex(script, r"--password(?:=|\s)")
+        self.assertNotIn("set -x", script)
+        for service_action in (
+            "systemctl enable",
+            "systemctl start",
+            "systemctl restart",
+            "systemctl try-restart",
+        ):
+            with self.subTest(service_action=service_action):
+                self.assertNotIn(service_action, script)
+
     def test_shared_only_ui_uses_exact_irreversible_warning_and_request_contract(self):
         static = self.project_dir() / "backend" / "static"
         html = (static / "index.html").read_text(encoding="utf-8")
