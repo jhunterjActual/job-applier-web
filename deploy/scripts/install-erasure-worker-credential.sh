@@ -30,7 +30,7 @@ if [[ -L ${target_environment} || -L ${retained_bundle} ]]; then
     exit 1
 fi
 
-install -d -o root -g root -m 0700 /etc/careertrellis
+install -d -o root -g root -m 0755 /etc/careertrellis
 plaintext=$(mktemp /etc/careertrellis/.erasure-worker-credential.XXXXXX)
 environment_temporary=""
 trap 'shred -u -- "${plaintext:-}" "${environment_temporary:-}" 2>/dev/null || true' EXIT

@@ -134,8 +134,8 @@ Start-Job -ArgumentList $Port -ScriptBlock {
         Start-Sleep -Seconds 1
         try {
             $version = Invoke-RestMethod "http://127.0.0.1:$Port/api/version" -TimeoutSec 1
-            if ($version.build -eq "20260813.26") {
-                Start-Process "http://127.0.0.1:$Port/?build=20260813.26"
+            if ($version.build -eq "20260813.27") {
+                Start-Process "http://127.0.0.1:$Port/?build=20260813.27"
                 return
             }
         } catch { }
