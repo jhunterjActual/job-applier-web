@@ -128,7 +128,8 @@ if ! rehearsal_database_url=$(read_exact_setting "${rehearsal_database_environme
     exit 1
 fi
 
-if ! CAREERTRELLIS_REHEARSAL_DATABASE_URL="${rehearsal_database_url}" \
+identity_status=0
+if CAREERTRELLIS_REHEARSAL_DATABASE_URL="${rehearsal_database_url}" \
     CAREERTRELLIS_LIVE_MIGRATION_DATABASE_URL="${live_migration_database_url}" \
     CAREERTRELLIS_LIVE_RUNTIME_DATABASE_URL="${live_runtime_database_url}" \
     CAREERTRELLIS_REHEARSAL_OBJECT_ENDPOINT="${rehearsal_object_endpoint}" \
@@ -199,11 +200,21 @@ try:
         os.environ["CAREERTRELLIS_LIVE_OBJECT_BUCKET"],
     )
 except (KeyError, TypeError, ValueError):
-    raise SystemExit(1)
+    raise SystemExit(2)
 if rehearsal_database in live_databases or rehearsal_object == live_object:
-    raise SystemExit(1)
+    raise SystemExit(42)
 '; then
+    :
+else
+    identity_status=$?
+fi
+
+if [[ ${identity_status} -eq 42 ]]; then
     echo "Rehearsal targets must differ from live targets." >&2
+    exit 1
+fi
+if [[ ${identity_status} -ne 0 ]]; then
+    echo "Rehearsal target identity validation failed." >&2
     exit 1
 fi
 
