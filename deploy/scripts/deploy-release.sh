@@ -92,10 +92,15 @@ if [[ ! -d ${release_dir} ]]; then
     chmod 0755 \
         "${temporary_release}/deploy/scripts/maintenance-lock.sh" \
         "${temporary_release}/deploy/scripts/apply-postgres-runtime-grants.sh" \
+        "${temporary_release}/deploy/scripts/deploy-release.sh" \
         "${temporary_release}/deploy/scripts/finalize-postgres-r2-cutover.sh" \
+        "${temporary_release}/deploy/scripts/hosted-authority.sh" \
         "${temporary_release}/deploy/scripts/bootstrap-erasure-worker-role.sh" \
+        "${temporary_release}/deploy/scripts/import-sqlite-postgres.sh" \
         "${temporary_release}/deploy/scripts/install-erasure-worker-credential.sh" \
         "${temporary_release}/deploy/scripts/mirror-generated-objects-onedrive.sh" \
+        "${temporary_release}/deploy/scripts/migrate-postgres.sh" \
+        "${temporary_release}/deploy/scripts/preflight-sqlite-postgres-import.sh" \
         "${temporary_release}/deploy/scripts/rehearse-postgres-r2-cutover.sh" \
         "${temporary_release}/deploy/scripts/reconcile-sqlite-postgres-import.sh" \
         "${temporary_release}/deploy/scripts/test-generated-object-restore.sh"

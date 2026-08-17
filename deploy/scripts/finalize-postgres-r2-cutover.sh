@@ -105,7 +105,9 @@ required_scripts=(
     deploy-release.sh
 )
 for required_script in "${required_scripts[@]}"; do
-    if [[ ! -f ${release_script_dir}/${required_script} || -L ${release_script_dir}/${required_script} ]]; then
+    if [[ ! -f ${release_script_dir}/${required_script} || \
+          -L ${release_script_dir}/${required_script} || \
+          ! -x ${release_script_dir}/${required_script} ]]; then
         echo "The exact release is missing a reviewed final-cutover component." >&2
         exit 1
     fi

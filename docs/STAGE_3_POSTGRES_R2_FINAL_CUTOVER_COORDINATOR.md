@@ -1,11 +1,19 @@
 # Stage 3: PostgreSQL/R2 final-cutover coordinator
 
-Build `20260813.30` is the final-capable release for the root-only cutover
+Build `20260813.31` is the final-capable release for the root-only cutover
 coordinator. It pairs `HOSTED_REPOSITORY_CUTOVER_COMPLETE = True` with the exact
 one-line `deploy/hosted-authority.compatibility` declaration. Merely installing
 or preparing it performs no migration, import, authority transition, release
 activation, credential change, or service action. While authority remains
 `sqlite-pre-cutover`, ordinary deploy, rollback, and systemd startup reject it.
+
+The prepared release must preserve execute permission on every reviewed helper
+that this coordinator invokes directly. Build `20260813.31` corrects the
+prepared-release mode defect that made build `20260813.30` fail at its first
+release-local authority invocation; its migration and later deploy helpers had
+the same latent mode defect. The failure occurred before any pending attempt,
+service action, migration, import, or authority change. Do not repair or retry
+the older release in place; prepare and review the new exact release instead.
 
 The permanent object bucket is empty before import, so its recovery generation
 cannot be verified before import. The coordinator is therefore split into two
@@ -300,7 +308,7 @@ authority.
       authority downgrade, or backward recovery path after the marker.
 - [ ] P0, coordinator, account-erasure, import/reconciliation, PostgreSQL/RLS,
       route-qualification, dependency, compilation, and shell checks pass for
-      build `20260813.30`.
+      build `20260813.31`.
 - [ ] The cutover flag is true only in the same exact release that contains the
       one-line `postgres-r2-authoritative-v1` capability, while no live release,
       service, authority, database, object, credential, environment, user, DNS,
