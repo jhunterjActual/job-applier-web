@@ -333,9 +333,26 @@ class FinalCutoverStaticContractTests(unittest.TestCase):
             "\nverify_installed_start_guards()", required_start
         )
         required_validation = coordinator[required_start:required_end]
+        executable_start = required_validation.index(
+            "required_executable_scripts=("
+        )
+        executable_validation = required_validation[executable_start:]
+        self.assertIn("maintenance-lock.sh", required_validation[:executable_start])
+        self.assertNotIn("maintenance-lock.sh", executable_validation)
+        for script_name in (
+            "migrate-postgres.sh",
+            GRANT_WRAPPER_NAME,
+            "preflight-sqlite-postgres-import.sh",
+            "import-sqlite-postgres.sh",
+            "reconcile-sqlite-postgres-import.sh",
+            "hosted-authority.sh",
+            "deploy-release.sh",
+        ):
+            with self.subTest(script=script_name):
+                self.assertIn(script_name, executable_validation)
         self.assertIn(
-            "! -x ${release_script_dir}/${required_script}",
-            required_validation,
+            "! -x ${release_script_dir}/${required_executable_script}",
+            executable_validation,
         )
         self.assertLess(
             required_end,
