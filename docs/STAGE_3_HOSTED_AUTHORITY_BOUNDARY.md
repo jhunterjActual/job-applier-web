@@ -1,12 +1,13 @@
 # Stage 3 hosted data-authority boundary
 
 The release-independent operational latch protects the PostgreSQL/private-R2
-cutover. Build `20260813.30` is the first final-capable release: it pairs the
-true repository-cutover flag with the exact hosted-authority compatibility
-declaration. It does **not** perform the cutover merely by being merged,
-installed, or prepared. Do not import the permanent workspace, mark hosted
-storage authoritative, or activate it outside the reviewed two-phase
-coordinator.
+cutover. Build `20260813.31` is the reviewed final-capable release: it preserves
+the true repository-cutover flag and exact hosted-authority compatibility
+declaration introduced by build `20260813.30`, while repairing the prepared-
+release helper modes needed by the coordinator. It does **not** perform the
+cutover merely by being merged, installed, or prepared. Do not import the
+permanent workspace, mark hosted storage authoritative, or activate it outside
+the reviewed two-phase coordinator.
 
 ## Durable one-way state
 
@@ -85,7 +86,7 @@ identities prevents a recycled PID from reviving a stale lease. A crash,
 reboot, stale lease, mismatched attempt/release, or any other pending phase
 therefore denies startup.
 
-Build `20260813.30` adds that capability file only alongside the true repository
+Build `20260813.31` preserves that capability file only alongside the true repository
 cutover flag and the completed shared-host, owner-isolation, recovery, and
 two-phase coordinator gates. Pre-cutover ordinary deploy and runtime checks
 continue to reject the final-capable release until the marker transition.
@@ -170,7 +171,7 @@ service. Its boundary is documented in
 
 Acceptance for the combined tree requires shell syntax, marker transition/fixed-
 error and import-reconciliation tests, the P0 suite, compile checks, dependency-
-lock checks, a single `20260814_0009` Alembic head, build `20260813.30`, no
+lock checks, a single `20260814_0009` Alembic head, build `20260813.31`, no
 protected-file changes, and confirmation that live/external state remains
 untouched by the code PR. The reconciliation boundary is documented in
 `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.

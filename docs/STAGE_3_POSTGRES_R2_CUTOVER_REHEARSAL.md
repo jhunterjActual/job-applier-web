@@ -104,7 +104,7 @@ decides whether retry or disposable-target cleanup is safe.
 
 ## Not final-cutover evidence
 
-A receipt from this build (`20260813.30`) proves the disposable rehearsal only.
+A receipt from this build (`20260813.31`) proves the disposable rehearsal only.
 The final cutover release must repeat prepare-only checks and the no-omission
 rehearsal after all final compatibility changes are present. Permanent import,
 the one-line `postgres-r2-authoritative-v1` capability, the repository cutover

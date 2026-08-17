@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -289,6 +290,76 @@ class FinalCutoverStaticContractTests(unittest.TestCase):
         ):
             with self.subTest(script=script_name):
                 self.assertIn(f'"${{release_script_dir}}/{script_name}"', source)
+
+    def test_prepared_release_makes_every_coordinator_script_executable(self) -> None:
+        _path, coordinator = _coordinator()
+        deploy = (SCRIPT_DIRECTORY / "deploy-release.sh").read_text(
+            encoding="utf-8"
+        )
+        coordinator_scripts = set(
+            re.findall(
+                r'"\$\{release_script_dir\}/([a-z0-9-]+\.sh)"',
+                coordinator,
+            )
+        )
+        self.assertIn("hosted-authority.sh", coordinator_scripts)
+        self.assertIn("migrate-postgres.sh", coordinator_scripts)
+
+        chmod_start = deploy.index("    chmod 0755 \\")
+        chmod_end = deploy.index("\n    chown -R", chmod_start)
+        executable_preparation = deploy[chmod_start:chmod_end]
+        for script_name in sorted(coordinator_scripts):
+            with self.subTest(script=script_name):
+                self.assertIn(
+                    f'"${{temporary_release}}/deploy/scripts/{script_name}"',
+                    executable_preparation,
+                )
+
+    @unittest.skipIf(os.name == "nt", "POSIX execute modes are unavailable")
+    def test_bootstrap_scripts_are_executable_before_preparation(self) -> None:
+        for script_name in (
+            "deploy-release.sh",
+            "hosted-authority.sh",
+            "migrate-postgres.sh",
+        ):
+            with self.subTest(script=script_name):
+                mode = (SCRIPT_DIRECTORY / script_name).stat().st_mode
+                self.assertTrue(mode & stat.S_IXUSR)
+
+    def test_nonexecutable_coordinator_script_fails_before_authority(self) -> None:
+        _path, coordinator = _coordinator()
+        required_start = coordinator.index("required_scripts=(")
+        required_end = coordinator.index(
+            "\nverify_installed_start_guards()", required_start
+        )
+        required_validation = coordinator[required_start:required_end]
+        executable_start = required_validation.index(
+            "required_executable_scripts=("
+        )
+        executable_validation = required_validation[executable_start:]
+        self.assertIn("maintenance-lock.sh", required_validation[:executable_start])
+        self.assertNotIn("maintenance-lock.sh", executable_validation)
+        for script_name in (
+            "migrate-postgres.sh",
+            GRANT_WRAPPER_NAME,
+            "preflight-sqlite-postgres-import.sh",
+            "import-sqlite-postgres.sh",
+            "reconcile-sqlite-postgres-import.sh",
+            "hosted-authority.sh",
+            "deploy-release.sh",
+        ):
+            with self.subTest(script=script_name):
+                self.assertIn(script_name, executable_validation)
+        self.assertIn(
+            "! -x ${release_script_dir}/${required_executable_script}",
+            executable_validation,
+        )
+        self.assertLess(
+            required_end,
+            coordinator.index(
+                'authority_state=$("${release_script_dir}/hosted-authority.sh" status)'
+            ),
+        )
 
     def test_services_are_stopped_and_rechecked_in_both_phases(self) -> None:
         _path, source = _coordinator()

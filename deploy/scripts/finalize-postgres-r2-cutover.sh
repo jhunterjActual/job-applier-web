@@ -105,7 +105,23 @@ required_scripts=(
     deploy-release.sh
 )
 for required_script in "${required_scripts[@]}"; do
-    if [[ ! -f ${release_script_dir}/${required_script} || -L ${release_script_dir}/${required_script} ]]; then
+    if [[ ! -f ${release_script_dir}/${required_script} || \
+          -L ${release_script_dir}/${required_script} ]]; then
+        echo "The exact release is missing a reviewed final-cutover component." >&2
+        exit 1
+    fi
+done
+required_executable_scripts=(
+    migrate-postgres.sh
+    apply-postgres-runtime-grants.sh
+    preflight-sqlite-postgres-import.sh
+    import-sqlite-postgres.sh
+    reconcile-sqlite-postgres-import.sh
+    hosted-authority.sh
+    deploy-release.sh
+)
+for required_executable_script in "${required_executable_scripts[@]}"; do
+    if [[ ! -x ${release_script_dir}/${required_executable_script} ]]; then
         echo "The exact release is missing a reviewed final-cutover component." >&2
         exit 1
     fi
