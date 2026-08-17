@@ -759,6 +759,32 @@ class AccountErasureDeploymentBoundaryTests(unittest.TestCase):
             if line and not line.startswith("#") and "=" in line
         }
 
+    def test_runtime_grants_revoke_private_erasure_tables_after_broad_grants(self):
+        grant_source = (
+            self.project_dir() / "deploy" / "postgres" / "grant-runtime.sql"
+        ).read_text(encoding="utf-8")
+        broad_grant = grant_source.index(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA careertrellis"
+        )
+        private_revoke = grant_source.index(
+            "REVOKE ALL ON careertrellis.account_erasure_requests,\n"
+            "    careertrellis.account_erasure_claim_queue\n"
+            "    FROM careertrellis_runtime, careertrellis_worker,\n"
+            "    careertrellis_erasure_worker;"
+        )
+
+        self.assertGreater(private_revoke, broad_grant)
+        self.assertIn(
+            "GRANT EXECUTE ON FUNCTION careertrellis.request_account_erasure()\n"
+            "    TO careertrellis_runtime;",
+            grant_source,
+        )
+        self.assertIn(
+            "careertrellis.purge_expired_account_erasures(integer)\n"
+            "    TO careertrellis_erasure_worker;",
+            grant_source,
+        )
+
     def test_release_tools_accept_exact_boolean_without_activating_worker(self):
         scripts = self.project_dir() / "deploy" / "scripts"
         enablement_pattern = (

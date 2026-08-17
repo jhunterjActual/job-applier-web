@@ -208,7 +208,7 @@ state that finite recovery-media window.
       introduced by merely deploying this slice.
 - [ ] Focused recovery, object-store, import/reconciliation, cutover, P0,
       dependency, compilation, shell-syntax, documentation, and protected-file
-      checks pass for build `20260813.27`.
+      checks pass for build `20260813.28`.
 
 The final authority transition remains governed by
 `STAGE_3_POSTGRES_R2_FINAL_CUTOVER_COORDINATOR.md`. These receipts are manual
