@@ -257,6 +257,72 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         ):
             runtime_grants_module.apply_runtime_grants(grant_path)
 
+        with self.admin_engine.connect() as connection:
+            for role in (RUNTIME_ROLE, WORKER_ROLE, ERASURE_WORKER_ROLE):
+                for table_name in (
+                    "account_erasure_requests",
+                    "account_erasure_claim_queue",
+                ):
+                    for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                        with self.subTest(
+                            role=role,
+                            table=table_name,
+                            privilege=privilege,
+                        ):
+                            self.assertFalse(
+                                connection.scalar(
+                                    text(
+                                        "SELECT has_table_privilege("
+                                        ":role, :table_name, :privilege)"
+                                    ),
+                                    {
+                                        "role": role,
+                                        "table_name": f"careertrellis.{table_name}",
+                                        "privilege": privilege,
+                                    },
+                                )
+                            )
+
+            self.assertTrue(
+                connection.scalar(
+                    text(
+                        "SELECT has_table_privilege("
+                        ":role, 'careertrellis.jobs', 'SELECT')"
+                    ),
+                    {"role": RUNTIME_ROLE},
+                )
+            )
+            self.assertTrue(
+                connection.scalar(
+                    text(
+                        "SELECT has_table_privilege("
+                        ":role, 'careertrellis.jobs', 'SELECT')"
+                    ),
+                    {"role": WORKER_ROLE},
+                )
+            )
+            self.assertTrue(
+                connection.scalar(
+                    text(
+                        "SELECT has_function_privilege("
+                        ":role, 'careertrellis.request_account_erasure()', "
+                        "'EXECUTE')"
+                    ),
+                    {"role": RUNTIME_ROLE},
+                )
+            )
+            self.assertTrue(
+                connection.scalar(
+                    text(
+                        "SELECT has_function_privilege("
+                        ":role, "
+                        "'careertrellis.claim_next_account_erasure(uuid, integer)', "
+                        "'EXECUTE')"
+                    ),
+                    {"role": ERASURE_WORKER_ROLE},
+                )
+            )
+
     @classmethod
     def _drop_cluster_objects(cls) -> None:
         with cls.admin_server_engine.connect() as connection:

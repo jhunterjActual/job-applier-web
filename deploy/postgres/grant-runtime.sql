@@ -62,6 +62,10 @@ GRANT UPDATE (last_seen_at) ON careertrellis.app_users
 -- Cross-owner claim, object acknowledgement, finalization, retry, and receipt
 -- purge are available only to the dedicated erasure role. Neither worker gets
 -- table access, and the search worker cannot invoke this broker.
+REVOKE ALL ON careertrellis.account_erasure_requests,
+    careertrellis.account_erasure_claim_queue
+    FROM careertrellis_runtime, careertrellis_worker,
+    careertrellis_erasure_worker;
 REVOKE ALL ON FUNCTION careertrellis.sync_account_erasure_claim_queue()
     FROM PUBLIC, careertrellis_runtime, careertrellis_worker,
     careertrellis_erasure_worker;

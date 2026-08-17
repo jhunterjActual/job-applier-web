@@ -130,8 +130,10 @@ migration, web-runtime, or search-worker passwords:
 3. With all application workers inactive, apply migration
    `20260814_0009_account_erasure`. The role must exist first because the
    migration revokes broad access and grants its exact broker functions.
-4. Reapply `deploy/postgres/grant-runtime.sql` after migration. It revokes all
-   table, sequence, and general function privileges from the erasure role, then
+4. Reapply `deploy/postgres/grant-runtime.sql` after migration. After its broad
+   ordinary runtime grants, it re-revokes direct access to both private erasure
+   tables from the web, search, and erasure roles. It also revokes all table,
+   sequence, and general function privileges from the erasure role, then
    restores only the exact broker EXECUTE grants.
 5. Install a distinct delete-only private-bucket credential, keep the worker
    flag false, and run the disposable PostgreSQL/R2 isolation and retry tests.
@@ -174,6 +176,6 @@ Acceptance requires fixed-response route tests, worker retry/lease/idempotency
 tests, two-owner RLS and broker tests on disposable PostgreSQL, synthetic R2
 deletion tests, role/grant static checks, P0 and compile checks, shell and
 PowerShell parsing, one Alembic head at `20260814_0009`, build
-`20260813.24`, no protected-file changes, and confirmation that the erasure
+`20260813.28`, no protected-file changes, and confirmation that the erasure
 worker, shared cutover, live services, credentials, and external stores remain
 untouched.
