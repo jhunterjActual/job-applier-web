@@ -17,6 +17,10 @@ CAREERTRELLIS_IDENTITY_STORE=postgres
 # separately carry the exact reviewed compatibility declaration described in
 # docs/STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md.
 # CAREERTRELLIS_DATA_STORE=postgres
+# These web-side producer gates must exactly match their dedicated worker files.
+# Keep a feature unavailable when its durable consumer is disabled.
+CAREERTRELLIS_SEARCH_WORKER_ENABLED=false
+CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=false
 WORKOS_API_KEY=replace-with-the-staging-workos-api-key
 WORKOS_CLIENT_ID=replace-with-the-staging-workos-client-id
 WORKOS_COOKIE_PASSWORD=replace-with-a-url-safe-base64-key-from-32-random-bytes

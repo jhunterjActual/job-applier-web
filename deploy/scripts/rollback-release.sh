@@ -63,9 +63,23 @@ fi
 /usr/local/sbin/careertrellis-authority assert-code-rollback-allowed
 /usr/local/sbin/careertrellis-authority assert-release-startable "${target_release}"
 
+assert_erasure_worker_activation_ready() {
+    local configured_enabled=$1
+
+    if [[ ${configured_enabled} != true ]]; then
+        return 0
+    fi
+    if ! systemctl is-active --quiet careertrellis-erasure-worker.service || \
+       ! systemctl is-enabled --quiet careertrellis-erasure-worker.service; then
+        echo "The account-erasure worker must already be active and enabled before its producer switch is set to true." >&2
+        return 1
+    fi
+}
+
 activate_release() {
     local release=$1
     local revision activation_link environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds erasure_worker_active=false recovery_helper recovery_helpers_available=false
+    local erasure_worker_enabled search_worker_enabled web_erasure_worker_enabled web_search_worker_enabled
     revision=$(basename "${release}")
 
     /usr/local/sbin/careertrellis-authority assert-release-startable "${release}" || return 1
@@ -118,6 +132,10 @@ activate_release() {
     fi
     erasure_poll_seconds=$(sed -n 's/^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_POLL_SECONDS=//p' /etc/careertrellis/account-erasure-worker.env)
     erasure_batch_size=$(sed -n 's/^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_BATCH_SIZE=//p' /etc/careertrellis/account-erasure-worker.env)
+    erasure_worker_enabled=$(sed -n 's/^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=//p' /etc/careertrellis/account-erasure-worker.env)
+    search_worker_enabled=$(sed -n 's/^CAREERTRELLIS_SEARCH_WORKER_ENABLED=//p' /etc/careertrellis/search-worker.env)
+    web_erasure_worker_enabled=$(sed -n 's/^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=//p' /etc/careertrellis/staging.env)
+    web_search_worker_enabled=$(sed -n 's/^CAREERTRELLIS_SEARCH_WORKER_ENABLED=//p' /etc/careertrellis/staging.env)
     erasure_data_store_count=$(grep -Ec '^CAREERTRELLIS_DATA_STORE=' /etc/careertrellis/account-erasure-worker.env)
     if [[ $(grep -Ec '^CAREERTRELLIS_ENVIRONMENT=' /etc/careertrellis/account-erasure-worker.env) -ne 1 ]] || \
        [[ $(grep -Fxc "CAREERTRELLIS_ENVIRONMENT=staging" /etc/careertrellis/account-erasure-worker.env) -ne 1 ]] || \
@@ -127,6 +145,14 @@ activate_release() {
        [[ ${erasure_data_store_count} -eq 1 && $(grep -Fxc "CAREERTRELLIS_DATA_STORE=postgres" /etc/careertrellis/account-erasure-worker.env) -ne 1 ]] || \
        [[ $(grep -Ec '^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=' /etc/careertrellis/account-erasure-worker.env) -ne 1 ]] || \
        [[ $(grep -Ec '^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=(true|false)$' /etc/careertrellis/account-erasure-worker.env) -ne 1 ]] || \
+       [[ $(grep -Ec '^CAREERTRELLIS_SEARCH_WORKER_ENABLED=' /etc/careertrellis/search-worker.env) -ne 1 ]] || \
+       [[ $(grep -Ec '^CAREERTRELLIS_SEARCH_WORKER_ENABLED=(true|false)$' /etc/careertrellis/search-worker.env) -ne 1 ]] || \
+       [[ $(grep -Ec '^CAREERTRELLIS_SEARCH_WORKER_ENABLED=' /etc/careertrellis/staging.env) -ne 1 ]] || \
+       [[ $(grep -Ec '^CAREERTRELLIS_SEARCH_WORKER_ENABLED=(true|false)$' /etc/careertrellis/staging.env) -ne 1 ]] || \
+       [[ $(grep -Ec '^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=' /etc/careertrellis/staging.env) -ne 1 ]] || \
+       [[ $(grep -Ec '^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=(true|false)$' /etc/careertrellis/staging.env) -ne 1 ]] || \
+       [[ ${web_search_worker_enabled} != "${search_worker_enabled}" ]] || \
+       [[ ${web_erasure_worker_enabled} != "${erasure_worker_enabled}" ]] || \
        [[ $(grep -Ec '^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_POLL_SECONDS=' /etc/careertrellis/account-erasure-worker.env) -ne 1 ]] || \
        [[ ! ${erasure_poll_seconds} =~ ^(0|[1-9][0-9]{0,2})$ || ${erasure_poll_seconds} -lt 5 || ${erasure_poll_seconds} -gt 300 ]] || \
        [[ $(grep -Ec '^CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_BATCH_SIZE=' /etc/careertrellis/account-erasure-worker.env) -ne 1 ]] || \
@@ -138,6 +164,7 @@ activate_release() {
         echo "The account-erasure worker must retain its reviewed exact enablement flag, dedicated database, and object-store selections." >&2
         return 1
     fi
+    assert_erasure_worker_activation_ready "${erasure_worker_enabled}" || return 1
     for environment_file in \
         /etc/careertrellis/staging.env \
         /etc/careertrellis/search-worker.env; do
@@ -167,15 +194,34 @@ activate_release() {
         install -o root -g root -m 0755 "${release}/deploy/scripts/test-generated-object-restore.sh" /usr/local/sbin/careertrellis-test-generated-object-restore || return 1
     fi
     systemctl daemon-reload || return 1
+    # Stop the old producer before changing either consumer. The running web
+    # process retains its startup flags and must not enqueue work after a
+    # newly-disabled worker has been stopped.
+    systemctl stop careertrellis-web.service || return 1
+    if [[ ${search_worker_enabled} == false ]]; then
+        systemctl disable careertrellis-worker.service >/dev/null || return 1
+        systemctl stop careertrellis-worker.service || return 1
+    fi
+    if [[ ${erasure_worker_enabled} == false ]]; then
+        systemctl disable careertrellis-erasure-worker.service >/dev/null || return 1
+        systemctl stop careertrellis-erasure-worker.service || return 1
+    fi
     systemctl reload caddy || return 1
-    systemctl restart careertrellis-worker.service careertrellis-web.service || return 1
-    if [[ ${erasure_worker_active} == true ]]; then
+    systemctl restart careertrellis-web.service || return 1
+    if [[ ${search_worker_enabled} == true ]]; then
+        systemctl restart careertrellis-worker.service || return 1
+    fi
+    if [[ ${erasure_worker_enabled} == true ]]; then
         systemctl restart careertrellis-erasure-worker.service || return 1
     fi
     for _attempt in $(seq 1 30); do
         if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:8001/health/ready >/dev/null; then
             if [[ ${recovery_helpers_available} == false ]]; then
                 rm -f -- /usr/local/sbin/careertrellis-mirror-generated-objects /usr/local/sbin/careertrellis-test-generated-object-restore || return 1
+            fi
+            systemctl enable careertrellis-web.service >/dev/null || return 1
+            if [[ ${search_worker_enabled} == true ]]; then
+                systemctl enable careertrellis-worker.service >/dev/null || return 1
             fi
             return 0
         fi

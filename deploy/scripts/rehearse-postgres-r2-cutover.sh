@@ -8,6 +8,7 @@ systemctl_command=systemctl
 live_migration_environment_file=/etc/careertrellis/postgres-migration.env
 live_runtime_environment_file=/etc/careertrellis/postgres-runtime.env
 live_object_environment_file=/etc/careertrellis/object-storage.env
+maintenance_lock_file=/run/lock/careertrellis-maintenance.lock
 test_mode=false
 
 if [[ ${1:-} == "--test-root" ]]; then
@@ -23,6 +24,7 @@ if [[ ${1:-} == "--test-root" ]]; then
     live_migration_environment_file=${test_root}/etc/postgres-migration.env
     live_runtime_environment_file=${test_root}/etc/postgres-runtime.env
     live_object_environment_file=${test_root}/etc/object-storage.env
+    maintenance_lock_file=${test_root}/run/lock/careertrellis-maintenance.lock
     shift 2
 fi
 
@@ -62,6 +64,10 @@ for required_path in \
         exit 1
     fi
 done
+if [[ ! -f ${release_dir}/deploy/scripts/maintenance-lock.sh || -L ${release_dir}/deploy/scripts/maintenance-lock.sh ]]; then
+    echo "The rehearsal release is incomplete." >&2
+    exit 1
+fi
 
 validate_environment_file() {
     local environment_file=$1
@@ -122,7 +128,8 @@ if ! rehearsal_database_url=$(read_exact_setting "${rehearsal_database_environme
     exit 1
 fi
 
-if ! CAREERTRELLIS_REHEARSAL_DATABASE_URL="${rehearsal_database_url}" \
+identity_status=0
+if CAREERTRELLIS_REHEARSAL_DATABASE_URL="${rehearsal_database_url}" \
     CAREERTRELLIS_LIVE_MIGRATION_DATABASE_URL="${live_migration_database_url}" \
     CAREERTRELLIS_LIVE_RUNTIME_DATABASE_URL="${live_runtime_database_url}" \
     CAREERTRELLIS_REHEARSAL_OBJECT_ENDPOINT="${rehearsal_object_endpoint}" \
@@ -132,16 +139,35 @@ if ! CAREERTRELLIS_REHEARSAL_DATABASE_URL="${rehearsal_database_url}" \
     "${release_dir}/backend/venv/bin/python" -c '
 import os
 import sys
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
+
+from psycopg.conninfo import conninfo_to_dict
+from sqlalchemy.engine import make_url
 
 def database_identity(value):
-    parsed = urlsplit(value)
-    if parsed.scheme not in {"postgresql", "postgresql+psycopg"}:
+    url = make_url(value)
+    if url.drivername not in {"postgresql", "postgresql+psycopg"}:
         raise ValueError
-    database = unquote(parsed.path.lstrip("/"))
-    if not parsed.hostname or not database:
+    native_url = url.set(drivername="postgresql").render_as_string(
+        hide_password=False
+    )
+    parameters = conninfo_to_dict(native_url)
+    if parameters.get("service") or parameters.get("hostaddr"):
         raise ValueError
-    return parsed.hostname.casefold().rstrip("."), parsed.port or 5432, database
+    host = parameters.get("host", "")
+    database = parameters.get("dbname", "")
+    port = parameters.get("port", "5432")
+    if (
+        not host
+        or not database
+        or "," in host
+        or "," in port
+        or host.startswith("/")
+        or parameters.get("target_session_attrs", "any") != "any"
+        or parameters.get("load_balance_hosts", "disable") != "disable"
+    ):
+        raise ValueError
+    return host.casefold().rstrip("."), int(port or "5432"), database
 
 def object_identity(endpoint, bucket):
     parsed = urlsplit(endpoint)
@@ -174,11 +200,21 @@ try:
         os.environ["CAREERTRELLIS_LIVE_OBJECT_BUCKET"],
     )
 except (KeyError, TypeError, ValueError):
-    raise SystemExit(1)
+    raise SystemExit(2)
 if rehearsal_database in live_databases or rehearsal_object == live_object:
-    raise SystemExit(1)
+    raise SystemExit(42)
 '; then
+    :
+else
+    identity_status=$?
+fi
+
+if [[ ${identity_status} -eq 42 ]]; then
     echo "Rehearsal targets must differ from live targets." >&2
+    exit 1
+fi
+if [[ ${identity_status} -ne 0 ]]; then
+    echo "Rehearsal target identity validation failed." >&2
     exit 1
 fi
 
@@ -186,7 +222,19 @@ if [[ ! -x ${authority_helper} ]]; then
     echo "Hosted authority state is unavailable." >&2
     exit 1
 fi
-"${authority_helper}" assert-import-allowed
+
+exec 10>"${maintenance_lock_file}"
+export CAREERTRELLIS_MAINTENANCE_LOCK_FD=10
+if [[ ${test_mode} == true ]]; then
+    if ! flock -n 10; then
+        echo "Another CareerTrellis maintenance operation is running." >&2
+        exit 1
+    fi
+else
+    # shellcheck source=maintenance-lock.sh
+    source "${release_dir}/deploy/scripts/maintenance-lock.sh"
+    acquire_careertrellis_maintenance_lock
+fi
 
 if ! command -v "${systemctl_command}" >/dev/null 2>&1; then
     echo "Service state is unavailable." >&2
@@ -198,6 +246,24 @@ for service in careertrellis-web.service careertrellis-worker.service careertrel
         exit 1
     fi
 done
+
+rehearsal_migration_environment_sha256=$(sha256sum "${rehearsal_database_environment_file}" | awk '{print $1}')
+rehearsal_object_environment_sha256=$(sha256sum "${rehearsal_object_environment_file}" | awk '{print $1}')
+if [[ ! ${rehearsal_migration_environment_sha256} =~ ^[0-9a-f]{64}$ || \
+      ! ${rehearsal_object_environment_sha256} =~ ^[0-9a-f]{64}$ ]]; then
+    echo "Rehearsal target identity validation failed." >&2
+    exit 1
+fi
+"${authority_helper}" \
+    assert-rehearsal-import-allowed \
+    "${release_revision}" \
+    "${rehearsal_migration_environment_sha256}" \
+    "${rehearsal_object_environment_sha256}" \
+    "$$"
+export CAREERTRELLIS_REHEARSAL_IMPORT_COORDINATOR_PID="$$"
+export CAREERTRELLIS_REHEARSAL_IMPORT_RELEASE="${release_revision}"
+export CAREERTRELLIS_REHEARSAL_IMPORT_MIGRATION_ENVIRONMENT_SHA256="${rehearsal_migration_environment_sha256}"
+export CAREERTRELLIS_REHEARSAL_IMPORT_OBJECT_ENVIRONMENT_SHA256="${rehearsal_object_environment_sha256}"
 
 "${release_dir}/deploy/scripts/preflight-sqlite-postgres-import.sh" "${release_dir}"
 "${release_dir}/deploy/scripts/import-sqlite-postgres.sh" \

@@ -1,4 +1,6 @@
+import hashlib
 import os
+import re
 import shlex
 import stat
 import subprocess
@@ -25,12 +27,18 @@ class CutoverRehearsalSourceContractTests(unittest.TestCase):
             / "rehearse-postgres-r2-cutover.sh"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("assert-import-allowed", source)
+        self.assertIn("assert-rehearsal-import-allowed", source)
+        self.assertIn("CAREERTRELLIS_MAINTENANCE_LOCK_FD=10", source)
+        self.assertIn("CAREERTRELLIS_REHEARSAL_IMPORT_MIGRATION_ENVIRONMENT_SHA256", source)
         self.assertIn("careertrellis-erasure-worker.service", source)
         self.assertIn("root:root 600", source)
         self.assertIn("^${setting_name}=", source)
         self.assertIn("database_identity", source)
         self.assertIn("object_identity", source)
+        self.assertIn("conninfo_to_dict", source)
+        self.assertIn("make_url", source)
+        self.assertIn('parameters.get("service")', source)
+        self.assertIn('parameters.get("hostaddr")', source)
         self.assertIn(CONFIRMATION, source)
         self.assertIn('"${release_dir}/deploy/scripts/preflight-sqlite-postgres-import.sh"', source)
         self.assertIn('"${release_dir}/deploy/scripts/import-sqlite-postgres.sh"', source)
@@ -57,6 +65,73 @@ class CutoverRehearsalSourceContractTests(unittest.TestCase):
         self.assertIn("test_cutover_rehearsal.py", workflow)
         self.assertIn("rehearse-postgres-r2-cutover.sh", deploy)
 
+    def test_effective_database_identity_rejects_libpq_indirection(self):
+        source = (
+            self.project_dir()
+            / "deploy"
+            / "scripts"
+            / "rehearse-postgres-r2-cutover.sh"
+        ).read_text(encoding="utf-8")
+        match = re.search(
+            r'"\$\{release_dir\}/backend/venv/bin/python" -c \'\n(.*?)\n\'; then',
+            source,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        identity_code = match.group(1)
+        base_environment = {
+            **os.environ,
+            "CAREERTRELLIS_LIVE_MIGRATION_DATABASE_URL": (
+                "postgresql+psycopg://migration@db.example:5432/live"
+            ),
+            "CAREERTRELLIS_LIVE_RUNTIME_DATABASE_URL": (
+                "postgresql+psycopg://runtime@db.example:5432/live"
+            ),
+            "CAREERTRELLIS_REHEARSAL_OBJECT_ENDPOINT": (
+                "https://account.r2.example"
+            ),
+            "CAREERTRELLIS_REHEARSAL_OBJECT_BUCKET": "rehearsal-materials",
+            "CAREERTRELLIS_LIVE_OBJECT_ENDPOINT": (
+                "https://account.r2.example"
+            ),
+            "CAREERTRELLIS_LIVE_OBJECT_BUCKET": "live-materials",
+        }
+
+        def check(url: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [sys.executable, "-c", identity_code],
+                env={
+                    **base_environment,
+                    "CAREERTRELLIS_REHEARSAL_DATABASE_URL": url,
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(
+            0,
+            check(
+                "postgresql+psycopg://migration@db.example:5432/rehearsal"
+            ).returncode,
+        )
+        unsafe_urls = (
+            "postgresql+psycopg://migration@decoy.example/rehearsal?"
+            "hostaddr=10.70.0.2&dbname=live",
+            "postgresql+psycopg://migration@decoy.example/rehearsal?"
+            "service=private-service",
+            "postgresql+psycopg://migration@decoy.example/rehearsal?"
+            "host=decoy.example,db.example&port=5432,5432",
+            "postgresql+psycopg://migration@decoy.example/rehearsal?"
+            "target_session_attrs=primary",
+        )
+        for unsafe_url in unsafe_urls:
+            with self.subTest(control=unsafe_url.split("?")[1].split("=")[0]):
+                completed = check(unsafe_url)
+                self.assertNotEqual(0, completed.returncode)
+                self.assertEqual("", completed.stdout)
+                self.assertEqual("", completed.stderr)
+
     def test_hosted_cutover_controls_remain_absent(self):
         project_dir = self.project_dir()
         data_store = (project_dir / "backend" / "data_store.py").read_text(
@@ -78,6 +153,7 @@ class CutoverRehearsalShellTests(unittest.TestCase):
         self.bin_dir = self.root / "bin"
         self.etc_dir = self.root / "etc"
         self.command_log = self.root / "commands.log"
+        self.authority_log = self.root / "authority.log"
         self.authority_state = self.root / "authority-state"
         self.active_services = self.root / "active-services"
         self.project_dir = Path(__file__).resolve().parents[1]
@@ -92,9 +168,11 @@ class CutoverRehearsalShellTests(unittest.TestCase):
         (self.release / "deploy" / "scripts").mkdir(parents=True)
         self.bin_dir.mkdir(parents=True)
         self.etc_dir.mkdir(parents=True)
+        (self.root / "run" / "lock").mkdir(parents=True)
         self.authority_state.write_text("sqlite-pre-cutover\n", encoding="utf-8")
         self.active_services.write_text("", encoding="utf-8")
         self.command_log.write_text("", encoding="utf-8")
+        self.authority_log.write_text("", encoding="utf-8")
 
         self._write_executable(
             self.release / "backend" / "venv" / "bin" / "python",
@@ -104,8 +182,13 @@ class CutoverRehearsalShellTests(unittest.TestCase):
             self.bin_dir / "careertrellis-authority",
             "#!/usr/bin/env bash\n"
             "set -eu\n"
-            f"[[ ${{1:-}} == assert-import-allowed ]] || exit 2\n"
-            f"[[ $(cat {shlex.quote(self.authority_state.as_posix())}) == sqlite-pre-cutover ]]\n",
+            "[[ $# -eq 5 ]] || exit 2\n"
+            f"[[ ${{1:-}} == assert-rehearsal-import-allowed && ${{2:-}} == {REVISION} ]] || exit 2\n"
+            "[[ ${3:-} =~ ^[0-9a-f]{64}$ && ${4:-} =~ ^[0-9a-f]{64}$ && ${5:-} =~ ^[1-9][0-9]*$ ]] || exit 2\n"
+            "[[ ${CAREERTRELLIS_MAINTENANCE_LOCK_FD:-} == 10 ]] || exit 2\n"
+            f"[[ $(readlink -f /proc/${{5}}/fd/10) == {shlex.quote((self.root / 'run' / 'lock' / 'careertrellis-maintenance.lock').as_posix())} ]] || exit 2\n"
+            f"[[ $(cat {shlex.quote(self.authority_state.as_posix())}) == sqlite-pre-cutover ]]\n"
+            f"printf '%s %s %s %s\\n' \"$2\" \"$3\" \"$4\" \"$5\" > {shlex.quote(self.authority_log.as_posix())}\n",
         )
         self._write_executable(
             self.bin_dir / "systemctl",
@@ -125,9 +208,18 @@ class CutoverRehearsalShellTests(unittest.TestCase):
             self.release / "deploy" / "scripts" / "import-sqlite-postgres.sh",
             "#!/usr/bin/env bash\n"
             "set -eu\n"
+            f"[[ ${{CAREERTRELLIS_REHEARSAL_IMPORT_RELEASE:-}} == {REVISION} ]] || exit 2\n"
+            "[[ ${CAREERTRELLIS_REHEARSAL_IMPORT_COORDINATOR_PID:-} =~ ^[1-9][0-9]*$ ]] || exit 2\n"
+            "[[ $(sha256sum \"$2\" | awk '{print $1}') == ${CAREERTRELLIS_REHEARSAL_IMPORT_MIGRATION_ENVIRONMENT_SHA256:-} ]] || exit 2\n"
+            "[[ $(sha256sum \"$3\" | awk '{print $1}') == ${CAREERTRELLIS_REHEARSAL_IMPORT_OBJECT_ENVIRONMENT_SHA256:-} ]] || exit 2\n"
+            "[[ ${CAREERTRELLIS_MAINTENANCE_LOCK_FD:-} == 10 ]] || exit 2\n"
             f"printf 'import:%s\\n' \"$#\" >> {shlex.quote(self.command_log.as_posix())}\n"
             "printf '{\"verified_target_counts\":{\"jobs\":1}}\\n'\n"
             "printf '{\"verified_counts\":{\"jobs\":1},\"verified_objects\":0}\\n'\n",
+        )
+        (self.release / "deploy" / "scripts" / "maintenance-lock.sh").write_text(
+            "#!/usr/bin/env bash\n",
+            encoding="utf-8",
         )
 
         self.live_migration_environment = self.etc_dir / "postgres-migration.env"
@@ -204,6 +296,17 @@ class CutoverRehearsalShellTests(unittest.TestCase):
         self.assertIn('"authority":"sqlite-pre-cutover"', completed.stdout)
         self.assertIn('"no_omissions":true', completed.stdout)
         self.assertEqual(["preflight", "import:3"], self.command_log.read_text(encoding="utf-8").splitlines())
+        authority_fields = self.authority_log.read_text(encoding="utf-8").split()
+        self.assertEqual(4, len(authority_fields))
+        self.assertEqual(REVISION, authority_fields[0])
+        self.assertEqual(
+            hashlib.sha256(self.rehearsal_database_environment.read_bytes()).hexdigest(),
+            authority_fields[1],
+        )
+        self.assertEqual(
+            hashlib.sha256(self.rehearsal_object_environment.read_bytes()).hexdigest(),
+            authority_fields[2],
+        )
         for secret in ("live-secret", "rehearsal-secret", "live-materials", "rehearsal-materials"):
             self.assertNotIn(secret, completed.stdout)
             self.assertNotIn(secret, completed.stderr)
@@ -276,6 +379,34 @@ class CutoverRehearsalShellTests(unittest.TestCase):
         self.assertNotIn("different-secret", completed.stderr)
         self.assertEqual("", self.command_log.read_text(encoding="utf-8"))
 
+    def test_database_indirection_and_multi_host_controls_fail_closed(self):
+        unsafe_urls = (
+            "postgresql+psycopg://migration:rehearsal-secret@decoy.example/"
+            "rehearsal?hostaddr=10.70.0.2&dbname=live",
+            "postgresql+psycopg://migration:rehearsal-secret@decoy.example/"
+            "rehearsal?service=private-service",
+            "postgresql+psycopg://migration:rehearsal-secret@decoy.example/"
+            "rehearsal?host=decoy.example,db.example&port=5432,5432",
+            "postgresql+psycopg://migration:rehearsal-secret@decoy.example/"
+            "rehearsal?target_session_attrs=primary",
+        )
+        for unsafe_url in unsafe_urls:
+            with self.subTest(url=unsafe_url.split("?")[1].split("=")[0]):
+                self._write_environment(
+                    self.rehearsal_database_environment,
+                    f"CAREERTRELLIS_MIGRATION_DATABASE_URL={unsafe_url}\n",
+                )
+                completed = self.run_wrapper()
+                self.assertNotEqual(0, completed.returncode)
+                self.assertIn(
+                    "Rehearsal target identity validation failed.",
+                    completed.stderr,
+                )
+                self.assertNotIn("rehearsal-secret", completed.stderr)
+                self.assertEqual(
+                    "", self.command_log.read_text(encoding="utf-8")
+                )
+
     def test_bad_mode_wrong_confirmation_and_extra_argument_fail_closed(self):
         self.rehearsal_database_environment.chmod(0o640)
         mode_failure = self.run_wrapper()
@@ -301,9 +432,11 @@ class CutoverRehearsalShellTests(unittest.TestCase):
         )
         self.assertNotEqual(0, wrong_confirmation.returncode)
 
-        extra_argument = self.run_wrapper("--omit-generated-files")
-        self.assertNotEqual(0, extra_argument.returncode)
-        self.assertEqual("", self.command_log.read_text(encoding="utf-8"))
+        for omission in ("--omit-generated-files", "--omit-provider-secrets"):
+            with self.subTest(omission=omission):
+                extra_argument = self.run_wrapper(omission)
+                self.assertNotEqual(0, extra_argument.returncode)
+                self.assertEqual("", self.command_log.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

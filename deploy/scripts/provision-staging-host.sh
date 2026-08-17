@@ -20,6 +20,15 @@ for command in age caddy curl flock getent git python3 realpath stat sync system
     fi
 done
 
+maintenance_lock_helper=${repository_root}/deploy/scripts/maintenance-lock.sh
+if [[ ! -f ${maintenance_lock_helper} || -L ${maintenance_lock_helper} ]]; then
+    echo "The reviewed maintenance-lock helper is unavailable." >&2
+    exit 1
+fi
+# shellcheck source=maintenance-lock.sh
+source "${maintenance_lock_helper}"
+acquire_careertrellis_maintenance_lock
+
 if ! id careertrellis >/dev/null 2>&1; then
     useradd --system --user-group --home-dir /var/lib/careertrellis --shell /usr/sbin/nologin careertrellis
 fi

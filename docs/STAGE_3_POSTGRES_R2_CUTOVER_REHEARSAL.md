@@ -50,20 +50,28 @@ rehearsal wrapper proves all of the following:
   and atomic import/reconciliation wrapper;
 - both rehearsal files and all three live identity files are regular,
   non-symlinked `root:root` mode-`0600` files;
-- the rehearsal PostgreSQL host/port/database identity differs from both the
-  live migration and runtime identities even when usernames or passwords
-  differ;
+- the effective libpq rehearsal PostgreSQL host/port/database identity differs
+  from both live migration and runtime identities even when usernames or
+  passwords differ; service-file, `hostaddr`, multi-host, and non-default
+  target-selection indirection is rejected rather than compared lexically;
 - the rehearsal R2 endpoint/bucket identity differs from the live application
   object identity and both object environments select `r2_encrypted`;
-- the installed authority helper confirms exact `sqlite-pre-cutover`; and
+- the wrapper acquires descriptor 10 on the exact shared maintenance lock, and
+  the installed authority helper confirms exact `sqlite-pre-cutover` with no
+  pending final-cutover attempt;
 - the web, search-worker, and account-erasure-worker services are all inactive.
 
 Identity comparison occurs inside the exact release's Python process through
 environment values, not command arguments. Fixed errors never include a URL,
 username, password, endpoint, bucket, tenant identifier, local document path,
-or document hash. The underlying import wrapper reacquires the shared
-maintenance/import locks and rechecks authority and inactive services before it
-opens the frozen source or either disposable target.
+or document hash. Only after the normalized target-separation proof does the
+wrapper compute the two environment-file digests and pass the exact release,
+digests, and live rehearsal coordinator PID through the separate
+`assert-rehearsal-import-allowed` boundary. The underlying import wrapper
+recomputes those digests, inherits descriptor 10, takes its separate import
+lock, and rechecks authority and inactive services before it opens the frozen
+source or either disposable target. Direct, missing, partial, mixed, stale, or
+final-cutover import contexts are rejected.
 
 The wrapper has no command that marks authority, moves a release symlink,
 enables, starts, restarts, or stops a service, performs target cleanup, or
@@ -96,7 +104,7 @@ decides whether retry or disposable-target cleanup is safe.
 
 ## Not final-cutover evidence
 
-A receipt from this build (`20260813.24`) proves the disposable rehearsal only.
+A receipt from this build (`20260813.29`) proves the disposable rehearsal only.
 The final cutover release must repeat prepare-only checks and the no-omission
 rehearsal after all final compatibility changes are present. Permanent import,
 the one-line `postgres-r2-authoritative-v1` capability, the repository cutover

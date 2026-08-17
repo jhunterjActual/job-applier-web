@@ -1994,6 +1994,12 @@ class DependencyLockTests(unittest.TestCase):
         importer = (
             project_dir / "deploy" / "scripts" / "import-sqlite-postgres.sh"
         ).read_text(encoding="utf-8")
+        reconcile = (
+            project_dir
+            / "deploy"
+            / "scripts"
+            / "reconcile-sqlite-postgres-import.sh"
+        ).read_text(encoding="utf-8")
         provision = (
             project_dir / "deploy" / "scripts" / "provision-staging-host.sh"
         ).read_text(encoding="utf-8")
@@ -2008,6 +2014,10 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("-L ${state_file}", authority)
         self.assertIn("root:root 644", authority)
         self.assertIn("-x ${capability_file}", authority)
+        self.assertIn("validate_pre_cutover_release", authority)
+        self.assertIn("validate_rehearsal_release", authority)
+        self.assertIn("HOSTED_REPOSITORY_CUTOVER_COMPLETE = False", authority)
+        self.assertIn("require_pre_cutover_release", authority)
         self.assertIn("validate_release_target_path", authority)
         initialize_guard = authority[
             authority.index("initialize_authority_state() {"):
@@ -2028,6 +2038,7 @@ class DependencyLockTests(unittest.TestCase):
         for service_name, check_name in (
             ("careertrellis-web", "check-web-runtime"),
             ("careertrellis-worker", "check-worker-runtime"),
+            ("careertrellis-erasure-worker", "check-worker-runtime"),
         ):
             drop_in = (
                 project_dir
@@ -2036,8 +2047,9 @@ class DependencyLockTests(unittest.TestCase):
                 / f"{service_name}.service.d"
                 / "hosted-authority.conf"
             ).read_text(encoding="utf-8")
-            self.assertIn(
-                f"ExecStartPre=/usr/local/sbin/careertrellis-authority {check_name}",
+            self.assertEqual(
+                "[Service]\n"
+                f"ExecStartPre=+/usr/local/sbin/careertrellis-authority {check_name}\n",
                 drop_in,
             )
             self.assertIn(f"{service_name}.service.d/hosted-authority.conf", deploy)
@@ -2057,6 +2069,7 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("assert-code-rollback-allowed", deploy)
         self.assertIn("assert-code-rollback-allowed", rollback)
         self.assertIn("assert-import-allowed", importer)
+        self.assertIn("assert-reconciliation-allowed", reconcile)
         self.assertIn("services remain stopped", deploy)
 
     @unittest.skipIf(os.name == "nt", "POSIX hosted-authority shell regression")
@@ -2074,6 +2087,61 @@ class DependencyLockTests(unittest.TestCase):
                     capture_output=True,
                     text=True,
                     env=command_environment,
+                    check=False,
+                )
+
+            maintenance_lock = test_root / "run" / "lock" / "careertrellis-maintenance.lock"
+            maintenance_lock.parent.mkdir(parents=True)
+
+            def run_authority_with_lock(
+                *arguments: str,
+            ) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        'lock_path=$1; shift; exec 10>"${lock_path}"; flock -n 10; '
+                        'export CAREERTRELLIS_MAINTENANCE_LOCK_FD=10; exec "$@"',
+                        "authority-lock-holder",
+                        str(maintenance_lock),
+                        "bash",
+                        str(authority),
+                        "--test-root",
+                        temp_dir,
+                        *arguments,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                    check=False,
+                )
+
+            def run_rehearsal_authority(
+                release_revision: str,
+                migration_sha256: str,
+                object_sha256: str,
+            ) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        'lock_path=$1; shift; exec 10>"${lock_path}"; flock -n 10; '
+                        'export CAREERTRELLIS_MAINTENANCE_LOCK_FD=10; '
+                        'coordinator_pid=$BASHPID; exec "$@" "${coordinator_pid}"',
+                        "rehearsal-lock-holder",
+                        str(maintenance_lock),
+                        "bash",
+                        str(authority),
+                        "--test-root",
+                        temp_dir,
+                        "assert-rehearsal-import-allowed",
+                        release_revision,
+                        migration_sha256,
+                        object_sha256,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    env=environment,
                     check=False,
                 )
 
@@ -2105,7 +2173,7 @@ class DependencyLockTests(unittest.TestCase):
             self.assertEqual(0, run_authority("initialize").returncode)
             self.assertEqual("sqlite-pre-cutover", run_authority("status").stdout.strip())
             self.assertEqual(0, run_authority("assert-code-rollback-allowed").returncode)
-            self.assertEqual(0, run_authority("assert-import-allowed").returncode)
+            self.assertNotEqual(0, run_authority("assert-import-allowed").returncode)
             outside_release = test_root / ("b" * 40)
             outside_release.mkdir()
             invalid_target = run_authority(
@@ -2120,16 +2188,178 @@ class DependencyLockTests(unittest.TestCase):
 
             release = test_root / "staging" / "releases" / ("a" * 40)
             (release / "deploy").mkdir(parents=True)
+            (release / "backend").mkdir()
+            (release / "backend" / "data_store.py").write_text(
+                "HOSTED_REPOSITORY_CUTOVER_COMPLETE = False\n",
+                encoding="utf-8",
+            )
+            (test_root / "staging" / "current").symlink_to(
+                release, target_is_directory=True
+            )
+            self.assertEqual(
+                0, run_authority("assert-release-startable", str(release)).returncode
+            )
+            self.assertEqual(0, run_authority("check-web-runtime").returncode)
+            self.assertNotEqual(
+                0,
+                run_authority(
+                    "assert-rehearsal-import-allowed",
+                    "a" * 40,
+                    "d" * 64,
+                    "e" * 64,
+                    str(os.getpid()),
+                ).returncode,
+            )
+            self.assertEqual(
+                0,
+                run_rehearsal_authority("a" * 40, "d" * 64, "e" * 64).returncode,
+            )
+            self.assertNotEqual(
+                0,
+                run_rehearsal_authority("a" * 40, "0" * 63, "e" * 64).returncode,
+            )
+            (release / "backend" / "data_store.py").write_text(
+                "HOSTED_REPOSITORY_CUTOVER_COMPLETE = True\n",
+                encoding="utf-8",
+            )
+            self.assertNotEqual(
+                0,
+                run_rehearsal_authority("a" * 40, "d" * 64, "e" * 64).returncode,
+            )
+            capability_file = release / "deploy" / "hosted-authority.compatibility"
+            capability_file.write_text("wrong-capability\n", encoding="utf-8")
+            self.assertNotEqual(
+                0,
+                run_rehearsal_authority("a" * 40, "d" * 64, "e" * 64).returncode,
+            )
+            capability_file.write_text(
+                "postgres-r2-authoritative-v1\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                0,
+                run_rehearsal_authority("a" * 40, "d" * 64, "e" * 64).returncode,
+            )
+            self.assertNotEqual(
+                0, run_authority("assert-release-startable", str(release)).returncode
+            )
+            (release / "backend" / "data_store.py").write_text(
+                "HOSTED_REPOSITORY_CUTOVER_COMPLETE = False\n"
+                "HOSTED_REPOSITORY_CUTOVER_COMPLETE = True\n",
+                encoding="utf-8",
+            )
+            self.assertNotEqual(
+                0,
+                run_rehearsal_authority("a" * 40, "d" * 64, "e" * 64).returncode,
+            )
+            self.assertNotEqual(
+                0, run_authority("assert-release-startable", str(release)).returncode
+            )
+            self.assertNotEqual(0, run_authority("check-web-runtime").returncode)
+            (release / "backend" / "data_store.py").write_text(
+                "HOSTED_REPOSITORY_CUTOVER_COMPLETE = False\n",
+                encoding="utf-8",
+            )
+            capability_file.unlink()
+            pending_cutover = authority_directory / "pending-cutover"
+            attempt_id = "c" * 32
+
+            def write_pending(phase: str, source_sha256: str = "f" * 64) -> None:
+                pending_cutover.write_text(
+                    "version=1\n"
+                    f"phase={phase}\n"
+                    f"attempt_id={attempt_id}\n"
+                    f"release={'a' * 40}\n"
+                    f"migration_environment_sha256={'d' * 64}\n"
+                    f"object_environment_sha256={'e' * 64}\n"
+                    f"provider_environment_sha256={'9' * 64}\n"
+                    f"source_snapshot_sha256={source_sha256}\n",
+                    encoding="utf-8",
+                )
+
+            write_pending("preparing", "pending")
+            self.assertNotEqual(0, run_authority("check-web-runtime").returncode)
+            write_pending("importing")
+            self.assertNotEqual(
+                0, run_authority("assert-release-startable", str(release)).returncode
+            )
+            self.assertNotEqual(0, run_authority("check-web-runtime").returncode)
+            self.assertNotEqual(0, run_authority("assert-import-allowed").returncode)
+            self.assertNotEqual(
+                0,
+                run_authority_with_lock(
+                    "assert-import-allowed",
+                    "0" * 32,
+                    "a" * 40,
+                    "d" * 64,
+                    "e" * 64,
+                    "9" * 64,
+                ).returncode,
+            )
+            exact_import_arguments = (
+                "assert-import-allowed",
+                attempt_id,
+                "a" * 40,
+                "d" * 64,
+                "e" * 64,
+                "9" * 64,
+            )
+            self.assertNotEqual(
+                0,
+                run_authority(*exact_import_arguments).returncode,
+            )
+            self.assertEqual(
+                0,
+                run_authority_with_lock(*exact_import_arguments).returncode,
+            )
+            self.assertNotEqual(
+                0,
+                run_rehearsal_authority("a" * 40, "d" * 64, "e" * 64).returncode,
+            )
+            self.assertEqual(
+                0, run_authority("assert-reconciliation-allowed").returncode
+            )
+            pending_cutover.unlink()
             premature_transition = run_authority(
                 "mark-postgres-r2-authoritative",
                 str(release),
+                attempt_id,
                 "I_UNDERSTAND_SQLITE_WRITES_WILL_BE_DISABLED",
+                CAREERTRELLIS_MAINTENANCE_LOCK_FD="10",
             )
             self.assertEqual("Hosted authority release validation failed.\n", premature_transition.stderr)
 
             (release / "deploy" / "hosted-authority.compatibility").write_text(
                 "postgres-r2-authoritative-v1\n",
                 encoding="utf-8",
+            )
+            false_manifest_mark = run_authority(
+                "mark-postgres-r2-authoritative",
+                str(release),
+                attempt_id,
+                "I_UNDERSTAND_SQLITE_WRITES_WILL_BE_DISABLED",
+                CAREERTRELLIS_MAINTENANCE_LOCK_FD="10",
+            )
+            self.assertNotEqual(0, false_manifest_mark.returncode)
+            self.assertEqual(
+                "Hosted authority release validation failed.\n",
+                false_manifest_mark.stderr,
+            )
+            (release / "backend" / "data_store.py").write_text(
+                "HOSTED_REPOSITORY_CUTOVER_COMPLETE = True\n",
+                encoding="utf-8",
+            )
+            premature_start = run_authority("assert-release-startable", str(release))
+            premature_runtime = run_authority("check-web-runtime")
+            self.assertNotEqual(0, premature_start.returncode)
+            self.assertNotEqual(0, premature_runtime.returncode)
+            self.assertEqual(
+                "Hosted authority release validation failed.\n",
+                premature_start.stderr,
+            )
+            self.assertEqual(
+                "Hosted authority runtime validation failed.\n",
+                premature_runtime.stderr,
             )
             (test_root / "etc").mkdir()
             (test_root / "etc" / "staging.env").write_text(
@@ -2140,12 +2370,58 @@ class DependencyLockTests(unittest.TestCase):
                 "CAREERTRELLIS_OBJECT_STORE=r2_encrypted\n",
                 encoding="utf-8",
             )
+            missing_pending = run_authority(
+                "mark-postgres-r2-authoritative",
+                str(release),
+                attempt_id,
+                "I_UNDERSTAND_SQLITE_WRITES_WILL_BE_DISABLED",
+                CAREERTRELLIS_MAINTENANCE_LOCK_FD="10",
+            )
+            self.assertNotEqual(0, missing_pending.returncode)
+            self.assertEqual(
+                "Hosted authority release validation failed.\n",
+                missing_pending.stderr,
+            )
+            write_pending("recovery-verified")
+            missing_recovery_evidence = run_authority(
+                "mark-postgres-r2-authoritative",
+                str(release),
+                attempt_id,
+                "I_UNDERSTAND_SQLITE_WRITES_WILL_BE_DISABLED",
+                CAREERTRELLIS_MAINTENANCE_LOCK_FD="10",
+            )
+            self.assertNotEqual(0, missing_recovery_evidence.returncode)
+            self.assertEqual(
+                "Hosted authority release validation failed.\n",
+                missing_recovery_evidence.stderr,
+            )
+            recovery_evidence = authority_directory / "post-import-recovery"
+            recovery_evidence.write_text(
+                "version=1\n"
+                f"attempt_id={attempt_id}\n"
+                f"release={'a' * 40}\n"
+                "postgres_backup_label=20260817-010203F\n"
+                f"generated_object_manifest_sha256={'1' * 64}\n"
+                "postgres_mirror_verified=true\n"
+                "postgres_restore_verified=true\n"
+                "postgres_bad_checksums_zero=true\n"
+                "generated_object_mirror_verified=true\n"
+                "generated_object_restore_verified=true\n"
+                "restored_database_object_reconciliation_verified=true\n"
+                "provider_keyring_recovery_verified=true\n"
+                "object_keyring_recovery_verified=true\n"
+                "decrypt_every_object_verified=true\n"
+                "reconciliation_verified=true\n",
+                encoding="utf-8",
+            )
             self.assertEqual(
                 0,
                 run_authority(
                     "mark-postgres-r2-authoritative",
                     str(release),
+                    attempt_id,
                     "I_UNDERSTAND_SQLITE_WRITES_WILL_BE_DISABLED",
+                    CAREERTRELLIS_MAINTENANCE_LOCK_FD="10",
                 ).returncode,
             )
             self.assertEqual(0, run_authority("initialize").returncode)
@@ -2157,28 +2433,124 @@ class DependencyLockTests(unittest.TestCase):
             self.assertEqual("Hosted authority prevents SQLite import.\n", import_denied.stderr)
             self.assertEqual(0, run_authority("assert-release-startable", str(release)).returncode)
 
-            (test_root / "staging" / "current").symlink_to(release, target_is_directory=True)
+            hosted_environment = {
+                "CAREERTRELLIS_DATA_STORE": "postgres",
+                "CAREERTRELLIS_OBJECT_STORE": "r2_encrypted",
+            }
+            self.assertNotEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
+            for blocked_phase in ("authority-marked", "activation-failed"):
+                write_pending(blocked_phase)
+                self.assertNotEqual(
+                    0,
+                    run_authority("check-web-runtime", **hosted_environment).returncode,
+                )
+
+            write_pending("activating")
+            self.assertNotEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
+            activation_lease = test_root / "run" / "careertrellis-hosted-activation.lease"
+            activation_lease.parent.mkdir(exist_ok=True)
+            lock_holder = subprocess.Popen(
+                [
+                    "bash",
+                    "-c",
+                    'exec 10>"$1"; flock -n 10; printf "ready\\n"; sleep 60',
+                    "activation-lock-holder",
+                    str(maintenance_lock),
+                ],
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                self.assertEqual("ready\n", lock_holder.stdout.readline())
+                coordinator_boot_id = Path(
+                    "/proc/sys/kernel/random/boot_id"
+                ).read_text(encoding="ascii").strip().lower()
+                coordinator_stat_fields = Path(
+                    f"/proc/{lock_holder.pid}/stat"
+                ).read_text(encoding="ascii").rsplit(") ", 1)[1].split()
+                coordinator_start_time = coordinator_stat_fields[19]
+                activation_lease.write_text(
+                    "version=1\n"
+                    f"attempt_id={attempt_id}\n"
+                    f"release={'a' * 40}\n"
+                    f"coordinator_pid={lock_holder.pid}\n"
+                    f"coordinator_boot_id={coordinator_boot_id}\n"
+                    f"coordinator_start_time={coordinator_start_time}\n",
+                    encoding="utf-8",
+                )
+                self.assertEqual(
+                    0,
+                    run_authority("check-web-runtime", **hosted_environment).returncode,
+                )
+                self.assertEqual(
+                    0, run_authority("check-worker-runtime").returncode
+                )
+                wrong_store = run_authority(
+                    "check-web-runtime",
+                    CAREERTRELLIS_DATA_STORE="sqlite",
+                    CAREERTRELLIS_OBJECT_STORE="filesystem",
+                )
+                self.assertEqual(
+                    "Hosted authority runtime validation failed.\n", wrong_store.stderr
+                )
+                activation_lease.write_text(
+                    "version=1\n"
+                    f"attempt_id={attempt_id}\n"
+                    f"release={'a' * 40}\n"
+                    f"coordinator_pid={lock_holder.pid}\n"
+                    f"coordinator_boot_id={coordinator_boot_id}\n"
+                    "coordinator_start_time=1\n",
+                    encoding="utf-8",
+                )
+                self.assertNotEqual(
+                    0,
+                    run_authority(
+                        "check-web-runtime", **hosted_environment
+                    ).returncode,
+                )
+                activation_lease.write_text(
+                    "version=1\n"
+                    f"attempt_id={'0' * 32}\n"
+                    f"release={'a' * 40}\n"
+                    f"coordinator_pid={lock_holder.pid}\n"
+                    f"coordinator_boot_id={coordinator_boot_id}\n"
+                    f"coordinator_start_time={coordinator_start_time}\n",
+                    encoding="utf-8",
+                )
+                self.assertNotEqual(
+                    0,
+                    run_authority("check-web-runtime", **hosted_environment).returncode,
+                )
+            finally:
+                lock_holder.terminate()
+                lock_holder.wait(timeout=5)
+
+            activation_lease.unlink()
+            write_pending("activated")
             self.assertEqual(
                 0,
-                run_authority(
-                    "check-web-runtime",
-                    CAREERTRELLIS_DATA_STORE="postgres",
-                    CAREERTRELLIS_OBJECT_STORE="r2_encrypted",
-                ).returncode,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
             )
-            wrong_store = run_authority(
-                "check-web-runtime",
-                CAREERTRELLIS_DATA_STORE="sqlite",
-                CAREERTRELLIS_OBJECT_STORE="filesystem",
-            )
-            self.assertEqual("Hosted authority runtime validation failed.\n", wrong_store.stderr)
             self.assertEqual(0, run_authority("check-worker-runtime").returncode)
+            pending_cutover.unlink()
+            self.assertEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
             self.assertEqual(
                 0,
                 run_authority(
                     "mark-postgres-r2-authoritative",
                     str(release),
+                    attempt_id,
                     "I_UNDERSTAND_SQLITE_WRITES_WILL_BE_DISABLED",
+                    CAREERTRELLIS_MAINTENANCE_LOCK_FD="10",
                 ).returncode,
             )
 
@@ -2344,7 +2716,7 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("CAREERTRELLIS_MIGRATION_DATABASE_URL", import_source)
         self.assertIn("CAREERTRELLIS_DATA_DIR", import_source)
         self.assertIn("target-object-storage.env", import_source)
-        self.assertIn("assert-import-allowed", reconcile_source)
+        self.assertIn("assert-reconciliation-allowed", reconcile_source)
         self.assertIn("CAREERTRELLIS_ROTATE_OWNER_USER_ID", rotation_source)
 
     def test_release_activation_requires_root_only_runtime_secret_files(self) -> None:
@@ -2375,6 +2747,7 @@ class DependencyLockTests(unittest.TestCase):
             "hosted-authority.sh",
             "apply-postgres-runtime-grants.sh",
             "finalize-postgres-r2-cutover.sh",
+            "provision-staging-host.sh",
         ):
             source = (scripts / name).read_text(encoding="utf-8")
             self.assertIn("maintenance-lock.sh", source)
@@ -3428,6 +3801,7 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
         with (
             patch.object(app_module, "runtime_search_run_repository", return_value=search_runs),
             patch.object(app_module, "data_store_kind", return_value=data_store_module.SHARED_DATA_STORE),
+            patch.object(app_module.config, "search_worker_enabled", return_value=True),
             patch.object(app_module, "capture_event"),
         ):
             shared_result = app_module.search_jobs(
@@ -3441,6 +3815,27 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
         search_runs.publish_prepared.assert_called_once_with(
             "00000000-0000-4000-8000-000000000101", "shared keywords", ""
         )
+        background_tasks.add_task.assert_not_called()
+
+        background_tasks.reset_mock()
+        search_runs.reset_mock()
+        with (
+            patch.object(app_module, "runtime_search_run_repository", return_value=search_runs),
+            patch.object(app_module, "data_store_kind", return_value=data_store_module.SHARED_DATA_STORE),
+            patch.object(app_module.config, "search_worker_enabled", return_value=False),
+            self.assertRaises(app_module.HTTPException) as unavailable,
+        ):
+            app_module.search_jobs(
+                app_module.SearchRequest(keywords="disabled shared search"),
+                background_tasks,
+                request,
+                operation_id=None,
+            )
+        self.assertEqual(503, unavailable.exception.status_code)
+        self.assertEqual(
+            "The job search could not be queued.", unavailable.exception.detail
+        )
+        search_runs.enqueue.assert_not_called()
         background_tasks.add_task.assert_not_called()
 
         background_tasks.reset_mock()
