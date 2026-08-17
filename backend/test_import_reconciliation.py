@@ -561,12 +561,63 @@ class ImportReconciliationTests(unittest.TestCase):
             "acquire_careertrellis_maintenance_lock",
             "flock -n 9",
             "careertrellis-web.service careertrellis-worker.service",
-            "assert-import-allowed",
+            "assert-reconciliation-allowed",
             "sqlite_postgres_reconcile.py",
         ):
             with self.subTest(invariant=invariant):
                 self.assertIn(invariant, wrapper)
         self.assertIn("flock -n 8", maintenance_helper)
+
+    def test_import_wrapper_requires_final_or_digest_bound_rehearsal_authority(self):
+        project_dir = Path(__file__).parents[1]
+        wrapper = (
+            project_dir / "deploy" / "scripts" / "import-sqlite-postgres.sh"
+        ).read_text(encoding="utf-8")
+        authority = (
+            project_dir / "deploy" / "scripts" / "hosted-authority.sh"
+        ).read_text(encoding="utf-8")
+
+        for invariant in (
+            "CAREERTRELLIS_FINAL_CUTOVER_ATTEMPT_ID",
+            "CAREERTRELLIS_REHEARSAL_IMPORT_COORDINATOR_PID",
+            "CAREERTRELLIS_REHEARSAL_IMPORT_RELEASE",
+            "CAREERTRELLIS_REHEARSAL_IMPORT_MIGRATION_ENVIRONMENT_SHA256",
+            "CAREERTRELLIS_REHEARSAL_IMPORT_OBJECT_ENVIRONMENT_SHA256",
+            "assert-rehearsal-import-allowed",
+            'migration_environment_sha256=$(sha256sum "${target_environment_file}"',
+            'object_environment_sha256=$(sha256sum "${object_environment_file}"',
+        ):
+            with self.subTest(invariant=invariant):
+                self.assertIn(invariant, wrapper)
+        self.assertIn(
+            "if [[ ${final_cutover_context} == true && ${rehearsal_context} == true ]]",
+            wrapper,
+        )
+        omission_guard = (
+            "if [[ (${final_cutover_context} == true || ${rehearsal_context} == true) "
+            "&& $# -ne 0 ]]"
+        )
+        self.assertIn(omission_guard, wrapper)
+        self.assertLess(
+            wrapper.index(omission_guard),
+            wrapper.index('/usr/local/sbin/careertrellis-authority "${authority_arguments[@]}"'),
+        )
+        self.assertLess(
+            wrapper.index(omission_guard),
+            wrapper.index('if ! ./venv/bin/python sqlite_postgres_import.py'),
+        )
+        for omission in ("--omit-provider-secrets", "--omit-generated-files"):
+            self.assertIn(omission, wrapper)
+        self.assertIn(
+            'else\n    echo "Hosted authority prevents SQLite import." >&2\n    exit 1\nfi\n'
+            '/usr/local/sbin/careertrellis-authority "${authority_arguments[@]}"',
+            wrapper,
+        )
+        self.assertIn(
+            'if [[ ! -e ${pending_cutover_file} && ! -L ${pending_cutover_file} ]]; then\n'
+            '        echo "Hosted authority prevents SQLite import."',
+            authority,
+        )
 
 
 if __name__ == "__main__":

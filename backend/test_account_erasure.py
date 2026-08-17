@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, Mock, patch
@@ -66,6 +68,11 @@ class AccountErasureRouteTests(unittest.TestCase):
                 "runtime_account_erasure_repository",
                 return_value=repository,
             ) as runtime_repository,
+            patch.object(
+                app_module.config,
+                "account_erasure_worker_enabled",
+                return_value=True,
+            ),
             patch.object(app_module, "get_db_connection") as sqlite_connection,
             patch.object(app_module, "logout_url") as workos_logout,
         ):
@@ -105,6 +112,7 @@ class AccountErasureRouteTests(unittest.TestCase):
             "WORKOS_REDIRECT_URI": "https://staging-app.jhunterj.com/auth/callback",
             "WORKOS_LOGOUT_RETURN_TO": "https://staging-app.jhunterj.com/",
             "CAREERTRELLIS_STAGING_OWNER_WORKOS_USER_ID": "user_01STAGINGOWNER",
+            "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED": "true",
         }
         authenticated = web_auth_module.SessionAuthentication(
             status="authenticated",
@@ -236,6 +244,11 @@ class AccountErasureRouteTests(unittest.TestCase):
                         "runtime_account_erasure_repository",
                         return_value=repository,
                     ),
+                    patch.object(
+                        app_module.config,
+                        "account_erasure_worker_enabled",
+                        return_value=True,
+                    ),
                     self.assertRaises(HTTPException) as caught,
                 ):
                     app_module.request_account_erasure(self.payload(), self.request())
@@ -269,6 +282,11 @@ class AccountErasureRouteTests(unittest.TestCase):
                         app_module,
                         "runtime_account_erasure_repository",
                         return_value=repository,
+                    ),
+                    patch.object(
+                        app_module.config,
+                        "account_erasure_worker_enabled",
+                        return_value=True,
                     ),
                     self.assertRaises(HTTPException) as caught,
                 ):
@@ -315,6 +333,11 @@ class AccountErasureRouteTests(unittest.TestCase):
                 "data_store_kind",
                 return_value=data_store_module.SHARED_DATA_STORE,
             ),
+            patch.object(
+                app_module.config,
+                "account_erasure_worker_enabled",
+                return_value=True,
+            ),
         ):
             shared_summary = app_module.get_session_summary(request)
         self.assertEqual(
@@ -343,6 +366,38 @@ class AccountErasureRouteTests(unittest.TestCase):
             },
             workos_sqlite_summary,
         )
+
+    def test_disabled_worker_hides_and_rejects_account_erasure_before_repository_access(self):
+        repository_factory = Mock()
+        with (
+            patch.object(app_module, "get_auth_configuration", return_value=Mock()),
+            patch.object(
+                app_module,
+                "data_store_kind",
+                return_value=data_store_module.SHARED_DATA_STORE,
+            ),
+            patch.object(
+                app_module.config,
+                "account_erasure_worker_enabled",
+                return_value=False,
+            ),
+            patch.object(
+                app_module,
+                "runtime_account_erasure_repository",
+                repository_factory,
+            ),
+        ):
+            summary = app_module.get_session_summary(self.request())
+            with self.assertRaises(HTTPException) as caught:
+                app_module.request_account_erasure(self.payload(), self.request())
+
+        self.assertFalse(summary["account_erasure_available"])
+        self.assertEqual(503, caught.exception.status_code)
+        self.assertEqual(
+            repository_module.ACCOUNT_ERASURE_UNAVAILABLE_MESSAGE,
+            caught.exception.detail,
+        )
+        repository_factory.assert_not_called()
 
 
 class AccountErasureRepositoryTests(unittest.TestCase):
@@ -759,6 +814,14 @@ class AccountErasureDeploymentBoundaryTests(unittest.TestCase):
             if line and not line.startswith("#") and "=" in line
         }
 
+    @staticmethod
+    def activation_service_slice(source: str) -> str:
+        start = source.index("    systemctl daemon-reload || return 1")
+        readiness_loop = source.index("    for _attempt in $(seq 1 30); do", start)
+        end_marker = "\n    return 1\n}"
+        end = source.index(end_marker, readiness_loop) + len("\n    return 1")
+        return source[start:end]
+
     def test_runtime_grants_revoke_private_erasure_tables_after_broad_grants(self):
         grant_source = (
             self.project_dir() / "deploy" / "postgres" / "grant-runtime.sql"
@@ -803,9 +866,67 @@ class AccountErasureDeploymentBoundaryTests(unittest.TestCase):
                     source,
                 )
                 self.assertIn(
+                    "systemctl is-enabled --quiet careertrellis-erasure-worker.service",
+                    source,
+                )
+                self.assertIn(
                     "systemctl restart careertrellis-erasure-worker.service",
                     source,
                 )
+                self.assertIn(
+                    "${web_search_worker_enabled} != \"${search_worker_enabled}\"",
+                    source,
+                )
+                self.assertIn(
+                    "${web_erasure_worker_enabled} != \"${erasure_worker_enabled}\"",
+                    source,
+                )
+                self.assertIn(
+                    "if [[ ${search_worker_enabled} == true ]]; then",
+                    source,
+                )
+                self.assertIn(
+                    "systemctl disable careertrellis-worker.service",
+                    source,
+                )
+                self.assertIn(
+                    "systemctl disable careertrellis-erasure-worker.service",
+                    source,
+                )
+                self.assertIn(
+                    'assert_erasure_worker_activation_ready "${erasure_worker_enabled}"',
+                    source,
+                )
+                activation_preflight = source.index(
+                    'assert_erasure_worker_activation_ready "${erasure_worker_enabled}"'
+                )
+                activation_link = source.index("    activation_link=", activation_preflight)
+                self.assertLess(activation_preflight, activation_link)
+                if name == "deploy-release.sh":
+                    self.assertLess(
+                        source.index('validate_release "${release_dir}"'),
+                        source.index(
+                            "install -d -o root -g root -m 0755 "
+                            "/usr/local/libexec/careertrellis"
+                        ),
+                    )
+                web_restart = source.index(
+                    "systemctl restart careertrellis-web.service"
+                )
+                web_stop = source.index(
+                    "systemctl stop careertrellis-web.service || return 1",
+                    activation_link,
+                )
+                self.assertLess(web_stop, web_restart)
+                for command in (
+                    "systemctl disable careertrellis-worker.service",
+                    "systemctl stop careertrellis-worker.service",
+                    "systemctl disable careertrellis-erasure-worker.service",
+                    "systemctl stop careertrellis-erasure-worker.service",
+                ):
+                    command_position = source.index(command)
+                    self.assertLess(web_stop, command_position)
+                    self.assertLess(command_position, web_restart)
                 self.assertNotIn(
                     "systemctl enable --now careertrellis-erasure-worker.service",
                     source,
@@ -824,6 +945,199 @@ class AccountErasureDeploymentBoundaryTests(unittest.TestCase):
                     f"CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED={value}"
                 )
             )
+
+    @unittest.skipIf(os.name == "nt", "POSIX release service-state regression")
+    def test_true_erasure_switch_requires_active_and_enabled_worker(self):
+        scripts = self.project_dir() / "deploy" / "scripts"
+        states = (
+            ("false", 1, 1, 0),
+            ("true", 0, 0, 0),
+            ("true", 1, 0, 1),
+            ("true", 0, 1, 1),
+        )
+        for name in ("deploy-release.sh", "rollback-release.sh"):
+            source = (scripts / name).read_text(encoding="utf-8")
+            start = source.index("assert_erasure_worker_activation_ready() {")
+            end = source.index("\n}\n", start) + len("\n}")
+            preflight = source[start:end]
+            for configured, active_status, enabled_status, expected in states:
+                with self.subTest(
+                    script=name,
+                    configured=configured,
+                    active_status=active_status,
+                    enabled_status=enabled_status,
+                ):
+                    script = (
+                        "set -Euo pipefail\n"
+                        f"ACTIVE_STATUS={active_status}\n"
+                        f"ENABLED_STATUS={enabled_status}\n"
+                        "systemctl() {\n"
+                        "case \"$1\" in\n"
+                        "is-active) return \"${ACTIVE_STATUS}\" ;;\n"
+                        "is-enabled) return \"${ENABLED_STATUS}\" ;;\n"
+                        "*) return 97 ;;\n"
+                        "esac\n"
+                        "}\n"
+                        f"{preflight}\n"
+                        f"assert_erasure_worker_activation_ready {configured}\n"
+                    )
+                    result = subprocess.run(
+                        ["bash", "-c", script],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(expected, result.returncode, result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "POSIX release service-state regression")
+    def test_disabled_worker_branches_stop_and_disable_both_services(self):
+        scripts = self.project_dir() / "deploy" / "scripts"
+        for name in ("deploy-release.sh", "rollback-release.sh"):
+            with self.subTest(script=name), tempfile.TemporaryDirectory() as temp_dir:
+                source = (scripts / name).read_text(encoding="utf-8")
+                activation_slice = self.activation_service_slice(source)
+                event_log = Path(temp_dir) / "events"
+                script = (
+                    "set -Eeuo pipefail\n"
+                    f"EVENT_LOG='{event_log.as_posix()}'\n"
+                    "systemctl() { printf '%s\\n' \"$*\" >> \"${EVENT_LOG}\"; }\n"
+                    "curl() { return 0; }\n"
+                    "seq() { printf '1\\n'; }\n"
+                    "activate_release_slice() {\n"
+                    "local search_worker_enabled=false\n"
+                    "local erasure_worker_enabled=false\n"
+                    "local recovery_helpers_available=true\n"
+                    f"{activation_slice}\n"
+                    "}\n"
+                    "activate_release_slice\n"
+                )
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                events = event_log.read_text(encoding="utf-8").splitlines()
+                self.assertIn("restart careertrellis-web.service", events)
+                self.assertIn("stop careertrellis-web.service", events)
+                self.assertIn("stop careertrellis-worker.service", events)
+                self.assertIn("stop careertrellis-erasure-worker.service", events)
+                self.assertIn("enable careertrellis-web.service", events)
+                self.assertIn("disable careertrellis-worker.service", events)
+                self.assertIn("disable careertrellis-erasure-worker.service", events)
+                self.assertNotIn("restart careertrellis-worker.service", events)
+                self.assertNotIn(
+                    "restart careertrellis-erasure-worker.service", events
+                )
+                web_restart = events.index("restart careertrellis-web.service")
+                web_stop = events.index("stop careertrellis-web.service")
+                self.assertLess(
+                    web_stop, events.index("disable careertrellis-worker.service")
+                )
+                self.assertLess(
+                    web_stop, events.index("stop careertrellis-worker.service")
+                )
+                self.assertLess(
+                    web_stop,
+                    events.index("disable careertrellis-erasure-worker.service"),
+                )
+                self.assertLess(
+                    web_stop,
+                    events.index("stop careertrellis-erasure-worker.service"),
+                )
+                for command in (
+                    "disable careertrellis-worker.service",
+                    "stop careertrellis-worker.service",
+                    "disable careertrellis-erasure-worker.service",
+                    "stop careertrellis-erasure-worker.service",
+                ):
+                    self.assertLess(events.index(command), web_restart)
+
+    @unittest.skipIf(os.name == "nt", "POSIX release service-state regression")
+    def test_readiness_failure_leaves_false_workers_stopped_and_disabled(self):
+        scripts = self.project_dir() / "deploy" / "scripts"
+        for name in ("deploy-release.sh", "rollback-release.sh"):
+            with self.subTest(script=name), tempfile.TemporaryDirectory() as temp_dir:
+                source = (scripts / name).read_text(encoding="utf-8")
+                activation_slice = self.activation_service_slice(source)
+                event_log = Path(temp_dir) / "events"
+                script = (
+                    "set -Euo pipefail\n"
+                    f"EVENT_LOG='{event_log.as_posix()}'\n"
+                    "systemctl() { printf '%s\\n' \"$*\" >> \"${EVENT_LOG}\"; }\n"
+                    "curl() { return 1; }\n"
+                    "sleep() { :; }\n"
+                    "seq() { printf '1\\n'; }\n"
+                    "activate_release_slice() {\n"
+                    "local search_worker_enabled=false\n"
+                    "local erasure_worker_enabled=false\n"
+                    "local recovery_helpers_available=true\n"
+                    f"{activation_slice}\n"
+                    "}\n"
+                    "activate_release_slice\n"
+                )
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(1, result.returncode, result.stderr)
+                events = event_log.read_text(encoding="utf-8").splitlines()
+                web_restart = events.index("restart careertrellis-web.service")
+                web_stop = events.index("stop careertrellis-web.service")
+                for command in (
+                    "disable careertrellis-worker.service",
+                    "stop careertrellis-worker.service",
+                    "disable careertrellis-erasure-worker.service",
+                    "stop careertrellis-erasure-worker.service",
+                ):
+                    self.assertLess(web_stop, events.index(command))
+                    self.assertLess(events.index(command), web_restart)
+                self.assertNotIn("enable careertrellis-web.service", events)
+                self.assertNotIn("restart careertrellis-worker.service", events)
+                self.assertNotIn(
+                    "restart careertrellis-erasure-worker.service", events
+                )
+
+    @unittest.skipIf(os.name == "nt", "POSIX release service-state regression")
+    def test_enabled_search_branch_still_restarts_and_enables_search_worker(self):
+        scripts = self.project_dir() / "deploy" / "scripts"
+        for name in ("deploy-release.sh", "rollback-release.sh"):
+            with self.subTest(script=name), tempfile.TemporaryDirectory() as temp_dir:
+                source = (scripts / name).read_text(encoding="utf-8")
+                activation_slice = self.activation_service_slice(source)
+                event_log = Path(temp_dir) / "events"
+                script = (
+                    "set -Eeuo pipefail\n"
+                    f"EVENT_LOG='{event_log.as_posix()}'\n"
+                    "systemctl() { printf '%s\\n' \"$*\" >> \"${EVENT_LOG}\"; }\n"
+                    "curl() { return 0; }\n"
+                    "seq() { printf '1\\n'; }\n"
+                    "activate_release_slice() {\n"
+                    "local search_worker_enabled=true\n"
+                    "local erasure_worker_enabled=false\n"
+                    "local recovery_helpers_available=true\n"
+                    f"{activation_slice}\n"
+                    "}\n"
+                    "activate_release_slice\n"
+                )
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                events = event_log.read_text(encoding="utf-8").splitlines()
+                self.assertLess(
+                    events.index("stop careertrellis-web.service"),
+                    events.index("stop careertrellis-erasure-worker.service"),
+                )
+                self.assertIn("restart careertrellis-worker.service", events)
+                self.assertIn("enable careertrellis-worker.service", events)
+                self.assertNotIn("disable careertrellis-worker.service", events)
 
     def test_erasure_role_bootstrap_streams_root_read_sql_without_password_argv(self):
         script = (

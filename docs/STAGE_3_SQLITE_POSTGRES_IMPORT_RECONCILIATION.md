@@ -82,19 +82,37 @@ worker, and account-erasure-worker services remain inactive. Success therefore
 requires both the atomic import receipt and a fresh independent read-only
 reconciliation receipt.
 
+The mutation wrapper is not a standalone permanent-import command. A permanent
+target is admitted only for the coordinator's exact pending attempt, immutable
+release, migration/object/provider environment digests, and inherited
+descriptor 10 maintenance lock. With no attempt context it fails before the
+Python importer. The disposable rehearsal is the only alternate mode: its
+reviewed wrapper first proves normalized PostgreSQL and R2 identities differ
+from the live targets, acquires descriptor 10, and passes the exact release,
+environment digests, and live rehearsal coordinator PID through a separate
+`assert-rehearsal-import-allowed` boundary. Missing, partial, mixed, stale, or
+directly supplied contexts fail closed.
+
 If the importer exits unsuccessfully—including an indeterminate PostgreSQL
-commit or object-compensation result—the wrapper does not retry. It names
-`reconcile-sqlite-postgres-import.sh` as the required next command. Run that
-command with the exact same release, source, target environment files, and
-omission options before deciding whether a retry or disposable-target cleanup is
-safe. Reconciliation remains read-only even when it detects partial state.
+commit or object-compensation result—the wrapper does not retry. A final
+coordinator attempt is already in `importing` and can advance only through its
+reviewed `reconcile-pending` action; a rehearsal names the standalone read-only
+`reconcile-sqlite-postgres-import.sh` command. Use the exact same release,
+source, target environment files, and omission options before deciding whether
+disposable-target cleanup is safe. Reconciliation remains read-only even when
+it detects partial state. Migration, runtime-grant, or preflight failures occur
+in the distinct `preparing` phase and use only the coordinator's explicit
+`resume-preparation` action; they are never mislabeled as ambiguous imports.
 
 ## Rehearsal and eventual cutover
 
 The later dormant final-cutover coordinator treats this successful read-only
-receipt as a mandatory gate inside one inherited maintenance lock. It cannot
-mark authority or activate a release after an omitted, failed, ambiguous, or
-unreviewed reconciliation, and it never repairs a mismatch. See
+receipt as a mandatory gate in both locked phases. Phase one pauses durably
+after import and automatic reconciliation; phase two reruns independent
+reconciliation after post-import backup/restore evidence and before authority
+marking. It cannot mark authority or activate a release after an omitted,
+failed, ambiguous, or unreviewed reconciliation, and it never repairs a
+mismatch. See
 `STAGE_3_POSTGRES_R2_FINAL_CUTOVER_COORDINATOR.md` for the exact ordering and
 failure boundary.
 
@@ -110,7 +128,7 @@ that enforces target separation and emits the bounded disposable receipt.
 This PR does not authorize either run. It does not apply a migration, change a
 database or bucket, edit an environment file, restart a service, move a release
 symlink, mark PostgreSQL/R2 authoritative, expose staging, or invite another
-user. Build strings agree at `20260813.24`; local SQLite behavior is unchanged.
+user. Build strings agree at `20260813.29`; local SQLite behavior is unchanged.
 
 ## Acceptance checklist
 
@@ -118,7 +136,7 @@ user. Build strings agree at `20260813.24`; local SQLite behavior is unchanged.
       including focused import-reconciliation tests and shell syntax.
 - [ ] All environment files are regular `root:root` mode `0600` files and no
       secret or tenant value appears in the retained receipt.
-- [ ] Both services stayed inactive and authority remained
+- [ ] All three application services stayed inactive and authority remained
       `sqlite-pre-cutover` for the whole read-only run.
 - [ ] A no-omission disposable import automatically produced a successful
       sanitized reconciliation receipt for every supported table and all three

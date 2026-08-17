@@ -256,12 +256,13 @@ not waive the exact-release checks:
 4. Confirm WireGuard, the runtime database role, the permanent private R2
    bucket, its bucket-only credential, and its application-egress `/32`
    restriction are ready without printing secrets.
-5. Take a fresh full pgBackRest backup, copy its encrypted repository to the
-   independent destination, record the backup label, and pass an isolated
-   restore with zero bad checksums. While all three services remain quiescent,
-   create the separate immutable generated-object ciphertext generation paired
-   with that exact label and pass its manifest and disposable-restore gate from
-   `STAGE_3_GENERATED_OBJECT_RECOVERY.md`.
+5. Take a fresh full pgBackRest backup immediately before the permanent import,
+   copy its encrypted repository to the independent destination, record the
+   backup label, and pass an isolated restore with zero bad checksums. The
+   permanent object bucket is still empty at this point; do not misrepresent an
+   empty generated-object mirror as recovery evidence. The meaningful paired
+   PostgreSQL/generated-object generation is created during the coordinator's
+   post-import pause.
 6. Retain the completed disposable no-omission import and three-surface
    reconciliation receipts produced by the exact reviewed release's root-only
    wrapper. Keep the rehearsal database and bucket until an operator explicitly
@@ -274,11 +275,15 @@ not waive the exact-release checks:
 
 ## Eventual final cutover sequence
 
-The later dormant coordinator encodes this sequence under one inherited
-maintenance lock, requires the snapshot/backup/mirror/restore receipts before
-mutation, leaves all services stopped after a pre-marker failure, and permits
-only a reviewed forward correction after the marker. It remains a no-activation
-slice; see `STAGE_3_POSTGRES_R2_FINAL_CUTOVER_COORDINATOR.md`.
+The later dormant coordinator encodes this sequence in two separately locked
+phases. A durable root-only `preparing` record is written before source hashing
+or target mutation and keeps every application service stopped during the
+operator-reviewed post-import recovery pause. Preparation failures use a
+reviewed preparation resume; only an importer outcome is `importing` and
+eligible for read-only reconciliation. A transient live-coordinator lease is
+required for hosted systemd startup, and every post-marker failure permits only
+a reviewed forward correction. It remains a no-activation slice; see
+`STAGE_3_POSTGRES_R2_FINAL_CUTOVER_COORDINATOR.md`.
 
 This sequence is documentation for the later complete transition, not an
 instruction to activate this foundation release:
@@ -299,23 +304,33 @@ instruction to activate this foundation release:
    automatically complete its independent read-only reconciliation before it
    can report success.
 7. Review the sanitized reconciliation of the accepted source-file inventory,
-   every owner-scoped PostgreSQL
-   table, `stored_objects` metadata, and all permanent-bucket object keys. Stop
-   on any missing row/object, count or hash mismatch, duplicate reference, or
-   orphan key.
-8. Confirm the exact reviewed release carries the hosted-authority capability,
-   mark PostgreSQL/R2 authoritative while all three services remain stopped,
-   activate only that release, and verify its build, local liveness/readiness,
-   service state, and HTTPS path. The marker must precede the first hosted write.
-9. Verify owner login and logout, representative profile/resume/job/application
+   every owner-scoped PostgreSQL table, `stored_objects` metadata, and all
+   permanent-bucket object keys. Stop on any missing row/object, count or hash
+   mismatch, duplicate reference, or orphan key. Phase one then records the
+   exact imported attempt and leaves every application service stopped with
+   authority unchanged.
+8. During that durable pause, take a fresh full backup of the imported
+   PostgreSQL database, mirror it independently, and pass an isolated restore.
+   Create the separately paired immutable generated-object ciphertext
+   generation from the now-populated permanent bucket and pass its manifest and
+   disposable-restore gate. Do not proceed on incomplete recovery evidence.
+9. Start phase two for the same release and target identities. Rerun preflight
+   and independent reconciliation without retrying import, confirm the exact
+   reviewed release carries the hosted-authority capability, mark PostgreSQL/R2
+   authoritative while all three services remain stopped and disabled, create
+   the exact transient activation lease, activate only that release, and verify
+   its build, local liveness/readiness, service state, and HTTPS path. Both
+   asynchronous producer/consumer pairs remain false and their workers remain
+   inactive/disabled through cutover; each is activated only by a separate
+   later review. The marker must precede the first hosted write.
+10. Verify owner login and logout, representative profile/resume/job/application
    reads and writes, provider capability, export/deletion scope, and authorized
    generated-object download. Repeat missing-context and cross-tenant negative
    tests and inspect minimized logs for secret or personal-data leakage.
-10. Take a fresh post-import full PostgreSQL backup, mirror it independently,
-    create and verify the separately paired generated-object recovery
-    generation, record the permanent R2 inventory receipt, and retain the
-    frozen SQLite snapshot for the reviewed rollback window. Generation purge
-    remains a separate exact operator action and is never part of cutover.
+11. Take a fresh post-activation full PostgreSQL backup and object inventory,
+    retain the post-import recovery generation and frozen SQLite snapshot for
+    the reviewed recovery window, and keep generation purge a separate exact
+    operator action that is never part of cutover.
 
 Do not reopen web traffic if reconciliation, readiness, authorization, or
 recovery evidence is incomplete.

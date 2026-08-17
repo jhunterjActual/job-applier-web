@@ -1,179 +1,311 @@
 # Stage 3: PostgreSQL/R2 final-cutover coordinator
 
-This slice adds a dormant, root-only coordinator for a later reviewed
-PostgreSQL/private-R2 authority transition. It does **not** authorize or perform
-that transition. Build `20260813.28` keeps
+This slice hardens the dormant root-only cutover coordinator without enabling
+hosted repositories or changing live state. Build `20260813.29` keeps
 `HOSTED_REPOSITORY_CUTOVER_COMPLETE` false, ships no
-`deploy/hosted-authority.compatibility` file, changes no live environment or
-credential, and does not migrate, import, reconcile, mark authority, move a
-release symlink, restart a service, or access PostgreSQL or R2.
+`deploy/hosted-authority.compatibility`, and performs no migration, import,
+authority transition, release activation, credential change, or service action
+merely by being installed or prepared.
 
-The coordinator is an ordering and failure-boundary control. It cannot replace
-the operator's review of backup, import, reconciliation, authorization, and
-recovery evidence. Do not run it against staging until a later exact release
-separately flips the repository-cutover guard, carries the exact reviewed
-hosted-authority capability, and every prerequisite below has been approved.
+The permanent object bucket is empty before import, so its recovery generation
+cannot be verified before import. The coordinator is therefore split into two
+explicit phases with a durable, root-only pending-attempt record between them.
+The pause makes post-import PostgreSQL and generated-object backup/restore
+evidence a prerequisite to the irreversible authority marker rather than a
+post-activation promise.
 
-## Manual evidence that automation cannot create
+Do not run either phase until a later exact release separately flips the
+repository-cutover guard, carries the exact hosted-authority capability, and
+all prerequisites for that exact release have been approved.
 
-Before the coordinator may acquire the maintenance lock, an operator must
-retain and approve all of these sanitized receipts for the exact immutable
-release and frozen source:
+## Pre-authority and worker gates
 
-- the required GitHub checks and `careertrellis-deploy --prepare-only` receipt
-  for one exact 40-character merge commit;
-- a recoverable, read-only SQLite database and generated-files snapshot with
-  bounded inventory counts and hashes;
-- an immediately pre-cutover pgBackRest full-backup label, the successful
-  independent encrypted-mirror receipt, and an isolated restore result with
-  zero bad checksums;
-- the permanent private-bucket recovery/versioning and inventory receipt,
-  including one immutable generated-object ciphertext generation paired with
-  the approved pgBackRest label and its successful disposable restore, without
-  object keys, document hashes, credentials, or tenant data;
-- the earlier disposable no-omission import and independent three-surface
-  reconciliation receipts from the same reviewed implementation; and
-- confirmation that the provider-secret and object keyrings are independently
-  retrievable and every reviewed runtime environment file is a regular,
-  non-symlinked `root:root` mode-`0600` file.
+While authority is `sqlite-pre-cutover`, the installed authority helper permits
+only an immutable release with exactly one
+`HOSTED_REPOSITORY_CUTOVER_COMPLETE = False` assignment and no compatibility
+manifest. A final-capable release cannot be started early through ordinary
+deploy or rollback. Any pending cutover record also blocks pre-cutover release
+starts and runtime checks, so a partially imported workspace cannot silently
+resume SQLite writes.
 
-The receipts stay outside command arguments. The exact confirmation token
-`I_HAVE_VERIFIED_QUIESCENT_SNAPSHOTS_AND_BACKUPS` records the operator's
-attestation that they were reviewed; it is not a substitute for the evidence
-itself. The coordinator can validate only the exact token, not the operator's
-underlying evidence; the operator must not invoke it when a receipt is missing,
-stale, malformed, or bound to another release. A receipt must never contain a
-database URL, password, R2 key, keyring, WorkOS identifier, object key, local
-private path, document hash, profile content, or other tenant value. A missing
-or inexact confirmation fails before any migration, import, authority, release,
-or service mutation.
+The web environment carries the same exact boolean switches as the dedicated
+workers:
 
-## One inherited maintenance lock
+- `CAREERTRELLIS_SEARCH_WORKER_ENABLED`
+- `CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED`
 
-`deploy/scripts/finalize-postgres-r2-cutover.sh` uses the shared
-`deploy/scripts/maintenance-lock.sh` helper to own the existing exclusive
-`/run/lock/careertrellis-maintenance.lock` for the whole operation. Migration,
-runtime-grant, preflight, import, reconciliation, authority, and activation
-steps run inside that inherited lock rather than dropping it between commands.
-A child helper must not trust an arbitrary environment flag as proof of
-ownership, and standalone deploy, rollback, migration, import, reconciliation,
-or `apply-postgres-runtime-grants.sh` commands must continue to take the same
-lock normally.
+Deploy, rollback, and the coordinator reject missing, malformed, duplicate, or
+mismatched producer/consumer values. Final cutover requires both pairs to be
+exactly false. The web therefore rejects or hides both producer operations and
+deploy keeps both workers stopped and disabled. Enabling either consumer after
+cutover remains a separate reviewed operator action; the coordinator never
+implicitly starts the erasure worker.
 
-Keeping one verified lock prevents a deployment, rollback, second import, or
-manual reconciliation from entering between the frozen-source checks and the
-one-way marker. The coordinator also proves the web, search-worker, and
-account-erasure-worker services are inactive before any source or target is
-opened and rechecks that quiescent state immediately before the marker changes.
+Before phase one, the coordinator also requires the installed authority helper
+and all three systemd start guards to byte-match the exact release. It takes the
+maintenance lock, reloads systemd, and proves each unit's loaded `DropInPaths`
+contains that exact guard. The no-start provisioner takes the same lock, so it
+cannot replace these files concurrently. Preparing a release alone does not
+install them; the reviewed no-start provisioning step must have completed.
+These checks make the pending pause effective across reboots and manual starts.
 
-## Exact transition order
+## Durable pending attempt
 
-After the manual receipts pass review, the later compatible release uses this
-exact root-only interface:
+The coordinator records the attempt in:
+
+```text
+/etc/careertrellis/authority/pending-cutover
+```
+
+The regular, non-symlink file is `root:root` mode `0600` and contains only a
+format version, random 128-bit attempt ID, phase, exact 40-character release,
+SHA-256 identities for the root-owned migration, object, and provider-keyring
+environment files,
+and a private digest of the serialized SQLite workspace, owner binding, and
+bounded generated-file inventory. It contains no URL, credential, keyring,
+tenant identifier, object key, private path, or document hash. Replacement is
+atomic and synced.
+
+The accepted phases are `preparing`, `importing`, `imported`,
+`recovery-verified`, `authority-marked`, `activating`, `activation-failed`, and
+`activated`. A new import is refused while any pending record exists. The
+`preparing` phase alone may carry the literal source identity `pending` until
+the stopped source is hashed; every later phase requires the exact SHA-256.
+The intended phase-one import alone receives the random attempt ID while
+holding the inherited maintenance lock; standalone or retry imports remain
+denied. A `preparing` record means target preparation did not reach the
+importer and can advance only through the reviewed `resume-preparation` action.
+An `importing` record means the importer outcome may be ambiguous and requires
+operator review and the exact read-only `reconcile-pending` action; do not
+retry or delete either record casually.
+
+## Phase one: import and pause
+
+Before phase one, retain approved sanitized evidence for the exact release and
+frozen source:
+
+- required GitHub, P0, PostgreSQL/RLS, route-qualification, dependency, syntax,
+  and prepare-only checks;
+- a recoverable SQLite database and generated-files snapshot;
+- an immediately pre-import full pgBackRest backup, encrypted independent
+  mirror, and isolated restore with zero bad checksums;
+- independently recoverable provider and object keyrings;
+- the completed disposable no-omission rehearsal and three-surface
+  reconciliation; and
+- verified permanent PostgreSQL/R2 identities, empty destinations, role/RLS
+  boundaries, and regular root-owned environment files.
+
+The exact later compatible release is invoked as:
 
 ```bash
 sudo /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT/deploy/scripts/finalize-postgres-r2-cutover.sh \
+  import-and-pause \
   /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT \
   /etc/careertrellis/postgres-migration.env \
   /etc/careertrellis/object-storage.env \
-  I_HAVE_VERIFIED_QUIESCENT_SNAPSHOTS_AND_BACKUPS \
+  I_HAVE_VERIFIED_QUIESCENT_SOURCE_AND_PRE_IMPORT_BACKUP
+```
+
+Under one inherited maintenance lock, phase one:
+
+1. validates the final-capable exact release, environment identities, authority
+   state, and matching web/worker switches;
+2. durably records `preparing` before service stop, source hashing, or target
+   mutation, then stops and proves the web, search, and erasure services
+   inactive;
+3. records the exact frozen-source digest while remaining `preparing`;
+4. applies the exact Alembic head and reviewed runtime grants;
+5. runs the read-only SQLite preflight;
+6. records `importing` immediately before importing the frozen source to
+   permanent PostgreSQL and private R2 with no
+   omission switches, including automatic independent reconciliation; and
+7. durably records `imported`, releases the lock, and deliberately leaves all
+   three services stopped with authority still `sqlite-pre-cutover`.
+
+No release is activated and no authority marker changes in phase one.
+
+If phase one exits while `preparing`, the importer was not entered. Diagnose
+the migration, grant, preflight, source, or service-state failure first. After
+confirming it is safe to resume the same attempt and exact targets, use:
+
+```bash
+sudo /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT/deploy/scripts/finalize-postgres-r2-cutover.sh \
+  resume-preparation \
+  /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT \
+  /etc/careertrellis/postgres-migration.env \
+  /etc/careertrellis/object-storage.env \
+  I_HAVE_REVIEWED_PRE_IMPORT_PREPARATION_FAILURE
+```
+
+This explicitly revalidates the bound attempt and frozen source, reruns only
+the idempotent preparation operations, and writes `importing` immediately
+before its single import invocation. It is never an automatic retry.
+
+If phase one exits after writing `importing`, do not rerun or resume the
+importer. After reviewing the failure and confirming read-only reconciliation
+is the correct next step, use the same exact paths:
+
+```bash
+sudo /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT/deploy/scripts/finalize-postgres-r2-cutover.sh \
+  reconcile-pending \
+  /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT \
+  /etc/careertrellis/postgres-migration.env \
+  /etc/careertrellis/object-storage.env \
+  I_HAVE_REVIEWED_AMBIGUOUS_IMPORT
+```
+
+This action never imports. It promotes `importing` to `imported` only when the
+same frozen source and exact target pass preflight and complete independent
+reconciliation.
+
+## Operator pause: prove imported-state recovery
+
+While the pending record blocks application restart and all three services
+remain inactive:
+
+1. review phase one's sanitized import/reconciliation receipt;
+2. take a fresh full pgBackRest backup of the imported permanent database,
+   mirror it independently, and pass an isolated restore;
+3. create an immutable generated-object ciphertext generation from the now-
+   populated permanent bucket, pair it with that backup label, and verify its
+   manifest and disposable restore;
+4. prove zero PostgreSQL restore checksums are bad, reconcile the isolated
+   restored database to the disposable restored object bucket, recover the
+   provider and object keyrings independently, and decrypt every restored
+   generated object;
+5. confirm the permanent PostgreSQL row counts, `stored_objects` references,
+   full R2 inventory, restored database, and restored generation agree; and
+6. retain all receipts in the encrypted operator evidence store without
+   credentials, URLs, tenant values, object keys, or document hashes.
+
+There is intentionally no maintenance lock across this human-reviewed pause.
+The durable pending record and service start guards preserve quiescence across
+process exits and host sessions.
+
+Record the reviewed non-secret pairing through the exact coordinator before
+phase two. The backup label and manifest digest are not credentials or tenant
+data, but they must match the retained receipts:
+
+```bash
+sudo /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT/deploy/scripts/finalize-postgres-r2-cutover.sh \
+  record-recovery-evidence \
+  /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT \
+  /etc/careertrellis/postgres-migration.env \
+  /etc/careertrellis/object-storage.env \
+  EXACT_FULL_BACKUP_LABEL \
+  EXACT_GENERATED_OBJECT_MANIFEST_SHA256 \
+  I_HAVE_VERIFIED_POST_IMPORT_BACKUPS_AND_RESTORES
+```
+
+This action reruns preflight and reconciliation, writes a root-only evidence
+record bound to the attempt/release with exact true attestations for the full
+PostgreSQL mirror/restore/checksum, generated-object mirror/restore, paired
+restored-surface reconciliation, independent provider/object keyring recovery,
+every-object decryption, and final reconciliation gates, and advances the pending phase to
+`recovery-verified`. The authority helper itself refuses a direct marker change
+without that exact pending phase, release, inherited lock, and evidence record.
+
+## Phase two: reconcile, mark, and activate
+
+Only after the post-import backups and restores pass, invoke:
+
+```bash
+sudo /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT/deploy/scripts/finalize-postgres-r2-cutover.sh \
+  mark-and-activate \
+  /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT \
+  /etc/careertrellis/postgres-migration.env \
+  /etc/careertrellis/object-storage.env \
+  I_HAVE_VERIFIED_POST_IMPORT_BACKUPS_AND_RESTORES \
   I_UNDERSTAND_SQLITE_WRITES_WILL_BE_DISABLED
 ```
 
-The release, migration-environment, and object-environment paths must satisfy
-their existing immutable/root-owned validation. The first confirmation binds
-the manual snapshot/backup receipts to the attempt; the second is passed only
-to the one-way hosted-authority transition. The coordinator then keeps this
-order while holding the inherited lock:
+Under a new inherited maintenance lock, phase two:
 
-1. Resolve the exact immutable release, validate the still-pre-cutover
-   authority state and root-owned inputs, idempotently stop the web,
-   search-worker, and account-erasure-worker services, and prove all three are
-   inactive. This re-establishes the quiescence asserted by the manual receipt.
-2. The exact confirmation attests that the approved SQLite/generated-files
-   snapshot, immediately pre-cutover PostgreSQL backup, independent mirror,
-   isolated restore, and permanent-object recovery receipts belong to this
-   exact attempt. The coordinator does not inspect or regenerate them.
-3. Apply the exact reviewed Alembic head with `migrate-postgres.sh`, then invoke
-   `apply-postgres-runtime-grants.sh` to reapply the reviewed runtime grants.
-   Never run an Alembic downgrade.
-4. Run the exact release's read-only SQLite preflight and compare its sanitized
-   counts with the approved no-omission rehearsal baseline.
-5. Import the frozen workspace into the permanent PostgreSQL database and
-   private R2 bucket with no omission switches. The import wrapper must finish
-   its independent read-only reconciliation under the same lock before it can
-   report success.
-6. Require a successful sanitized reconciliation across every supported source
-   and owner-scoped target table, encrypted provider-secret plaintext,
-   `stored_objects` metadata, application object references, accepted source
-   files, and the full permanent-bucket inventory. Any missing, extra,
-   duplicate, corrupt, mismatched, or orphan surface stops the transition.
-7. Validate that the selected exact release carries only the reviewed
-   `postgres-r2-authoritative-v1` capability and that the root-owned web and
-   object-store environments select PostgreSQL and encrypted private R2
-   exactly.
-8. While all three services are still inactive, pass the exact release and
-   second confirmation to the authority helper for the one-way
-   `postgres-r2-authoritative` marker transition. The marker must be durable
-   before the first PostgreSQL/R2 application write can occur.
-9. Invoke `deploy-release.sh` for only that same immutable release. Record
-   whether the separately controlled erasure worker was active before the
-   coordinator stopped it, and start that worker only after successful
-   activation when it was previously active; never activate it implicitly.
-   Then verify the build, local liveness/readiness, service state, HTTPS path,
-   owner flows, negative authorization checks, and minimized logs before
-   reopening traffic.
-10. Take the post-import PostgreSQL full backup and independent mirror, retain
-    the permanent-object inventory receipt, and preserve the frozen SQLite and
-    generated-files snapshot for the reviewed recovery window.
+1. validates the exact `recovery-verified` attempt, release, source and
+   environment identities, plus the root-only paired recovery record;
+   authority state, and worker switches;
+2. stops/rechecks all three application services;
+3. reruns the exact preflight and independent read-only reconciliation without
+   retrying the import;
+4. durably marks PostgreSQL/R2 authoritative;
+5. records `authority-marked` immediately after the durable marker, proves all
+   three application units inactive and disabled, and creates a root-only
+   transient activation lease bound to the exact attempt, release, live
+   coordinator PID, kernel boot identity, process start time, and inherited
+   maintenance-lock descriptor;
+6. records `activating`, activates only the same immutable release while the
+   systemd guards can validate that live lease, verifies web/Caddy active and
+   enabled with both workers inactive and disabled, records `activated`, and
+   removes the lease.
 
-No operator may skip forward, substitute a different release, reuse an
-omission rehearsal, or mark authority from an unreconciled import. An
-ambiguous import outcome requires the read-only reconciliation command with the
-same release and inputs before any retry decision.
+The cutover path never starts either asynchronous worker. Search and account
+erasure remain unavailable until their separately reviewed post-cutover
+activation procedures update each matched web/worker switch and service state.
 
-## Failure and recovery boundary
+## Failure boundary
 
-Before the authority marker changes, any failed prerequisite, migration,
-grant, preflight, import, or reconciliation step aborts the attempt and leaves
-all three application services stopped. The coordinator does not automatically
-restart the prior SQLite release: doing so would invalidate the quiescent
-snapshot and blur whether a later retry still refers to the approved evidence.
-The operator may investigate, reconcile an ambiguous outcome, or begin a new
-reviewed attempt while `sqlite-pre-cutover` remains authoritative.
+Validation failures before the durable attempt begins do not change services
+or authority. Once `preparing` is written, any phase-one failure leaves all
+three services stopped and the pending record at the last durable state. Use
+`resume-preparation` only for a reviewed `preparing` failure. Do not retry an
+ambiguous `importing` attempt or remove its record; use the exact read-only
+`reconcile-pending` action only after review. Any failure during the pause or
+before phase-two authority marking also leaves SQLite authority unchanged and
+services stopped.
 
-After the marker changes, SQLite and local generated files must never become
-writable authority again. Code-only rollback, SQLite import, and an automatic
-restart of an older release are forbidden. A failed activation, readiness
-check, smoke check, or later operation leaves services stopped and requires a
-reviewed forward code or schema correction that preserves PostgreSQL/private-R2
-authority. The authority marker is not downgraded or recreated.
+After the authority marker changes, SQLite import and code-only rollback are
+permanently forbidden. A failed activation removes the transient lease, stops
+and disables all application services, and records `activation-failed`; a
+crash leaves no usable lease because the recorded PID, boot identity, process
+start time, and descriptor-10 maintenance-lock ownership must all still match.
+A recycled PID cannot revive the lease. Hosted runtime guards permit an
+`activating` start only while that exact live lease is valid, permit normal
+runtime only at `activated`, and reject every other pending phase. After
+diagnosing and correcting the failure, resume only the same exact release and
+pending attempt with:
 
-## Acceptance for this dormant slice
+```bash
+sudo /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT/deploy/scripts/finalize-postgres-r2-cutover.sh \
+  resume-hosted-activation \
+  /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT \
+  /etc/careertrellis/postgres-migration.env \
+  /etc/careertrellis/object-storage.env \
+  I_HAVE_REVIEWED_HOSTED_FORWARD_RECOVERY
+```
 
-- [ ] The coordinator and every nested helper share one verified inherited
-      maintenance lock without creating a lock-bypass environment variable.
-- [ ] Tests prove the exact ordering, confirmation contract, three-service
-      quiescence, no-omission import, automatic reconciliation, and marker-before-
-      activation boundary.
-- [ ] Injected failures before the marker leave all services stopped and do not
-      restart the SQLite release; injected failures after the marker require a
-      forward correction and never invoke rollback or import.
-- [ ] Receipt output is fixed and sanitized; secrets, private paths, object
-      keys, document hashes, owner identifiers, and tenant data are absent.
-- [ ] The P0, coordinator, import/reconciliation, PostgreSQL/RLS, route-
-      qualification, dependency-lock, compilation, and shell-syntax checks
-      pass for build `20260813.28`.
-- [ ] `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains false, the hosted-authority
-      compatibility file remains absent, and no live release, service,
-      authority marker, database, object, credential, environment, user, DNS,
-      Caddy, or firewall state changes in this slice.
+The resume action requires hosted authority plus the exact `authority-marked`
+or `activation-failed` pending attempt. It also safely normalizes the same
+attempt when a crash left `activating`, or when the marker committed just
+before `recovery-verified` could be advanced. It revalidates the paired
+evidence and source/target identities, never imports or marks again, creates a
+new transient lease, and performs only the forward activation and final
+service-state verification. If authority status is unavailable, all import,
+retry, rollback, and activation actions are forbidden until an operator
+establishes the durable state. No trap restarts services or downgrades
+authority.
 
-The durable marker and restart boundary remain authoritative in
-`STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md`; import ambiguity and no-omission
-reconciliation remain authoritative in
-`STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`; the complete repository and
-operator gate remains in `STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md`; and the
-manual generated-object recovery and separate retention boundary remains in
-`STAGE_3_GENERATED_OBJECT_RECOVERY.md`. This coordinator neither creates nor
-purges a recovery generation.
+## Acceptance for this dormant hardening slice
+
+- [ ] Pre-cutover deploy/runtime rejects a final-capable release and any pending
+      cutover attempt.
+- [ ] Web producer availability matches each durable consumer switch, and
+      disabled workers remain stopped/disabled during deploy and rollback.
+- [ ] Phase one records `preparing` before service stop, source hashing, or
+      target mutation, supports only an explicit reviewed preparation resume,
+      and records `importing` immediately before the importer.
+- [ ] Phase two requires the exact recovery-verified attempt and post-import
+      recovery evidence record, reruns reconciliation, then marks authority
+      before an exact live activation lease permits systemd startup.
+- [ ] Failure tests prove no import retry, automatic service restart, rollback,
+      authority downgrade, or backward recovery path after the marker.
+- [ ] P0, coordinator, account-erasure, import/reconciliation, PostgreSQL/RLS,
+      route-qualification, dependency, compilation, and shell checks pass for
+      build `20260813.29`.
+- [ ] The cutover flag remains false, the compatibility file remains absent,
+      and no live release, service, authority, database, object, credential,
+      environment, user, DNS, Caddy, or firewall state changes in this slice.
+
+The authority marker remains authoritative in
+`STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md`; import ambiguity remains authoritative
+in `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`; and generated-object
+recovery remains authoritative in `STAGE_3_GENERATED_OBJECT_RECOVERY.md`.

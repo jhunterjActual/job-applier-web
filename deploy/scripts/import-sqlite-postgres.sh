@@ -86,7 +86,70 @@ if [[ ! -x /usr/local/sbin/careertrellis-authority ]]; then
     echo "Hosted authority state is unavailable." >&2
     exit 1
 fi
-/usr/local/sbin/careertrellis-authority assert-import-allowed
+authority_arguments=(assert-import-allowed)
+final_cutover_context=false
+rehearsal_context=false
+if [[ -n ${CAREERTRELLIS_FINAL_CUTOVER_ATTEMPT_ID:-} ]]; then
+    final_cutover_context=true
+fi
+for rehearsal_setting in \
+    CAREERTRELLIS_REHEARSAL_IMPORT_COORDINATOR_PID \
+    CAREERTRELLIS_REHEARSAL_IMPORT_RELEASE \
+    CAREERTRELLIS_REHEARSAL_IMPORT_MIGRATION_ENVIRONMENT_SHA256 \
+    CAREERTRELLIS_REHEARSAL_IMPORT_OBJECT_ENVIRONMENT_SHA256; do
+    if [[ -n ${!rehearsal_setting:-} ]]; then
+        rehearsal_context=true
+    fi
+done
+if [[ ${final_cutover_context} == true && ${rehearsal_context} == true ]]; then
+    echo "Hosted authority prevents SQLite import." >&2
+    exit 1
+fi
+if [[ (${final_cutover_context} == true || ${rehearsal_context} == true) && $# -ne 0 ]]; then
+    echo "Authorized SQLite import does not permit omitted data classes." >&2
+    exit 1
+fi
+if [[ ${final_cutover_context} == true ]]; then
+    if [[ -z ${object_environment_file} ]]; then
+        echo "Hosted authority prevents SQLite import." >&2
+        exit 1
+    fi
+    migration_environment_sha256=$(sha256sum "${target_environment_file}" | awk '{print $1}')
+    object_environment_sha256=$(sha256sum "${object_environment_file}" | awk '{print $1}')
+    provider_environment_sha256=$(sha256sum "${secret_environment_file}" | awk '{print $1}')
+    authority_arguments+=(
+        "${CAREERTRELLIS_FINAL_CUTOVER_ATTEMPT_ID}"
+        "${release_revision}"
+        "${migration_environment_sha256}"
+        "${object_environment_sha256}"
+        "${provider_environment_sha256}"
+    )
+elif [[ ${rehearsal_context} == true ]]; then
+    if [[ -z ${object_environment_file} ]]; then
+        echo "Hosted authority prevents SQLite import." >&2
+        exit 1
+    fi
+    migration_environment_sha256=$(sha256sum "${target_environment_file}" | awk '{print $1}')
+    object_environment_sha256=$(sha256sum "${object_environment_file}" | awk '{print $1}')
+    if [[ ${CAREERTRELLIS_REHEARSAL_IMPORT_RELEASE:-} != "${release_revision}" || \
+          ${CAREERTRELLIS_REHEARSAL_IMPORT_MIGRATION_ENVIRONMENT_SHA256:-} != "${migration_environment_sha256}" || \
+          ${CAREERTRELLIS_REHEARSAL_IMPORT_OBJECT_ENVIRONMENT_SHA256:-} != "${object_environment_sha256}" || \
+          ! ${CAREERTRELLIS_REHEARSAL_IMPORT_COORDINATOR_PID:-} =~ ^[1-9][0-9]*$ ]]; then
+        echo "Hosted authority prevents SQLite import." >&2
+        exit 1
+    fi
+    authority_arguments=(
+        assert-rehearsal-import-allowed
+        "${release_revision}"
+        "${migration_environment_sha256}"
+        "${object_environment_sha256}"
+        "${CAREERTRELLIS_REHEARSAL_IMPORT_COORDINATOR_PID}"
+    )
+else
+    echo "Hosted authority prevents SQLite import." >&2
+    exit 1
+fi
+/usr/local/sbin/careertrellis-authority "${authority_arguments[@]}"
 
 set -a
 # shellcheck disable=SC1090

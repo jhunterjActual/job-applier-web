@@ -105,8 +105,12 @@ activation must deliberately change that flag to the exact value `true`, select
 guards, and enable and start the unit as an explicit operator action. Web UI,
 an API request, deployment, and rollback cannot perform that initial
 activation. After activation, forward deployment and rollback accept the exact
-values `true` or `false`; they restart the erasure worker only when it was
-already active, so an inactive worker is never started implicitly.
+values `true` or `false`. A `true` release is rejected before release or service
+mutation unless the erasure unit is already both active and enabled; deployment
+then restarts that viable consumer before the web producer becomes available.
+An inactive or disabled erasure worker is never started implicitly. A `false`
+release stops and disables the worker before web restart/readiness, including
+on a later readiness failure.
 
 ## Role, migration, and grant order
 
@@ -176,6 +180,6 @@ Acceptance requires fixed-response route tests, worker retry/lease/idempotency
 tests, two-owner RLS and broker tests on disposable PostgreSQL, synthetic R2
 deletion tests, role/grant static checks, P0 and compile checks, shell and
 PowerShell parsing, one Alembic head at `20260814_0009`, build
-`20260813.28`, no protected-file changes, and confirmation that the erasure
+`20260813.29`, no protected-file changes, and confirmation that the erasure
 worker, shared cutover, live services, credentials, and external stores remain
 untouched.

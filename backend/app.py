@@ -673,7 +673,10 @@ def get_session_summary(request: Request) -> dict[str, object]:
             "account_erasure_available": False,
         }
     try:
-        account_erasure_available = data_store_kind() == SHARED_DATA_STORE
+        account_erasure_available = (
+            data_store_kind() == SHARED_DATA_STORE
+            and config.account_erasure_worker_enabled()
+        )
     except config.RuntimeConfigurationError:
         account_erasure_available = False
     return {
@@ -1577,6 +1580,11 @@ def request_account_erasure(
         raise HTTPException(status_code=409, detail=LOCAL_ACCOUNT_ERASURE_DETAIL)
     if not getattr(request.state, "local_user_id", None):
         raise HTTPException(status_code=401, detail="Authentication required.")
+    if not config.account_erasure_worker_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail=ACCOUNT_ERASURE_UNAVAILABLE_MESSAGE,
+        )
     try:
         receipt = runtime_account_erasure_repository().request_erasure()
     except AccountErasureUnavailable as exc:
@@ -1931,6 +1939,12 @@ def search_jobs(
     Returns:
         dict: Success status and status message.
     """
+    selected_store = data_store_kind()
+    if selected_store == SHARED_DATA_STORE and not config.search_worker_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="The job search could not be queued.",
+        )
     try:
         search_run_repository = runtime_search_run_repository(
             sqlite_connection_factory=get_db_connection
@@ -1985,7 +1999,7 @@ def search_jobs(
                 detail="The job search could not be queued.",
             ) from exc
         raise
-    if data_store_kind() == LOCAL_DATA_STORE:
+    if selected_store == LOCAL_DATA_STORE:
         background_tasks.add_task(run_local_search_run, run_id)
     capture_event(
         "job_search_started",

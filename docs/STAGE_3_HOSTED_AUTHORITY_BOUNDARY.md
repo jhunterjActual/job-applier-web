@@ -51,11 +51,19 @@ authority slice itself needed no Alembic change and its head remained
 ## Restart and rollback enforcement
 
 Before deploy or rollback mutates a release symlink, unit, installed helper, or
-service, the installed helper validates the selected immutable target. The
-systemd drop-ins then run the installed helper before every web, search-worker,
-or account-erasure-worker start; restoring an older unit file does not remove
-those drop-ins. In `postgres-r2-authoritative` state, all three services require the current immutable
-release to contain exactly this reviewed capability declaration:
+service, the installed helper validates the selected immutable target. While
+authority is `sqlite-pre-cutover`, it admits only a release with exactly one
+false repository-cutover assignment and no hosted compatibility manifest. It
+also rejects any start while the root-only final-cutover pending record exists.
+This prevents ordinary deployment from starting final-capable code before the
+authority marker and prevents a paused/partial permanent import from resuming
+SQLite writes. The systemd drop-ins then run the exact root-owned installed
+helper with the systemd `+` execution prefix before every web, search-worker,
+or account-erasure-worker start. The elevated pre-start process reads only the
+root-owned authority control files and never inherits service credentials;
+restoring an older unit file does not remove those drop-ins. In
+`postgres-r2-authoritative` state, all three services require the current
+immutable release to contain exactly this reviewed capability declaration:
 
 ```text
 deploy/hosted-authority.compatibility: postgres-r2-authoritative-v1
@@ -68,7 +76,14 @@ receives no web, WorkOS, migration, or object-store credentials. The separate
 account-erasure worker receives only its broker database URL, bounded settings,
 and delete-only private-bucket credential—never WorkOS, provider-secret, web,
 upload, or object-decryption settings. Both workers are covered by the same
-release capability.
+release capability. When a root-only pending attempt exists after the marker,
+runtime is denied unless the phase is `activated`, or it is `activating` and a
+root:root mode `0600` transient lease proves that the exact live coordinator
+PID, kernel boot identity, and process start time still match and that process
+still holds descriptor 10 on the maintenance lock. Binding all three process
+identities prevents a recycled PID from reviving a stale lease. A crash,
+reboot, stale lease, mismatched attempt/release, or any other pending phase
+therefore denies startup.
 
 This PR does not add that capability file because the repository cutover flag
 is still false. A later final cutover review must add it only to a release whose
@@ -85,32 +100,40 @@ rewrite the marker.
 
 ## Eventual operator transition (not for this PR)
 
-The later dormant coordinator keeps the maintenance lock inherited across the
-complete preflight, migration/grant, no-omission import/reconciliation, marker,
-and activation sequence. It also deliberately leaves all services stopped on
-every pre-marker failure and requires a forward correction after the marker.
-Its manual receipt and ordering contract is documented in
+The later dormant coordinator uses two separately locked phases. Phase one
+migrates, grants, imports, reconciles, and durably pauses with every application
+service stopped and authority unchanged. It writes `preparing` before service
+stop, source hashing, or target mutation; a reviewed preparation failure can be
+resumed without treating a never-started import as ambiguous. `importing` is
+written only immediately before the importer. The root-only pending record
+blocks pre-cutover deploy/runtime while the operator creates and restores both
+the post-import PostgreSQL backup and generated-object recovery generation.
+Phase two revalidates the exact attempt and reconciliation before marking
+authority and activating the same release under the transient live-coordinator
+lease. Failures before a durable attempt leave prior service state unchanged;
+failures after it starts leave services stopped, while every post-marker
+failure requires a forward correction.
+Its exact receipt and ordering contract is documented in
 `STAGE_3_POSTGRES_R2_FINAL_CUTOVER_COORDINATOR.md`; that slice does not add the
 capability or perform this transition.
 
-The final cutover must keep the maintenance lock held and the web, search-
-worker, and account-erasure-worker services stopped through snapshot,
-migration, no-omission import, and
-reconciliation. Only after those receipts pass, and **before any service can
-accept the first PostgreSQL/R2 write**, an operator may run the one-way command:
-
-```bash
-sudo /usr/local/sbin/careertrellis-authority \
-  mark-postgres-r2-authoritative \
-  /opt/careertrellis/staging/releases/EXACT_MERGE_COMMIT \
-  I_UNDERSTAND_SQLITE_WRITES_WILL_BE_DISABLED
-```
+The final cutover must keep the web, search-worker, and account-erasure-worker
+services stopped from the phase-one source freeze through the phase-two marker.
+The maintenance lock is held within each automated phase; the durable pending
+record and loaded start guards preserve quiescence during the operator-reviewed
+post-import recovery pause. Only after those receipts pass, and **before any
+service can accept the first PostgreSQL/R2 write**, may the exact coordinator
+invoke the internal one-way authority command. Do not invoke the authority
+helper directly; it requires the coordinator's inherited lock, exact pending
+attempt ID, exact release, and paired recovery-evidence record.
 
 The command itself rejects a target outside the immutable 40-character release
-path, an absent/symlinked/executable/non-exact capability file, or runtime files
-that do not select PostgreSQL/private R2 exactly. The exact reviewed release
-must pass that check before the marker changes or either service is started. Check
-the non-secret state with:
+path, an absent/symlinked/executable/non-exact capability file, a non-unique or
+false repository-cutover assignment, runtime files that do not select
+PostgreSQL/private R2 exactly, or the absence of the exact release-bound
+`recovery-verified` pending attempt and its exact recovery evidence. The exact reviewed release must pass that
+check before the marker changes or any service is started. Check the non-secret
+state with:
 
 ```bash
 sudo /usr/local/sbin/careertrellis-authority status
@@ -146,7 +169,7 @@ service. Its boundary is documented in
 
 Acceptance for the combined tree requires shell syntax, marker transition/fixed-
 error and import-reconciliation tests, the P0 suite, compile checks, dependency-
-lock checks, a single `20260814_0009` Alembic head, build `20260813.24`, no
+lock checks, a single `20260814_0009` Alembic head, build `20260813.29`, no
 protected-file changes, and confirmation that the cutover flag and live/external
 state remain untouched. The reconciliation boundary is documented in
 `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.

@@ -7,6 +7,10 @@ hosted_capability=postgres-r2-authoritative-v1
 authority_directory=/etc/careertrellis/authority
 authority_parent=/etc/careertrellis
 state_file=${authority_directory}/data-authority
+pending_cutover_file=${authority_directory}/pending-cutover
+recovery_evidence_file=${authority_directory}/post-import-recovery
+activation_lease_file=/run/careertrellis-hosted-activation.lease
+maintenance_lock_file=/run/lock/careertrellis-maintenance.lock
 release_root=/opt/careertrellis/staging
 staging_environment_file=/etc/careertrellis/staging.env
 object_environment_file=/etc/careertrellis/object-storage.env
@@ -21,6 +25,10 @@ if [[ ${1:-} == "--test-root" ]]; then
     authority_directory=${2}/authority
     authority_parent=${2}
     state_file=${authority_directory}/data-authority
+    pending_cutover_file=${authority_directory}/pending-cutover
+    recovery_evidence_file=${authority_directory}/post-import-recovery
+    activation_lease_file=${2}/run/careertrellis-hosted-activation.lease
+    maintenance_lock_file=${2}/run/lock/careertrellis-maintenance.lock
     release_root=${2}/staging
     staging_environment_file=${2}/etc/staging.env
     object_environment_file=${2}/etc/object-storage.env
@@ -133,16 +141,39 @@ validate_release_target_path() {
 
 validate_release_capability() {
     local target_release=$1
-    local capability_file
+    local capability_file cutover_file
     local -a capability_lines=()
     validate_release_target_path "${target_release}" || return 1
     target_release=$(readlink -f "${target_release}")
     capability_file=${target_release}/deploy/hosted-authority.compatibility
+    cutover_file=${target_release}/backend/data_store.py
     if [[ ! -f ${capability_file} || -L ${capability_file} || -x ${capability_file} ]]; then
         return 1
     fi
     mapfile -t capability_lines < "${capability_file}"
-    [[ ${#capability_lines[@]} -eq 1 && ${capability_lines[0]} == "${hosted_capability}" ]]
+    [[ ${#capability_lines[@]} -eq 1 && ${capability_lines[0]} == "${hosted_capability}" ]] && \
+        [[ -f ${cutover_file} && ! -L ${cutover_file} ]] && \
+        [[ $(grep -Ec '^HOSTED_REPOSITORY_CUTOVER_COMPLETE = (True|False)$' "${cutover_file}") -eq 1 ]] && \
+        [[ $(grep -Fxc 'HOSTED_REPOSITORY_CUTOVER_COMPLETE = True' "${cutover_file}") -eq 1 ]]
+}
+
+validate_pre_cutover_release() {
+    local target_release=$1
+    local capability_file cutover_file
+    validate_release_target_path "${target_release}" || return 1
+    target_release=$(readlink -f "${target_release}")
+    capability_file=${target_release}/deploy/hosted-authority.compatibility
+    cutover_file=${target_release}/backend/data_store.py
+    [[ ! -e ${capability_file} && ! -L ${capability_file} ]] && \
+        [[ -f ${cutover_file} && ! -L ${cutover_file} ]] && \
+        [[ $(grep -Ec '^HOSTED_REPOSITORY_CUTOVER_COMPLETE = (True|False)$' "${cutover_file}") -eq 1 ]] && \
+        [[ $(grep -Fxc 'HOSTED_REPOSITORY_CUTOVER_COMPLETE = False' "${cutover_file}") -eq 1 ]]
+}
+
+validate_rehearsal_release() {
+    local target_release=$1
+    validate_pre_cutover_release "${target_release}" || \
+        validate_release_capability "${target_release}"
 }
 
 require_hosted_release_capability() {
@@ -152,6 +183,15 @@ require_hosted_release_capability() {
     fi
     current_release=$(readlink -f "${release_root}/current")
     validate_release_capability "${current_release}"
+}
+
+require_pre_cutover_release() {
+    local current_release
+    if [[ ! -L ${release_root}/current ]]; then
+        return 1
+    fi
+    current_release=$(readlink -f "${release_root}/current")
+    validate_pre_cutover_release "${current_release}"
 }
 
 require_current_release_target() {
@@ -184,7 +224,12 @@ assert_release_startable() {
         return 1
     fi
     if [[ ${state} == "${pre_cutover_state}" ]]; then
-        return
+        if [[ ! -e ${pending_cutover_file} && ! -L ${pending_cutover_file} ]] && \
+           validate_pre_cutover_release "${target_release}"; then
+            return
+        fi
+        echo "Hosted authority release validation failed." >&2
+        return 1
     fi
     if ! validate_hosted_release "${target_release}"; then
         echo "Hosted authority release validation failed." >&2
@@ -201,18 +246,40 @@ validate_hosted_release() {
 
 check_runtime() {
     local runtime_kind=$1
-    local state
+    local state current_release current_revision pending_attempt
+    require_root
     state=$(read_authority_state) || return 1
     if ! require_current_release_target; then
         echo "Hosted authority runtime validation failed." >&2
         return 1
     fi
     if [[ ${state} == "${pre_cutover_state}" ]]; then
-        return
+        if [[ ! -e ${pending_cutover_file} && ! -L ${pending_cutover_file} ]] && \
+           require_pre_cutover_release; then
+            return
+        fi
+        echo "Hosted authority runtime validation failed." >&2
+        return 1
     fi
     if ! require_hosted_release_capability; then
         echo "Hosted authority runtime validation failed." >&2
         return 1
+    fi
+    if [[ -e ${pending_cutover_file} || -L ${pending_cutover_file} ]]; then
+        current_release=$(readlink -f "${release_root}/current")
+        current_revision=$(basename "${current_release}")
+        if pending_cutover_allows activated "${current_revision}"; then
+            :
+        elif pending_cutover_allows activating "${current_revision}"; then
+            pending_attempt=$(sed -n 's/^attempt_id=//p' "${pending_cutover_file}")
+            if ! activation_lease_allows "${pending_attempt}" "${current_revision}"; then
+                echo "Hosted authority runtime validation failed." >&2
+                return 1
+            fi
+        else
+            echo "Hosted authority runtime validation failed." >&2
+            return 1
+        fi
     fi
     if [[ ${runtime_kind} == "web" && (${CAREERTRELLIS_DATA_STORE:-} != "postgres" || ${CAREERTRELLIS_OBJECT_STORE:-} != "r2_encrypted") ]]; then
         echo "Hosted authority runtime validation failed." >&2
@@ -230,13 +297,189 @@ assert_pre_cutover() {
     fi
 }
 
+pending_cutover_allows() {
+    local expected_phase=$1
+    local expected_release=${2:-}
+    local expected_attempt=${3:-}
+    local expected_migration_environment_sha256=${4:-}
+    local expected_object_environment_sha256=${5:-}
+    local expected_provider_environment_sha256=${6:-}
+    local -a pending_lines=()
+    if [[ ! -f ${pending_cutover_file} || -L ${pending_cutover_file} ]]; then
+        return 1
+    fi
+    if [[ ${test_mode} == false && $(stat -c '%U:%G %a' "${pending_cutover_file}") != "root:root 600" ]]; then
+        return 1
+    fi
+    mapfile -t pending_lines < "${pending_cutover_file}"
+    [[ ${#pending_lines[@]} -eq 8 && $(wc -l < "${pending_cutover_file}") -eq 8 ]] || return 1
+    [[ ${pending_lines[0]} == "version=1" ]] || return 1
+    [[ ${pending_lines[1]} == "phase=${expected_phase}" ]] || return 1
+    [[ ${pending_lines[2]} =~ ^attempt_id=[0-9a-f]{32}$ ]] || return 1
+    [[ ${pending_lines[3]} =~ ^release=[0-9a-f]{40}$ ]] || return 1
+    [[ ${pending_lines[4]} =~ ^migration_environment_sha256=[0-9a-f]{64}$ ]] || return 1
+    [[ ${pending_lines[5]} =~ ^object_environment_sha256=[0-9a-f]{64}$ ]] || return 1
+    [[ ${pending_lines[6]} =~ ^provider_environment_sha256=[0-9a-f]{64}$ ]] || return 1
+    if [[ ${expected_phase} == "preparing" ]]; then
+        [[ ${pending_lines[7]} =~ ^source_snapshot_sha256=(pending|[0-9a-f]{64})$ ]] || return 1
+    else
+        [[ ${pending_lines[7]} =~ ^source_snapshot_sha256=[0-9a-f]{64}$ ]] || return 1
+    fi
+    if [[ -n ${expected_release} && ${pending_lines[3]} != "release=${expected_release}" ]]; then
+        return 1
+    fi
+    if [[ -n ${expected_attempt} && ${pending_lines[2]} != "attempt_id=${expected_attempt}" ]]; then
+        return 1
+    fi
+    if [[ -n ${expected_migration_environment_sha256} && ${pending_lines[4]} != "migration_environment_sha256=${expected_migration_environment_sha256}" ]] || \
+       [[ -n ${expected_object_environment_sha256} && ${pending_lines[5]} != "object_environment_sha256=${expected_object_environment_sha256}" ]] || \
+       [[ -n ${expected_provider_environment_sha256} && ${pending_lines[6]} != "provider_environment_sha256=${expected_provider_environment_sha256}" ]]; then
+        return 1
+    fi
+}
+
+read_boot_id() {
+    local boot_id
+    IFS= read -r boot_id < /proc/sys/kernel/random/boot_id || return 1
+    boot_id=${boot_id,,}
+    [[ ${boot_id} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
+    printf '%s' "${boot_id}"
+}
+
+read_process_start_time() {
+    local process_id=$1 process_stat process_fields
+    [[ ${process_id} =~ ^[1-9][0-9]*$ ]] || return 1
+    IFS= read -r process_stat < "/proc/${process_id}/stat" || return 1
+    [[ ${process_stat} == *") "* ]] || return 1
+    process_fields=${process_stat##*) }
+    set -- ${process_fields}
+    [[ $# -ge 20 && ${20} =~ ^[1-9][0-9]*$ ]] || return 1
+    printf '%s' "${20}"
+}
+
+activation_lease_allows() {
+    local expected_attempt=$1
+    local expected_release=$2
+    local coordinator_pid current_boot_id current_start_time
+    local -a lease_lines=()
+    if [[ ! -f ${activation_lease_file} || -L ${activation_lease_file} ]]; then
+        return 1
+    fi
+    if [[ ${test_mode} == false && $(stat -c '%U:%G %a' "${activation_lease_file}") != "root:root 600" ]]; then
+        return 1
+    fi
+    mapfile -t lease_lines < "${activation_lease_file}"
+    [[ ${#lease_lines[@]} -eq 6 && $(wc -l < "${activation_lease_file}") -eq 6 ]] || return 1
+    [[ ${lease_lines[0]} == "version=1" ]] || return 1
+    [[ ${lease_lines[1]} == "attempt_id=${expected_attempt}" ]] || return 1
+    [[ ${lease_lines[2]} == "release=${expected_release}" ]] || return 1
+    [[ ${lease_lines[3]} =~ ^coordinator_pid=[1-9][0-9]*$ ]] || return 1
+    [[ ${lease_lines[4]} =~ ^coordinator_boot_id=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
+    [[ ${lease_lines[5]} =~ ^coordinator_start_time=[1-9][0-9]*$ ]] || return 1
+    coordinator_pid=${lease_lines[3]#coordinator_pid=}
+    kill -0 "${coordinator_pid}" 2>/dev/null || return 1
+    [[ -e /proc/${coordinator_pid}/fd/10 ]] || return 1
+    [[ $(readlink -f "/proc/${coordinator_pid}/fd/10" 2>/dev/null || true) == "${maintenance_lock_file}" ]] || return 1
+    current_boot_id=$(read_boot_id) || return 1
+    current_start_time=$(read_process_start_time "${coordinator_pid}") || return 1
+    [[ ${lease_lines[4]} == "coordinator_boot_id=${current_boot_id}" ]] || return 1
+    [[ ${lease_lines[5]} == "coordinator_start_time=${current_start_time}" ]]
+}
+
+require_inherited_maintenance_lock() {
+    [[ ${CAREERTRELLIS_MAINTENANCE_LOCK_FD:-} == 10 ]] || return 1
+    [[ -e /proc/self/fd/10 ]] || return 1
+    [[ $(readlink -f /proc/self/fd/10 2>/dev/null || true) == "${maintenance_lock_file}" ]] || return 1
+    flock -n 10
+}
+
+recovery_evidence_allows() {
+    local expected_release=$1
+    local expected_attempt=$2
+    local -a evidence_lines=()
+    if [[ ! -f ${recovery_evidence_file} || -L ${recovery_evidence_file} ]]; then
+        return 1
+    fi
+    if [[ ${test_mode} == false && $(stat -c '%U:%G %a' "${recovery_evidence_file}") != "root:root 600" ]]; then
+        return 1
+    fi
+    mapfile -t evidence_lines < "${recovery_evidence_file}"
+    [[ ${#evidence_lines[@]} -eq 15 ]] || return 1
+    [[ ${evidence_lines[0]} == 'version=1' ]] || return 1
+    [[ ${evidence_lines[1]} == "attempt_id=${expected_attempt}" ]] || return 1
+    [[ ${evidence_lines[2]} == "release=${expected_release}" ]] || return 1
+    [[ ${evidence_lines[3]} =~ ^postgres_backup_label=[0-9]{8}-[0-9]{6}F$ ]] || return 1
+    [[ ${evidence_lines[4]} =~ ^generated_object_manifest_sha256=[0-9a-f]{64}$ ]] || return 1
+    [[ ${evidence_lines[5]} == 'postgres_mirror_verified=true' ]] || return 1
+    [[ ${evidence_lines[6]} == 'postgres_restore_verified=true' ]] || return 1
+    [[ ${evidence_lines[7]} == 'postgres_bad_checksums_zero=true' ]] || return 1
+    [[ ${evidence_lines[8]} == 'generated_object_mirror_verified=true' ]] || return 1
+    [[ ${evidence_lines[9]} == 'generated_object_restore_verified=true' ]] || return 1
+    [[ ${evidence_lines[10]} == 'restored_database_object_reconciliation_verified=true' ]] || return 1
+    [[ ${evidence_lines[11]} == 'provider_keyring_recovery_verified=true' ]] || return 1
+    [[ ${evidence_lines[12]} == 'object_keyring_recovery_verified=true' ]] || return 1
+    [[ ${evidence_lines[13]} == 'decrypt_every_object_verified=true' ]] || return 1
+    [[ ${evidence_lines[14]} == 'reconciliation_verified=true' ]]
+}
+
+assert_import_allowed() {
+    local attempt_id=${1:-}
+    local expected_release=${2:-}
+    local migration_environment_sha256=${3:-}
+    local object_environment_sha256=${4:-}
+    local provider_environment_sha256=${5:-}
+    assert_pre_cutover "Hosted authority prevents SQLite import." || return 1
+    if [[ ! -e ${pending_cutover_file} && ! -L ${pending_cutover_file} ]]; then
+        echo "Hosted authority prevents SQLite import." >&2
+        return 1
+    fi
+    if [[ ! ${attempt_id} =~ ^[0-9a-f]{32}$ || ! ${expected_release} =~ ^[0-9a-f]{40}$ || \
+          ! ${migration_environment_sha256} =~ ^[0-9a-f]{64}$ || ! ${object_environment_sha256} =~ ^[0-9a-f]{64}$ || \
+          ! ${provider_environment_sha256} =~ ^[0-9a-f]{64}$ ]] || \
+       ! pending_cutover_allows importing "${expected_release}" "${attempt_id}" \
+            "${migration_environment_sha256}" "${object_environment_sha256}" "${provider_environment_sha256}"; then
+        echo "Hosted authority prevents SQLite import." >&2
+        return 1
+    fi
+    if ! require_inherited_maintenance_lock; then
+        echo "Hosted authority prevents SQLite import." >&2
+        return 1
+    fi
+}
+
+assert_rehearsal_import_allowed() {
+    local expected_release=${1:-}
+    local migration_environment_sha256=${2:-}
+    local object_environment_sha256=${3:-}
+    local coordinator_pid=${4:-}
+    assert_pre_cutover "Hosted authority prevents SQLite import." || return 1
+    if [[ -e ${pending_cutover_file} || -L ${pending_cutover_file} ]] || \
+       [[ ! ${expected_release} =~ ^[0-9a-f]{40}$ ]] || \
+       [[ ! ${migration_environment_sha256} =~ ^[0-9a-f]{64}$ ]] || \
+       [[ ! ${object_environment_sha256} =~ ^[0-9a-f]{64}$ ]] || \
+       [[ ! ${coordinator_pid} =~ ^[1-9][0-9]*$ ]] || \
+       ! validate_rehearsal_release "${release_root}/releases/${expected_release}" || \
+       ! require_inherited_maintenance_lock || \
+       ! kill -0 "${coordinator_pid}" 2>/dev/null || \
+       [[ ! -e /proc/${coordinator_pid}/fd/10 ]] || \
+       [[ $(readlink -f "/proc/${coordinator_pid}/fd/10" 2>/dev/null || true) != "${maintenance_lock_file}" ]]; then
+        echo "Hosted authority prevents SQLite import." >&2
+        return 1
+    fi
+}
+
 mark_hosted_authoritative() {
     local target_release=${1:-}
-    local confirmation=${2:-}
+    local attempt_id=${2:-}
+    local confirmation=${3:-}
     local maintenance_lock_helper script_dir
     local state
     require_root
     if [[ ${confirmation} != "I_UNDERSTAND_SQLITE_WRITES_WILL_BE_DISABLED" ]]; then
+        echo "Hosted authority confirmation is required." >&2
+        return 1
+    fi
+    if [[ ! ${attempt_id} =~ ^[0-9a-f]{32}$ || ${CAREERTRELLIS_MAINTENANCE_LOCK_FD:-} != 10 ]]; then
         echo "Hosted authority confirmation is required." >&2
         return 1
     fi
@@ -262,6 +505,12 @@ mark_hosted_authoritative() {
         echo "Hosted authority release validation failed." >&2
         return 1
     fi
+    target_release=$(readlink -f "${target_release}")
+    if ! pending_cutover_allows recovery-verified "$(basename "${target_release}")" "${attempt_id}" || \
+       ! recovery_evidence_allows "$(basename "${target_release}")" "${attempt_id}"; then
+        echo "Hosted authority release validation failed." >&2
+        return 1
+    fi
     if [[ ${test_mode} == false ]]; then
         for service in careertrellis-web.service careertrellis-worker.service careertrellis-erasure-worker.service; do
             if systemctl is-active --quiet "${service}"; then
@@ -284,16 +533,24 @@ case "${command_name}" in
         read_authority_state
         ;;
     mark-postgres-r2-authoritative)
-        [[ $# -eq 2 ]] || { echo "Hosted authority confirmation is required." >&2; exit 1; }
-        mark_hosted_authoritative "$1" "$2"
+        [[ $# -eq 3 ]] || { echo "Hosted authority confirmation is required." >&2; exit 1; }
+        mark_hosted_authoritative "$1" "$2" "$3"
         ;;
     assert-code-rollback-allowed)
         [[ $# -eq 0 ]] || { echo "Hosted authority command is invalid." >&2; exit 1; }
         assert_pre_cutover "Hosted authority prevents code rollback."
         ;;
     assert-import-allowed)
+        [[ $# -eq 0 || $# -eq 5 ]] || { echo "Hosted authority command is invalid." >&2; exit 1; }
+        assert_import_allowed "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}"
+        ;;
+    assert-rehearsal-import-allowed)
+        [[ $# -eq 4 ]] || { echo "Hosted authority command is invalid." >&2; exit 1; }
+        assert_rehearsal_import_allowed "$1" "$2" "$3" "$4"
+        ;;
+    assert-reconciliation-allowed)
         [[ $# -eq 0 ]] || { echo "Hosted authority command is invalid." >&2; exit 1; }
-        assert_pre_cutover "Hosted authority prevents SQLite import."
+        assert_pre_cutover "Hosted authority prevents SQLite reconciliation."
         ;;
     assert-release-startable)
         [[ $# -eq 1 ]] || { echo "Hosted authority command is invalid." >&2; exit 1; }
@@ -308,7 +565,7 @@ case "${command_name}" in
         check_runtime worker
         ;;
     *)
-        echo "Usage: $0 {initialize|status|mark-postgres-r2-authoritative RELEASE CONFIRMATION|assert-code-rollback-allowed|assert-import-allowed|assert-release-startable RELEASE|check-web-runtime|check-worker-runtime}" >&2
+        echo "Usage: $0 {initialize|status|mark-postgres-r2-authoritative RELEASE ATTEMPT_ID CONFIRMATION|assert-code-rollback-allowed|assert-import-allowed ATTEMPT_ID RELEASE MIGRATION_SHA256 OBJECT_SHA256 PROVIDER_SHA256|assert-rehearsal-import-allowed RELEASE MIGRATION_SHA256 OBJECT_SHA256 COORDINATOR_PID|assert-reconciliation-allowed|assert-release-startable RELEASE|check-web-runtime|check-worker-runtime}" >&2
         exit 1
         ;;
 esac

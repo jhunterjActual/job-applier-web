@@ -37,7 +37,7 @@ See [docs/STAGE_3_POSTGRES_CUTOVER_ROUTE_QUALIFICATION.md](docs/STAGE_3_POSTGRES
 See [docs/STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md](docs/STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md) for the durable one-way hosted-authority marker, release-independent restart/rollback guards, and continuing no-activation boundary.
 See [docs/STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md](docs/STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md) for the root-only, read-only source/PostgreSQL/private-object reconciliation gate that follows every reviewed import without changing data authority.
 See [docs/STAGE_3_POSTGRES_R2_CUTOVER_REHEARSAL.md](docs/STAGE_3_POSTGRES_R2_CUTOVER_REHEARSAL.md) for the exact-release disposable no-omission rehearsal wrapper, sanitized receipt, target-separation checks, and continuing no-activation boundary.
-See [docs/STAGE_3_POSTGRES_R2_FINAL_CUTOVER_COORDINATOR.md](docs/STAGE_3_POSTGRES_R2_FINAL_CUTOVER_COORDINATOR.md) for the dormant root-only final-cutover ordering, inherited maintenance-lock, manual-receipt, and forward-fix failure contract under the continuing no-activation boundary.
+See [docs/STAGE_3_POSTGRES_R2_FINAL_CUTOVER_COORDINATOR.md](docs/STAGE_3_POSTGRES_R2_FINAL_CUTOVER_COORDINATOR.md) for the dormant two-phase import/pause/activation contract, durable pending-attempt guard, post-import recovery gate, and forward-fix failure boundary.
 
 A self-contained, privacy-first workspace designed to streamline job discovery, resume tailoring, guided-manual applications, progress tracking, and interview preparation.
 
