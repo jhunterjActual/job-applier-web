@@ -128,7 +128,7 @@ that enforces target separation and emits the bounded disposable receipt.
 This PR does not authorize either run. It does not apply a migration, change a
 database or bucket, edit an environment file, restart a service, move a release
 symlink, mark PostgreSQL/R2 authoritative, expose staging, or invite another
-user. Build strings agree at `20260813.29`; local SQLite behavior is unchanged.
+user. Build strings agree at `20260813.30`; local SQLite behavior is unchanged.
 
 ## Acceptance checklist
 

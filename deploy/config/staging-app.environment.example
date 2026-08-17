@@ -10,13 +10,10 @@ PLAYWRIGHT_BROWSERS_PATH=/var/lib/careertrellis/shared/ms-playwright
 # mode-0600 file; never commit real WorkOS values.
 CAREERTRELLIS_AUTH_MODE=workos
 CAREERTRELLIS_IDENTITY_STORE=postgres
-# Required only by the completed PostgreSQL repository-cutover release. This
-# foundation remains an explicit no-activation stage; do not add this setting to
-# the live environment until every repository and rollback gate is reviewed.
-# The host authority marker does not enable this setting; the final release must
-# separately carry the exact reviewed compatibility declaration described in
-# docs/STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md.
-# CAREERTRELLIS_DATA_STORE=postgres
+# Required by the final PostgreSQL/R2 cutover candidate. Install this exact
+# selection only as part of the reviewed coordinator workflow; the pre-cutover
+# authority guard prevents ordinary activation of this final-capable release.
+CAREERTRELLIS_DATA_STORE=postgres
 # These web-side producer gates must exactly match their dedicated worker files.
 # Keep a feature unavailable when its durable consumer is disabled.
 CAREERTRELLIS_SEARCH_WORKER_ENABLED=false

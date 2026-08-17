@@ -1260,6 +1260,7 @@ class AccountErasureDeploymentBoundaryTests(unittest.TestCase):
             {
                 "CAREERTRELLIS_ENVIRONMENT",
                 "CAREERTRELLIS_DATA_DIR",
+                "CAREERTRELLIS_DATA_STORE",
                 "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED",
                 "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_POLL_SECONDS",
                 "CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_BATCH_SIZE",

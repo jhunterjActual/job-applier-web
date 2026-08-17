@@ -2032,8 +2032,13 @@ class DependencyLockTests(unittest.TestCase):
             initialize_guard.index("fixed_state_error"),
             initialize_guard.index('write_authority_state "${pre_cutover_state}"'),
         )
-        self.assertFalse((project_dir / "deploy" / "hosted-authority.compatibility").exists())
-        self.assertFalse(data_store_module.HOSTED_REPOSITORY_CUTOVER_COMPLETE)
+        self.assertEqual(
+            "postgres-r2-authoritative-v1\n",
+            (
+                project_dir / "deploy" / "hosted-authority.compatibility"
+            ).read_text(encoding="utf-8"),
+        )
+        self.assertTrue(data_store_module.HOSTED_REPOSITORY_CUTOVER_COMPLETE)
 
         for service_name, check_name in (
             ("careertrellis-web", "check-web-runtime"),
@@ -3231,7 +3236,7 @@ class DataStoreConfigurationTests(unittest.TestCase):
                             fail_on_incomplete=False
                         )
 
-    def test_shared_data_store_fails_closed_until_repository_cutover(self) -> None:
+    def test_shared_data_store_is_enabled_by_repository_cutover(self) -> None:
         with patch.dict(
             os.environ,
             {
@@ -3247,11 +3252,10 @@ class DataStoreConfigurationTests(unittest.TestCase):
                     fail_on_incomplete=False
                 ),
             )
-            with self.assertRaisesRegex(
-                config_module.RuntimeConfigurationError,
-                "not fully converted",
-            ):
-                data_store_module.validate_data_store_configuration()
+            self.assertEqual(
+                data_store_module.SHARED_DATA_STORE,
+                data_store_module.validate_data_store_configuration(),
+            )
 
     def test_data_store_readiness_closes_local_sqlite_connection(self) -> None:
         connection = Mock()

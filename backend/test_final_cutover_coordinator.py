@@ -415,14 +415,29 @@ class FinalCutoverStaticContractTests(unittest.TestCase):
         self.assertLess(importing, importer)
         self.assertIn("source_snapshot_sha256=pending", branch[:preparing])
 
-    def test_slice_remains_dormant(self) -> None:
+    def test_final_candidate_pairs_cutover_flag_and_capability(self) -> None:
         data_store = (PROJECT_ROOT / "backend" / "data_store.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("HOSTED_REPOSITORY_CUTOVER_COMPLETE = False", data_store)
-        self.assertFalse(
-            (PROJECT_ROOT / "deploy" / "hosted-authority.compatibility").exists()
+        self.assertIn("HOSTED_REPOSITORY_CUTOVER_COMPLETE = True", data_store)
+        self.assertEqual(
+            "postgres-r2-authoritative-v1\n",
+            (
+                PROJECT_ROOT / "deploy" / "hosted-authority.compatibility"
+            ).read_text(encoding="utf-8"),
         )
+        for environment_name in (
+            "staging-app.environment.example",
+            "search-worker.environment.example",
+            "account-erasure-worker.environment.example",
+        ):
+            environment = (
+                PROJECT_ROOT / "deploy" / "config" / environment_name
+            ).read_text(encoding="utf-8")
+            self.assertEqual(
+                1,
+                environment.splitlines().count("CAREERTRELLIS_DATA_STORE=postgres"),
+            )
 
 
 class RuntimeGrantApplicationTests(unittest.TestCase):
