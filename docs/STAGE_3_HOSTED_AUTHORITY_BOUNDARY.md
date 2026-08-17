@@ -1,12 +1,12 @@
 # Stage 3 hosted data-authority boundary
 
-This slice adds the release-independent operational latch required before the
-eventual PostgreSQL/private-R2 cutover. It does **not** perform that cutover.
-`HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains false, the live service and
-environment files are unchanged, and this release intentionally has no hosted-
-authority compatibility declaration. Do not import the permanent workspace,
-mark hosted storage authoritative, activate this release, restart staging, or
-change PostgreSQL, R2, DNS, Caddy, credentials, or users for this PR.
+The release-independent operational latch protects the PostgreSQL/private-R2
+cutover. Build `20260813.30` is the first final-capable release: it pairs the
+true repository-cutover flag with the exact hosted-authority compatibility
+declaration. It does **not** perform the cutover merely by being merged,
+installed, or prepared. Do not import the permanent workspace, mark hosted
+storage authoritative, or activate it outside the reviewed two-phase
+coordinator.
 
 ## Durable one-way state
 
@@ -85,9 +85,10 @@ identities prevents a recycled PID from reviving a stale lease. A crash,
 reboot, stale lease, mismatched attempt/release, or any other pending phase
 therefore denies startup.
 
-This PR does not add that capability file because the repository cutover flag
-is still false. A later final cutover review must add it only to a release whose
-complete shared-host paths and owner-isolation gates are ready.
+Build `20260813.30` adds that capability file only alongside the true repository
+cutover flag and the completed shared-host, owner-isolation, recovery, and
+two-phase coordinator gates. Pre-cutover ordinary deploy and runtime checks
+continue to reject the final-capable release until the marker transition.
 
 Manual rollback and a post-readiness-failure automatic rollback are allowed
 only in `sqlite-pre-cutover`. After hosted authority is marked, the rollback
@@ -169,7 +170,7 @@ service. Its boundary is documented in
 
 Acceptance for the combined tree requires shell syntax, marker transition/fixed-
 error and import-reconciliation tests, the P0 suite, compile checks, dependency-
-lock checks, a single `20260814_0009` Alembic head, build `20260813.29`, no
-protected-file changes, and confirmation that the cutover flag and live/external
-state remain untouched. The reconciliation boundary is documented in
+lock checks, a single `20260814_0009` Alembic head, build `20260813.30`, no
+protected-file changes, and confirmation that live/external state remains
+untouched by the code PR. The reconciliation boundary is documented in
 `STAGE_3_SQLITE_POSTGRES_IMPORT_RECONCILIATION.md`.

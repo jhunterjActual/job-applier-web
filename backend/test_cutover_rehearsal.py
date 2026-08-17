@@ -132,15 +132,18 @@ class CutoverRehearsalSourceContractTests(unittest.TestCase):
                 self.assertEqual("", completed.stdout)
                 self.assertEqual("", completed.stderr)
 
-    def test_hosted_cutover_controls_remain_absent(self):
+    def test_final_candidate_pairs_cutover_flag_and_capability(self):
         project_dir = self.project_dir()
         data_store = (project_dir / "backend" / "data_store.py").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("HOSTED_REPOSITORY_CUTOVER_COMPLETE = False", data_store)
-        self.assertFalse(
-            (project_dir / "deploy" / "hosted-authority.compatibility").exists()
+        self.assertIn("HOSTED_REPOSITORY_CUTOVER_COMPLETE = True", data_store)
+        self.assertEqual(
+            "postgres-r2-authoritative-v1\n",
+            (project_dir / "deploy" / "hosted-authority.compatibility").read_text(
+                encoding="utf-8"
+            ),
         )
 
 

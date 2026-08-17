@@ -1,11 +1,11 @@
 # Stage 3: PostgreSQL/R2 final-cutover coordinator
 
-This slice hardens the dormant root-only cutover coordinator without enabling
-hosted repositories or changing live state. Build `20260813.29` keeps
-`HOSTED_REPOSITORY_CUTOVER_COMPLETE` false, ships no
-`deploy/hosted-authority.compatibility`, and performs no migration, import,
-authority transition, release activation, credential change, or service action
-merely by being installed or prepared.
+Build `20260813.30` is the final-capable release for the root-only cutover
+coordinator. It pairs `HOSTED_REPOSITORY_CUTOVER_COMPLETE = True` with the exact
+one-line `deploy/hosted-authority.compatibility` declaration. Merely installing
+or preparing it performs no migration, import, authority transition, release
+activation, credential change, or service action. While authority remains
+`sqlite-pre-cutover`, ordinary deploy, rollback, and systemd startup reject it.
 
 The permanent object bucket is empty before import, so its recovery generation
 cannot be verified before import. The coordinator is therefore split into two
@@ -14,9 +14,9 @@ The pause makes post-import PostgreSQL and generated-object backup/restore
 evidence a prerequisite to the irreversible authority marker rather than a
 post-activation promise.
 
-Do not run either phase until a later exact release separately flips the
-repository-cutover guard, carries the exact hosted-authority capability, and
-all prerequisites for that exact release have been approved.
+Run either phase only from this exact reviewed release after all prerequisites
+for its squash-merge commit have been reverified and the phase has received
+explicit operator approval.
 
 ## Pre-authority and worker gates
 
@@ -284,7 +284,7 @@ retry, rollback, and activation actions are forbidden until an operator
 establishes the durable state. No trap restarts services or downgrades
 authority.
 
-## Acceptance for this dormant hardening slice
+## Acceptance for the final-capable release
 
 - [ ] Pre-cutover deploy/runtime rejects a final-capable release and any pending
       cutover attempt.
@@ -300,10 +300,11 @@ authority.
       authority downgrade, or backward recovery path after the marker.
 - [ ] P0, coordinator, account-erasure, import/reconciliation, PostgreSQL/RLS,
       route-qualification, dependency, compilation, and shell checks pass for
-      build `20260813.29`.
-- [ ] The cutover flag remains false, the compatibility file remains absent,
-      and no live release, service, authority, database, object, credential,
-      environment, user, DNS, Caddy, or firewall state changes in this slice.
+      build `20260813.30`.
+- [ ] The cutover flag is true only in the same exact release that contains the
+      one-line `postgres-r2-authoritative-v1` capability, while no live release,
+      service, authority, database, object, credential, environment, user, DNS,
+      Caddy, or firewall state changes merely from this code change.
 
 The authority marker remains authoritative in
 `STAGE_3_HOSTED_AUTHORITY_BOUNDARY.md`; import ambiguity remains authoritative

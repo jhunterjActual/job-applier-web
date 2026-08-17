@@ -1,9 +1,9 @@
 """Runtime data-store selection for standalone and shared-host operation.
 
 Standalone installs retain the existing SQLite repository. Shared-host
-deployments must select PostgreSQL explicitly, but remain blocked until every
-production repository has been converted to an owner-scoped PostgreSQL
-transaction.
+deployments must select PostgreSQL explicitly; the final cutover candidate is
+enabled only after every production repository has been converted to an
+owner-scoped PostgreSQL transaction.
 """
 
 from __future__ import annotations
@@ -26,9 +26,9 @@ DATA_STORE_ENVIRONMENT_VARIABLE = "CAREERTRELLIS_DATA_STORE"
 LOCAL_DATA_STORE = "sqlite"
 SHARED_DATA_STORE = "postgres"
 
-# Flip only in the final repository-cutover change after every hosted data path
-# is owner-scoped and the complete cross-tenant test suite passes.
-HOSTED_REPOSITORY_CUTOVER_COMPLETE = False
+# This final repository-cutover release is paired with the exact hosted-authority
+# capability manifest. Pre-cutover authority guards prevent ordinary activation.
+HOSTED_REPOSITORY_CUTOVER_COMPLETE = True
 
 
 def data_store_kind() -> str:
@@ -58,7 +58,7 @@ def data_store_kind() -> str:
 
 
 def validate_data_store_configuration(*, fail_on_incomplete: bool = True) -> str:
-    """Validate selection and block shared hosting before repository cutover."""
+    """Validate selection and retain the explicit repository-cutover guard."""
     selected = data_store_kind()
     if (
         fail_on_incomplete
