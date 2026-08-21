@@ -1,5 +1,10 @@
 # Stage 1 web deployment foundation
 
+> Historical bootstrap context: staging now uses authoritative PostgreSQL and
+> R2 with the reviewed workers active. The single-user SQLite and inactive-worker
+> descriptions below record the original Stage 1 boundary; they are not current
+> authority. The exact-commit deploy and rollback mechanics remain in use.
+
 The access-restricted staging hostname is `staging-app.jhunterj.com`. This stage makes the current application repeatably deployable on Linux without representing the existing single-user SQLite application as ready for beta users.
 
 ## Security boundary
@@ -61,13 +66,21 @@ Generate the temporary staging password hash interactively; never put the plaint
 caddy hash-password --algorithm argon2id
 ```
 
-Replace all placeholder values, then validate the proxy configuration:
+Replace the owner and origin-token placeholders. If the installed Caddyfile
+declares `pilot-01`, leave its verifier key absent and follow
+`PILOT_CADDY_ACCESS.md` after preparing the exact release; the reviewed helper
+adds that verifier and validates the candidate. Do not add it manually. Once
+all declared principals are staged, validate the proxy configuration:
 
 ```bash
 sudo caddy validate \
   --config /etc/caddy/Caddyfile.careertrellis-staging \
   --envfile /etc/caddy/careertrellis-staging.env
 ```
+
+The invitation-only pilot adds a separate opaque outer-gate principal without
+sharing the existing credential. Follow `PILOT_CADDY_ACCESS.md`; this Caddy
+principal remains independent from WorkOS and CareerTrellis authorization.
 
 ## Deploy an exact reviewed commit
 

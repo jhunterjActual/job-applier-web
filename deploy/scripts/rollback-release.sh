@@ -101,7 +101,8 @@ activate_release() {
         /etc/careertrellis/postgres-erasure-worker.env \
         /etc/careertrellis/provider-secrets.env \
         /etc/careertrellis/object-storage.env \
-        /etc/careertrellis/account-erasure-object-storage.env; do
+        /etc/careertrellis/account-erasure-object-storage.env \
+        /etc/caddy/careertrellis-staging.env; do
         if [[ ! -f ${environment_file} || -L ${environment_file} || $(stat -c '%U:%G %a' "${environment_file}") != "root:root 600" ]]; then
             echo "Every service runtime environment file must be root:root mode 0600." >&2
             return 1
@@ -174,6 +175,15 @@ activate_release() {
         fi
     done
 
+    if grep -Fxq $'\t\tpilot-01 {$STAGING_BASIC_AUTH_PILOT_01_HASH}' "${release}/deploy/caddy/Caddyfile.staging"; then
+        if [[ ! -x ${release}/deploy/scripts/manage-pilot-caddy-credential.sh || \
+              -L ${release}/deploy/scripts/manage-pilot-caddy-credential.sh ]]; then
+            echo "The reviewed pilot Caddy credential helper is unavailable." >&2
+            return 1
+        fi
+        "${release}/deploy/scripts/manage-pilot-caddy-credential.sh" check >/dev/null || return 1
+    fi
+
     caddy validate \
         --config "${release}/deploy/caddy/Caddyfile.staging" \
         --envfile /etc/caddy/careertrellis-staging.env || return 1
@@ -189,6 +199,9 @@ activate_release() {
     install -d -o root -g root -m 0755 /etc/systemd/system/caddy.service.d || return 1
     install -o root -g root -m 0644 "${release}/deploy/systemd/caddy.service.d/careertrellis-staging.conf" /etc/systemd/system/caddy.service.d/careertrellis-staging.conf || return 1
     install -o root -g root -m 0644 "${release}/deploy/caddy/Caddyfile.staging" /etc/caddy/Caddyfile.careertrellis-staging || return 1
+    if [[ -f ${release}/deploy/scripts/manage-pilot-caddy-credential.sh && ! -L ${release}/deploy/scripts/manage-pilot-caddy-credential.sh ]]; then
+        install -o root -g root -m 0755 "${release}/deploy/scripts/manage-pilot-caddy-credential.sh" /usr/local/sbin/careertrellis-caddy-pilot-credential || return 1
+    fi
     if [[ ${recovery_helpers_available} == true ]]; then
         install -o root -g root -m 0755 "${release}/deploy/scripts/mirror-generated-objects-onedrive.sh" /usr/local/sbin/careertrellis-mirror-generated-objects || return 1
         install -o root -g root -m 0755 "${release}/deploy/scripts/test-generated-object-restore.sh" /usr/local/sbin/careertrellis-test-generated-object-restore || return 1

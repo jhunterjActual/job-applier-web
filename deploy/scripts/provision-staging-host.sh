@@ -29,6 +29,13 @@ fi
 source "${maintenance_lock_helper}"
 acquire_careertrellis_maintenance_lock
 
+if [[ -e /etc/caddy/careertrellis-staging.env || -L /etc/caddy/careertrellis-staging.env ]] && \
+   [[ ! -f /etc/caddy/careertrellis-staging.env || -L /etc/caddy/careertrellis-staging.env || \
+      $(stat -c '%U:%G %a' /etc/caddy/careertrellis-staging.env) != "root:root 600" ]]; then
+    echo "The Caddy environment is invalid." >&2
+    exit 1
+fi
+
 if ! id careertrellis >/dev/null 2>&1; then
     useradd --system --user-group --home-dir /var/lib/careertrellis --shell /usr/sbin/nologin careertrellis
 fi
@@ -127,9 +134,15 @@ if [[ -e /etc/careertrellis/generated-object-recovery.env || -L /etc/careertrell
 else
     install -o root -g root -m 0600 "${repository_root}/deploy/config/generated-object-recovery.environment.example" /etc/careertrellis/generated-object-recovery.env
 fi
-if [[ ! -e /etc/caddy/careertrellis-staging.env ]]; then
+if [[ -e /etc/caddy/careertrellis-staging.env || -L /etc/caddy/careertrellis-staging.env ]]; then
+    if [[ ! -f /etc/caddy/careertrellis-staging.env || -L /etc/caddy/careertrellis-staging.env || $(stat -c '%U:%G %a' /etc/caddy/careertrellis-staging.env) != "root:root 600" ]]; then
+        echo "The Caddy environment is invalid." >&2
+        exit 1
+    fi
+else
     install -o root -g root -m 0600 "${repository_root}/deploy/config/staging-caddy.environment.example" /etc/caddy/careertrellis-staging.env
 fi
+install -o root -g root -m 0755 "${repository_root}/deploy/scripts/manage-pilot-caddy-credential.sh" /usr/local/sbin/careertrellis-caddy-pilot-credential
 
 systemctl daemon-reload
 echo "Provisioning files installed. Replace every placeholder in:"

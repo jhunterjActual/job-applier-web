@@ -2753,6 +2753,7 @@ class DependencyLockTests(unittest.TestCase):
             "apply-postgres-runtime-grants.sh",
             "finalize-postgres-r2-cutover.sh",
             "provision-staging-host.sh",
+            "manage-pilot-caddy-credential.sh",
         ):
             source = (scripts / name).read_text(encoding="utf-8")
             self.assertIn("maintenance-lock.sh", source)
@@ -2764,6 +2765,181 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn('chown caddy:caddy "${caddy_access_log}"', script)
         self.assertIn('chmod 0600 "${caddy_access_log}"', script)
         self.assertIn('install -o caddy -g caddy -m 0600 /dev/null "${caddy_access_log}"', script)
+
+    def test_pilot_caddy_gate_is_fixed_root_only_and_fail_closed(self) -> None:
+        project_dir = self.project_dir()
+        scripts = project_dir / "deploy" / "scripts"
+        caddy_source = (
+            project_dir / "deploy" / "caddy" / "Caddyfile.staging"
+        ).read_text(encoding="utf-8")
+        environment = (
+            project_dir / "deploy" / "config" / "staging-caddy.environment.example"
+        ).read_text(encoding="utf-8")
+        helper = (scripts / "manage-pilot-caddy-credential.sh").read_text(
+            encoding="utf-8"
+        )
+        deploy = (scripts / "deploy-release.sh").read_text(encoding="utf-8")
+        rollback = (scripts / "rollback-release.sh").read_text(encoding="utf-8")
+        provision = (scripts / "provision-staging-host.sh").read_text(
+            encoding="utf-8"
+        )
+        runbook = (project_dir / "docs" / "PILOT_CADDY_ACCESS.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertEqual(
+            {
+                "CAREERTRELLIS_TRUSTED_PROXY_TOKEN",
+                "STAGING_BASIC_AUTH_USER",
+                "STAGING_BASIC_AUTH_HASH",
+            },
+            {
+                line.split("=", 1)[0]
+                for line in environment.splitlines()
+                if line and not line.startswith("#") and "=" in line
+            },
+        )
+        self.assertEqual(1, caddy_source.count("basic_auth argon2id"))
+        self.assertEqual(
+            1,
+            caddy_source.count(
+                "{$STAGING_BASIC_AUTH_USER} {$STAGING_BASIC_AUTH_HASH}"
+            ),
+        )
+        self.assertEqual(
+            1,
+            caddy_source.count("pilot-01 {$STAGING_BASIC_AUTH_PILOT_01_HASH}"),
+        )
+        self.assertNotIn("STAGING_BASIC_AUTH_PILOT_USER", caddy_source + environment)
+        self.assertNotIn("STAGING_BASIC_AUTH_PILOT_01_HASH", environment)
+        self.assertNotIn("password=", environment.lower())
+
+        self.assertTrue(helper.startswith("#!/bin/bash\n"))
+        self.assertIn("set +x", helper)
+        self.assertIn(
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            helper,
+        )
+        self.assertIn("pilot_username=pilot-01", helper)
+        self.assertIn("inspect|check|install|rotate", helper)
+        self.assertNotIn("--plaintext", helper)
+        self.assertNotIn('source "${environment_file}"', helper)
+        self.assertIn("root:root 600", helper)
+        self.assertIn(
+            '$(dirname "${release_dir}") != "/opt/careertrellis/staging/releases"',
+            helper,
+        )
+        self.assertIn('! ${release_revision} =~ ^[0-9a-f]{40}$', helper)
+        self.assertIn("root:careertrellis 750", helper)
+        self.assertIn(
+            '${script_path} != "/usr/local/sbin/careertrellis-caddy-pilot-credential"',
+            helper,
+        )
+        self.assertIn("root:careertrellis 640", helper)
+        provenance_index = helper.index("Installation requires one exact prepared release.")
+        source_index = helper.index('source "${maintenance_lock_helper}"')
+        self.assertLess(provenance_index, source_index)
+        self.assertIn('maintenance_lock_metadata="root:root 755"', helper)
+        self.assertIn(
+            "grep -Fxq $'\\t\\tpilot-01 {$STAGING_BASIC_AUTH_PILOT_01_HASH}'",
+            helper,
+        )
+        self.assertIn("acquire_careertrellis_maintenance_lock", helper)
+        self.assertIn('mktemp /etc/caddy/.careertrellis-staging.candidate.', helper)
+        self.assertIn('mv -Tf -- "${candidate_file}" "${environment_file}"', helper)
+        install_exit = helper.index("print_receipt staged")
+        reload_index = helper.index("systemctl reload caddy")
+        self.assertLess(install_exit, reload_index)
+        self.assertIn("Caddy reload result is ambiguous", helper)
+        self.assertIn("systemctl stop caddy", helper)
+        self.assertIn("candidate environment was retained", helper)
+        self.assertIn("owner_entry_valid=true", helper)
+        self.assertNotIn("owner_entry_preserved", helper)
+        self.assertNotIn("sha256sum", helper)
+        self.assertNotIn("STAGING_BASIC_AUTH_PILOT_01_HASH=${", runbook)
+
+        for activation in (deploy, rollback):
+            self.assertIn("/etc/caddy/careertrellis-staging.env", activation)
+            self.assertIn("root:root 600", activation)
+            check_index = activation.index(
+                'manage-pilot-caddy-credential.sh" check'
+            )
+            caddy_index = activation.index("caddy validate", check_index)
+            symlink_index = activation.index("mv -Tf", caddy_index)
+            self.assertLess(check_index, caddy_index)
+            self.assertLess(caddy_index, symlink_index)
+            pilot_gate = activation.index(
+                "if grep -Fxq $'\\t\\tpilot-01 {$STAGING_BASIC_AUTH_PILOT_01_HASH}'"
+            )
+            self.assertLess(pilot_gate, check_index)
+        bash_candidates = (
+            Path(r"C:\Program Files\Git\bin\bash.exe"),
+            Path("/bin/bash"),
+        )
+        bash = next((candidate for candidate in bash_candidates if candidate.is_file()), None)
+        if bash is not None:
+            marker = (
+                "PATH=/usr/bin:/bin; "
+                "grep -Fxq $'\\t\\tpilot-01 {$STAGING_BASIC_AUTH_PILOT_01_HASH}'"
+            )
+            legacy = subprocess.run(
+                [str(bash), "-c", marker],
+                input="staging.example {\n}\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            pilot = subprocess.run(
+                [str(bash), "-c", marker],
+                input="\t\tpilot-01 {$STAGING_BASIC_AUTH_PILOT_01_HASH}\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(1, legacy.returncode)
+            self.assertEqual(0, pilot.returncode)
+        self.assertLess(
+            deploy.index("if [[ ${prepare_only} == true ]]"),
+            deploy.index('manage-pilot-caddy-credential.sh" check'),
+        )
+        prepare_exit = deploy.index("exit 0", deploy.index("if [[ ${prepare_only}"))
+        prepare_prefix = deploy[:prepare_exit]
+        self.assertNotIn("systemctl ", prepare_prefix)
+        self.assertNotIn("caddy validate", prepare_prefix)
+        self.assertNotIn("ln -s", prepare_prefix)
+        self.assertIn(
+            'manage-pilot-caddy-credential.sh" /usr/local/sbin/careertrellis-caddy-pilot-credential',
+            deploy,
+        )
+        self.assertIn(
+            'manage-pilot-caddy-credential.sh" /usr/local/sbin/careertrellis-caddy-pilot-credential',
+            provision,
+        )
+        self.assertLess(
+            provision.index("The Caddy environment is invalid."),
+            provision.index(
+                'manage-pilot-caddy-credential.sh" /usr/local/sbin/careertrellis-caddy-pilot-credential'
+            ),
+        )
+        self.assertIn("! -f /etc/caddy/careertrellis-staging.env", provision)
+        self.assertIn("-L /etc/caddy/careertrellis-staging.env", provision)
+
+        deploy_activation = deploy[
+            deploy.index("activate_release() {") : deploy.index(
+                'if ! activate_release "${release_dir}"'
+            )
+        ]
+        rollback_activation = rollback[
+            rollback.index("activate_release() {") : rollback.index(
+                'if activate_release "${target_release}"'
+            )
+        ]
+        for activation in (deploy_activation, rollback_activation):
+            self.assertEqual(1, activation.count("systemctl reload caddy"))
+            self.assertLess(
+                activation.index("careertrellis-caddy-pilot-credential"),
+                activation.index("systemctl reload caddy"),
+            )
 
     def test_generated_object_recovery_is_manual_append_only_and_identity_bounded(self) -> None:
         project_dir = self.project_dir()
@@ -2951,6 +3127,16 @@ class DependencyLockTests(unittest.TestCase):
             project_dir / "deploy" / "systemd" / "careertrellis-web.service"
         ).read_text(encoding="utf-8")
         self.assertIn("log_skip /auth/callback", caddy_source)
+        for field in (
+            "user_id delete",
+            "request>headers>Authorization delete",
+            "request>headers>Proxy-Authorization delete",
+            "request>headers>Cookie delete",
+            "resp_headers>Set-Cookie delete",
+        ):
+            self.assertIn(field, caddy_source)
+        self.assertNotIn("log_credentials", caddy_source)
+        self.assertNotIn("{http.auth.user.id}", caddy_source)
         self.assertIn('Referrer-Policy "same-origin"', caddy_source)
         self.assertNotIn('Referrer-Policy "no-referrer"', caddy_source)
         self.assertIn('response.headers["Referrer-Policy"] = "no-referrer"', app_source)
