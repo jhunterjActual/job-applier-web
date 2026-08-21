@@ -287,7 +287,7 @@ activate_release() {
     fi
     install -d -o root -g root -m 0755 /etc/systemd/system/caddy.service.d || return 1
     install -o root -g root -m 0644 "${target_release}/deploy/systemd/caddy.service.d/careertrellis-staging.conf" /etc/systemd/system/caddy.service.d/careertrellis-staging.conf || return 1
-    install -o root -g root -m 0644 "${target_release}/deploy/caddy/Caddyfile.staging" /etc/caddy/Caddyfile.careertrellis-staging || return 1
+    install -o root -g root -m 0644 "${target_release}/deploy/caddy/Caddyfile.staging" /etc/caddy/Caddyfile || return 1
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/deploy-release.sh" /usr/local/sbin/careertrellis-deploy || return 1
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/rollback-release.sh" /usr/local/sbin/careertrellis-rollback || return 1
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/install-erasure-worker-credential.sh" /usr/local/sbin/careertrellis-install-erasure-worker-credential || return 1

@@ -102,7 +102,7 @@ install -o root -g root -m 0644 "${repository_root}/deploy/systemd/careertrellis
 install -o root -g root -m 0644 "${repository_root}/deploy/systemd/careertrellis-erasure-worker.service.d/hosted-authority.conf" /etc/systemd/system/careertrellis-erasure-worker.service.d/hosted-authority.conf
 install -d -o root -g root -m 0755 /etc/systemd/system/caddy.service.d
 install -o root -g root -m 0644 "${repository_root}/deploy/systemd/caddy.service.d/careertrellis-staging.conf" /etc/systemd/system/caddy.service.d/careertrellis-staging.conf
-install -o root -g root -m 0644 "${repository_root}/deploy/caddy/Caddyfile.staging" /etc/caddy/Caddyfile.careertrellis-staging
+install -o root -g root -m 0644 "${repository_root}/deploy/caddy/Caddyfile.staging" /etc/caddy/Caddyfile
 install -d -o root -g root -m 0755 /usr/local/libexec/careertrellis
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/maintenance-lock.sh" /usr/local/libexec/careertrellis/maintenance-lock.sh
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/deploy-release.sh" /usr/local/sbin/careertrellis-deploy

@@ -116,7 +116,7 @@ if [[ ${operation} == install ]]; then
     maintenance_lock_helper=${script_dir}/maintenance-lock.sh
     maintenance_lock_metadata="root:careertrellis 750"
 else
-    caddy_config=/etc/caddy/Caddyfile.careertrellis-staging
+    caddy_config=/etc/caddy/Caddyfile
     if [[ ${script_path} != "/usr/local/sbin/careertrellis-caddy-pilot-credential" || \
           -L ${script_path} || \
           $(stat -c '%U:%G %a' "${script_path}") != "root:root 755" || \

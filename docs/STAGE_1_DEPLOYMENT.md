@@ -74,7 +74,7 @@ all declared principals are staged, validate the proxy configuration:
 
 ```bash
 sudo caddy validate \
-  --config /etc/caddy/Caddyfile.careertrellis-staging \
+  --config /etc/caddy/Caddyfile \
   --envfile /etc/caddy/careertrellis-staging.env
 ```
 

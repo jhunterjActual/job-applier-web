@@ -198,7 +198,7 @@ activate_release() {
     fi
     install -d -o root -g root -m 0755 /etc/systemd/system/caddy.service.d || return 1
     install -o root -g root -m 0644 "${release}/deploy/systemd/caddy.service.d/careertrellis-staging.conf" /etc/systemd/system/caddy.service.d/careertrellis-staging.conf || return 1
-    install -o root -g root -m 0644 "${release}/deploy/caddy/Caddyfile.staging" /etc/caddy/Caddyfile.careertrellis-staging || return 1
+    install -o root -g root -m 0644 "${release}/deploy/caddy/Caddyfile.staging" /etc/caddy/Caddyfile || return 1
     if [[ -f ${release}/deploy/scripts/manage-pilot-caddy-credential.sh && ! -L ${release}/deploy/scripts/manage-pilot-caddy-credential.sh ]]; then
         install -o root -g root -m 0755 "${release}/deploy/scripts/manage-pilot-caddy-credential.sh" /usr/local/sbin/careertrellis-caddy-pilot-credential || return 1
     fi
