@@ -35,6 +35,25 @@ Run these commands from the repository root:
 - Subagents should gather and assess evidence but must not approve or merge PRs, deploy releases, change external state, handle or reveal secrets, or make the final gate decision unless the user explicitly delegates that authority. The primary agent owns synthesis, unresolved conflicts, final verification, and all consequential external actions.
 - A subagent result is evidence, not proof by itself. The primary agent must inspect the returned receipt against the gate, reconcile contradictions or missing coverage, and report any check that remains incomplete.
 
+## Long-running operation observation
+
+Treat these as staging observations and polling defaults, not deadlines or SLAs. Record UTC start and stop times, elapsed seconds, sanitized object or byte counts, exact release or backup label, result, and receipt SHA-256. Revise estimates only after several comparable successful runs.
+
+A progress poll may inspect only the already-running PID or unit, a privacy-safe phase field, append-only root-owned aggregate statistics, or the final receipt. It must not acquire the operation lock, start another helper, signal or restart the owner, traverse the same remote repository, query mutable application state, or write, delete, rename, retry, or clean either side. An SSH disconnect is not a failure signal: reconnect, identify the original PID, marker, lock, phase, and receipt, and never rerun until terminal state is proven.
+
+| Operation | Current staging evidence | Default polling frequency | Escalation rule |
+|---|---:|---:|---|
+| OneDrive whole-repository hydration copy | about 2 hours 37 minutes for 26,856 objects / 108,445,872 bytes | owning PID and wrapper phase every 10 minutes; use the wrapper's root-only aggregate stats | after 30 minutes without counter movement, take one read-only PID/I/O liveness sample; do not run `rclone size`, `lsf`, `copy`, or `check` as a poll |
+| Whole-repository `rclone check --download` | about 3 hours 13 minutes for the same repository | owning PID and wrapper phase every 10–15 minutes | after 30 minutes without visible progress, take one read-only PID/I/O liveness sample; do not launch a concurrent rclone traversal |
+| pgBackRest full backup | measured baseline not yet retained in policy | PID, unit, and privacy-safe log every 2–5 minutes | use `pgbackrest info` before and after, not in a tight loop; never overlap backup, check, expire, restore, or mirror |
+| pgBackRest OneDrive mirror | measured baseline not yet retained in policy | PID, unit, and root-only aggregate stats every 5–10 minutes | do not start a duplicate mirror or perform a full destination listing as a poll |
+| Isolated PostgreSQL restore and checksum | retained-hydration redress expected in 4–10 minutes; investigate after 20 minutes | every 30 seconds during restore/start/stop and every 60 seconds during quiet checksum work | inspect only PID, phase, port, and receipt; never start the restored cluster manually or touch the live cluster |
+| Generated-object mirror or disposable restore | measured baseline not yet retained in policy | owning PID, phase, and receipt every 1–2 minutes | never start a second helper, list the target repeatedly, retry, or clean up as a poll |
+| Migration, import, and reconciliation | measured baseline not yet retained in policy | coordinator PID, durable pending phase, and root-only log every 30–60 seconds | never rerun the importer or issue mutation or live row-count queries as progress checks |
+| Worker activation | wrapper includes bounded heartbeat/readiness loops and a required 20-second stability window | normally wait for the wrapper; after 60 seconds inspect only PID, phase, heartbeat age, and receipt | never duplicate start/enable/restart, shorten the stability window, or invoke provider/queue work |
+
+Prefer reviewed wrapper-native output such as `--stats 5m --stats-one-line-date` in a root-only log over external polling. Never expose remote paths, object names, identifiers, URLs, or credentials in sanitized progress receipts.
+
 ## Completion criteria
 
 Before declaring work complete, inspect `git diff` and `git status`, run the P0 tests and syntax check above, and confirm no protected files are staged. For runtime or UI changes, start the app, verify `/api/version` and `/`, exercise the changed flow, then stop it cleanly. Report any check that could not be run and why.
