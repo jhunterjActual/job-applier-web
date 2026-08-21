@@ -104,6 +104,10 @@ if [[ ! -d ${release_dir} ]]; then
         "${temporary_release}/deploy/scripts/rehearse-postgres-r2-cutover.sh" \
         "${temporary_release}/deploy/scripts/reconcile-sqlite-postgres-import.sh" \
         "${temporary_release}/deploy/scripts/test-generated-object-restore.sh"
+    if [[ -f ${temporary_release}/deploy/scripts/manage-pilot-caddy-credential.sh && \
+          ! -L ${temporary_release}/deploy/scripts/manage-pilot-caddy-credential.sh ]]; then
+        chmod 0755 "${temporary_release}/deploy/scripts/manage-pilot-caddy-credential.sh"
+    fi
     chown -R root:careertrellis "${temporary_release}"
     chmod -R u=rwX,g=rX,o= "${temporary_release}"
     mv "${temporary_release}" "${release_dir}"
@@ -148,7 +152,8 @@ validate_release() {
         /etc/careertrellis/postgres-erasure-worker.env \
         /etc/careertrellis/provider-secrets.env \
         /etc/careertrellis/object-storage.env \
-        /etc/careertrellis/account-erasure-object-storage.env; do
+        /etc/careertrellis/account-erasure-object-storage.env \
+        /etc/caddy/careertrellis-staging.env; do
         if [[ ! -f ${environment_file} || -L ${environment_file} || $(stat -c '%U:%G %a' "${environment_file}") != "root:root 600" ]]; then
             echo "Every service runtime environment file must be root:root mode 0600." >&2
             return 1
@@ -219,6 +224,14 @@ validate_release() {
             return 1
         fi
     done
+    if grep -Fxq $'\t\tpilot-01 {$STAGING_BASIC_AUTH_PILOT_01_HASH}' "${target_release}/deploy/caddy/Caddyfile.staging"; then
+        if [[ ! -x ${target_release}/deploy/scripts/manage-pilot-caddy-credential.sh || \
+              -L ${target_release}/deploy/scripts/manage-pilot-caddy-credential.sh ]]; then
+            echo "The reviewed pilot Caddy credential helper is unavailable." >&2
+            return 1
+        fi
+        "${target_release}/deploy/scripts/manage-pilot-caddy-credential.sh" check >/dev/null || return 1
+    fi
     caddy validate \
         --config "${target_release}/deploy/caddy/Caddyfile.staging" \
         --envfile /etc/caddy/careertrellis-staging.env
@@ -278,6 +291,9 @@ activate_release() {
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/deploy-release.sh" /usr/local/sbin/careertrellis-deploy || return 1
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/rollback-release.sh" /usr/local/sbin/careertrellis-rollback || return 1
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/install-erasure-worker-credential.sh" /usr/local/sbin/careertrellis-install-erasure-worker-credential || return 1
+    if grep -Fxq $'\t\tpilot-01 {$STAGING_BASIC_AUTH_PILOT_01_HASH}' "${target_release}/deploy/caddy/Caddyfile.staging"; then
+        install -o root -g root -m 0755 "${target_release}/deploy/scripts/manage-pilot-caddy-credential.sh" /usr/local/sbin/careertrellis-caddy-pilot-credential || return 1
+    fi
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/finalize-postgres-r2-cutover.sh" /usr/local/sbin/careertrellis-finalize-cutover || return 1
     if [[ ${recovery_helpers_available} == true ]]; then
         install -o root -g root -m 0755 "${target_release}/deploy/scripts/mirror-generated-objects-onedrive.sh" /usr/local/sbin/careertrellis-mirror-generated-objects || return 1

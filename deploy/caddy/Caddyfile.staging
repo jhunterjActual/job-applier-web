@@ -5,6 +5,7 @@ staging-app.jhunterj.com {
 	# Remove it only in a separate reviewed release after the acceptance checks pass.
 	basic_auth argon2id {
 		{$STAGING_BASIC_AUTH_USER} {$STAGING_BASIC_AUTH_HASH}
+		pilot-01 {$STAGING_BASIC_AUTH_PILOT_01_HASH}
 	}
 
 	header {
@@ -36,7 +37,14 @@ staging-app.jhunterj.com {
 			roll_keep 5
 			roll_keep_for 168h
 		}
-		format json
+		format filter {
+			user_id delete
+			request>headers>Authorization delete
+			request>headers>Proxy-Authorization delete
+			request>headers>Cookie delete
+			resp_headers>Set-Cookie delete
+			wrap json
+		}
 	}
 
 	# Authorization codes and state arrive in the callback query string.
