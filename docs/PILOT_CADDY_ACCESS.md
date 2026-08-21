@@ -47,6 +47,10 @@ Then activate only that exact commit through the normal deployment helper. That
 activation performs the single enabling Caddy reload. The deploy path rechecks
 the root-owned mode-`0600` Caddy environment, the unique active pilot entry,
 and the target release's Caddyfile before changing the release symlink. A
+normal activation installs that reviewed file at the durable
+`/etc/caddy/Caddyfile` path; the installed credential helper validates that same
+effective path for later inspection or rotation. Historical suffixed Caddyfile
+paths are inert and must not be restored by assumption. A
 pre-cutover rollback applies the same checks only when its target declares the
 pilot principal; hosted authority rejects rollback and requires a reviewed
 forward correction.

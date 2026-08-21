@@ -2783,6 +2783,16 @@ class DependencyLockTests(unittest.TestCase):
         provision = (scripts / "provision-staging-host.sh").read_text(
             encoding="utf-8"
         )
+        caddy_dropin = (
+            project_dir
+            / "deploy"
+            / "systemd"
+            / "caddy.service.d"
+            / "careertrellis-staging.conf"
+        ).read_text(encoding="utf-8")
+        stage_one_runbook = (
+            project_dir / "docs" / "STAGE_1_DEPLOYMENT.md"
+        ).read_text(encoding="utf-8")
         runbook = (project_dir / "docs" / "PILOT_CADDY_ACCESS.md").read_text(
             encoding="utf-8"
         )
@@ -2857,6 +2867,27 @@ class DependencyLockTests(unittest.TestCase):
         self.assertNotIn("owner_entry_preserved", helper)
         self.assertNotIn("sha256sum", helper)
         self.assertNotIn("STAGING_BASIC_AUTH_PILOT_01_HASH=${", runbook)
+
+        durable_caddyfile = "/etc/caddy/Caddyfile"
+        legacy_caddyfile = durable_caddyfile + ".careertrellis-staging"
+        for installed_surface in (
+            helper,
+            deploy,
+            rollback,
+            provision,
+            caddy_dropin,
+            stage_one_runbook,
+        ):
+            self.assertIn(durable_caddyfile, installed_surface)
+            self.assertNotIn(legacy_caddyfile, installed_surface)
+        self.assertIn(
+            "ExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile",
+            caddy_dropin,
+        )
+        self.assertIn(
+            "ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force",
+            caddy_dropin,
+        )
 
         for activation in (deploy, rollback):
             self.assertIn("/etc/caddy/careertrellis-staging.env", activation)
