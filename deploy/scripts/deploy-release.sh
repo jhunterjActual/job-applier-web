@@ -124,25 +124,37 @@ if [[ ! -x /usr/local/sbin/careertrellis-authority ]]; then
     exit 1
 fi
 
-assert_erasure_worker_activation_ready() {
+assert_consumer_activation_ready() {
     local configured_enabled=$1
+    local unit=$2
 
     if [[ ${configured_enabled} != true ]]; then
         return 0
     fi
-    if ! systemctl is-active --quiet careertrellis-erasure-worker.service || \
-       ! systemctl is-enabled --quiet careertrellis-erasure-worker.service; then
-        echo "The account-erasure worker must already be active and enabled before its producer switch is set to true." >&2
+    if ! systemctl is-enabled --quiet "${unit}"; then
+        echo "Every enabled application consumer must remain enabled before its producer is started." >&2
         return 1
     fi
 }
 
 validate_release() {
     local target_release=$1
-    local environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds recovery_helper
+    local environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds recovery_helper target_authority_helper
     local erasure_worker_enabled search_worker_enabled web_erasure_worker_enabled web_search_worker_enabled
 
     /usr/local/sbin/careertrellis-authority assert-release-startable "${target_release}" || return 1
+    target_authority_helper=${target_release}/deploy/scripts/hosted-authority.sh
+    if [[ ! -f ${target_authority_helper} || -L ${target_authority_helper} || ! -x ${target_authority_helper} || \
+          $(stat -c '%U:%G %a' "${target_authority_helper}") != "root:careertrellis 750" ]]; then
+        echo "The target release hosted-authority helper is unavailable." >&2
+        return 1
+    fi
+    "${target_authority_helper}" assert-release-startable "${target_release}" || return 1
+    if [[ $(/usr/local/sbin/careertrellis-authority status) == postgres-r2-authoritative ]]; then
+        CAREERTRELLIS_DATA_STORE=postgres CAREERTRELLIS_OBJECT_STORE=r2_encrypted \
+            "${target_authority_helper}" check-web-runtime || return 1
+        "${target_authority_helper}" check-worker-runtime || return 1
+    fi
     for environment_file in \
         /etc/careertrellis/staging.env \
         /etc/careertrellis/search-worker.env \
@@ -215,7 +227,8 @@ validate_release() {
         echo "The account-erasure worker must retain its reviewed exact enablement flag, dedicated database, and object-store selections." >&2
         return 1
     fi
-    assert_erasure_worker_activation_ready "${erasure_worker_enabled}" || return 1
+    assert_consumer_activation_ready "${search_worker_enabled}" careertrellis-worker.service || return 1
+    assert_consumer_activation_ready "${erasure_worker_enabled}" careertrellis-erasure-worker.service || return 1
     for environment_file in \
         /etc/careertrellis/staging.env \
         /etc/careertrellis/search-worker.env; do
@@ -317,13 +330,15 @@ activate_release() {
     else
         systemctl enable --now caddy || return 1
     fi
-    systemctl restart careertrellis-web.service || return 1
     if [[ ${search_worker_enabled} == true ]]; then
         systemctl restart careertrellis-worker.service || return 1
+        systemctl is-active --quiet careertrellis-worker.service || return 1
     fi
     if [[ ${erasure_worker_enabled} == true ]]; then
         systemctl restart careertrellis-erasure-worker.service || return 1
+        systemctl is-active --quiet careertrellis-erasure-worker.service || return 1
     fi
+    systemctl restart careertrellis-web.service || return 1
 
     for _attempt in $(seq 1 30); do
         if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:8001/health/ready >/dev/null; then

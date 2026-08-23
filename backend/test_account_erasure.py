@@ -866,10 +866,6 @@ class AccountErasureDeploymentBoundaryTests(unittest.TestCase):
                     source,
                 )
                 self.assertIn(
-                    "systemctl is-enabled --quiet careertrellis-erasure-worker.service",
-                    source,
-                )
-                self.assertIn(
                     "systemctl restart careertrellis-erasure-worker.service",
                     source,
                 )
@@ -893,13 +889,29 @@ class AccountErasureDeploymentBoundaryTests(unittest.TestCase):
                     "systemctl disable careertrellis-erasure-worker.service",
                     source,
                 )
-                self.assertIn(
-                    'assert_erasure_worker_activation_ready "${erasure_worker_enabled}"',
-                    source,
-                )
-                activation_preflight = source.index(
-                    'assert_erasure_worker_activation_ready "${erasure_worker_enabled}"'
-                )
+                if name == "deploy-release.sh":
+                    self.assertIn(
+                        'systemctl is-enabled --quiet "${unit}"', source
+                    )
+                    self.assertNotIn(
+                        "assert_erasure_worker_activation_ready", source
+                    )
+                    preflight_command = (
+                        'assert_consumer_activation_ready "${erasure_worker_enabled}" '
+                        "careertrellis-erasure-worker.service"
+                    )
+                else:
+                    self.assertIn(
+                        "systemctl is-enabled --quiet "
+                        "careertrellis-erasure-worker.service",
+                        source,
+                    )
+                    preflight_command = (
+                        'assert_erasure_worker_activation_ready '
+                        '"${erasure_worker_enabled}"'
+                    )
+                self.assertIn(preflight_command, source)
+                activation_preflight = source.index(preflight_command)
                 activation_link = source.index("    activation_link=", activation_preflight)
                 self.assertLess(activation_preflight, activation_link)
                 if name == "deploy-release.sh":
@@ -947,17 +959,34 @@ class AccountErasureDeploymentBoundaryTests(unittest.TestCase):
             )
 
     @unittest.skipIf(os.name == "nt", "POSIX release service-state regression")
-    def test_true_erasure_switch_requires_active_and_enabled_worker(self):
+    def test_true_erasure_switch_requires_reviewed_service_state(self):
         scripts = self.project_dir() / "deploy" / "scripts"
-        states = (
-            ("false", 1, 1, 0),
-            ("true", 0, 0, 0),
-            ("true", 1, 0, 1),
-            ("true", 0, 1, 1),
-        )
         for name in ("deploy-release.sh", "rollback-release.sh"):
             source = (scripts / name).read_text(encoding="utf-8")
-            start = source.index("assert_erasure_worker_activation_ready() {")
+            if name == "deploy-release.sh":
+                function_name = "assert_consumer_activation_ready"
+                states = (
+                    ("false", 1, 1, 0),
+                    ("true", 0, 0, 0),
+                    ("true", 1, 0, 0),
+                    ("true", 0, 1, 1),
+                )
+                invocation = (
+                    "assert_consumer_activation_ready "
+                    "{configured} careertrellis-erasure-worker.service\n"
+                )
+            else:
+                function_name = "assert_erasure_worker_activation_ready"
+                states = (
+                    ("false", 1, 1, 0),
+                    ("true", 0, 0, 0),
+                    ("true", 1, 0, 1),
+                    ("true", 0, 1, 1),
+                )
+                invocation = (
+                    "assert_erasure_worker_activation_ready {configured}\n"
+                )
+            start = source.index(f"{function_name}() {{")
             end = source.index("\n}\n", start) + len("\n}")
             preflight = source[start:end]
             for configured, active_status, enabled_status, expected in states:
@@ -979,7 +1008,7 @@ class AccountErasureDeploymentBoundaryTests(unittest.TestCase):
                         "esac\n"
                         "}\n"
                         f"{preflight}\n"
-                        f"assert_erasure_worker_activation_ready {configured}\n"
+                        f"{invocation.format(configured=configured)}"
                     )
                     result = subprocess.run(
                         ["bash", "-c", script],

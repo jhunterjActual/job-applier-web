@@ -55,6 +55,13 @@ pre-cutover rollback applies the same checks only when its target declares the
 pilot principal; hosted authority rejects rollback and requires a reviewed
 forward correction.
 
+If a hosted activation fails, do not rerun that release, invoke rollback,
+rotate or reinstall the pilot credential, rewrite cutover/recovery evidence, or
+manually start an application service. Leave the existing staged verifier in
+place, prepare and review a forward release, and use that exact target's deploy
+helper once. The forward deploy performs a privacy-safe credential `check` and
+starts both enabled consumers before the web producer.
+
 ```bash
 sudo CAREERTRELLIS_SOURCE_DIR=/srv/careertrellis/job-applier-web \
   /usr/local/sbin/careertrellis-deploy \
