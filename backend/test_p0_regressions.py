@@ -2543,6 +2543,131 @@ class DependencyLockTests(unittest.TestCase):
                 run_authority("check-web-runtime", **hosted_environment).returncode,
             )
             self.assertEqual(0, run_authority("check-worker-runtime").returncode)
+
+            historical_pending = pending_cutover.read_bytes()
+            historical_recovery = recovery_evidence.read_bytes()
+            forward_release = test_root / "staging" / "releases" / ("b" * 40)
+            (forward_release / "deploy").mkdir(parents=True)
+            (forward_release / "backend").mkdir()
+            (forward_release / "deploy" / "hosted-authority.compatibility").write_text(
+                "postgres-r2-authoritative-v1\n",
+                encoding="utf-8",
+            )
+            (forward_release / "backend" / "data_store.py").write_text(
+                "HOSTED_REPOSITORY_CUTOVER_COMPLETE = True\n",
+                encoding="utf-8",
+            )
+            current_link = test_root / "staging" / "current"
+            current_link.unlink()
+            current_link.symlink_to(forward_release, target_is_directory=True)
+
+            self.assertEqual(
+                0,
+                run_authority(
+                    "assert-release-startable", str(forward_release)
+                ).returncode,
+            )
+            self.assertEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
+            self.assertEqual(0, run_authority("check-worker-runtime").returncode)
+            self.assertEqual(historical_pending, pending_cutover.read_bytes())
+            self.assertEqual(historical_recovery, recovery_evidence.read_bytes())
+
+            recovery_evidence.unlink()
+            self.assertNotEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
+            self.assertNotEqual(0, run_authority("check-worker-runtime").returncode)
+            recovery_evidence.write_bytes(historical_recovery)
+
+            recovery_evidence.write_bytes(
+                historical_recovery.replace(
+                    f"attempt_id={attempt_id}".encode("ascii"),
+                    f"attempt_id={'0' * 32}".encode("ascii"),
+                    1,
+                )
+            )
+            self.assertNotEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
+            recovery_evidence.write_bytes(
+                historical_recovery.replace(
+                    f"release={'a' * 40}".encode("ascii"),
+                    f"release={'0' * 40}".encode("ascii"),
+                    1,
+                )
+            )
+            self.assertNotEqual(0, run_authority("check-worker-runtime").returncode)
+            recovery_evidence.write_bytes(historical_recovery + b"unexpected=true\n")
+            self.assertNotEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
+            recovery_evidence.write_bytes(historical_recovery)
+            self.assertEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
+            self.assertEqual(historical_pending, pending_cutover.read_bytes())
+            self.assertEqual(historical_recovery, recovery_evidence.read_bytes())
+
+            write_pending("activating")
+            self.assertNotEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
+            self.assertNotEqual(0, run_authority("check-worker-runtime").returncode)
+            write_pending("activated")
+            pending_cutover.write_bytes(pending_cutover.read_bytes() + b"unexpected=true\n")
+            self.assertNotEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
+            pending_cutover.write_bytes(historical_pending)
+            self.assertEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
+
+            forward_capability = (
+                forward_release / "deploy" / "hosted-authority.compatibility"
+            )
+            forward_capability.unlink()
+            self.assertNotEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
+            forward_capability.write_text("wrong-capability\n", encoding="utf-8")
+            self.assertNotEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
+            forward_capability.write_text(
+                "postgres-r2-authoritative-v1\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                0,
+                run_authority("check-web-runtime", **hosted_environment).returncode,
+            )
+            forward_cutover = forward_release / "backend" / "data_store.py"
+            forward_cutover.write_text(
+                "HOSTED_REPOSITORY_CUTOVER_COMPLETE = False\n",
+                encoding="utf-8",
+            )
+            self.assertNotEqual(0, run_authority("check-worker-runtime").returncode)
+            forward_cutover.write_text(
+                "HOSTED_REPOSITORY_CUTOVER_COMPLETE = True\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(0, run_authority("check-worker-runtime").returncode)
+            self.assertEqual(historical_pending, pending_cutover.read_bytes())
+            self.assertEqual(historical_recovery, recovery_evidence.read_bytes())
+
             pending_cutover.unlink()
             self.assertEqual(
                 0,
@@ -2971,6 +3096,91 @@ class DependencyLockTests(unittest.TestCase):
                 activation.index("careertrellis-caddy-pilot-credential"),
                 activation.index("systemctl reload caddy"),
             )
+
+    def test_hosted_forward_deploy_validates_target_and_starts_consumers_first(self) -> None:
+        deploy = (
+            self.project_dir() / "deploy" / "scripts" / "deploy-release.sh"
+        ).read_text(encoding="utf-8")
+
+        target_helper = deploy.index(
+            "target_authority_helper=${target_release}/deploy/scripts/hosted-authority.sh"
+        )
+        target_metadata = deploy.index(
+            '$(stat -c \'%U:%G %a\' "${target_authority_helper}") != "root:careertrellis 750"',
+            target_helper,
+        )
+        target_startable = deploy.index(
+            '"${target_authority_helper}" assert-release-startable "${target_release}"',
+            target_metadata,
+        )
+        target_web = deploy.index(
+            '"${target_authority_helper}" check-web-runtime', target_startable
+        )
+        target_worker = deploy.index(
+            '"${target_authority_helper}" check-worker-runtime', target_web
+        )
+        current_swap = deploy.index('mv -Tf "${activation_link}" "${current_link}"')
+        self.assertLess(target_helper, target_metadata)
+        self.assertLess(target_metadata, target_startable)
+        self.assertLess(target_startable, target_web)
+        self.assertLess(target_web, target_worker)
+        self.assertLess(target_worker, current_swap)
+
+        readiness = deploy[
+            deploy.index("assert_consumer_activation_ready() {") : deploy.index(
+                "validate_release() {"
+            )
+        ]
+        self.assertIn('systemctl is-enabled --quiet "${unit}"', readiness)
+        self.assertNotIn("systemctl is-active", readiness)
+        self.assertIn(
+            'assert_consumer_activation_ready "${search_worker_enabled}" careertrellis-worker.service',
+            deploy,
+        )
+        self.assertIn(
+            'assert_consumer_activation_ready "${erasure_worker_enabled}" careertrellis-erasure-worker.service',
+            deploy,
+        )
+
+        activation = deploy[
+            deploy.index("activate_release() {") : deploy.index(
+                'if ! activate_release "${release_dir}"'
+            )
+        ]
+        search_restart = activation.index(
+            "systemctl restart careertrellis-worker.service"
+        )
+        search_active = activation.index(
+            "systemctl is-active --quiet careertrellis-worker.service",
+            search_restart,
+        )
+        erasure_restart = activation.index(
+            "systemctl restart careertrellis-erasure-worker.service"
+        )
+        erasure_active = activation.index(
+            "systemctl is-active --quiet careertrellis-erasure-worker.service",
+            erasure_restart,
+        )
+        web_restart = activation.index("systemctl restart careertrellis-web.service")
+        self.assertLess(search_restart, search_active)
+        self.assertLess(search_active, web_restart)
+        self.assertLess(erasure_restart, erasure_active)
+        self.assertLess(erasure_active, web_restart)
+
+        failure = deploy[deploy.index('if ! activate_release "${release_dir}"') :]
+        self.assertIn(
+            "systemctl stop careertrellis-erasure-worker.service careertrellis-worker.service careertrellis-web.service",
+            failure,
+        )
+        self.assertIn("requires a reviewed forward correction", failure)
+        self.assertNotIn("pending-cutover", failure)
+        self.assertNotIn("post-import-recovery", failure)
+
+        prepare_exit = deploy.index("exit 0", deploy.index("if [[ ${prepare_only}"))
+        prepare_prefix = deploy[:prepare_exit]
+        self.assertNotIn("systemctl ", prepare_prefix)
+        self.assertNotIn("caddy validate", prepare_prefix)
+        self.assertNotIn("ln -s", prepare_prefix)
 
     def test_generated_object_recovery_is_manual_append_only_and_identity_bounded(self) -> None:
         project_dir = self.project_dir()

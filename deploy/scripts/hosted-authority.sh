@@ -268,7 +268,12 @@ check_runtime() {
     if [[ -e ${pending_cutover_file} || -L ${pending_cutover_file} ]]; then
         current_release=$(readlink -f "${release_root}/current")
         current_revision=$(basename "${current_release}")
-        if pending_cutover_allows activated "${current_revision}"; then
+        # An activated record is immutable evidence of the release that
+        # completed the cutover, not a permanent pin on later compatible
+        # releases. The current release remains gated by the hosted capability
+        # above. Only the transient activating phase stays revision- and
+        # live-coordinator-bound.
+        if activated_cutover_history_allows; then
             :
         elif pending_cutover_allows activating "${current_revision}"; then
             pending_attempt=$(sed -n 's/^attempt_id=//p' "${pending_cutover_file}")
@@ -420,6 +425,14 @@ recovery_evidence_allows() {
     [[ ${evidence_lines[12]} == 'object_keyring_recovery_verified=true' ]] || return 1
     [[ ${evidence_lines[13]} == 'decrypt_every_object_verified=true' ]] || return 1
     [[ ${evidence_lines[14]} == 'reconciliation_verified=true' ]]
+}
+
+activated_cutover_history_allows() {
+    local historical_release historical_attempt
+    pending_cutover_allows activated || return 1
+    historical_release=$(sed -n 's/^release=//p' "${pending_cutover_file}")
+    historical_attempt=$(sed -n 's/^attempt_id=//p' "${pending_cutover_file}")
+    recovery_evidence_allows "${historical_release}" "${historical_attempt}"
 }
 
 assert_import_allowed() {

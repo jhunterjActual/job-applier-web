@@ -86,6 +86,15 @@ identities prevents a recycled PID from reviving a stale lease. A crash,
 reboot, stale lease, mismatched attempt/release, or any other pending phase
 therefore denies startup.
 
+The exact eight-line `activated` record remains immutable historical evidence
+of the release and attempt that completed cutover. It is not rewritten and does
+not permanently pin later code releases to that historical revision. A later
+release may start only when its own immutable directory still passes the hosted
+capability check and the live runtime selections remain PostgreSQL/private R2.
+The nonterminal `activating` phase deliberately remains bound to the exact
+current revision and live coordinator lease; this distinction permits reviewed
+post-cutover forward releases without weakening ambiguous-cutover containment.
+
 Build `20260813.31` preserves that capability file only alongside the true repository
 cutover flag and the completed shared-host, owner-isolation, recovery, and
 two-phase coordinator gates. Pre-cutover ordinary deploy and runtime checks
