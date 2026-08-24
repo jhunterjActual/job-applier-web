@@ -28,8 +28,8 @@ Use a separate WorkOS staging environment; do not reuse future production creden
 1. Enable AuthKit and configure registration as invitation-only.
 2. Add the exact callback URI `https://staging-app.jhunterj.com/auth/callback`.
 3. Add the exact post-logout URI `https://staging-app.jhunterj.com/`.
-4. Require email verification and MFA in the staging authentication policy.
-5. Invite only the staging owner, complete that account's verification and MFA enrollment, and copy its immutable `user_...` ID from WorkOS.
+4. Require email verification in the staging authentication policy. Password authentication is allowed and environment-wide MFA remains disabled because access must not require TOTP enrollment. Optional passkeys may be offered separately, but factor enrollment is not an authorization prerequisite.
+5. Invite only the staging owner for this owner-only stage, complete email verification, and copy its immutable `user_...` ID from WorkOS. Do not require or record factor enrollment.
 6. Confirm that password reset/account recovery is enabled in the hosted AuthKit flow and that its email sender is acceptable for staging.
 7. Record the staging API key and client ID. Do not paste any secret into GitHub, a PR, chat, application logs, or the repository.
 

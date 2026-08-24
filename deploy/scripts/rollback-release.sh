@@ -78,7 +78,7 @@ assert_erasure_worker_activation_ready() {
 
 activate_release() {
     local release=$1
-    local revision activation_link environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds erasure_worker_active=false recovery_helper recovery_helpers_available=false
+    local revision activation_link environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds erasure_worker_active=false pilot_user_helper_available=false recovery_helper recovery_helpers_available=false
     local erasure_worker_enabled search_worker_enabled web_erasure_worker_enabled web_search_worker_enabled
     revision=$(basename "${release}")
 
@@ -121,6 +121,21 @@ activate_release() {
             fi
         done
         recovery_helpers_available=true
+    fi
+    if [[ -e ${release}/deploy/scripts/manage-pilot-user.sh || \
+          -L ${release}/deploy/scripts/manage-pilot-user.sh || \
+          -e ${release}/backend/pilot_users.py || \
+          -L ${release}/backend/pilot_users.py ]]; then
+        if [[ ! -f ${release}/deploy/scripts/manage-pilot-user.sh || \
+              -L ${release}/deploy/scripts/manage-pilot-user.sh || \
+              $(stat -c '%U:%G %a' "${release}/deploy/scripts/manage-pilot-user.sh") != "root:careertrellis 750" || \
+              ! -f ${release}/backend/pilot_users.py || \
+              -L ${release}/backend/pilot_users.py || \
+              $(stat -c '%U:%G %a' "${release}/backend/pilot_users.py") != "root:careertrellis 640" ]]; then
+            echo "The pilot user operator boundary must be a complete reviewed pair." >&2
+            return 1
+        fi
+        pilot_user_helper_available=true
     fi
     if grep -Ev '^(#|[[:space:]]*$|CAREERTRELLIS_(ENVIRONMENT|DATA_DIR|DATA_STORE|ACCOUNT_ERASURE_WORKER_(ENABLED|POLL_SECONDS|BATCH_SIZE))=)' \
         /etc/careertrellis/account-erasure-worker.env >/dev/null || \
@@ -201,6 +216,12 @@ activate_release() {
     install -o root -g root -m 0644 "${release}/deploy/caddy/Caddyfile.staging" /etc/caddy/Caddyfile || return 1
     if [[ -f ${release}/deploy/scripts/manage-pilot-caddy-credential.sh && ! -L ${release}/deploy/scripts/manage-pilot-caddy-credential.sh ]]; then
         install -o root -g root -m 0755 "${release}/deploy/scripts/manage-pilot-caddy-credential.sh" /usr/local/sbin/careertrellis-caddy-pilot-credential || return 1
+    fi
+    if [[ ${pilot_user_helper_available} == true ]]; then
+        install -o root -g root -m 0750 "${release}/deploy/scripts/manage-pilot-user.sh" /usr/local/sbin/careertrellis-pilot-user || return 1
+        install -o root -g root -m 0640 "${release}/backend/pilot_users.py" /usr/local/libexec/careertrellis/pilot_users.py || return 1
+    else
+        rm -f -- /usr/local/sbin/careertrellis-pilot-user /usr/local/libexec/careertrellis/pilot_users.py || return 1
     fi
     if [[ ${recovery_helpers_available} == true ]]; then
         install -o root -g root -m 0755 "${release}/deploy/scripts/mirror-generated-objects-onedrive.sh" /usr/local/sbin/careertrellis-mirror-generated-objects || return 1

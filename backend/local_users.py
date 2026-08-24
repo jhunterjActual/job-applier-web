@@ -1,7 +1,9 @@
 """Authenticated identity mapping for standalone and shared-host runtimes."""
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
+from typing import Literal
 
 from sqlalchemy import text
 
@@ -19,7 +21,13 @@ IDENTITY_STORE_ENVIRONMENT_VARIABLE = "CAREERTRELLIS_IDENTITY_STORE"
 
 
 class LocalUserAuthorizationError(PermissionError):
-    """The identity is not the active owner of this deployment."""
+    """The identity is not an active, operator-approved local user."""
+
+
+@dataclass(frozen=True)
+class AuthorizedLocalUser:
+    id: int
+    role: Literal["owner", "user"]
 
 
 def _utc_timestamp() -> datetime:
@@ -54,8 +62,8 @@ def validate_identity_store_configuration() -> str:
     return identity_store_kind()
 
 
-def check_identity_store_ready() -> None:
-    """Verify that the configured identity table is reachable by the runtime role."""
+def check_identity_store_ready(expected_owner_workos_user_id: str | None = None) -> None:
+    """Verify identity storage and, on shared hosts, the immutable active owner."""
     if identity_store_kind() == "sqlite":
         connection = get_db_connection()
         try:
@@ -63,41 +71,23 @@ def check_identity_store_ready() -> None:
         finally:
             connection.close()
         return
-    with runtime_postgres_engine().begin() as connection:
-        connection.execute(text("SELECT 1 FROM careertrellis.app_users LIMIT 0"))
+    if not expected_owner_workos_user_id:
+        raise LocalUserAuthorizationError("The configured staging owner is required.")
+    owner = _postgres_user(
+        expected_owner_workos_user_id,
+        expected_owner_workos_user_id,
+        touch=False,
+    )
+    if owner is None or owner.role != "owner":
+        raise LocalUserAuthorizationError("The configured staging owner is unavailable.")
 
 
-def _sqlite_provision_owner(workos_user_id: str) -> int:
-    connection = get_db_connection()
-    try:
-        existing_owner = connection.execute(
-            "SELECT id, workos_user_id, disabled_at FROM app_users WHERE role = 'owner' LIMIT 1"
-        ).fetchone()
-        if existing_owner is not None:
-            if existing_owner["workos_user_id"] != workos_user_id or existing_owner["disabled_at"]:
-                raise LocalUserAuthorizationError("The staging owner mapping does not match.")
-            connection.execute(
-                "UPDATE app_users SET last_seen_at = ? WHERE id = ?",
-                (_utc_timestamp().isoformat(timespec="seconds"), existing_owner["id"]),
-            )
-            connection.commit()
-            return int(existing_owner["id"])
-
-        timestamp = _utc_timestamp().isoformat(timespec="seconds")
-        cursor = connection.execute(
-            """
-            INSERT INTO app_users (workos_user_id, role, created_at, last_seen_at)
-            VALUES (?, 'owner', ?, ?)
-            """,
-            (workos_user_id, timestamp, timestamp),
-        )
-        connection.commit()
-        return int(cursor.lastrowid)
-    finally:
-        connection.close()
-
-
-def _postgres_owner(workos_user_id: str, *, touch: bool) -> int | None:
+def _postgres_user(
+    workos_user_id: str,
+    expected_owner_workos_user_id: str,
+    *,
+    touch: bool,
+) -> AuthorizedLocalUser | None:
     with identity_transaction(runtime_postgres_engine(), workos_user_id) as connection:
         row = connection.execute(
             text(
@@ -109,7 +99,11 @@ def _postgres_owner(workos_user_id: str, *, touch: bool) -> int | None:
             ),
             {"workos_user_id": workos_user_id},
         ).mappings().one_or_none()
-        if row is None or row["role"] != "owner" or row["disabled_at"] is not None:
+        if row is None or row["disabled_at"] is not None:
+            return None
+        role = str(row["role"])
+        configured_owner = workos_user_id == expected_owner_workos_user_id
+        if role not in {"owner", "user"} or configured_owner != (role == "owner"):
             return None
         if touch:
             connection.execute(
@@ -119,25 +113,24 @@ def _postgres_owner(workos_user_id: str, *, touch: bool) -> int | None:
                 ),
                 {"last_seen_at": _utc_timestamp(), "user_id": row["id"]},
             )
-        return int(row["id"])
+        return AuthorizedLocalUser(id=int(row["id"]), role=role)
 
 
-def provision_staging_owner(workos_user_id: str) -> int:
-    """Resolve the approved owner; shared-host login never creates or elevates it."""
-    if identity_store_kind() == "sqlite":
-        return _sqlite_provision_owner(workos_user_id)
-    user_id = _postgres_owner(workos_user_id, touch=True)
-    if user_id is None:
-        raise LocalUserAuthorizationError(
-            "The PostgreSQL staging owner must be seeded before login."
-        )
-    return user_id
-
-
-def authorized_local_owner(workos_user_id: str) -> int | None:
-    """Return the active owner ID without ever creating an account implicitly."""
+def authorized_local_user(
+    workos_user_id: str,
+    expected_owner_workos_user_id: str,
+    *,
+    touch: bool = False,
+) -> AuthorizedLocalUser | None:
+    """Resolve one preseeded active user without creating or changing authorization."""
     if identity_store_kind() == "postgres":
-        return _postgres_owner(workos_user_id, touch=False)
+        return _postgres_user(
+            workos_user_id,
+            expected_owner_workos_user_id,
+            touch=touch,
+        )
+    if workos_user_id != expected_owner_workos_user_id:
+        return None
     connection = get_db_connection()
     try:
         row = connection.execute(
@@ -147,6 +140,14 @@ def authorized_local_owner(workos_user_id: str) -> int | None:
             """,
             (workos_user_id,),
         ).fetchone()
-        return int(row["id"]) if row is not None else None
+        if row is None:
+            return None
+        if touch:
+            connection.execute(
+                "UPDATE app_users SET last_seen_at = ? WHERE id = ?",
+                (_utc_timestamp().isoformat(timespec="seconds"), row["id"]),
+            )
+            connection.commit()
+        return AuthorizedLocalUser(id=int(row["id"]), role="owner")
     finally:
         connection.close()

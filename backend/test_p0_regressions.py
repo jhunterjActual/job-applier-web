@@ -33,6 +33,7 @@ import local_users as local_users_module
 import materials as materials_module
 import operations as operations_module
 import job_retention_repository as job_retention_repository_module
+import pilot_users as pilot_users_module
 import postgres_database as postgres_database_module
 import profile_repository as profile_repository_module
 import provider_secrets as provider_secrets_module
@@ -73,6 +74,7 @@ from backup_restore import (
 import pymupdf
 from docx import Document as WordDocument
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import StatementError
 from ai_providers import AIProviderError, AIProviderSettings, CapabilityResponse, extract_text_from_images, generate_structured, settings_from_profile
 from lifecycle import undo_latest_lifecycle_change, update_lifecycle
 from lifecycle_repository import SQLiteLifecycleRepository
@@ -3623,6 +3625,39 @@ class ProfileSecretPresenceTests(unittest.TestCase):
 class DataStoreConfigurationTests(unittest.TestCase):
     POSTGRES_URL = "postgresql+psycopg://runtime:test@database.test/careertrellis"
 
+    def test_postgres_engine_hides_parameters_and_preserves_bounded_pool(self) -> None:
+        sentinel = object()
+        with patch.object(
+            postgres_database_module,
+            "create_engine",
+            return_value=sentinel,
+        ) as create:
+            self.assertIs(
+                sentinel,
+                postgres_database_module.create_postgres_engine(self.POSTGRES_URL),
+            )
+
+        options = create.call_args.kwargs
+        self.assertTrue(options["hide_parameters"])
+        self.assertTrue(options["pool_pre_ping"])
+        self.assertEqual("rollback", options["pool_reset_on_return"])
+        self.assertEqual(5, options["pool_size"])
+        self.assertEqual(5, options["max_overflow"])
+        self.assertEqual(10, options["pool_timeout"])
+
+        synthetic_identity = "user_01SYNTHETICLOGBOUNDARY"
+        rendered = str(
+            StatementError(
+                "synthetic database failure",
+                "SELECT :identity",
+                {"identity": synthetic_identity},
+                RuntimeError("synthetic driver failure"),
+                hide_parameters=options["hide_parameters"],
+            )
+        )
+        self.assertNotIn(synthetic_identity, rendered)
+        self.assertIn("SQL parameters hidden", rendered)
+
     def test_local_data_store_defaults_to_sqlite_and_accepts_explicit_sqlite(self) -> None:
         with patch.dict(
             os.environ,
@@ -4484,7 +4519,7 @@ class WebAuthenticationTests(unittest.TestCase):
             with self.assertRaises(web_auth_module.AuthenticationConfigurationError):
                 web_auth_module.get_auth_configuration()
 
-    def test_pkce_login_flow_is_encrypted_state_bound_and_owner_only(self) -> None:
+    def test_pkce_login_flow_is_encrypted_state_bound_and_identity_verified(self) -> None:
         class FakeUser:
             id = self.OWNER_ID
             email_verified = True
@@ -4538,6 +4573,20 @@ class WebAuthenticationTests(unittest.TestCase):
         self.assertEqual("login", management.authorization_arguments["prompt"])
         self.assertEqual("sdk-generated-code-verifier", management.authentication_arguments["code_verifier"])
 
+    def test_workos_verification_rejects_unverified_impersonated_and_malformed_users(self) -> None:
+        verified_pilot = SimpleNamespace(id="user_01PILOTBOUNDARY", email_verified=True)
+        self.assertEqual(
+            verified_pilot.id,
+            web_auth_module._verified_user_id(verified_pilot),
+        )
+        for user, impersonator in (
+            (SimpleNamespace(id="user_01UNVERIFIED", email_verified=False), None),
+            (verified_pilot, SimpleNamespace(id="user_01IMPERSONATOR")),
+            (SimpleNamespace(id="malformed", email_verified=True), None),
+        ):
+            with self.assertRaises(web_auth_module.IdentityNotAuthorizedError):
+                web_auth_module._verified_user_id(user, impersonator)
+
     def test_session_refresh_preserves_cookie_on_network_failure(self) -> None:
         invalid_jwt = SimpleNamespace(
             authenticated=False,
@@ -4573,7 +4622,7 @@ class WebAuthenticationTests(unittest.TestCase):
         self.assertEqual("unavailable", unknown_result.status)
         self.assertFalse(unknown_result.clear_cookie)
 
-    def test_owner_mapping_is_idempotent_and_never_reassigned(self) -> None:
+    def test_sqlite_owner_mapping_is_read_only_and_never_reassigned(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = Path(temp_dir) / "identity.db"
             with (
@@ -4585,14 +4634,32 @@ class WebAuthenticationTests(unittest.TestCase):
                 ),
             ):
                 database_module.init_db()
-                first_id = local_users_module.provision_staging_owner(self.OWNER_ID)
-                second_id = local_users_module.provision_staging_owner(self.OWNER_ID)
-                with self.assertRaises(local_users_module.LocalUserAuthorizationError):
-                    local_users_module.provision_staging_owner("user_01DIFFERENTOWNER")
-                self.assertEqual(first_id, second_id)
-                self.assertEqual(
-                    first_id,
-                    local_users_module.authorized_local_owner(self.OWNER_ID),
+                self.assertIsNone(
+                    local_users_module.authorized_local_user(
+                        self.OWNER_ID, self.OWNER_ID, touch=True
+                    )
+                )
+                connection = database_module.get_db_connection()
+                try:
+                    timestamp = "2026-08-24T12:00:00+00:00"
+                    first_id = connection.execute(
+                        "INSERT INTO app_users (workos_user_id, role, created_at, last_seen_at) "
+                        "VALUES (?, 'owner', ?, ?)",
+                        (self.OWNER_ID, timestamp, timestamp),
+                    ).lastrowid
+                    connection.commit()
+                finally:
+                    connection.close()
+                resolved = local_users_module.authorized_local_user(
+                    self.OWNER_ID, self.OWNER_ID, touch=True
+                )
+                self.assertIsNotNone(resolved)
+                self.assertEqual(first_id, resolved.id)
+                self.assertEqual("owner", resolved.role)
+                self.assertIsNone(
+                    local_users_module.authorized_local_user(
+                        "user_01DIFFERENTOWNER", self.OWNER_ID, touch=True
+                    )
                 )
 
     def test_shared_identity_store_requires_explicit_postgres_configuration(self) -> None:
@@ -4608,7 +4675,7 @@ class WebAuthenticationTests(unittest.TestCase):
             with self.assertRaises(config_module.RuntimeConfigurationError):
                 local_users_module.validate_identity_store_configuration()
 
-    def test_postgres_owner_resolution_never_creates_or_elevates_identity(self) -> None:
+    def test_postgres_user_resolution_never_creates_elevates_or_reactivates(self) -> None:
         mapping_result = SimpleNamespace(one_or_none=lambda: None)
         execution_result = SimpleNamespace(mappings=lambda: mapping_result)
         connection = SimpleNamespace(execute=lambda *args, **kwargs: execution_result)
@@ -4625,9 +4692,84 @@ class WebAuthenticationTests(unittest.TestCase):
             patch.object(local_users_module, "runtime_postgres_engine", return_value=object()),
             patch.object(local_users_module, "identity_transaction", return_value=IdentityScope()),
         ):
-            self.assertIsNone(local_users_module.authorized_local_owner(self.OWNER_ID))
-            with self.assertRaises(local_users_module.LocalUserAuthorizationError):
-                local_users_module.provision_staging_owner(self.OWNER_ID)
+            self.assertIsNone(
+                local_users_module.authorized_local_user(
+                    self.OWNER_ID, self.OWNER_ID, touch=True
+                )
+            )
+
+    def test_postgres_user_resolution_enforces_owner_role_binding(self) -> None:
+        def resolve(row, workos_user_id: str, *, touch: bool = True):
+            statements: list[str] = []
+
+            class Connection:
+                def execute(self, statement, _parameters=None):
+                    statements.append(str(statement))
+                    if str(statement).lstrip().startswith("SELECT id, role, disabled_at"):
+                        mapping_result = SimpleNamespace(one_or_none=lambda: row)
+                        return SimpleNamespace(mappings=lambda: mapping_result)
+                    return SimpleNamespace()
+
+            class IdentityScope:
+                def __enter__(self):
+                    return Connection()
+
+                def __exit__(self, *_args):
+                    return False
+
+            with (
+                patch.object(local_users_module, "identity_store_kind", return_value="postgres"),
+                patch.object(local_users_module, "runtime_postgres_engine", return_value=object()),
+                patch.object(local_users_module, "identity_transaction", return_value=IdentityScope()),
+            ):
+                result = local_users_module.authorized_local_user(
+                    workos_user_id,
+                    self.OWNER_ID,
+                    touch=touch,
+                )
+            return result, statements
+
+        owner, owner_statements = resolve(
+            {"id": 1, "role": "owner", "disabled_at": None},
+            self.OWNER_ID,
+        )
+        pilot, pilot_statements = resolve(
+            {"id": 2, "role": "user", "disabled_at": None},
+            "user_01PILOTBOUNDARY",
+        )
+        self.assertEqual((1, "owner"), (owner.id, owner.role))
+        self.assertEqual((2, "user"), (pilot.id, pilot.role))
+        self.assertTrue(any("UPDATE careertrellis.app_users" in sql for sql in owner_statements))
+        self.assertTrue(any("UPDATE careertrellis.app_users" in sql for sql in pilot_statements))
+
+        for row, identity in (
+            ({"id": 1, "role": "user", "disabled_at": None}, self.OWNER_ID),
+            ({"id": 2, "role": "owner", "disabled_at": None}, "user_01PILOTBOUNDARY"),
+            ({"id": 2, "role": "user", "disabled_at": "disabled"}, "user_01PILOTBOUNDARY"),
+        ):
+            resolved, statements = resolve(row, identity)
+            self.assertIsNone(resolved)
+            self.assertFalse(any("UPDATE careertrellis.app_users" in sql for sql in statements))
+
+    def test_shared_readiness_requires_the_active_configured_owner(self) -> None:
+        with (
+            patch.object(local_users_module, "identity_store_kind", return_value="postgres"),
+            patch.object(
+                local_users_module,
+                "_postgres_user",
+                return_value=local_users_module.AuthorizedLocalUser(1, "owner"),
+            ) as resolver,
+        ):
+            local_users_module.check_identity_store_ready(self.OWNER_ID)
+        resolver.assert_called_once_with(self.OWNER_ID, self.OWNER_ID, touch=False)
+
+        for result in (None, local_users_module.AuthorizedLocalUser(2, "user")):
+            with (
+                patch.object(local_users_module, "identity_store_kind", return_value="postgres"),
+                patch.object(local_users_module, "_postgres_user", return_value=result),
+                self.assertRaises(local_users_module.LocalUserAuthorizationError),
+            ):
+                local_users_module.check_identity_store_ready(self.OWNER_ID)
 
     def test_sqlite_import_preflight_counts_but_never_returns_secret_values(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -4703,12 +4845,20 @@ class WebAuthenticationTests(unittest.TestCase):
                 )
                 with (
                     patch.object(app_module, "authenticate_session", return_value=authenticated),
-                    patch.object(app_module, "authorized_local_owner", return_value=1),
+                    patch.object(
+                        app_module,
+                        "authorized_local_user",
+                        return_value=local_users_module.AuthorizedLocalUser(1, "owner"),
+                    ),
                 ):
                     session_response = client.get("/api/session", headers=headers)
                 with (
                     patch.object(app_module, "complete_login", return_value=completed),
-                    patch.object(app_module, "provision_staging_owner", return_value=1),
+                    patch.object(
+                        app_module,
+                        "authorized_local_user",
+                        return_value=local_users_module.AuthorizedLocalUser(1, "owner"),
+                    ),
                 ):
                     callback_response = client.get(
                         "/auth/callback?code=one-time-code&state=state-value",
@@ -4739,6 +4889,163 @@ class WebAuthenticationTests(unittest.TestCase):
         self.assertIn("Secure", session_cookie)
         self.assertIn("SameSite=lax", session_cookie)
 
+    def test_pilot_callback_succeeds_only_for_preseeded_active_user(self) -> None:
+        headers = {app_module.TRUSTED_PROXY_TOKEN_HEADER: self.ORIGIN_TOKEN}
+        pilot_id = "user_01PILOTBOUNDARY"
+        completed = web_auth_module.CompletedLogin(
+            workos_user_id=pilot_id,
+            sealed_session="encrypted-pilot-session",
+        )
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            client = TestClient(app_module.app, base_url="https://staging-app.jhunterj.com")
+            try:
+                with (
+                    patch.object(app_module, "complete_login", return_value=completed),
+                    patch.object(
+                        app_module,
+                        "authorized_local_user",
+                        return_value=local_users_module.AuthorizedLocalUser(2, "user"),
+                    ) as resolver,
+                ):
+                    response = client.get(
+                        "/auth/callback?code=synthetic-code&state=synthetic-state",
+                        headers={
+                            **headers,
+                            "Cookie": f"{web_auth_module.LOGIN_FLOW_COOKIE_NAME}=synthetic-flow",
+                        },
+                        follow_redirects=False,
+                    )
+            finally:
+                client.close()
+
+        self.assertEqual(303, response.status_code)
+        resolver.assert_called_once_with(
+            pilot_id,
+            self.OWNER_ID,
+            touch=True,
+        )
+        self.assertTrue(
+            any(
+                value.startswith(web_auth_module.SESSION_COOKIE_NAME)
+                for value in response.headers.get_list("set-cookie")
+            )
+        )
+
+    def test_unlisted_or_disabled_callback_is_fixed_403_without_session(self) -> None:
+        headers = {app_module.TRUSTED_PROXY_TOKEN_HEADER: self.ORIGIN_TOKEN}
+        completed = web_auth_module.CompletedLogin(
+            workos_user_id="user_01PILOTBOUNDARY",
+            sealed_session="must-not-be-issued",
+        )
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            client = TestClient(app_module.app, base_url="https://staging-app.jhunterj.com")
+            try:
+                for local_result in (None, None):
+                    with (
+                        patch.object(app_module, "complete_login", return_value=completed),
+                        patch.object(
+                            app_module,
+                            "authorized_local_user",
+                            return_value=local_result,
+                        ),
+                    ):
+                        response = client.get(
+                            "/auth/callback?code=synthetic-code&state=synthetic-state",
+                            headers={
+                                **headers,
+                                "Cookie": f"{web_auth_module.LOGIN_FLOW_COOKIE_NAME}=synthetic-flow",
+                            },
+                            follow_redirects=False,
+                        )
+                    self.assertEqual(403, response.status_code)
+                    self.assertEqual(
+                        {"detail": "This identity is not authorized."},
+                        response.json(),
+                    )
+                    cookies = response.headers.get_list("set-cookie")
+                    self.assertFalse(
+                        any(value.startswith(web_auth_module.SESSION_COOKIE_NAME) for value in cookies)
+                    )
+                    self.assertTrue(
+                        any(value.startswith(web_auth_module.LOGIN_FLOW_COOKIE_NAME) for value in cookies)
+                    )
+            finally:
+                client.close()
+
+    def test_disabled_user_session_is_cleared_before_private_routing(self) -> None:
+        headers = {app_module.TRUSTED_PROXY_TOKEN_HEADER: self.ORIGIN_TOKEN}
+        authenticated = web_auth_module.SessionAuthentication(
+            status="authenticated",
+            workos_user_id="user_01PILOTBOUNDARY",
+            session_id="session_01SYNTHETIC",
+        )
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            client = TestClient(app_module.app, base_url="https://staging-app.jhunterj.com")
+            try:
+                with (
+                    patch.object(app_module, "authenticate_session", return_value=authenticated),
+                    patch.object(app_module, "authorized_local_user", return_value=None),
+                ):
+                    response = client.get("/api/session", headers=headers)
+            finally:
+                client.close()
+        self.assertEqual(401, response.status_code)
+        self.assertTrue(
+            any(
+                value.startswith(web_auth_module.SESSION_COOKIE_NAME)
+                for value in response.headers.get_list("set-cookie")
+            )
+        )
+
+    def test_owner_and_pilot_http_requests_bind_and_reset_distinct_tenant_contexts(self) -> None:
+        headers = {app_module.TRUSTED_PROXY_TOKEN_HEADER: self.ORIGIN_TOKEN}
+        observed_owner_ids: list[int] = []
+
+        def profile_repository(**_kwargs):
+            observed_owner_ids.append(provider_secrets_module.current_owner_user_id())
+            return SimpleNamespace(get_profile=lambda: None)
+
+        identities = (
+            (self.OWNER_ID, local_users_module.AuthorizedLocalUser(1, "owner")),
+            ("user_01PILOTBOUNDARY", local_users_module.AuthorizedLocalUser(2, "user")),
+        )
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            client = TestClient(app_module.app, base_url="https://staging-app.jhunterj.com")
+            try:
+                for workos_user_id, local_user in identities:
+                    authentication = web_auth_module.SessionAuthentication(
+                        status="authenticated",
+                        workos_user_id=workos_user_id,
+                        session_id="session_01SYNTHETIC",
+                    )
+                    with (
+                        patch.object(
+                            app_module,
+                            "authenticate_session",
+                            return_value=authentication,
+                        ),
+                        patch.object(
+                            app_module,
+                            "authorized_local_user",
+                            return_value=local_user,
+                        ),
+                        patch.object(
+                            app_module,
+                            "runtime_profile_repository",
+                            side_effect=profile_repository,
+                        ),
+                    ):
+                        response = client.get("/api/profile", headers=headers)
+                    self.assertEqual(200, response.status_code)
+                    self.assertEqual({}, response.json())
+                    with self.assertRaises(
+                        provider_secrets_module.ProviderSecretAuthorizationError
+                    ):
+                        provider_secrets_module.current_owner_user_id()
+            finally:
+                client.close()
+        self.assertEqual([1, 2], observed_owner_ids)
+
     def test_liveness_survives_missing_auth_config_but_readiness_fails(self) -> None:
         incomplete_environment = {
             "CAREERTRELLIS_ENVIRONMENT": "staging",
@@ -4764,6 +5071,214 @@ class WebAuthenticationTests(unittest.TestCase):
             readiness.json(),
         )
         authenticate_session.assert_not_called()
+
+
+class PilotUserOperatorTests(unittest.TestCase):
+    OWNER_ID = "user_01STAGINGOWNER"
+    PILOT_ID = "user_01PILOTBOUNDARY"
+
+    class FakeConnection:
+        def __init__(self, rows):
+            self.rows = rows
+            self.identity = None
+            self.erasure_pending = False
+            self.driver_statements: list[str] = []
+
+        def exec_driver_sql(self, statement):
+            self.driver_statements.append(statement)
+            return SimpleNamespace()
+
+        def scalar(self, statement, _parameters=None):
+            self.driver_statements.append(str(statement))
+            if "account_erasure_requests" in str(statement):
+                return self.erasure_pending
+            return True
+
+        def execute(self, statement, parameters=None):
+            sql = str(statement)
+            values = parameters or {}
+            if sql.startswith("SELECT id, role, disabled_at"):
+                row = self.rows.get(self.identity)
+                return SimpleNamespace(
+                    mappings=lambda: SimpleNamespace(one_or_none=lambda: row)
+                )
+            if sql.startswith("INSERT INTO careertrellis.app_users"):
+                identity = values["workos_user_id"]
+                if identity in self.rows:
+                    raise AssertionError("duplicate synthetic mapping")
+                self.rows[identity] = {
+                    "id": len(self.rows) + 1,
+                    "role": "user",
+                    "disabled_at": None,
+                }
+                return SimpleNamespace(rowcount=1)
+            if "SET disabled_at = CURRENT_TIMESTAMP" in sql:
+                self.rows[values["workos_user_id"]]["disabled_at"] = "disabled"
+                return SimpleNamespace(rowcount=1)
+            if "SET disabled_at = NULL" in sql:
+                self.rows[values["workos_user_id"]]["disabled_at"] = None
+                return SimpleNamespace(rowcount=1)
+            raise AssertionError(f"Unexpected synthetic SQL shape: {sql}")
+
+    class FakeEngine:
+        def __init__(self, connection):
+            self.connection = connection
+
+        class Scope:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def __enter__(self):
+                return self.connection
+
+            def __exit__(self, *_args):
+                return False
+
+        def begin(self):
+            return self.Scope(self.connection)
+
+    def engine(self):
+        rows = {
+            self.OWNER_ID: {"id": 1, "role": "owner", "disabled_at": None}
+        }
+        connection = self.FakeConnection(rows)
+        return self.FakeEngine(connection), connection
+
+    def operation(self, engine, operation: str, target: str):
+        with patch.object(
+            pilot_users_module,
+            "set_identity_context",
+            side_effect=lambda connection, identity: setattr(
+                connection, "identity", identity
+            ),
+        ):
+            return pilot_users_module.perform_operation(
+                engine,
+                operation,
+                self.OWNER_ID,
+                target,
+            )
+
+    def test_operator_seed_inspect_disable_and_reinvite_are_idempotent(self) -> None:
+        engine, connection = self.engine()
+        created = self.operation(engine, "seed", self.PILOT_ID)
+        repeated = self.operation(engine, "seed", self.PILOT_ID)
+        inspected = self.operation(engine, "inspect", self.PILOT_ID)
+        disabled = self.operation(engine, "disable", self.PILOT_ID)
+        disabled_again = self.operation(engine, "disable", self.PILOT_ID)
+        seed_disabled = self.operation(engine, "seed", self.PILOT_ID)
+        reactivated = self.operation(engine, "reinvite", self.PILOT_ID)
+        reinvited_again = self.operation(engine, "reinvite", self.PILOT_ID)
+
+        self.assertEqual("created", created.result)
+        self.assertTrue(created.changed)
+        self.assertEqual("already_active", repeated.result)
+        self.assertEqual("ok", inspected.result)
+        self.assertEqual("disabled", disabled.result)
+        self.assertEqual("already_disabled", disabled_again.result)
+        self.assertEqual(("disabled_requires_reinvite", 4), (seed_disabled.result, seed_disabled.exit_code))
+        self.assertEqual("reactivated", reactivated.result)
+        self.assertEqual("already_active", reinvited_again.result)
+        self.assertEqual(
+            {"id": 2, "role": "user", "disabled_at": None},
+            connection.rows[self.PILOT_ID],
+        )
+        self.assertIn("SET LOCAL log_parameter_max_length = 0", connection.driver_statements)
+        self.assertIn("SET LOCAL log_parameter_max_length_on_error = 0", connection.driver_statements)
+
+    def test_operator_never_reactivates_an_accepted_erasure(self) -> None:
+        engine, connection = self.engine()
+        self.operation(engine, "seed", self.PILOT_ID)
+        self.operation(engine, "disable", self.PILOT_ID)
+        connection.erasure_pending = True
+
+        blocked = self.operation(engine, "reinvite", self.PILOT_ID)
+
+        self.assertEqual(("erasure_pending", 5), (blocked.result, blocked.exit_code))
+        self.assertFalse(blocked.active)
+        self.assertEqual("disabled", connection.rows[self.PILOT_ID]["disabled_at"])
+
+    def test_operator_protects_owner_and_never_discloses_identity(self) -> None:
+        engine, _connection = self.engine()
+        protected = self.operation(engine, "disable", self.OWNER_ID)
+        self.assertEqual(("owner_protected", 3), (protected.result, protected.exit_code))
+
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            pilot_users_module._print_result("disable", protected)
+        receipt = output.getvalue()
+        self.assertIn("identity_disclosed=no", receipt)
+        self.assertNotIn(self.OWNER_ID, receipt)
+        self.assertNotIn(self.PILOT_ID, receipt)
+
+        with self.assertRaises(pilot_users_module.PilotUserOperationError):
+            self.operation(engine, "seed", "user_bad-id")
+
+    def test_operator_requires_the_dedicated_migration_database_role(self) -> None:
+        runtime_url = (
+            "postgresql+psycopg://careertrellis_runtime:synthetic@"
+            "database.test/careertrellis"
+        )
+        with (
+            patch.object(pilot_users_module, "_protected_setting", return_value=runtime_url),
+            self.assertRaises(pilot_users_module.PilotUserOperationError),
+        ):
+            pilot_users_module._operator_engine()
+
+        migration_url = (
+            "postgresql+psycopg://careertrellis_migration:synthetic@"
+            "database.test/careertrellis"
+        )
+        sentinel = object()
+        with (
+            patch.object(pilot_users_module, "_protected_setting", return_value=migration_url),
+            patch.object(pilot_users_module, "create_engine", return_value=sentinel) as create,
+        ):
+            self.assertIs(sentinel, pilot_users_module._operator_engine())
+        self.assertTrue(create.call_args.kwargs["hide_parameters"])
+        self.assertFalse(create.call_args.kwargs["echo"])
+
+    def test_operator_wrapper_and_release_hooks_are_root_only_and_exact_bound(self) -> None:
+        project_dir = Path(__file__).resolve().parent.parent
+        wrapper = (project_dir / "deploy" / "scripts" / "manage-pilot-user.sh").read_text(
+            encoding="utf-8"
+        )
+        deploy = (project_dir / "deploy" / "scripts" / "deploy-release.sh").read_text(
+            encoding="utf-8"
+        )
+        rollback = (project_dir / "deploy" / "scripts" / "rollback-release.sh").read_text(
+            encoding="utf-8"
+        )
+        provision = (project_dir / "deploy" / "scripts" / "provision-staging-host.sh").read_text(
+            encoding="utf-8"
+        )
+        operator_grant = (
+            project_dir / "deploy" / "postgres" / "grant-pilot-operator.sql"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("if [[ ${EUID} -ne 0 ]]", wrapper)
+        self.assertIn("if [[ ! -t 0 || ! -t 1 || ! -t 2 ]]", wrapper)
+        self.assertIn("acquire_careertrellis_maintenance_lock", wrapper)
+        self.assertLess(wrapper.index("acquire_careertrellis_maintenance_lock"), wrapper.index("current_release=$(readlink"))
+        self.assertIn("sha256sum", wrapper)
+        self.assertIn("exec env -i", wrapper)
+        self.assertIn('"${current_release}/backend/pilot_users.py"', wrapper)
+        self.assertNotIn('source "${migration_environment}"', wrapper)
+        self.assertNotIn('source "${staging_environment}"', wrapper)
+        for source in (deploy, rollback, provision):
+            self.assertIn("careertrellis-pilot-user", source)
+            self.assertIn("pilot_users.py", source)
+        self.assertIn("-m 0750", deploy)
+        self.assertIn("-m 0640", deploy)
+        self.assertIn(
+            "GRANT SET ON PARAMETER log_parameter_max_length ", operator_grant
+        )
+        self.assertIn(
+            "GRANT SET ON PARAMETER log_parameter_max_length_on_error ",
+            operator_grant,
+        )
+        self.assertNotIn("careertrellis_runtime", operator_grant)
+        self.assertNotIn("careertrellis_worker", operator_grant)
 
 
 class LocalBrowserBoundaryTests(unittest.TestCase):
@@ -4858,7 +5373,7 @@ class LocalBrowserBoundaryTests(unittest.TestCase):
         self.assertEqual({"status": "ok", "build": app_module.APP_BUILD}, live.json())
         self.assertEqual({"status": "ready", "build": app_module.APP_BUILD}, ready.json())
         data_ready.assert_called_once_with(app_module.get_db_connection)
-        identity_ready.assert_called_once_with()
+        identity_ready.assert_called_once_with(None)
         secrets_ready.assert_called_once_with()
         objects_ready.assert_called_once_with()
 
@@ -5913,7 +6428,11 @@ class EncryptedFullBackupTests(unittest.TestCase):
                     "authenticate_session",
                     return_value=authenticated,
                 ),
-                patch.object(app_module, "authorized_local_owner", return_value=73),
+                patch.object(
+                    app_module,
+                    "authorized_local_user",
+                    return_value=local_users_module.AuthorizedLocalUser(73, "owner"),
+                ),
                 patch.object(app_module.Request, "form", side_effect=AssertionError("upload parsed")) as form,
                 patch.object(app_module, "BACKUP_RESTORE_LOCK", local_lock),
                 patch.object(app_module, "create_encrypted_backup", local_helpers["create"]),

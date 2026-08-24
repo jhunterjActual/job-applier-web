@@ -54,6 +54,7 @@ def create_postgres_engine(value: str | URL | None = None) -> Engine:
     url = postgres_url(value) if value is not None else database_url_from_environment()
     return create_engine(
         url,
+        hide_parameters=True,
         pool_pre_ping=True,
         pool_reset_on_return="rollback",
         pool_size=5,

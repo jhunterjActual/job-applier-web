@@ -212,6 +212,62 @@ class PostgreSQLScheduledSearchDispatchTests(unittest.TestCase):
             )
         self.assertEqual([], dispatch_due_postgres_saved_searches(engine=self.worker_engine))
 
+    def test_disabled_owner_schedule_is_deferred_without_provider_work(self) -> None:
+        due_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        disabled_search = self._insert_due_search(
+            self.user_one,
+            due_at,
+            keywords="disabled owner schedule",
+            location="Remote",
+        )
+        active_search = self._insert_due_search(
+            self.user_two,
+            due_at + timedelta(seconds=1),
+            keywords="active owner schedule",
+            location="Ohio",
+        )
+        with self.admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE careertrellis.app_users "
+                    "SET disabled_at = CURRENT_TIMESTAMP WHERE id = :owner"
+                ),
+                {"owner": self.user_one},
+            )
+
+        dispatched = dispatch_due_postgres_saved_searches(
+            engine=self.worker_engine, limit=2
+        )
+        self.assertEqual([active_search], [item.saved_search_id for item in dispatched])
+        self.assertEqual([self.user_two], [item.owner_user_id for item in dispatched])
+        with self.admin_engine.begin() as connection:
+            disabled = connection.execute(
+                text(
+                    "SELECT last_run_at, next_alert_at "
+                    "FROM careertrellis.saved_searches WHERE id = :id"
+                ),
+                {"id": disabled_search},
+            ).mappings().one()
+            deferred_until = connection.scalar(
+                text(
+                    "SELECT due_at FROM careertrellis.scheduled_search_dispatch_queue "
+                    "WHERE saved_search_id = :id"
+                ),
+                {"id": disabled_search},
+            )
+            database_now = connection.scalar(text("SELECT CURRENT_TIMESTAMP"))
+            disabled_runs = connection.scalar(
+                text(
+                    "SELECT count(*) FROM careertrellis.search_runs "
+                    "WHERE scheduled_search_id = :id"
+                ),
+                {"id": disabled_search},
+            )
+        self.assertIsNone(disabled["last_run_at"])
+        self.assertEqual(due_at, disabled["next_alert_at"])
+        self.assertGreater(deferred_until, database_now)
+        self.assertEqual(0, disabled_runs)
+
     def test_more_than_one_batch_of_active_owner_rows_does_not_starve_later_owner(
         self,
     ) -> None:

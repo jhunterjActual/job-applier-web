@@ -108,6 +108,12 @@ if [[ ! -d ${release_dir} ]]; then
           ! -L ${temporary_release}/deploy/scripts/manage-pilot-caddy-credential.sh ]]; then
         chmod 0755 "${temporary_release}/deploy/scripts/manage-pilot-caddy-credential.sh"
     fi
+    if [[ -f ${temporary_release}/deploy/scripts/manage-pilot-user.sh && \
+          ! -L ${temporary_release}/deploy/scripts/manage-pilot-user.sh && \
+          -f ${temporary_release}/backend/pilot_users.py && \
+          ! -L ${temporary_release}/backend/pilot_users.py ]]; then
+        chmod 0755 "${temporary_release}/deploy/scripts/manage-pilot-user.sh"
+    fi
     chown -R root:careertrellis "${temporary_release}"
     chmod -R u=rwX,g=rX,o= "${temporary_release}"
     mv "${temporary_release}" "${release_dir}"
@@ -245,6 +251,20 @@ validate_release() {
         fi
         "${target_release}/deploy/scripts/manage-pilot-caddy-credential.sh" check >/dev/null || return 1
     fi
+    if [[ -e ${target_release}/deploy/scripts/manage-pilot-user.sh || \
+          -L ${target_release}/deploy/scripts/manage-pilot-user.sh || \
+          -e ${target_release}/backend/pilot_users.py || \
+          -L ${target_release}/backend/pilot_users.py ]]; then
+        if [[ ! -f ${target_release}/deploy/scripts/manage-pilot-user.sh || \
+              -L ${target_release}/deploy/scripts/manage-pilot-user.sh || \
+              $(stat -c '%U:%G %a' "${target_release}/deploy/scripts/manage-pilot-user.sh") != "root:careertrellis 750" || \
+              ! -f ${target_release}/backend/pilot_users.py || \
+              -L ${target_release}/backend/pilot_users.py || \
+              $(stat -c '%U:%G %a' "${target_release}/backend/pilot_users.py") != "root:careertrellis 640" ]]; then
+            echo "The pilot user operator boundary must be a complete reviewed pair." >&2
+            return 1
+        fi
+    fi
     caddy validate \
         --config "${target_release}/deploy/caddy/Caddyfile.staging" \
         --envfile /etc/caddy/careertrellis-staging.env
@@ -268,7 +288,7 @@ fi
 
 activate_release() {
     local target_release=$1
-    local target_revision activation_link erasure_worker_active=false recovery_helpers_available=false
+    local target_revision activation_link erasure_worker_active=false pilot_user_helper_available=false recovery_helpers_available=false
     local erasure_worker_enabled search_worker_enabled
     target_revision=$(basename "${target_release}")
 
@@ -286,6 +306,12 @@ activate_release() {
     if [[ -x ${target_release}/deploy/scripts/mirror-generated-objects-onedrive.sh && \
           -x ${target_release}/deploy/scripts/test-generated-object-restore.sh ]]; then
         recovery_helpers_available=true
+    fi
+    if [[ -f ${target_release}/deploy/scripts/manage-pilot-user.sh && \
+          ! -L ${target_release}/deploy/scripts/manage-pilot-user.sh && \
+          -f ${target_release}/backend/pilot_users.py && \
+          ! -L ${target_release}/backend/pilot_users.py ]]; then
+        pilot_user_helper_available=true
     fi
 
     activation_link=${release_root}/.activate-${target_revision}-$$
@@ -306,6 +332,12 @@ activate_release() {
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/install-erasure-worker-credential.sh" /usr/local/sbin/careertrellis-install-erasure-worker-credential || return 1
     if grep -Fxq $'\t\tpilot-01 {$STAGING_BASIC_AUTH_PILOT_01_HASH}' "${target_release}/deploy/caddy/Caddyfile.staging"; then
         install -o root -g root -m 0755 "${target_release}/deploy/scripts/manage-pilot-caddy-credential.sh" /usr/local/sbin/careertrellis-caddy-pilot-credential || return 1
+    fi
+    if [[ ${pilot_user_helper_available} == true ]]; then
+        install -o root -g root -m 0750 "${target_release}/deploy/scripts/manage-pilot-user.sh" /usr/local/sbin/careertrellis-pilot-user || return 1
+        install -o root -g root -m 0640 "${target_release}/backend/pilot_users.py" /usr/local/libexec/careertrellis/pilot_users.py || return 1
+    else
+        rm -f -- /usr/local/sbin/careertrellis-pilot-user /usr/local/libexec/careertrellis/pilot_users.py || return 1
     fi
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/finalize-postgres-r2-cutover.sh" /usr/local/sbin/careertrellis-finalize-cutover || return 1
     if [[ ${recovery_helpers_available} == true ]]; then

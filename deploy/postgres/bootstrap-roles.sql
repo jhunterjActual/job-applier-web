@@ -54,6 +54,8 @@ SELECT format('ALTER ROLE careertrellis_worker PASSWORD %L', :'worker_password')
 ALTER ROLE careertrellis_worker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
 
 GRANT careertrellis_schema_owner TO careertrellis_migration;
+GRANT SET ON PARAMETER log_parameter_max_length TO careertrellis_migration;
+GRANT SET ON PARAMETER log_parameter_max_length_on_error TO careertrellis_migration;
 REVOKE ALL ON DATABASE :"DBNAME" FROM PUBLIC;
 GRANT CONNECT ON DATABASE :"DBNAME" TO careertrellis_migration, careertrellis_runtime, careertrellis_worker;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;

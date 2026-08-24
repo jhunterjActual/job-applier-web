@@ -570,16 +570,20 @@ class PostgreSQLSearchRunRepository:
         seconds = _lease_seconds(lease_seconds)
         try:
             with tenant_transaction(self._engine, self._owner_user_id) as connection:
-                row = connection.execute(text("""SELECT status FROM careertrellis.search_runs
-                    WHERE id=CAST(:run AS uuid) AND owner_user_id=:owner
-                        AND lease_token=CAST(:lease AS uuid)
-                        AND lease_expires_at > CURRENT_TIMESTAMP FOR UPDATE"""),
+                row = connection.execute(text("""SELECT run.status, app_user.disabled_at
+                    FROM careertrellis.search_runs AS run
+                    JOIN careertrellis.app_users AS app_user
+                      ON app_user.id=run.owner_user_id
+                    WHERE run.id=CAST(:run AS uuid) AND run.owner_user_id=:owner
+                        AND run.lease_token=CAST(:lease AS uuid)
+                        AND run.lease_expires_at > CURRENT_TIMESTAMP
+                    FOR UPDATE OF run FOR SHARE OF app_user"""),
                     {"run": claim.run_id, "owner": self._owner_user_id, "lease": claim.lease_token}).mappings().first()
                 if row is None:
                     raise SearchRunLeaseLost()
                 if row["status"] == "cancel_requested":
                     raise OperationCancelled("The search was stopped by the user.")
-                if row["status"] != "running":
+                if row["status"] != "running" or row["disabled_at"] is not None:
                     raise SearchRunLeaseLost()
                 connection.execute(text("""UPDATE careertrellis.search_runs
                     SET lease_expires_at=CURRENT_TIMESTAMP + make_interval(secs => :seconds), updated_at=CURRENT_TIMESTAMP
@@ -596,16 +600,35 @@ class PostgreSQLSearchRunRepository:
             raise ValueError("Search result summary is too large.")
         try:
             with tenant_transaction(self._engine, self._owner_user_id) as connection:
-                changed = connection.execute(text("""UPDATE careertrellis.search_runs SET
-                    status=CASE WHEN status='cancel_requested' THEN 'cancelled' ELSE :status END,
-                    result_json=CASE WHEN status='cancel_requested' THEN NULL ELSE CAST(:result AS jsonb) END,
-                    error_code=CASE WHEN status='cancel_requested' THEN NULL ELSE :error_code END,
+                changed = connection.execute(text("""WITH owner_state AS MATERIALIZED (
+                    SELECT app_user.disabled_at
+                    FROM careertrellis.app_users AS app_user
+                    WHERE app_user.id=:owner
+                    FOR SHARE
+                )
+                UPDATE careertrellis.search_runs AS run SET
+                    status=CASE
+                        WHEN run.status='cancel_requested' THEN 'cancelled'
+                        WHEN owner_state.disabled_at IS NOT NULL THEN 'cancelled'
+                        ELSE :status
+                    END,
+                    result_json=CASE
+                        WHEN run.status='cancel_requested'
+                          OR owner_state.disabled_at IS NOT NULL THEN NULL
+                        ELSE CAST(:result AS jsonb)
+                    END,
+                    error_code=CASE
+                        WHEN run.status='cancel_requested' THEN NULL
+                        WHEN owner_state.disabled_at IS NOT NULL THEN 'owner_disabled'
+                        ELSE :error_code
+                    END,
                     completed_at=CURRENT_TIMESTAMP, lease_expires_at=NULL, lease_token=NULL,
                     worker_id=NULL, updated_at=CURRENT_TIMESTAMP
-                    WHERE id=CAST(:run AS uuid) AND owner_user_id=:owner
-                        AND lease_token=CAST(:lease AS uuid)
-                        AND lease_expires_at > CURRENT_TIMESTAMP
-                        AND status IN ('running','cancel_requested')"""),
+                    FROM owner_state
+                    WHERE run.id=CAST(:run AS uuid) AND run.owner_user_id=:owner
+                        AND run.lease_token=CAST(:lease AS uuid)
+                        AND run.lease_expires_at > CURRENT_TIMESTAMP
+                        AND run.status IN ('running','cancel_requested')"""),
                     {"status": status, "result": json.dumps(payload) if payload is not None else None,
                      "error_code": str(error_code)[:64] if error_code else None,
                      "run": claim.run_id, "owner": self._owner_user_id, "lease": claim.lease_token}).rowcount
