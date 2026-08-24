@@ -50,7 +50,8 @@ staging-app.jhunterj.com {
 			request>headers>X-Real-Ip delete
 			request>headers>Authorization delete
 			request>headers>Proxy-Authorization delete
-			request>headers>X-CareerTrellis-Proxy-Token delete
+			# Filter paths are case-sensitive after Go canonicalizes header names.
+			request>headers>X-Careertrellis-Proxy-Token delete
 			request>headers>Cookie delete
 			resp_headers>Set-Cookie delete
 			resp_headers>Location delete

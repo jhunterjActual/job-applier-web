@@ -3382,12 +3382,15 @@ class DependencyLockTests(unittest.TestCase):
             "request>headers>X-Real-Ip delete",
             "request>headers>Authorization delete",
             "request>headers>Proxy-Authorization delete",
-            "request>headers>X-CareerTrellis-Proxy-Token delete",
+            "request>headers>X-Careertrellis-Proxy-Token delete",
             "request>headers>Cookie delete",
             "resp_headers>Set-Cookie delete",
             "resp_headers>Location delete",
         ):
             self.assertIn(field, caddy_source)
+        self.assertNotIn(
+            "request>headers>X-CareerTrellis-Proxy-Token delete", caddy_source
+        )
         self.assertNotIn("log_credentials", caddy_source)
         self.assertNotIn("{http.auth.user.id}", caddy_source)
         self.assertIn('Referrer-Policy "same-origin"', caddy_source)
