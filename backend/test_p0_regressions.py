@@ -4622,6 +4622,153 @@ class WebAuthenticationTests(unittest.TestCase):
         self.assertEqual("unavailable", unknown_result.status)
         self.assertFalse(unknown_result.clear_cookie)
 
+        session.refresh = lambda: SimpleNamespace(
+            authenticated=False,
+            reason=SimpleNamespace(value="invalid_jwt"),
+        )
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            ambiguous_result = web_auth_module.authenticate_session(
+                settings,
+                "sealed",
+                client=client,
+            )
+        self.assertEqual("unavailable", ambiguous_result.status)
+        self.assertFalse(ambiguous_result.clear_cookie)
+
+        session.refresh = lambda: SimpleNamespace(
+            authenticated=False,
+            reason=SimpleNamespace(value="refresh_denied"),
+        )
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            denied_result = web_auth_module.authenticate_session(
+                settings,
+                "sealed",
+                client=client,
+            )
+        self.assertEqual("unauthenticated", denied_result.status)
+        self.assertTrue(denied_result.clear_cookie)
+
+    def test_malformed_session_cookie_is_cleared_without_network_refresh(self) -> None:
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            settings = web_auth_module.get_auth_configuration()
+            result = web_auth_module.authenticate_session(settings, "not-a-sealed-session")
+        self.assertEqual("unauthenticated", result.status)
+        self.assertTrue(result.clear_cookie)
+
+    def test_initial_jwks_failure_is_controlled_without_clearing_cookie(self) -> None:
+        def jwks_failure():
+            raise web_auth_module.PyJWKClientError("synthetic JWKS failure")
+
+        session = SimpleNamespace(authenticate=jwks_failure)
+        client = SimpleNamespace(
+            user_management=SimpleNamespace(load_sealed_session=lambda **kwargs: session)
+        )
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            settings = web_auth_module.get_auth_configuration()
+            result = web_auth_module.authenticate_session(settings, "sealed", client=client)
+        self.assertEqual("unavailable", result.status)
+        self.assertFalse(result.clear_cookie)
+
+        def unexpected_failure():
+            raise RuntimeError("synthetic programming failure")
+
+        session.authenticate = unexpected_failure
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            with self.assertRaisesRegex(RuntimeError, "synthetic programming failure"):
+                web_auth_module.authenticate_session(settings, "sealed", client=client)
+
+    def test_browser_auth_unavailable_offers_fresh_login_without_clearing_cookie(self) -> None:
+        headers = {
+            app_module.TRUSTED_PROXY_TOKEN_HEADER: self.ORIGIN_TOKEN,
+            "Cookie": f"{web_auth_module.SESSION_COOKIE_NAME}=synthetic-sealed-session",
+        }
+        unavailable = web_auth_module.SessionAuthentication(status="unavailable")
+        pending = web_auth_module.PendingLogin(
+            authorization_url="https://authkit.test/authorize",
+            sealed_flow="synthetic-sealed-flow",
+        )
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            client = TestClient(app_module.app, base_url="https://staging-app.jhunterj.com")
+            try:
+                with (
+                    patch.object(
+                        app_module,
+                        "authenticate_session",
+                        return_value=unavailable,
+                    ),
+                    patch.object(app_module, "authorized_local_user") as resolver,
+                ):
+                    browser_response = client.get(
+                        "/",
+                        headers={**headers, "Accept": "text/html"},
+                        follow_redirects=False,
+                    )
+                    api_response = client.get(
+                        "/api/version",
+                        headers=headers,
+                        follow_redirects=False,
+                    )
+                with patch.object(app_module, "begin_login", return_value=pending):
+                    login_response = client.get(
+                        "/auth/login",
+                        headers=headers,
+                        follow_redirects=False,
+                    )
+            finally:
+                client.close()
+
+        self.assertEqual(503, browser_response.status_code)
+        self.assertTrue(browser_response.headers["content-type"].startswith("text/html"))
+        self.assertIn('href="/auth/login"', browser_response.text)
+        self.assertNotIn("synthetic-sealed-session", browser_response.text)
+        self.assertEqual("no-store, max-age=0", browser_response.headers["cache-control"])
+        self.assertNotIn("set-cookie", browser_response.headers)
+        self.assertEqual(503, api_response.status_code)
+        self.assertEqual(
+            {"detail": "Authentication is temporarily unavailable."},
+            api_response.json(),
+        )
+        self.assertNotIn("set-cookie", api_response.headers)
+        resolver.assert_not_called()
+        self.assertEqual(303, login_response.status_code)
+        self.assertEqual(pending.authorization_url, login_response.headers["location"])
+
+    def test_terminal_browser_session_failure_deletes_cookie_and_restarts_login(self) -> None:
+        headers = {
+            app_module.TRUSTED_PROXY_TOKEN_HEADER: self.ORIGIN_TOKEN,
+            "Accept": "text/html",
+            "Cookie": f"{web_auth_module.SESSION_COOKIE_NAME}=synthetic-terminal-session",
+        }
+        terminal = web_auth_module.SessionAuthentication(
+            status="unauthenticated",
+            clear_cookie=True,
+        )
+        with patch.dict(os.environ, self.staging_environment(), clear=False):
+            client = TestClient(app_module.app, base_url="https://staging-app.jhunterj.com")
+            try:
+                with (
+                    patch.object(
+                        app_module,
+                        "authenticate_session",
+                        return_value=terminal,
+                    ),
+                    patch.object(app_module, "authorized_local_user") as resolver,
+                ):
+                    response = client.get("/", headers=headers, follow_redirects=False)
+            finally:
+                client.close()
+
+        self.assertEqual(303, response.status_code)
+        self.assertEqual("/auth/login", response.headers["location"])
+        session_cookies = [
+            value
+            for value in response.headers.get_list("set-cookie")
+            if value.startswith(web_auth_module.SESSION_COOKIE_NAME)
+        ]
+        self.assertEqual(1, len(session_cookies))
+        self.assertIn("Max-Age=0", session_cookies[0])
+        resolver.assert_not_called()
+
     def test_sqlite_owner_mapping_is_read_only_and_never_reassigned(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = Path(temp_dir) / "identity.db"

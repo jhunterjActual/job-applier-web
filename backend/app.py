@@ -358,6 +358,35 @@ def _unauthenticated_response(request: Request, clear_cookie: bool = False) -> R
     return _secured_response(request, response)
 
 
+def _authentication_unavailable_response(request: Request) -> Response:
+    """Keep API failures fixed while giving browsers a safe fresh-login path."""
+    accepts_html = "text/html" in request.headers.get("accept", "").lower()
+    if request.method.upper() == "GET" and (request.url.path == "/" or accepts_html):
+        response: Response = Response(
+            """<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sign-in needs attention</title></head>
+<body>
+<main>
+<h1>Sign-in needs attention</h1>
+<p>Your current browser session could not be verified.</p>
+<p><a href="/auth/login">Restart sign-in in this browser</a></p>
+</main>
+</body>
+</html>
+""",
+            status_code=503,
+            media_type="text/html",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+    else:
+        response = JSONResponse(
+            {"detail": "Authentication is temporarily unavailable."},
+            status_code=503,
+        )
+    return _secured_response(request, response)
+
+
 def _require_local_backup_restore() -> None:
     """Keep SQLite workspace archives out of PostgreSQL-authoritative runtimes."""
     if data_store_kind() == SHARED_DATA_STORE:
@@ -416,13 +445,7 @@ async def protect_local_browser_boundary(request: Request, call_next):
             sealed_session,
         )
         if authentication.status == "unavailable":
-            return _secured_response(
-                request,
-                JSONResponse(
-                    {"detail": "Authentication is temporarily unavailable."},
-                    status_code=503,
-                ),
-            )
+            return _authentication_unavailable_response(request)
         if authentication.status != "authenticated" or not authentication.workos_user_id:
             return _unauthenticated_response(request, authentication.clear_cookie)
         local_user = await run_in_threadpool(
