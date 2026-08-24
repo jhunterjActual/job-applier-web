@@ -6,6 +6,11 @@ additional principal is the opaque, fixed username `pilot-01`; it is not a
 WorkOS identity, CareerTrellis account, tenant, or role and cannot provision
 one.
 
+The access log skips every `/auth` route, hashes connection-IP and User-Agent
+fields, and removes request Referer and response Location. This keeps the
+outer-gate acceptance receipt useful without retaining identity-provider paths
+or raw client fingerprints.
+
 The password and its Argon2id verifier must never appear in a command argument,
 shell history, chat, receipt, commit, or access log. Store the distinct
 high-entropy password only in the operator's password manager and share it with
@@ -79,8 +84,11 @@ classes and booleans:
 4. Before any CareerTrellis mapping exists, the pilot's verified WorkOS
    identity still receives the fixed application `403` and no application
    session or local user row.
-5. Access logs contain no Authorization, Proxy-Authorization, Cookie, or
-   Set-Cookie fields and no authentication callback entry.
+5. Using only boolean field-presence results, confirm access logs contain no
+   `/auth` entries; no raw connection, forwarded-IP, or User-Agent values; and
+   no Authorization, Proxy-Authorization, `X-CareerTrellis-Proxy-Token`,
+   Cookie, Set-Cookie, Referer, or Location fields. A representative non-auth
+   record must retain only hashed connection-IP and User-Agent fingerprints.
 
 To rotate the pilot password, create and store a new distinct password and run:
 

@@ -39,15 +39,27 @@ staging-app.jhunterj.com {
 		}
 		format filter {
 			user_id delete
+			request>remote_ip hash
+			request>client_ip hash
+			request>headers>User-Agent hash
+			request>headers>Referer delete
+			request>headers>Cf-Connecting-Ip delete
+			request>headers>Cf-Connecting-Ipv6 delete
+			request>headers>True-Client-Ip delete
+			request>headers>X-Forwarded-For delete
+			request>headers>X-Real-Ip delete
 			request>headers>Authorization delete
 			request>headers>Proxy-Authorization delete
+			request>headers>X-CareerTrellis-Proxy-Token delete
 			request>headers>Cookie delete
 			resp_headers>Set-Cookie delete
+			resp_headers>Location delete
 			wrap json
 		}
 	}
 
-	# Authorization codes and state arrive in the callback query string.
-	# Do not persist that one-time authentication material in access logs.
-	log_skip /auth/callback
+	# Authentication paths may carry identity-provider state, callback material,
+	# recovery context, or session transitions. Keep every /auth route out of the
+	# access log rather than relying on a growing path-by-path denylist.
+	log_skip /auth*
 }
