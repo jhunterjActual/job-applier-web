@@ -9,7 +9,7 @@ The Caddy Basic Authentication gate remains enabled during this stage as a tempo
 - Uses the WorkOS-hosted AuthKit UI for sign-in and account recovery.
 - Uses authorization-code flow with PKCE plus a ten-minute encrypted, replay-resistant state cookie.
 - Keeps access and refresh tokens inside a Fernet-encrypted, `HttpOnly`, `Secure`, `SameSite=Lax`, `__Host-` session cookie.
-- Validates the WorkOS session on every non-health request, refreshes expired access tokens, and preserves the old cookie when the refresh service has a transient network failure.
+- Validates the WorkOS session on every non-health request, refreshes expired access tokens, and preserves the old cookie when the refresh service has a transient network or JWKS failure. When WorkOS cannot distinguish an unusable refreshed token from a JWKS outage, browser navigations show an explicit link to restart the existing PKCE sign-in flow; API requests retain the fixed `503`. A successful callback replaces the stale cookie. The application does not retry an ambiguous refresh or automatically discard a potentially recoverable session.
 - Requires a verified email, rejects impersonated sessions, and compares the immutable WorkOS user ID with the one configured staging owner.
 - Creates a privacy-minimized SQLite mapping containing the WorkOS user ID, local role, timestamps, and disablement state. It does not copy the WorkOS email or profile.
 - Returns `401` to unauthenticated API clients and redirects unauthenticated browser navigations to AuthKit. Health endpoints remain available to Caddy and deployment checks.

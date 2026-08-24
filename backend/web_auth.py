@@ -5,6 +5,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet, InvalidToken
+from jwt.exceptions import PyJWKClientError
 from workos import WorkOSClient
 from workos.session import seal_session_from_auth_response
 
@@ -249,7 +250,13 @@ def authenticate_session(
         session_data=sealed_session,
         cookie_password=settings.cookie_password,
     )
-    result = session.authenticate()
+    try:
+        result = session.authenticate()
+    except PyJWKClientError:
+        # WorkOS 10.1.1 lets JWKS lookup failures escape authenticate(). A
+        # provider/JWKS outage is not proof that the local cookie is invalid,
+        # so preserve it and let the HTTP boundary offer explicit recovery.
+        return SessionAuthentication(status="unavailable")
     if result.authenticated:
         try:
             workos_user_id = _verified_user_id(result.user, result.impersonator)
