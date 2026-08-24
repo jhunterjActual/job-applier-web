@@ -28,6 +28,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlite_postgres_import import import_sqlite_workspace
 import sqlite_postgres_reconcile as reconciliation_module
 import object_store as object_store_module
+import pilot_users as pilot_users_module
 import postgres_database as postgres_database_module
 import provider_secrets as provider_secrets_module
 import stored_objects as stored_objects_module
@@ -292,6 +293,7 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                     {"role": RUNTIME_ROLE},
                 )
             )
+
             self.assertTrue(
                 connection.scalar(
                     text(
@@ -323,6 +325,83 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 )
             )
 
+    def test_runtime_grants_remove_legacy_app_user_column_acls(self) -> None:
+        with self.admin_engine.begin() as connection:
+            connection.exec_driver_sql(f"SET ROLE {SCHEMA_OWNER}")
+            connection.exec_driver_sql(
+                "GRANT INSERT (workos_user_id, last_seen_at), "
+                "UPDATE (last_seen_at) ON careertrellis.app_users "
+                f"TO {RUNTIME_ROLE}, {WORKER_ROLE}"
+            )
+            connection.exec_driver_sql("RESET ROLE")
+
+        grant_path = (
+            Path(__file__).resolve().parent.parent
+            / "deploy"
+            / "postgres"
+            / "grant-runtime.sql"
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "CAREERTRELLIS_MIGRATION_DATABASE_URL": self.migration_url.render_as_string(
+                    hide_password=False
+                )
+            },
+            clear=False,
+        ):
+            runtime_grants_module.apply_runtime_grants(grant_path)
+
+        for engine, identity in (
+            (self.runtime_engine, "user_legacy_runtime"),
+            (self.worker_engine, "user_legacy_worker"),
+        ):
+            with self.subTest(identity=identity), self.assertRaises(DBAPIError):
+                with identity_transaction(engine, identity) as connection:
+                    connection.execute(
+                        text(
+                            "INSERT INTO careertrellis.app_users (workos_user_id) "
+                            "VALUES (:identity)"
+                        ),
+                        {"identity": identity},
+                    )
+
+        with self.assertRaises(DBAPIError):
+            with identity_transaction(
+                self.worker_engine, "user_tenant_two"
+            ) as connection:
+                connection.execute(
+                    text(
+                        "UPDATE careertrellis.app_users "
+                        "SET last_seen_at = CURRENT_TIMESTAMP WHERE id = :id"
+                    ),
+                    {"id": self.user_two},
+                )
+
+        with tenant_transaction(
+            self.runtime_engine, self.user_one, "user_tenant_one"
+        ) as connection:
+            updated = connection.execute(
+                text(
+                    "UPDATE careertrellis.app_users "
+                    "SET last_seen_at = CURRENT_TIMESTAMP WHERE id = :id"
+                ),
+                {"id": self.user_one},
+            )
+            self.assertEqual(1, updated.rowcount)
+
+        with self.assertRaises(DBAPIError):
+            with tenant_transaction(
+                self.runtime_engine, self.user_one, "user_tenant_one"
+            ) as connection:
+                connection.execute(
+                    text(
+                        "UPDATE careertrellis.app_users "
+                        "SET disabled_at = CURRENT_TIMESTAMP WHERE id = :id"
+                    ),
+                    {"id": self.user_one},
+                )
+
     @classmethod
     def _drop_cluster_objects(cls) -> None:
         with cls.admin_server_engine.connect() as connection:
@@ -331,6 +410,17 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 f"WHERE datname = '{DATABASE_NAME}' AND pid <> pg_backend_pid()"
             )
             connection.exec_driver_sql(f'DROP DATABASE IF EXISTS "{DATABASE_NAME}"')
+            if connection.scalar(
+                text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :role)"),
+                {"role": MIGRATION_ROLE},
+            ):
+                connection.exec_driver_sql(
+                    f"REVOKE SET ON PARAMETER log_parameter_max_length FROM {MIGRATION_ROLE}"
+                )
+                connection.exec_driver_sql(
+                    "REVOKE SET ON PARAMETER log_parameter_max_length_on_error "
+                    f"FROM {MIGRATION_ROLE}"
+                )
             for role in (
                 MIGRATION_ROLE,
                 RUNTIME_ROLE,
@@ -365,6 +455,12 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 f"PASSWORD '{ERASURE_WORKER_PASSWORD}'"
             )
             connection.exec_driver_sql(f"GRANT {SCHEMA_OWNER} TO {MIGRATION_ROLE}")
+            connection.exec_driver_sql(
+                f"GRANT SET ON PARAMETER log_parameter_max_length TO {MIGRATION_ROLE}"
+            )
+            connection.exec_driver_sql(
+                f"GRANT SET ON PARAMETER log_parameter_max_length_on_error TO {MIGRATION_ROLE}"
+            )
             connection.exec_driver_sql(f'CREATE DATABASE "{DATABASE_NAME}"')
             connection.exec_driver_sql(f'REVOKE ALL ON DATABASE "{DATABASE_NAME}" FROM PUBLIC')
             connection.exec_driver_sql(
@@ -449,16 +545,12 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 f"FROM {RUNTIME_ROLE}"
             )
             connection.exec_driver_sql(
-                "REVOKE INSERT, UPDATE ON careertrellis.app_users "
+                "REVOKE INSERT, UPDATE, DELETE ON careertrellis.app_users "
                 f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}"
             )
             connection.exec_driver_sql(
-                "GRANT INSERT (workos_user_id, last_seen_at) ON careertrellis.app_users "
-                f"TO {RUNTIME_ROLE}, {WORKER_ROLE}"
-            )
-            connection.exec_driver_sql(
                 "GRANT UPDATE (last_seen_at) ON careertrellis.app_users "
-                f"TO {RUNTIME_ROLE}, {WORKER_ROLE}"
+                f"TO {RUNTIME_ROLE}"
             )
             connection.exec_driver_sql("RESET ROLE")
 
@@ -517,6 +609,63 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 ),
                 {"owner": self.user_two},
             )
+
+    def test_pilot_operator_uses_real_migration_role_and_respects_erasure(self) -> None:
+        migration_engine = create_engine(self.migration_url)
+        try:
+            inspected = pilot_users_module.perform_operation(
+                migration_engine,
+                "inspect",
+                "user_tenant_one",
+                "user_tenant_two",
+            )
+            self.assertEqual(
+                ("ok", "user", True),
+                (inspected.result, inspected.role, inspected.active),
+            )
+
+            disabled = pilot_users_module.perform_operation(
+                migration_engine,
+                "disable",
+                "user_tenant_one",
+                "user_tenant_two",
+            )
+            self.assertEqual(("disabled", True), (disabled.result, disabled.changed))
+            reactivated = pilot_users_module.perform_operation(
+                migration_engine,
+                "reinvite",
+                "user_tenant_one",
+                "user_tenant_two",
+            )
+            self.assertEqual(
+                ("reactivated", True), (reactivated.result, reactivated.active)
+            )
+
+            PostgreSQLAccountErasureRepository(
+                self.user_two, engine=self.runtime_engine
+            ).request_erasure()
+            blocked = pilot_users_module.perform_operation(
+                migration_engine,
+                "reinvite",
+                "user_tenant_one",
+                "user_tenant_two",
+            )
+            self.assertEqual(
+                ("erasure_pending", 5, False),
+                (blocked.result, blocked.exit_code, blocked.active),
+            )
+            with self.admin_engine.connect() as connection:
+                self.assertIsNotNone(
+                    connection.scalar(
+                        text(
+                            "SELECT disabled_at FROM careertrellis.app_users "
+                            "WHERE id = :owner"
+                        ),
+                        {"owner": self.user_two},
+                    )
+                )
+        finally:
+            migration_engine.dispose()
 
     def test_account_erasure_is_idempotent_owner_isolated_and_retains_only_receipt(self) -> None:
         owner_one_object_id = uuid4()
@@ -1027,8 +1176,8 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             with identity_transaction(self.runtime_engine, "user_new") as connection:
                 connection.execute(
                     text(
-                        "INSERT INTO careertrellis.app_users (workos_user_id, role) "
-                        "VALUES ('user_new', 'owner')"
+                        "INSERT INTO careertrellis.app_users (workos_user_id) "
+                        "VALUES ('user_new')"
                     )
                 )
 
@@ -1052,6 +1201,37 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 {"id": self.user_one},
             )
             self.assertEqual(1, updated.rowcount)
+
+        with self.assertRaises(DBAPIError):
+            with tenant_transaction(
+                self.runtime_engine, self.user_one, "user_tenant_one"
+            ) as connection:
+                connection.execute(
+                    text(
+                        "UPDATE careertrellis.app_users "
+                        "SET disabled_at = CURRENT_TIMESTAMP WHERE id = :id"
+                    ),
+                    {"id": self.user_one},
+                )
+
+        with self.assertRaises(DBAPIError):
+            with tenant_transaction(
+                self.runtime_engine, self.user_one, "user_tenant_one"
+            ) as connection:
+                connection.execute(
+                    text("DELETE FROM careertrellis.app_users WHERE id = :id"),
+                    {"id": self.user_one},
+                )
+
+        with self.assertRaises(DBAPIError):
+            with identity_transaction(self.worker_engine, "user_tenant_two") as connection:
+                connection.execute(
+                    text(
+                        "UPDATE careertrellis.app_users "
+                        "SET last_seen_at = CURRENT_TIMESTAMP WHERE id = :id"
+                    ),
+                    {"id": self.user_two},
+                )
 
     def test_tenant_context_blocks_cross_user_reads_updates_and_inserts(self) -> None:
         with tenant_transaction(
@@ -3196,6 +3376,153 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             repository.succeed(item, {"success": True, "jobs_added": 1, "secret": "omitted"})
             self.assertEqual(1, repository.status()["last_result"]["jobs_added"])
             self.assertNotIn("secret", repository.status()["last_result"])
+
+    def test_disabled_owner_search_is_cancelled_before_worker_claim(self) -> None:
+        owner_one = PostgreSQLSearchRunRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        owner_two = PostgreSQLSearchRunRepository(
+            self.user_two, engine=self.runtime_engine
+        )
+        disabled_run = owner_one.enqueue(
+            "00000000-0000-4000-8000-000000000091", "disabled owner", ""
+        )
+        active_run = owner_two.enqueue(
+            "00000000-0000-4000-8000-000000000092", "active owner", ""
+        )
+        owner_one.publish_prepared(disabled_run, "disabled owner", "")
+        owner_two.publish_prepared(active_run, "active owner", "")
+        with self.admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE careertrellis.app_users "
+                    "SET disabled_at = CURRENT_TIMESTAMP WHERE id = :owner"
+                ),
+                {"owner": self.user_one},
+            )
+
+        claim = claim_next_postgres_search_run(
+            "10000000-0000-4000-8000-000000000091",
+            engine=self.worker_engine,
+        )
+        self.assertIsNotNone(claim)
+        self.assertEqual(active_run, claim.run_id)
+        self.assertEqual(self.user_two, claim.owner_user_id)
+        self.assertIsNone(
+            claim_next_postgres_search_run(
+                "10000000-0000-4000-8000-000000000092",
+                engine=self.worker_engine,
+            )
+        )
+        with self.admin_engine.begin() as connection:
+            disabled = connection.execute(
+                text(
+                    "SELECT status, error_code, lease_token, worker_id "
+                    "FROM careertrellis.search_runs WHERE id = CAST(:run AS uuid)"
+                ),
+                {"run": disabled_run},
+            ).mappings().one()
+            queued = connection.scalar(
+                text(
+                    "SELECT count(*) FROM careertrellis.search_run_claim_queue "
+                    "WHERE run_id = CAST(:run AS uuid)"
+                ),
+                {"run": disabled_run},
+            )
+        self.assertEqual("cancelled", disabled["status"])
+        self.assertEqual("owner_disabled", disabled["error_code"])
+        self.assertIsNone(disabled["lease_token"])
+        self.assertIsNone(disabled["worker_id"])
+        self.assertEqual(0, queued)
+
+    def test_disabled_owner_cannot_renew_an_existing_search_run_lease(self) -> None:
+        repository = PostgreSQLSearchRunRepository(
+            self.user_two, engine=self.runtime_engine
+        )
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000093", "leased pilot", "Remote"
+        )
+        repository.publish_prepared(run_id, "leased pilot", "Remote")
+        claim = claim_next_postgres_search_run(
+            "10000000-0000-4000-8000-000000000093", engine=self.worker_engine
+        )
+        self.assertIsNotNone(claim)
+
+        with self.admin_engine.connect() as connection:
+            original_expiry = connection.scalar(
+                text(
+                    "SELECT lease_expires_at FROM careertrellis.search_runs "
+                    "WHERE id = CAST(:run_id AS uuid)"
+                ),
+                {"run_id": run_id},
+            )
+        with self.admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE careertrellis.app_users "
+                    "SET disabled_at = CURRENT_TIMESTAMP WHERE id = :owner"
+                ),
+                {"owner": self.user_two},
+            )
+
+        with self.assertRaises(SearchRunLeaseLost):
+            repository.heartbeat(claim, lease_seconds=900)
+
+        with self.admin_engine.connect() as connection:
+            state = connection.execute(
+                text(
+                    "SELECT status, lease_expires_at, lease_token "
+                    "FROM careertrellis.search_runs "
+                    "WHERE id = CAST(:run_id AS uuid)"
+                ),
+                {"run_id": run_id},
+            ).one()
+        self.assertEqual("running", state.status)
+        self.assertEqual(original_expiry, state.lease_expires_at)
+        self.assertEqual(claim.lease_token, str(state.lease_token))
+
+    def test_disabled_owner_finish_cancels_and_discards_result(self) -> None:
+        repository = PostgreSQLSearchRunRepository(
+            self.user_two, engine=self.runtime_engine
+        )
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000094", "finishing pilot", "Ohio"
+        )
+        repository.publish_prepared(run_id, "finishing pilot", "Ohio")
+        claim = claim_next_postgres_search_run(
+            "10000000-0000-4000-8000-000000000094", engine=self.worker_engine
+        )
+        self.assertIsNotNone(claim)
+        repository.heartbeat(claim)
+
+        with self.admin_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE careertrellis.app_users "
+                    "SET disabled_at = CURRENT_TIMESTAMP WHERE id = :owner"
+                ),
+                {"owner": self.user_two},
+            )
+
+        repository.succeed(
+            claim, {"success": True, "jobs_added": 17, "secret": "discard me"}
+        )
+
+        with self.admin_engine.connect() as connection:
+            state = connection.execute(
+                text(
+                    "SELECT status, result_json, error_code, lease_expires_at, "
+                    "lease_token, worker_id FROM careertrellis.search_runs "
+                    "WHERE id = CAST(:run_id AS uuid)"
+                ),
+                {"run_id": run_id},
+            ).one()
+        self.assertEqual("cancelled", state.status)
+        self.assertIsNone(state.result_json)
+        self.assertEqual("owner_disabled", state.error_code)
+        self.assertIsNone(state.lease_expires_at)
+        self.assertIsNone(state.lease_token)
+        self.assertIsNone(state.worker_id)
 
     def test_search_run_expiry_retries_and_rejects_the_stale_lease(self) -> None:
         repository = PostgreSQLSearchRunRepository(self.user_one, engine=self.runtime_engine)

@@ -26,6 +26,7 @@ import account_erasure_repository as repository_module
 import account_erasure_worker as worker_module
 import config as config_module
 import data_store as data_store_module
+import local_users as local_users_module
 import provider_secrets as provider_secrets_module
 import web_auth as web_auth_module
 
@@ -135,7 +136,11 @@ class AccountErasureRouteTests(unittest.TestCase):
             patch.dict(os.environ, environment, clear=False),
             patch.object(app_module, "data_store_kind", return_value=data_store_module.SHARED_DATA_STORE),
             patch.object(app_module, "authenticate_session", return_value=authenticated),
-            patch.object(app_module, "authorized_local_owner", return_value=41),
+            patch.object(
+                app_module,
+                "authorized_local_user",
+                return_value=local_users_module.AuthorizedLocalUser(41, "owner"),
+            ),
             patch.object(app_module, "runtime_account_erasure_repository", side_effect=selected_repository),
             patch.object(app_module, "logout_url") as workos_logout,
         ):

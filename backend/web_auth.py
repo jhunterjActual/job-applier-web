@@ -183,8 +183,7 @@ def _open_login_flow(settings: WorkOSAuthConfiguration, sealed_flow: str) -> tup
     return expected_state, code_verifier
 
 
-def _authorized_user_id(
-    settings: WorkOSAuthConfiguration,
+def _verified_user_id(
     user: Any,
     impersonator: Any = None,
 ) -> str:
@@ -196,7 +195,7 @@ def _authorized_user_id(
     else:
         workos_user_id = str(getattr(user, "id", ""))
         email_verified = getattr(user, "email_verified", False) is True
-    if not email_verified or not hmac_safe_equal(workos_user_id, settings.owner_workos_user_id):
+    if not email_verified or not WORKOS_USER_ID_PATTERN.fullmatch(workos_user_id):
         raise IdentityNotAuthorizedError("This identity is not authorized for staging.")
     return workos_user_id
 
@@ -225,7 +224,7 @@ def complete_login(
         code=code,
         code_verifier=code_verifier,
     )
-    workos_user_id = _authorized_user_id(settings, result.user, result.impersonator)
+    workos_user_id = _verified_user_id(result.user, result.impersonator)
     sealed_session = seal_session_from_auth_response(
         access_token=result.access_token,
         refresh_token=result.refresh_token,
@@ -253,7 +252,7 @@ def authenticate_session(
     result = session.authenticate()
     if result.authenticated:
         try:
-            workos_user_id = _authorized_user_id(settings, result.user, result.impersonator)
+            workos_user_id = _verified_user_id(result.user, result.impersonator)
         except IdentityNotAuthorizedError:
             return SessionAuthentication(status="unauthenticated", clear_cookie=True)
         return SessionAuthentication(
@@ -286,7 +285,7 @@ def authenticate_session(
             return SessionAuthentication(status="unavailable")
         return SessionAuthentication(status="unauthenticated", clear_cookie=True)
     try:
-        workos_user_id = _authorized_user_id(settings, refreshed.user, refreshed.impersonator)
+        workos_user_id = _verified_user_id(refreshed.user, refreshed.impersonator)
     except IdentityNotAuthorizedError:
         return SessionAuthentication(status="unauthenticated", clear_cookie=True)
     return SessionAuthentication(

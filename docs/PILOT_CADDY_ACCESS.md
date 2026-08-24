@@ -78,6 +78,12 @@ sudo CAREERTRELLIS_SOURCE_DIR=/srv/careertrellis/job-applier-web \
 Use separate clean browser profiles for these checks and retain only status
 classes and booleans:
 
+Password-only WorkOS authentication is accepted for this bounded pilot.
+Environment-wide MFA stays disabled so TOTP enrollment is not required;
+optional passkeys may be offered separately. Factor enrollment state must not be recorded.
+Invitation-only registration, verified email, and the reviewed CareerTrellis
+authorization boundary remain mandatory.
+
 1. Missing and incorrect Basic Auth credentials receive `401`.
 2. The existing owner credential still passes the Caddy gate.
 3. `pilot-01` passes the Caddy gate with the newly shared password.

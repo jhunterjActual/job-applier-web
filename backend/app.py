@@ -66,9 +66,8 @@ from data_store import (
 )
 from local_users import (
     LocalUserAuthorizationError,
-    authorized_local_owner,
+    authorized_local_user,
     check_identity_store_ready,
-    provision_staging_owner,
     validate_identity_store_configuration,
 )
 from postgres_database import dispose_postgres_engines
@@ -426,13 +425,16 @@ async def protect_local_browser_boundary(request: Request, call_next):
             )
         if authentication.status != "authenticated" or not authentication.workos_user_id:
             return _unauthenticated_response(request, authentication.clear_cookie)
-        local_user_id = await run_in_threadpool(
-            authorized_local_owner,
+        local_user = await run_in_threadpool(
+            authorized_local_user,
             authentication.workos_user_id,
+            auth_settings.owner_workos_user_id,
         )
-        if local_user_id is None:
+        if local_user is None:
             return _unauthenticated_response(request, clear_cookie=True)
+        local_user_id = local_user.id
         request.state.local_user_id = local_user_id
+        request.state.local_user_role = local_user.role
         request.state.workos_session_id = authentication.session_id
         request.state.refreshed_session = authentication.refreshed_session
         owner_context_token = set_current_owner_user_id(local_user_id)
@@ -614,7 +616,14 @@ async def auth_callback(request: Request) -> Response:
             state=state,
             sealed_flow=sealed_flow,
         )
-        await run_in_threadpool(provision_staging_owner, completed_login.workos_user_id)
+        local_user = await run_in_threadpool(
+            authorized_local_user,
+            completed_login.workos_user_id,
+            settings.owner_workos_user_id,
+            touch=True,
+        )
+        if local_user is None:
+            raise LocalUserAuthorizationError("The local user is not active.")
     except LoginFlowError as exc:
         response = JSONResponse({"detail": "The login attempt expired or is invalid."}, status_code=400)
         _delete_auth_cookie(response, LOGIN_FLOW_COOKIE_NAME)
@@ -728,14 +737,16 @@ def get_readiness() -> dict:
     """Report readiness only when configuration, storage, and the database are usable."""
     try:
         config.validate_runtime_configuration()
-        get_auth_configuration()
+        auth_settings = get_auth_configuration()
         if not all(
             directory.is_dir() and os.access(directory, os.R_OK | os.W_OK)
             for directory in (config.DATA_DIR, config.UPLOAD_DIR, config.OUTPUT_DIR)
         ):
             raise RuntimeError("Runtime storage is not accessible.")
         check_data_store_ready(get_db_connection)
-        check_identity_store_ready()
+        check_identity_store_ready(
+            auth_settings.owner_workos_user_id if auth_settings is not None else None
+        )
         check_provider_secret_store_ready()
         check_object_store_ready()
     except Exception as exc:

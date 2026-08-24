@@ -19,6 +19,7 @@ from sqlalchemy import text
 
 import app as app_module
 import generated_material_repository as generated_material_module
+from local_users import AuthorizedLocalUser
 import object_store as object_store_module
 import postgres_database as postgres_database_module
 import stored_objects as stored_objects_module
@@ -207,13 +208,25 @@ class PostgreSQLCutoverRouteQualificationTests(unittest.TestCase):
                 session_id=f"session-{sealed_session}",
             )
 
+        def authorize(
+            identity: str, _expected_owner: str, *, touch: bool = False
+        ) -> AuthorizedLocalUser | None:
+            del touch
+            owner_id = owner_by_identity.get(identity)
+            if owner_id is None:
+                return None
+            return AuthorizedLocalUser(
+                id=owner_id,
+                role="owner" if identity == "user_tenant_one" else "user",
+            )
+
         self.patchers = [
             patch.object(app_module, "get_auth_configuration", return_value=Mock()),
             patch.object(app_module, "authenticate_session", side_effect=authenticate),
             patch.object(
                 app_module,
-                "authorized_local_owner",
-                side_effect=lambda identity: owner_by_identity.get(identity),
+                "authorized_local_user",
+                side_effect=authorize,
             ),
             patch.object(app_module, "get_db_connection", self.sqlite_fallback),
             patch.object(app_module, "provider_secret_store_kind", return_value=SHARED_SECRET_STORE),

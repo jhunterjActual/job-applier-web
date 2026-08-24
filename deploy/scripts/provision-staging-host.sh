@@ -105,6 +105,8 @@ install -o root -g root -m 0644 "${repository_root}/deploy/systemd/caddy.service
 install -o root -g root -m 0644 "${repository_root}/deploy/caddy/Caddyfile.staging" /etc/caddy/Caddyfile
 install -d -o root -g root -m 0755 /usr/local/libexec/careertrellis
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/maintenance-lock.sh" /usr/local/libexec/careertrellis/maintenance-lock.sh
+install -o root -g root -m 0640 "${repository_root}/backend/pilot_users.py" /usr/local/libexec/careertrellis/pilot_users.py
+install -o root -g root -m 0750 "${repository_root}/deploy/scripts/manage-pilot-user.sh" /usr/local/sbin/careertrellis-pilot-user
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/deploy-release.sh" /usr/local/sbin/careertrellis-deploy
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/rollback-release.sh" /usr/local/sbin/careertrellis-rollback
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/hosted-authority.sh" /usr/local/sbin/careertrellis-authority

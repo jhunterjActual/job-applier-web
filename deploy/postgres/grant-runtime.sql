@@ -49,14 +49,17 @@ REVOKE ALL ON FUNCTION careertrellis.dispatch_due_saved_searches(integer)
 GRANT EXECUTE ON FUNCTION careertrellis.dispatch_due_saved_searches(integer)
     TO careertrellis_worker;
 
--- Authentication-controlled fields cannot be supplied or changed by a user.
--- A verified identity may create its default-role mapping and refresh last_seen_at.
-REVOKE INSERT, UPDATE ON careertrellis.app_users
+-- Authentication-controlled rows and fields are operator-managed. Login may
+-- refresh last_seen_at only after an existing active mapping is authorized.
+-- Remove the column ACLs granted by the accepted single-owner release before
+-- revoking broad table privileges; PostgreSQL tracks those ACLs independently.
+REVOKE INSERT (workos_user_id, last_seen_at), UPDATE (last_seen_at)
+    ON careertrellis.app_users
     FROM careertrellis_runtime, careertrellis_worker;
-GRANT INSERT (workos_user_id, last_seen_at) ON careertrellis.app_users
-    TO careertrellis_runtime, careertrellis_worker;
+REVOKE INSERT, UPDATE, DELETE ON careertrellis.app_users
+    FROM careertrellis_runtime, careertrellis_worker;
 GRANT UPDATE (last_seen_at) ON careertrellis.app_users
-    TO careertrellis_runtime, careertrellis_worker;
+    TO careertrellis_runtime;
 
 -- Account erasure is accepted only through the authenticated web function.
 -- Cross-owner claim, object acknowledgement, finalization, retry, and receipt
