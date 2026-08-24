@@ -3358,7 +3358,7 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("identity-distinct from the source", restore)
         self.assertIn("The disposable R2 target must be empty.", restore)
 
-    def test_auth_callback_material_is_excluded_from_host_access_logs(self) -> None:
+    def test_auth_and_client_fingerprints_are_excluded_from_host_access_logs(self) -> None:
         project_dir = self.project_dir()
         caddy_source = (project_dir / "deploy" / "caddy" / "Caddyfile.staging").read_text(
             encoding="utf-8"
@@ -3367,13 +3367,25 @@ class DependencyLockTests(unittest.TestCase):
         service_source = (
             project_dir / "deploy" / "systemd" / "careertrellis-web.service"
         ).read_text(encoding="utf-8")
-        self.assertIn("log_skip /auth/callback", caddy_source)
+        self.assertIn("log_skip /auth*", caddy_source)
+        self.assertNotIn("log_skip /auth/callback", caddy_source)
         for field in (
             "user_id delete",
+            "request>remote_ip hash",
+            "request>client_ip hash",
+            "request>headers>User-Agent hash",
+            "request>headers>Referer delete",
+            "request>headers>Cf-Connecting-Ip delete",
+            "request>headers>Cf-Connecting-Ipv6 delete",
+            "request>headers>True-Client-Ip delete",
+            "request>headers>X-Forwarded-For delete",
+            "request>headers>X-Real-Ip delete",
             "request>headers>Authorization delete",
             "request>headers>Proxy-Authorization delete",
+            "request>headers>X-CareerTrellis-Proxy-Token delete",
             "request>headers>Cookie delete",
             "resp_headers>Set-Cookie delete",
+            "resp_headers>Location delete",
         ):
             self.assertIn(field, caddy_source)
         self.assertNotIn("log_credentials", caddy_source)
