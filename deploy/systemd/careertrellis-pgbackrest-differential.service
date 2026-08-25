@@ -2,20 +2,39 @@
 Description=Differential encrypted PostgreSQL backup to R2
 After=network-online.target postgresql.service
 Wants=network-online.target
+OnFailure=careertrellis-backup-health-alert@%n.service
 
 [Service]
 Type=oneshot
-User=postgres
-Group=postgres
-ExecStartPre=/usr/bin/pgbackrest --stanza=careertrellis check
-ExecStart=/usr/bin/pgbackrest --stanza=careertrellis --type=diff backup
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/sbin/careertrellis-run-pgbackrest-backup differential_backup
+ExecStartPost=/usr/local/sbin/careertrellis-backup-health clear-unit-alert %n
+TimeoutStartSec=6h
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectHome=true
-ProtectSystem=full
+ProtectSystem=strict
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+ReadWritePaths=/run/lock
+ReadWritePaths=/var/backups/careertrellis/backup-health
+ReadWritePaths=/var/lib/careertrellis/backup-health
+ReadWritePaths=/var/log/pgbackrest
+ReadWritePaths=/var/spool/pgbackrest
 
 [Install]
 WantedBy=multi-user.target

@@ -3255,11 +3255,17 @@ class DependencyLockTests(unittest.TestCase):
         )
         self.assertNotIn("systemctl enable", provision)
         self.assertNotIn("systemctl start", provision)
-        self.assertFalse(
-            any(
-                "generated-object" in path.name
+        self.assertEqual(
+            {
+                "careertrellis-generated-object-backup-health-alert@.service",
+                "careertrellis-generated-object-backup-health.service",
+                "careertrellis-generated-object-backup-health.timer",
+            },
+            {
+                path.name
                 for path in (project_dir / "deploy" / "systemd").rglob("*")
-            )
+                if "generated-object" in path.name
+            },
         )
         for activation_source in (deploy, rollback):
             self.assertIn(
@@ -3360,6 +3366,589 @@ class DependencyLockTests(unittest.TestCase):
         self.assertNotIn(".careertrellis-recovery", restore)
         self.assertIn("identity-distinct from the source", restore)
         self.assertIn("The disposable R2 target must be empty.", restore)
+
+    def test_backup_health_regressions_are_ci_and_release_gated(self) -> None:
+        project_dir = self.project_dir()
+        gated_sources = (
+            project_dir / ".github" / "workflows" / "dependency-tests.yml",
+            project_dir / ".github" / "workflows" / "web-foundation.yml",
+            project_dir / "deploy" / "scripts" / "deploy-release.sh",
+        )
+        for source_path in gated_sources:
+            source = source_path.read_text(encoding="utf-8")
+            self.assertIn("test_p0_regressions.py", source)
+            self.assertIn("test_backup_health.py", source)
+            self.assertEqual(1, source.count("test_backup_health.py"))
+
+    def test_database_backup_health_uses_one_hardened_repository_boundary(self) -> None:
+        project_dir = self.project_dir()
+        scripts = project_dir / "deploy" / "scripts"
+        systemd = project_dir / "deploy" / "systemd"
+        repository_lock = (
+            "readonly lock_path=/run/lock/"
+            "careertrellis-pgbackrest-repository.lock"
+        )
+        wrapper_names = (
+            "run-pgbackrest-backup.sh",
+            "mirror-pgbackrest-onedrive.sh",
+            "check-pgbackrest-mirror.sh",
+            "test-pgbackrest-restore.sh",
+        )
+        wrappers = {
+            name: (scripts / name).read_text(encoding="utf-8")
+            for name in wrapper_names
+        }
+        for source in wrappers.values():
+            self.assertIn(repository_lock, source)
+            self.assertIn('exec 9<>"${lock_path}"', source)
+            self.assertIn("flock --nonblock 9", source)
+            self.assertIn(
+                "/usr/local/libexec/careertrellis/backup_health.py", source
+            )
+            self.assertIn(" publish --receipt-root ", source)
+
+        mirror = wrappers["mirror-pgbackrest-onedrive.sh"]
+        self.assertIn("${rclone_binary} copy", mirror)
+        self.assertIn("--immutable", mirror)
+        self.assertNotIn("${rclone_binary} sync", mirror)
+        self.assertNotIn("${rclone_binary} move", mirror)
+        self.assertNotIn("${rclone_binary} delete", mirror)
+        self.assertNotIn("${rclone_binary} purge", mirror)
+
+        inventory = wrappers["check-pgbackrest-mirror.sh"]
+        inventory_check = inventory[
+            inventory.index("${rclone_binary} check") : inventory.index(
+                "${rclone_binary} size"
+            )
+        ]
+        self.assertIn("--download", inventory_check)
+        self.assertIn("--one-way", inventory_check)
+        self.assertNotIn("--size-only", inventory)
+
+        service_expectations = {
+            "careertrellis-pgbackrest-full.service": (
+                "careertrellis-run-pgbackrest-backup full_backup"
+            ),
+            "careertrellis-pgbackrest-differential.service": (
+                "careertrellis-run-pgbackrest-backup differential_backup"
+            ),
+            "careertrellis-pgbackrest-onedrive.service": (
+                "careertrellis-mirror-pgbackrest-onedrive"
+            ),
+            "careertrellis-pgbackrest-inventory.service": (
+                "careertrellis-check-pgbackrest-mirror"
+            ),
+            "careertrellis-pgbackrest-restore.service": (
+                "careertrellis-test-pgbackrest-restore"
+            ),
+        }
+        for unit_name, helper_name in service_expectations.items():
+            unit = (systemd / unit_name).read_text(encoding="utf-8")
+            self.assertIn(
+                "OnFailure=careertrellis-backup-health-alert@%n.service", unit
+            )
+            self.assertIn(f"ExecStart=/usr/local/sbin/{helper_name}", unit)
+            self.assertIn(
+                "ExecStartPost=/usr/local/sbin/careertrellis-backup-health "
+                "clear-unit-alert %n",
+                unit,
+            )
+            for hardening in (
+                "User=root",
+                "Group=root",
+                "UMask=0077",
+                "NoNewPrivileges=true",
+                "PrivateTmp=true",
+                "PrivateDevices=true",
+                "ProtectHome=true",
+                "ProtectSystem=strict",
+                "RestrictNamespaces=true",
+                "RestrictSUIDSGID=true",
+                "LockPersonality=true",
+                "SystemCallArchitectures=native",
+            ):
+                self.assertIn(hardening, unit)
+
+        health_unit = (
+            systemd / "careertrellis-backup-health.service"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "ExecStartPost=/usr/local/sbin/careertrellis-backup-health "
+            "clear-unit-alert %n",
+            health_unit,
+        )
+        manager = (scripts / "manage-backup-health.sh").read_text(encoding="utf-8")
+        evaluation = manager[
+            manager.index("evaluate_database_health() {") : manager.index(
+                "acknowledge_wal_failures() {"
+            )
+        ]
+        self.assertNotIn(
+            "clear_unit_alert careertrellis-backup-health.service", evaluation
+        )
+
+    def test_backup_health_restore_and_future_timers_fail_closed(self) -> None:
+        project_dir = self.project_dir()
+        scripts = project_dir / "deploy" / "scripts"
+        systemd = project_dir / "deploy" / "systemd"
+        restore = (scripts / "test-pgbackrest-restore.sh").read_text(
+            encoding="utf-8"
+        )
+        exact_restore = restore.index('--set="${backup_label}"')
+        socket_binding = restore.index(
+            'unix_socket_directories = \'${socket_directory}\'', exact_restore
+        )
+        promotion = restore.index("promote >>", socket_binding)
+        writable_probe = restore.index("CREATE TEMP TABLE", promotion)
+        checksums = restore.index('"${pg_checksums}"', writable_probe)
+        cleanup = restore.index("if ! cleanup_restore; then", checksums)
+        receipt = restore.index('"operation":"pgbackrest_restore"', cleanup)
+        self.assertLess(exact_restore, socket_binding)
+        self.assertLess(socket_binding, promotion)
+        self.assertLess(promotion, writable_probe)
+        self.assertLess(writable_probe, checksums)
+        self.assertLess(checksums, cleanup)
+        self.assertLess(cleanup, receipt)
+        self.assertIn("listen_addresses = ''", restore)
+        start_options = restore[
+            restore.index("readonly postgres_start_options=") : restore.index(
+                'start >>"${private_log}"',
+                restore.index("readonly postgres_start_options="),
+            )
+        ]
+        for fixed_setting in (
+            "-c data_directory=${restore_directory}",
+            "-c hba_file=${test_hba}",
+            "-c ident_file=${test_ident}",
+            "-c listen_addresses=",
+            "-c port=${test_port}",
+            "-c unix_socket_directories=${socket_directory}",
+            "-c ssl=off",
+            "-c shared_preload_libraries=",
+            "-c session_preload_libraries=",
+            "-c local_preload_libraries=",
+            "-c archive_mode=off",
+            "-c recovery_end_command=",
+            "-c log_destination=stderr",
+            "-c external_pid_file=",
+            "-c max_connections=50",
+            "-c shared_buffers=64MB",
+            "-c primary_conninfo=",
+        ):
+            self.assertIn(fixed_setting, start_options)
+        self.assertIn('--options="${postgres_start_options}"', start_options)
+        self.assertIn("710:root:postgres", restore)
+        self.assertIn("restore_device_inode=$(stat -c '%d:%i'", restore)
+        self.assertIn('${current_identity} != "${restore_device_inode}"', restore)
+        self.assertIn("--host=\"${socket_directory}\"", restore)
+        self.assertIn("--target-action=promote", restore)
+        self.assertIn("pg_is_in_recovery()", restore)
+        self.assertIn("promotion_verified\":true", restore)
+        self.assertIn("checksum_verified\":true", restore)
+        self.assertIn("cleanup_verified\":true", restore)
+        self.assertIn(
+            'runuser -u postgres -- /usr/bin/tee -- "${test_hba}"', restore
+        )
+        self.assertIn(
+            'runuser -u postgres -- /usr/bin/tee -- "${test_config}"', restore
+        )
+        self.assertNotIn('cat >"${test_hba}"', restore)
+        self.assertNotIn('cat >"${test_config}"', restore)
+        self.assertNotIn(
+            'chown postgres:postgres "${test_config}" "${test_hba}"', restore
+        )
+
+        installer = (scripts / "install-backup-health-monitor.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("restore_root_needs_migration=true", installer)
+        self.assertIn('chown root:postgres "${restore_root}"', installer)
+        self.assertIn('chmod 0710 "${restore_root}"', installer)
+        rollback = installer[
+            installer.index("rollback_installation() {") : installer.index(
+                "trap rollback_installation ERR"
+            )
+        ]
+        self.assertIn('chown postgres:postgres "${restore_root}"', rollback)
+        self.assertIn('chmod 0700 "${restore_root}"', rollback)
+        self.assertIn("restore_root_creation_started", rollback)
+        self.assertIn('rmdir -- "${restore_root}"', rollback)
+        creation = installer[
+            installer.index("if [[ ${restore_root_was_absent} == true ]]") :
+            installer.index("if [[ ${restore_root_needs_migration} == true ]]")
+        ]
+        self.assertIn('install -d -o root -g postgres -m 0710 "${restore_root}"', creation)
+        self.assertIn("restore_root_created_identity", creation)
+
+        future_timers = {
+            "careertrellis-pgbackrest-inventory.timer": "7d",
+            "careertrellis-pgbackrest-restore.timer": "30d",
+        }
+        for timer_name, delay in future_timers.items():
+            timer = (systemd / timer_name).read_text(encoding="utf-8")
+            self.assertIn(f"OnActiveSec={delay}", timer)
+            self.assertIn(f"OnUnitActiveSec={delay}", timer)
+            self.assertNotIn("OnCalendar=", timer)
+            self.assertNotIn("Persistent=true", timer)
+
+        installer = (scripts / "install-backup-health-monitor.sh").read_text(
+            encoding="utf-8"
+        )
+        verification = installer.index('systemd-analyze --root="${verification_root}"')
+        rollback_capture = installer.index(
+            "rollback_root=$(mktemp -d", verification
+        )
+        installed_core = installer.rindex(
+            '"${verification_root}${helper_target_paths[0]}"'
+        )
+        self.assertLess(verification, rollback_capture)
+        self.assertLess(rollback_capture, installed_core)
+        self.assertIn("trap rollback_installation ERR", installer)
+        self.assertIn("cp --archive --preserve=all --no-dereference", installer)
+        self.assertIn("prior installed targets were restored", installer)
+
+        ingestion = installer.index("# Reviewed source ingestion is complete.")
+        self.assertLess(installer.index("validate_source() {"), ingestion)
+        self.assertIn(
+            "readonly repository_source=/proc/self/fd/${repository_fd}", installer
+        )
+        self.assertIn(
+            "A reviewed source directory is missing or is a symbolic link.",
+            installer,
+        )
+        self.assertIn(
+            "A reviewed source directory must be root-owned and not group- or world-writable.",
+            installer,
+        )
+        self.assertNotIn('"${repository_root}/', installer[ingestion:])
+        self.assertNotIn('"${repository_source}/', installer[ingestion:])
+        self.assertIn("trap cleanup_verification_root EXIT", installer)
+        self.assertIn(
+            '"${verification_root}${helper_target_paths[0]}"', installer[ingestion:]
+        )
+        self.assertIn(
+            '"${verification_root}${target_path}"', installer[ingestion:]
+        )
+        self.assertLess(ingestion, verification)
+        self.assertNotIn(
+            'rm -rf --one-file-system -- "${verification_root}"',
+            installer[verification:rollback_capture],
+        )
+
+        start_boundary = installer[
+            installer.index("# Starting these timer units") : installer.index(
+                'printf \'{"operation":"install_backup_health_monitor"'
+            )
+        ]
+        self.assertIn("systemctl start", start_boundary)
+        self.assertIn("careertrellis-pgbackrest-inventory.timer", start_boundary)
+        self.assertIn("careertrellis-pgbackrest-restore.timer", start_boundary)
+        self.assertIn("careertrellis-backup-health.timer", start_boundary)
+        self.assertNotIn(".service", start_boundary)
+
+    def test_wal_acknowledgement_and_persistent_unit_alerts_are_sticky(self) -> None:
+        manager = (
+            self.project_dir()
+            / "deploy"
+            / "scripts"
+            / "manage-backup-health.sh"
+        ).read_text(encoding="utf-8")
+        acknowledge = manager[
+            manager.index("acknowledge_wal_failures() {") : manager.index(
+                'case "${command_name}" in'
+            )
+        ]
+        self.assertIn("[[ ! -t 0 || ! -t 1 ]]", acknowledge)
+        self.assertIn("ACKNOWLEDGE RESOLVED DATABASE WAL ALERT", acknowledge)
+        self.assertIn("audit_unit_alerts", acknowledge)
+        self.assertIn('exec 8<>"${lock_path}"', acknowledge)
+        self.assertIn("flock --nonblock 8", acknowledge)
+        self.assertIn("--stanza=careertrellis", acknowledge)
+        self.assertIn("COALESCE(last_archived_wal, '')", acknowledge)
+        self.assertIn("${repository_behind} == true", acknowledge)
+        self.assertIn("${segment_lag} -gt 1", acknowledge)
+        baseline = acknowledge.index(
+            'mv -f -- "${baseline_temporary}" "${wal_baseline_path}"'
+        )
+        revalidation = acknowledge.index(
+            "evaluate_database_health acknowledge", baseline
+        )
+        accepted = acknowledge.index(
+            '"result":"ok","surface":"database"', revalidation
+        )
+        self.assertLess(baseline, revalidation)
+        self.assertLess(revalidation, accepted)
+        self.assertIn("if [[ ${evaluation_result} -ne 0 ]]", acknowledge)
+
+        evaluator = manager[
+            manager.index("evaluate_database_health() {") : manager.index(
+                "acknowledge_wal_failures() {"
+            )
+        ]
+        self.assertIn("if [[ ${evaluation_result} -eq 0 ]]", evaluator)
+        self.assertIn('"${wal_baseline_path}"', evaluator)
+        self.assertNotIn("if [[ ${evaluation_result} -le 1 ]]", evaluator)
+
+        clearing = manager[
+            manager.index("clear_unit_alert() {") : manager.index(
+                "operation_unit_state() {"
+            )
+        ]
+        self.assertIn("${service_result} != success", clearing)
+        self.assertIn("${service_exit_epoch} -lt ${observed_epoch}", clearing)
+        self.assertIn(
+            '${current_receipt_sha256} == "${prior_receipt_sha256}"', clearing
+        )
+        self.assertIn('${current_completed_at} < "${observed_at}"', clearing)
+        self.assertIn("newer accepted success receipt", clearing)
+
+        status_case = manager[
+            manager.index("    status)") : manager.index("    acknowledge-wal)")
+        ]
+        self.assertIn("audit_unit_alerts", status_case)
+        self.assertIn("${alert_audit_result} -eq 2", status_case)
+        self.assertIn("${alert_audit_result} -eq 10", status_case)
+        self.assertIn('"result":"alert"', status_case)
+        self.assertIn('"reason":"unit_alert_active"', status_case)
+        self.assertIn('"reason":"monitor_schedule_unavailable"', status_case)
+        self.assertIn("audit_monitor_schedule", status_case)
+        self.assertNotIn("evaluate_database_health status", status_case)
+        schedule_audit = manager[
+            manager.index("audit_monitor_schedule() {") : manager.index(
+                "evaluate_database_health() {"
+            )
+        ]
+        for timer_name in (
+            "careertrellis-pgbackrest-full.timer",
+            "careertrellis-pgbackrest-differential.timer",
+            "careertrellis-pgbackrest-onedrive.timer",
+            "careertrellis-pgbackrest-inventory.timer",
+            "careertrellis-pgbackrest-restore.timer",
+            "careertrellis-backup-health.timer",
+        ):
+            self.assertIn(timer_name, schedule_audit)
+        self.assertIn("/usr/bin/systemctl is-active", schedule_audit)
+        self.assertIn("/usr/bin/systemctl is-enabled", schedule_audit)
+        self.assertIn("--property=LoadState", schedule_audit)
+
+    def test_generated_object_health_is_local_receipt_only_and_truthful(self) -> None:
+        project_dir = self.project_dir()
+        scripts = project_dir / "deploy" / "scripts"
+        systemd = project_dir / "deploy" / "systemd"
+        manager = (
+            scripts / "manage-generated-object-backup-health.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('surface: "objects"', manager)
+        self.assertIn("generated_object_mirror", manager)
+        self.assertIn("generated_object_restore", manager)
+        self.assertIn("audit_unit_alerts", manager)
+        self.assertIn("unit_alert_evidence_invalid", manager)
+        status_case = manager[
+            manager.index("    status)") : manager.index("    alert-unit)")
+        ]
+        self.assertIn('"reason":"unit_alert_active"', status_case)
+        self.assertIn('"reason":"monitor_schedule_unavailable"', status_case)
+        self.assertIn("audit_monitor_schedule", status_case)
+        self.assertNotIn("evaluate_objects_health", status_case)
+        schedule_audit = manager[
+            manager.index("audit_monitor_schedule() {") : manager.index(
+                "record_unit_alert() {"
+            )
+        ]
+        self.assertIn("careertrellis-generated-object-backup-health.timer", manager)
+        self.assertIn("is-active", schedule_audit)
+        self.assertIn("is-enabled", schedule_audit)
+        self.assertIn("LoadState", schedule_audit)
+        clearing = manager[
+            manager.index("clear_unit_alert() {") : manager.index(
+                "operation_state() {"
+            )
+        ]
+        self.assertIn("${service_result} != success", clearing)
+        self.assertIn("${service_exit_epoch} -lt ${observed_epoch}", clearing)
+        for provider_traversal in (
+            "/usr/local/bin/rclone",
+            " rclone ",
+            "onedrive:",
+            "aws ",
+            "curl ",
+        ):
+            self.assertNotIn(provider_traversal, manager.lower())
+
+        health_service = (
+            systemd / "careertrellis-generated-object-backup-health.service"
+        ).read_text(encoding="utf-8")
+        alert_service = (
+            systemd
+            / "careertrellis-generated-object-backup-health-alert@.service"
+        ).read_text(encoding="utf-8")
+        for unit in (health_service, alert_service):
+            self.assertIn("RestrictAddressFamilies=AF_UNIX", unit)
+            self.assertIn("NoNewPrivileges=true", unit)
+            self.assertIn("ProtectSystem=strict", unit)
+        self.assertIn(
+            "OnFailure=careertrellis-generated-object-backup-health-alert@%n.service",
+            health_service,
+        )
+        self.assertIn(
+            "ExecStart=/usr/local/sbin/careertrellis-backup-health evaluate",
+            health_service,
+        )
+        self.assertIn(
+            "ExecStart=/usr/local/sbin/careertrellis-backup-health alert-unit %i",
+            alert_service,
+        )
+
+        mirror = (scripts / "mirror-generated-objects-onedrive.sh").read_text(
+            encoding="utf-8"
+        )
+        restore = (scripts / "test-generated-object-restore.sh").read_text(
+            encoding="utf-8"
+        )
+        mirror_receipt = mirror[
+            mirror.index("publish_health_receipt() {") : mirror.index(
+                "finish_local_cleanup_and_authority() {"
+            )
+        ]
+        restore_receipt = restore[
+            restore.index("publish_health_receipt() {") : restore.index(
+                "finish_local_cleanup_and_authority() {"
+            )
+        ]
+        self.assertIn('"operation":"generated_object_mirror"', mirror_receipt)
+        self.assertIn('"divergence_count":0', mirror_receipt)
+        self.assertIn('"operation":"generated_object_restore"', restore_receipt)
+        self.assertIn('"manifest_verified":true', restore_receipt)
+        self.assertIn('"ciphertext_verified":true', restore_receipt)
+        self.assertIn('"target_left_intact":true', restore_receipt)
+        self.assertIn('"result":"failed"', mirror_receipt)
+        self.assertIn('"divergence_count":1', mirror_receipt)
+        self.assertIn('"result":"failed"', restore_receipt)
+        self.assertIn('"manifest_verified":false', restore_receipt)
+        self.assertIn('"ciphertext_verified":false', restore_receipt)
+        self.assertIn('"target_left_intact":false', restore_receipt)
+        for overclaim in (
+            "cleanup_verified",
+            "decryption_verified",
+            "reconciliation_verified",
+        ):
+            self.assertNotIn(overclaim, restore_receipt)
+
+        for helper in (mirror, restore):
+            exit_handler = helper[
+                helper.index("cleanup_and_verify_authority() {") : helper.index(
+                    "trap cleanup_and_verify_authority EXIT"
+                )
+            ]
+            self.assertLess(
+                exit_handler.index('authority_after=$("${authority_helper}" status'),
+                exit_handler.index("publish_health_failure_receipt"),
+            )
+            self.assertLess(
+                exit_handler.index('rm -rf -- "${work_dir}"'),
+                exit_handler.index("publish_health_failure_receipt"),
+            )
+            self.assertIn("if [[ ${operation_status} -ne 0 ]]", exit_handler)
+            self.assertNotIn("cleanup_verified} == true", exit_handler)
+            self.assertNotIn("authority_verified} == true", exit_handler)
+            self.assertIn("failure receipt could not be retained", exit_handler)
+            cleanup = helper.rindex("if ! finish_local_cleanup_and_authority; then")
+            publication = helper.rindex("if ! publish_health_receipt")
+            self.assertLess(cleanup, publication)
+            finish = helper[
+                helper.index("finish_local_cleanup_and_authority() {") : cleanup
+            ]
+            self.assertIn('authority_after=$("${authority_helper}" status', finish)
+            self.assertIn('[[ ${authority_after} != "${authority_before}" ]]', finish)
+
+        self.assertIn("The whole target is intentionally left intact.", restore)
+        self.assertNotIn('"cleanup_verified":true', restore_receipt)
+        self.assertNotIn("decrypt", restore_receipt.lower())
+        self.assertNotIn("reconcil", restore_receipt.lower())
+
+    def test_web_release_lifecycle_integrates_object_health_and_preserves_evidence(self) -> None:
+        project_dir = self.project_dir()
+        lifecycle_sources = {
+            name: (
+                project_dir / "deploy" / "scripts" / name
+            ).read_text(encoding="utf-8")
+            for name in (
+                "deploy-release.sh",
+                "provision-staging-host.sh",
+                "rollback-release.sh",
+            )
+        }
+        reviewed_artifacts = (
+            "backend/backup_health.py",
+            "manage-generated-object-backup-health.sh",
+            "careertrellis-generated-object-backup-health.service",
+            "careertrellis-generated-object-backup-health.timer",
+            "careertrellis-generated-object-backup-health-alert@.service",
+        )
+        protected_root_markers = (
+            ("/var/backups/careertrellis", "backup-health/operations"),
+            ("/var/lib/careertrellis/backup-health/objects",),
+        )
+        for name, source in lifecycle_sources.items():
+            with self.subTest(source=name):
+                for artifact in reviewed_artifacts:
+                    self.assertIn(artifact, source)
+                self.assertIn(
+                    "/usr/local/libexec/careertrellis/backup_health.py", source
+                )
+                self.assertIn(
+                    "/usr/local/sbin/careertrellis-backup-health",
+                    source,
+                )
+                self.assertIn(
+                    "careertrellis-generated-object-backup-health.timer", source
+                )
+                quiescence = source.index(
+                    "systemctl is-active --quiet "
+                    "careertrellis-generated-object-backup-health.timer"
+                )
+                installed_core = source.rindex(
+                    "/usr/local/libexec/careertrellis/backup_health.py"
+                )
+                self.assertLess(quiescence, installed_core)
+                if name == "provision-staging-host.sh":
+                    self.assertIn("prevents reprovisioning", source)
+                else:
+                    self.assertIn(
+                        "systemctl stop "
+                        "careertrellis-generated-object-backup-health.timer",
+                        source,
+                    )
+                for markers in protected_root_markers:
+                    for marker in markers:
+                        self.assertIn(marker, source)
+                for line in source.splitlines():
+                    if re.search(r"\brm\b", line):
+                        self.assertNotIn("backup_health_receipt_root", line)
+                        self.assertNotIn("object_backup_health_state_root", line)
+                        self.assertNotIn(
+                            "/var/lib/careertrellis/backup-health", line
+                        )
+                        self.assertNotIn(
+                            "/var/backups/careertrellis/backup-health", line
+                        )
+
+        backup_health_runbook = (
+            project_dir / "docs" / "PILOT_BACKUP_HEALTH.md"
+        ).read_text(encoding="utf-8")
+        handoff_start = backup_health_runbook.index("The `.39` deployer predates")
+        handoff = backup_health_runbook[
+            handoff_start : backup_health_runbook.index(
+                "The database-host installer likewise consumes", handoff_start
+            )
+        ]
+        self.assertIn("--prepare-only", handoff)
+        self.assertIn(
+            "/opt/careertrellis/staging/releases/${revision}/deploy/scripts/deploy-release.sh",
+            handoff,
+        )
+        self.assertIn('sudo -n "${target}" "${revision}"', handoff)
+        self.assertIn("for activation is forbidden", handoff)
 
     def test_auth_and_client_fingerprints_are_excluded_from_host_access_logs(self) -> None:
         project_dir = self.project_dir()

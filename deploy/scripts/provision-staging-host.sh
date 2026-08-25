@@ -23,12 +23,30 @@ for acceptance_file in \
     fi
 done
 
-for command in age caddy curl flock getent git python3 realpath stat sync systemctl tar; do
+for object_health_file in \
+    "${repository_root}/backend/backup_health.py" \
+    "${repository_root}/deploy/scripts/manage-generated-object-backup-health.sh" \
+    "${repository_root}/deploy/systemd/careertrellis-generated-object-backup-health.service" \
+    "${repository_root}/deploy/systemd/careertrellis-generated-object-backup-health.timer" \
+    "${repository_root}/deploy/systemd/careertrellis-generated-object-backup-health-alert@.service"; do
+    if [[ ! -f ${object_health_file} || -L ${object_health_file} ]]; then
+        echo "Generated-object backup health must be a complete reviewed bundle." >&2
+        exit 1
+    fi
+done
+
+for command in age caddy curl flock getent git python3 realpath stat sync systemctl systemd-analyze tar; do
     if ! command -v "${command}" >/dev/null 2>&1; then
         echo "Required command is missing: ${command}" >&2
         exit 1
     fi
 done
+bash -n \
+    "${repository_root}/deploy/scripts/manage-generated-object-backup-health.sh" \
+    "${repository_root}/deploy/scripts/mirror-generated-objects-onedrive.sh" \
+    "${repository_root}/deploy/scripts/test-generated-object-restore.sh"
+python3 -B -c 'import pathlib, sys; compile(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), sys.argv[1], "exec")' \
+    "${repository_root}/backend/backup_health.py"
 
 maintenance_lock_helper=${repository_root}/deploy/scripts/maintenance-lock.sh
 if [[ ! -f ${maintenance_lock_helper} || -L ${maintenance_lock_helper} ]]; then
@@ -38,6 +56,12 @@ fi
 # shellcheck source=maintenance-lock.sh
 source "${maintenance_lock_helper}"
 acquire_careertrellis_maintenance_lock
+if systemctl is-active --quiet careertrellis-generated-object-backup-health.timer || \
+    [[ $(systemctl show careertrellis-generated-object-backup-health.service \
+        --property=ActiveState --value 2>/dev/null || true) =~ ^(active|activating|deactivating|reloading)$ ]]; then
+    echo "An active generated-object health scheduler prevents reprovisioning; use a reviewed release activation." >&2
+    exit 1
+fi
 
 pilot_acceptance_parent=/var/backups/careertrellis
 pilot_acceptance_root=${pilot_acceptance_parent}/pilot-auth-acceptance
@@ -61,6 +85,20 @@ ensure_pilot_acceptance_root() {
         fi
     else
         install -d -o root -g root -m 0700 "${pilot_acceptance_root}" || return 1
+    fi
+}
+
+ensure_root_only_directory() {
+    local path=$1
+    if [[ -e ${path} || -L ${path} ]]; then
+        if [[ ! -d ${path} || -L ${path} || \
+              $(realpath "${path}") != "${path}" || \
+              $(stat -c '%U:%G %a' "${path}") != "root:root 700" ]]; then
+            echo "A protected backup-health directory is invalid." >&2
+            return 1
+        fi
+    else
+        install -d -o root -g root -m 0700 "${path}" || return 1
     fi
 }
 
@@ -97,6 +135,25 @@ install -d -o careertrellis -g careertrellis -m 0700 /var/lib/careertrellis/stag
 install -d -o careertrellis-worker -g careertrellis -m 0700 /var/lib/careertrellis/worker
 install -d -o careertrellis-erasure-worker -g careertrellis -m 0700 /var/lib/careertrellis/account-erasure
 install -d -o root -g careertrellis -m 0750 /var/lib/careertrellis/shared
+for object_health_directory in \
+    /var/backups/careertrellis/backup-health \
+    /var/backups/careertrellis/backup-health/operations \
+    /var/lib/careertrellis/backup-health \
+    /var/lib/careertrellis/backup-health/objects \
+    /var/lib/careertrellis/backup-health/objects/alerts \
+    /var/lib/careertrellis/backup-health/objects/unit-alerts; do
+    ensure_root_only_directory "${object_health_directory}"
+done
+object_health_lock=/run/lock/careertrellis-backup-health-objects.lock
+if [[ -e ${object_health_lock} || -L ${object_health_lock} ]]; then
+    if [[ ! -f ${object_health_lock} || -L ${object_health_lock} || \
+          $(stat -c '%U:%G %a' "${object_health_lock}") != "root:root 600" ]]; then
+        echo "The generated-object backup-health lock is invalid." >&2
+        exit 1
+    fi
+else
+    install -o root -g root -m 0600 /dev/null "${object_health_lock}"
+fi
 generated_object_recovery_state=/var/lib/careertrellis/generated-object-recovery
 generated_object_recovery_work=${generated_object_recovery_state}/work
 for generated_object_recovery_directory in "${generated_object_recovery_state}" "${generated_object_recovery_work}"; do
@@ -153,6 +210,26 @@ install -o root -g root -m 0755 "${repository_root}/deploy/scripts/install-erasu
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/finalize-postgres-r2-cutover.sh" /usr/local/sbin/careertrellis-finalize-cutover
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/mirror-generated-objects-onedrive.sh" /usr/local/sbin/careertrellis-mirror-generated-objects
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/test-generated-object-restore.sh" /usr/local/sbin/careertrellis-test-generated-object-restore
+for object_health_target in \
+    /usr/local/libexec/careertrellis/backup_health.py \
+    /usr/local/sbin/careertrellis-backup-health \
+    /etc/systemd/system/careertrellis-generated-object-backup-health.service \
+    /etc/systemd/system/careertrellis-generated-object-backup-health.timer \
+    /etc/systemd/system/careertrellis-generated-object-backup-health-alert@.service; do
+    if [[ -L ${object_health_target} ]]; then
+        echo "An installed generated-object backup-health target must not be a symbolic link." >&2
+        exit 1
+    fi
+done
+install -o root -g root -m 0644 "${repository_root}/backend/backup_health.py" /usr/local/libexec/careertrellis/backup_health.py
+install -o root -g root -m 0755 "${repository_root}/deploy/scripts/manage-generated-object-backup-health.sh" /usr/local/sbin/careertrellis-backup-health
+systemd-analyze verify \
+    "${repository_root}/deploy/systemd/careertrellis-generated-object-backup-health.service" \
+    "${repository_root}/deploy/systemd/careertrellis-generated-object-backup-health.timer" \
+    "${repository_root}/deploy/systemd/careertrellis-generated-object-backup-health-alert@.service"
+install -o root -g root -m 0644 "${repository_root}/deploy/systemd/careertrellis-generated-object-backup-health.service" /etc/systemd/system/careertrellis-generated-object-backup-health.service
+install -o root -g root -m 0644 "${repository_root}/deploy/systemd/careertrellis-generated-object-backup-health.timer" /etc/systemd/system/careertrellis-generated-object-backup-health.timer
+install -o root -g root -m 0644 "${repository_root}/deploy/systemd/careertrellis-generated-object-backup-health-alert@.service" /etc/systemd/system/careertrellis-generated-object-backup-health-alert@.service
 /usr/local/sbin/careertrellis-authority initialize
 
 if [[ ! -e /etc/careertrellis/staging.env ]]; then
@@ -195,5 +272,5 @@ echo "  /etc/careertrellis/generated-object-recovery.env"
 echo "  /etc/caddy/careertrellis-staging.env"
 echo "Configure the dedicated OneDrive remote in /var/lib/careertrellis/generated-object-recovery/rclone.conf."
 echo "Install the separate erasure-worker database credential, then validate Caddy and deploy an exact commit."
-echo "Generated-object snapshot and restore commands are manual only; no timer was installed or enabled."
+echo "Generated-object snapshot and restore commands remain manual; the local health timer was installed but not enabled or started."
 echo "The account-erasure worker remains disabled and no services were started."

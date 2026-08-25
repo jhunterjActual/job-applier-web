@@ -6,37 +6,134 @@ if [[ ${EUID} -ne 0 ]]; then
     exit 1
 fi
 
-config=/etc/careertrellis/rclone.conf
-source_path=r2:job-applier-staging-db-backups/job-applier/staging/postgresql
-destination_path=onedrive:job-applier-staging/postgresql
-rclone_binary=/usr/local/bin/rclone
+readonly config=/etc/careertrellis/rclone.conf
+readonly source_path=r2:job-applier-staging-db-backups/job-applier/staging/postgresql
+readonly destination_path=onedrive:job-applier-staging/postgresql
+readonly rclone_binary=/usr/local/bin/rclone
+readonly lock_path=/run/lock/careertrellis-pgbackrest-repository.lock
+readonly core=/usr/local/libexec/careertrellis/backup_health.py
+readonly receipt_root=/var/backups/careertrellis/backup-health/operations
 
-if [[ $(stat -c '%a:%U:%G' "${config}" 2>/dev/null || true) != 600:root:root ]]; then
-    echo "The rclone configuration must be root:root with mode 0600." >&2
-    exit 1
-fi
-if [[ ! -x ${rclone_binary} ]]; then
-    echo "The verified rclone installation is missing." >&2
-    exit 1
-fi
-remote_inventory=$(${rclone_binary} listremotes --config "${config}")
-for remote_name in r2: onedrive:; do
-    if [[ $'\n'${remote_inventory}$'\n' != *$'\n'${remote_name}$'\n'* ]]; then
-        echo "Required rclone remote ${remote_name} is not configured." >&2
+for command_path in /usr/bin/flock /usr/bin/jq /usr/bin/pgbackrest /usr/sbin/runuser /usr/bin/python3; do
+    if [[ ! -x ${command_path} ]]; then
+        echo "A required mirror command is unavailable." >&2
         exit 1
     fi
 done
+if [[ ! -x ${rclone_binary} ]]; then
+    echo "The verified rclone installation is unavailable." >&2
+    exit 1
+fi
+if [[ -L ${config} || $(stat -c '%a:%U:%G' "${config}" 2>/dev/null || true) != 600:root:root ]]; then
+    echo "The rclone configuration must be a root-owned, non-symlink 0600 file." >&2
+    exit 1
+fi
+if [[ -L ${core} || ! -f ${core} || ! -r ${core} ]]; then
+    echo "The reviewed backup-health core is unavailable." >&2
+    exit 1
+fi
+if [[ -L ${lock_path} || ! -f ${lock_path} || \
+    $(stat -c '%a:%U:%G' "${lock_path}" 2>/dev/null || true) != 600:root:root ]]; then
+    echo "The canonical repository lock has an unsafe owner, mode, or type." >&2
+    exit 1
+fi
 
-# Copy without deleting the destination. If the primary repository expires or
-# loses objects, the secondary destination retains its older ciphertext.
-${rclone_binary} copy \
+remote_inventory=$(${rclone_binary} listremotes --config "${config}" 2>/dev/null) || {
+    echo "The configured recovery remotes could not be inspected." >&2
+    exit 1
+}
+for remote_name in r2: onedrive:; do
+    if [[ $'\n'${remote_inventory}$'\n' != *$'\n'${remote_name}$'\n'* ]]; then
+        echo "A required recovery remote is not configured." >&2
+        exit 1
+    fi
+done
+unset remote_inventory
+
+umask 077
+exec 9<>"${lock_path}"
+if ! flock --nonblock 9; then
+    echo "Another repository operation is active; this mirror was not started." >&2
+    exit 75
+fi
+
+readonly started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+readonly started_epoch=$(date -u +%s)
+private_log=$(mktemp /run/careertrellis-pgbackrest-mirror.XXXXXX)
+info_json=$(mktemp /run/careertrellis-pgbackrest-info.XXXXXX)
+size_json=$(mktemp /run/careertrellis-pgbackrest-size.XXXXXX)
+cleanup() {
+    rm -f -- "${private_log:-}" "${info_json:-}" "${size_json:-}"
+}
+trap cleanup EXIT
+
+if ! runuser -u postgres -- /usr/bin/pgbackrest \
+    --stanza=careertrellis \
+    --output=json \
+    info >"${info_json}" 2>"${private_log}"; then
+    echo "The source repository could not be bound to a backup label." >&2
+    exit 1
+fi
+backup_label=$(/usr/bin/jq -er '
+    .[0]
+    | select(.name == "careertrellis" and .status.code == 0)
+    | .backup
+    | sort_by(.timestamp.stop)
+    | last.label
+' "${info_json}") || {
+    echo "The source repository has no accepted backup label." >&2
+    exit 1
+}
+if [[ ! ${backup_label} =~ ^[0-9]{8}-[0-9]{6}F(_[0-9]{8}-[0-9]{6}[DI])?$ ]]; then
+    echo "The source repository returned an invalid backup label." >&2
+    exit 1
+fi
+
+# --immutable makes the secondary repository append-only: new ciphertext may be
+# added, but an existing destination object is never replaced or deleted.
+if ! ${rclone_binary} copy \
     "${source_path}" \
     "${destination_path}" \
     --config "${config}" \
+    --immutable \
     --checkers 4 \
     --transfers 2 \
     --create-empty-src-dirs \
-    --stats-one-line \
-    --stats 30s
+    --log-file "${private_log}" \
+    --log-level INFO \
+    --stats-one-line-date \
+    --stats 5m; then
+    echo "The append-only repository mirror failed; private output was discarded." >&2
+    exit 1
+fi
+if ! ${rclone_binary} size \
+    "${source_path}" \
+    --config "${config}" \
+    --json >"${size_json}" 2>>"${private_log}"; then
+    echo "The completed mirror could not be summarized safely." >&2
+    exit 1
+fi
+read -r object_count byte_count < <(/usr/bin/jq -er '
+    select((.count | type) == "number" and (.bytes | type) == "number")
+    | [.count, .bytes]
+    | @tsv
+' "${size_json}") || {
+    echo "The mirror aggregate was invalid." >&2
+    exit 1
+}
+if [[ ! ${object_count} =~ ^[0-9]+$ || ! ${byte_count} =~ ^[0-9]+$ ]]; then
+    echo "The mirror aggregate was outside its accepted range." >&2
+    exit 1
+fi
 
-${rclone_binary} size "${destination_path}" --config "${config}"
+readonly completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+readonly elapsed_seconds=$(( $(date -u +%s) - started_epoch ))
+printf '{"schema":"careertrellis.backup-health-operation/v1","operation":"pgbackrest_mirror","result":"ok","started_at":"%s","completed_at":"%s","backup_label":"%s","mirrored_backup_label":"%s","object_count":%s,"byte_count":%s,"elapsed_seconds":%d}\n' \
+    "${started_at}" \
+    "${completed_at}" \
+    "${backup_label}" \
+    "${backup_label}" \
+    "${object_count}" \
+    "${byte_count}" \
+    "${elapsed_seconds}" \
+    | /usr/bin/python3 -B "${core}" publish --receipt-root "${receipt_root}"
