@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly PostgreSQL backup and recovery health evaluation
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+Unit=careertrellis-backup-health.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly download-verified PostgreSQL recovery-mirror inventory
+
+[Timer]
+OnActiveSec=7d
+OnUnitActiveSec=7d
+RandomizedDelaySec=30m
+Unit=careertrellis-pgbackrest-inventory.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Monthly isolated PostgreSQL restore and checksum rehearsal
+
+[Timer]
+OnActiveSec=30d
+OnUnitActiveSec=30d
+RandomizedDelaySec=30m
+Unit=careertrellis-pgbackrest-restore.service
+
+[Install]
+WantedBy=timers.target

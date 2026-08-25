@@ -1,0 +1,12 @@
+[Unit]
+Description=Hourly generated-object backup and recovery health evaluation
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5m
+AccuracySec=1m
+Persistent=true
+Unit=careertrellis-generated-object-backup-health.service
+
+[Install]
+WantedBy=timers.target

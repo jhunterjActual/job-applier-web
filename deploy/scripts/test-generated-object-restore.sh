@@ -13,6 +13,8 @@ readonly rclone_config=${recovery_state}/rclone.conf
 readonly source_environment_file=/etc/careertrellis/generated-object-recovery.env
 readonly authority_helper=/usr/local/sbin/careertrellis-authority
 readonly maintenance_lock_helper=/usr/local/libexec/careertrellis/maintenance-lock.sh
+readonly backup_health_core=/usr/local/libexec/careertrellis/backup_health.py
+readonly backup_health_receipt_root=/var/backups/careertrellis/backup-health/operations
 
 if [[ ${EUID} -ne 0 ]]; then
     echo "Run the generated-object restore test as root." >&2
@@ -50,7 +52,7 @@ if [[ ! -x ${python_command} || ! -f ${recovery_cli} || -L ${recovery_cli} ]]; t
     exit 1
 fi
 
-for command_name in awk flock grep mktemp realpath rm runuser sed stat systemctl; do
+for command_name in awk date flock grep mktemp realpath rm runuser sed stat systemctl; do
     if ! command -v "${command_name}" >/dev/null 2>&1; then
         echo "A required generated-object recovery command is unavailable." >&2
         exit 1
@@ -58,6 +60,19 @@ for command_name in awk flock grep mktemp realpath rm runuser sed stat systemctl
 done
 if ! rclone_command=$(command -v rclone); then
     echo "A required generated-object recovery command is unavailable." >&2
+    exit 1
+fi
+if [[ ! -x /usr/bin/python3 || ! -x /usr/bin/env || ! -x /usr/bin/date || \
+      ! -f ${backup_health_core} || -L ${backup_health_core} || \
+      $(realpath "${backup_health_core}" 2>/dev/null || true) != "${backup_health_core}" || \
+      $(stat -c '%U:%G %a' "${backup_health_core}" 2>/dev/null || true) != "root:root 644" ]]; then
+    echo "The reviewed backup-health publisher is unavailable." >&2
+    exit 1
+fi
+if [[ ! -d ${backup_health_receipt_root} || -L ${backup_health_receipt_root} || \
+      $(realpath "${backup_health_receipt_root}") != "${backup_health_receipt_root}" || \
+      $(stat -c '%U:%G %a' "${backup_health_receipt_root}" 2>/dev/null || true) != "root:root 700" ]]; then
+    echo "The protected backup-health receipt root is invalid." >&2
     exit 1
 fi
 if ! id "${recovery_user}" >/dev/null 2>&1 || [[ $(id -gn "${recovery_user}") != "${recovery_group}" ]]; then
@@ -215,6 +230,13 @@ for service in careertrellis-web.service careertrellis-worker.service careertrel
     fi
 done
 
+operation_started_epoch=$(/usr/bin/date -u +%s)
+operation_started_at=$(/usr/bin/date -u +'%Y-%m-%dT%H:%M:%SZ')
+if [[ ! ${operation_started_epoch} =~ ^[0-9]+$ ]]; then
+    echo "The generated-object restore-test clock is invalid." >&2
+    exit 1
+fi
+
 snapshot_id=${release_revision}-${backup_label}
 work_root=${recovery_state}/work
 if [[ ! -d ${work_root} || -L ${work_root} || $(stat -c '%U:%G %a' "${work_root}") != "${recovery_user}:${recovery_group} 700" ]]; then
@@ -242,11 +264,63 @@ cleanup_and_verify_authority() {
         fi
     fi
     if [[ -n ${work_dir:-} && ${work_dir} == "${work_root}"/restore-* && -d ${work_dir} && ! -L ${work_dir} ]]; then
-        rm -rf -- "${work_dir}"
+        if ! rm -rf -- "${work_dir}" || [[ -e ${work_dir} || -L ${work_dir} ]]; then
+            operation_status=1
+        fi
+    fi
+    if [[ ${operation_status} -ne 0 ]] && \
+        ! publish_health_failure_receipt >/dev/null 2>&1; then
+        echo "The generated-object restore failure receipt could not be retained." >&2
     fi
     exit "${operation_status}"
 }
 trap cleanup_and_verify_authority EXIT
+
+publish_health_receipt() {
+    local object_count=$1
+    local byte_count=$2
+    local completed_epoch completed_at elapsed_seconds
+    completed_epoch=$(/usr/bin/date -u +%s)
+    completed_at=$(/usr/bin/date -u +'%Y-%m-%dT%H:%M:%SZ')
+    if [[ ! ${completed_epoch} =~ ^[0-9]+$ || ${completed_epoch} -lt ${operation_started_epoch} ]]; then
+        return 1
+    fi
+    elapsed_seconds=$(( completed_epoch - operation_started_epoch ))
+    printf '{"schema":"careertrellis.backup-health-operation/v1","operation":"generated_object_restore","result":"ok","started_at":"%s","completed_at":"%s","object_count":%s,"byte_count":%s,"elapsed_seconds":%s,"manifest_verified":true,"ciphertext_verified":true,"target_left_intact":true}\n' \
+        "${operation_started_at}" "${completed_at}" "${object_count}" "${byte_count}" "${elapsed_seconds}" | \
+        /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -B "${backup_health_core}" publish \
+            --receipt-root "${backup_health_receipt_root}" >/dev/null
+}
+
+publish_health_failure_receipt() {
+    local completed_epoch completed_at elapsed_seconds
+    completed_epoch=$(/usr/bin/date -u +%s)
+    completed_at=$(/usr/bin/date -u +'%Y-%m-%dT%H:%M:%SZ')
+    if [[ ! ${completed_epoch} =~ ^[0-9]+$ || ${completed_epoch} -lt ${operation_started_epoch} ]]; then
+        return 1
+    fi
+    elapsed_seconds=$(( completed_epoch - operation_started_epoch ))
+    printf '{"schema":"careertrellis.backup-health-operation/v1","operation":"generated_object_restore","result":"failed","started_at":"%s","completed_at":"%s","object_count":0,"byte_count":0,"elapsed_seconds":%s,"manifest_verified":false,"ciphertext_verified":false,"target_left_intact":false}\n' \
+        "${operation_started_at}" "${completed_at}" "${elapsed_seconds}" | \
+        /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -B "${backup_health_core}" publish \
+            --receipt-root "${backup_health_receipt_root}" >/dev/null
+}
+
+finish_local_cleanup_and_authority() {
+    local authority_after
+    if [[ -z ${work_dir:-} || ${work_dir} != "${work_root}"/restore-* || ! -d ${work_dir} || -L ${work_dir} ]]; then
+        return 1
+    fi
+    rm -rf -- "${work_dir}"
+    if [[ -e ${work_dir} || -L ${work_dir} ]]; then
+        return 1
+    fi
+    work_dir=
+    authority_after=$("${authority_helper}" status 2>/dev/null) || return 1
+    if [[ ${authority_after} != "${authority_before}" ]]; then
+        return 1
+    fi
+}
 
 clear_exported_environment() {
     local variable_name
@@ -306,7 +380,7 @@ rclone_fixed copy "${snapshot_source}" "${marker_root}" --include snapshot-manif
 rclone_fixed copy "${snapshot_source}/objects" "${source_root}" --immutable --stats 0 --log-level ERROR
 rclone_fixed check "${snapshot_source}/objects" "${source_root}" --download --stats 0 --log-level ERROR
 manifest_receipt=$(run_recovery_cli verify-manifest "${source_root}" "${manifest_path}" "${expected_manifest_sha256}")
-if ! (
+if ! manifest_values=$(
     export CAREERTRELLIS_EXPECTED_RELEASE="${release_revision}"
     export CAREERTRELLIS_EXPECTED_BACKUP_LABEL="${backup_label}"
     export CAREERTRELLIS_EXPECTED_SNAPSHOT_ID="${snapshot_id}"
@@ -330,8 +404,25 @@ if any(receipt.get(name) != value for name, value in expected.items()):
     raise SystemExit(1)
 if receipt.get("manifest_verified") is not True:
     raise SystemExit(1)
+object_count = receipt.get("object_count")
+ciphertext_bytes = receipt.get("ciphertext_bytes")
+if (
+    not isinstance(object_count, int)
+    or isinstance(object_count, bool)
+    or object_count < 0
+    or not isinstance(ciphertext_bytes, int)
+    or isinstance(ciphertext_bytes, bool)
+    or ciphertext_bytes < 0
+):
+    raise SystemExit(1)
+print(object_count, ciphertext_bytes, sep="\t")
 '
 ); then
+    echo "Generated-object recovery manifest failed." >&2
+    exit 1
+fi
+IFS=$'\t' read -r health_object_count health_byte_count <<<"${manifest_values}"
+if [[ ! ${health_object_count} =~ ^[0-9]+$ || ! ${health_byte_count} =~ ^[0-9]+$ ]]; then
     echo "Generated-object recovery manifest failed." >&2
     exit 1
 fi
@@ -343,5 +434,15 @@ rclone_fixed check "${source_root}" "generatedobjectrestore:${target_bucket}" --
 # manifest remains outside R2 because the application reconciler rejects
 # every non-v1 object key. The whole target is intentionally left intact.
 
+if ! finish_local_cleanup_and_authority; then
+    echo "Generated-object recovery cleanup or authority verification failed." >&2
+    exit 1
+fi
+if ! publish_health_receipt "${health_object_count}" "${health_byte_count}"; then
+    echo "Generated-object backup-health evidence could not be retained safely." >&2
+    exit 1
+fi
+
+trap - EXIT
 printf '{"authority":"%s","backup_label":"%s","manifest_sha256":"%s","release":"%s","result":"disposable_r2_restore_verified_and_left_intact","snapshot_id":"%s"}\n' \
     "${authority_before}" "${backup_label}" "${expected_manifest_sha256}" "${release_revision}" "${snapshot_id}"
