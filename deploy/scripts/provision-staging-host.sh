@@ -13,6 +13,16 @@ if [[ -z ${repository_root} || ! -f ${repository_root}/deploy/systemd/careertrel
 fi
 repository_root=$(realpath "${repository_root}")
 
+for acceptance_file in \
+    "${repository_root}/deploy/scripts/manage-pilot-acceptance.sh" \
+    "${repository_root}/backend/pilot_acceptance.py" \
+    "${repository_root}/backend/pilot_acceptance_receipts.py"; do
+    if [[ ! -f ${acceptance_file} || -L ${acceptance_file} ]]; then
+        echo "The pilot acceptance boundary must be a complete reviewed trio." >&2
+        exit 1
+    fi
+done
+
 for command in age caddy curl flock getent git python3 realpath stat sync systemctl tar; do
     if ! command -v "${command}" >/dev/null 2>&1; then
         echo "Required command is missing: ${command}" >&2
@@ -28,6 +38,31 @@ fi
 # shellcheck source=maintenance-lock.sh
 source "${maintenance_lock_helper}"
 acquire_careertrellis_maintenance_lock
+
+pilot_acceptance_parent=/var/backups/careertrellis
+pilot_acceptance_root=${pilot_acceptance_parent}/pilot-auth-acceptance
+ensure_pilot_acceptance_root() {
+    if [[ -e ${pilot_acceptance_parent} || -L ${pilot_acceptance_parent} ]]; then
+        if [[ ! -d ${pilot_acceptance_parent} || -L ${pilot_acceptance_parent} || \
+              $(realpath "${pilot_acceptance_parent}") != "${pilot_acceptance_parent}" || \
+              $(stat -c '%U:%G %a' "${pilot_acceptance_parent}") != "root:root 700" ]]; then
+            echo "The protected CareerTrellis receipt parent is invalid." >&2
+            return 1
+        fi
+    else
+        install -d -o root -g root -m 0700 "${pilot_acceptance_parent}" || return 1
+    fi
+    if [[ -e ${pilot_acceptance_root} || -L ${pilot_acceptance_root} ]]; then
+        if [[ ! -d ${pilot_acceptance_root} || -L ${pilot_acceptance_root} || \
+              $(realpath "${pilot_acceptance_root}") != "${pilot_acceptance_root}" || \
+              $(stat -c '%U:%G %a' "${pilot_acceptance_root}") != "root:root 700" ]]; then
+            echo "The pilot acceptance receipt root is invalid." >&2
+            return 1
+        fi
+    else
+        install -d -o root -g root -m 0700 "${pilot_acceptance_root}" || return 1
+    fi
+}
 
 if [[ -e /etc/caddy/careertrellis-staging.env || -L /etc/caddy/careertrellis-staging.env ]] && \
    [[ ! -f /etc/caddy/careertrellis-staging.env || -L /etc/caddy/careertrellis-staging.env || \
@@ -56,6 +91,7 @@ if [[ $(id -gn careertrellis-object-recovery) != "careertrellis-object-recovery"
     exit 1
 fi
 
+ensure_pilot_acceptance_root
 install -d -o root -g root -m 0755 /opt/careertrellis/staging/releases
 install -d -o careertrellis -g careertrellis -m 0700 /var/lib/careertrellis/staging
 install -d -o careertrellis-worker -g careertrellis -m 0700 /var/lib/careertrellis/worker
@@ -107,6 +143,9 @@ install -d -o root -g root -m 0755 /usr/local/libexec/careertrellis
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/maintenance-lock.sh" /usr/local/libexec/careertrellis/maintenance-lock.sh
 install -o root -g root -m 0640 "${repository_root}/backend/pilot_users.py" /usr/local/libexec/careertrellis/pilot_users.py
 install -o root -g root -m 0750 "${repository_root}/deploy/scripts/manage-pilot-user.sh" /usr/local/sbin/careertrellis-pilot-user
+install -o root -g root -m 0640 "${repository_root}/backend/pilot_acceptance.py" /usr/local/libexec/careertrellis/pilot_acceptance.py
+install -o root -g root -m 0640 "${repository_root}/backend/pilot_acceptance_receipts.py" /usr/local/libexec/careertrellis/pilot_acceptance_receipts.py
+install -o root -g root -m 0750 "${repository_root}/deploy/scripts/manage-pilot-acceptance.sh" /usr/local/sbin/careertrellis-pilot-acceptance
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/deploy-release.sh" /usr/local/sbin/careertrellis-deploy
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/rollback-release.sh" /usr/local/sbin/careertrellis-rollback
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/hosted-authority.sh" /usr/local/sbin/careertrellis-authority

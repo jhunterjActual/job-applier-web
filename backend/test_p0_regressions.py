@@ -2881,6 +2881,7 @@ class DependencyLockTests(unittest.TestCase):
             "finalize-postgres-r2-cutover.sh",
             "provision-staging-host.sh",
             "manage-pilot-caddy-credential.sh",
+            "manage-pilot-acceptance.sh",
         ):
             source = (scripts / name).read_text(encoding="utf-8")
             self.assertIn("maintenance-lock.sh", source)
@@ -5426,6 +5427,235 @@ class PilotUserOperatorTests(unittest.TestCase):
         )
         self.assertNotIn("careertrellis_runtime", operator_grant)
         self.assertNotIn("careertrellis_worker", operator_grant)
+
+    def test_pilot_acceptance_wrapper_and_release_hooks_are_exact_and_evidence_safe(self) -> None:
+        project_dir = Path(__file__).resolve().parent.parent
+        scripts = project_dir / "deploy" / "scripts"
+        wrapper = (scripts / "manage-pilot-acceptance.sh").read_text(
+            encoding="utf-8"
+        )
+        deploy = (scripts / "deploy-release.sh").read_text(encoding="utf-8")
+        rollback = (scripts / "rollback-release.sh").read_text(encoding="utf-8")
+        provision = (scripts / "provision-staging-host.sh").read_text(
+            encoding="utf-8"
+        )
+        web_workflow = (
+            project_dir / ".github" / "workflows" / "web-foundation.yml"
+        ).read_text(encoding="utf-8")
+        dependency_workflow = (
+            project_dir / ".github" / "workflows" / "dependency-tests.yml"
+        ).read_text(encoding="utf-8")
+        search_unit = (
+            project_dir / "deploy" / "systemd" / "careertrellis-worker.service"
+        ).read_text(encoding="utf-8")
+        erasure_unit = (
+            project_dir
+            / "deploy"
+            / "systemd"
+            / "careertrellis-erasure-worker.service"
+        ).read_text(encoding="utf-8")
+
+        self.assertTrue(wrapper.startswith("#!/bin/bash\n"))
+        self.assertIn("set -Eeuo pipefail", wrapper)
+        self.assertIn("set +x", wrapper)
+        self.assertIn("umask 077", wrapper)
+        self.assertIn("unset SYSTEMD_HOST SYSTEMD_MACHINE", wrapper)
+        self.assertIn("unset http_proxy https_proxy all_proxy", wrapper)
+        self.assertIn("if [[ ${EUID} -ne 0 ]]", wrapper)
+        self.assertIn("if [[ $# -ne 1", wrapper)
+        self.assertIn(
+            "^(prepare|verify-active|verify-disabled|verify-recovered|inspect|cleanup|record-browser)$",
+            wrapper,
+        )
+        self.assertIn("if [[ ! -t 0 || ! -t 1 || ! -t 2 ]]", wrapper)
+        for operation in (
+            "prepare",
+            "verify-active",
+            "verify-disabled",
+            "verify-recovered",
+            "inspect",
+            "cleanup",
+            "record-browser",
+        ):
+            self.assertIn(operation, wrapper)
+        self.assertIn("/usr/local/sbin/careertrellis-pilot-acceptance", wrapper)
+        self.assertIn("/usr/local/libexec/careertrellis/pilot_acceptance.py", wrapper)
+        self.assertIn(
+            "/usr/local/libexec/careertrellis/pilot_acceptance_receipts.py",
+            wrapper,
+        )
+        self.assertIn("root:root 750", wrapper)
+        self.assertGreaterEqual(wrapper.count("root:root 640"), 2)
+        self.assertIn("root:careertrellis 750", wrapper)
+        self.assertGreaterEqual(wrapper.count("root:careertrellis 640"), 2)
+        self.assertIn("acquire_careertrellis_maintenance_lock", wrapper)
+        self.assertLess(
+            wrapper.index("acquire_careertrellis_maintenance_lock"),
+            wrapper.index('current_release=$(readlink -f "${current_link}")'),
+        )
+        self.assertIn("/run/lock/careertrellis-pilot-auth-acceptance.lock", wrapper)
+        self.assertGreaterEqual(wrapper.count("sha256sum"), 6)
+        self.assertIn("postgres-r2-authoritative", wrapper)
+        self.assertIn("assert-release-startable", wrapper)
+        self.assertIn("check-web-runtime", wrapper)
+        self.assertIn("check-worker-runtime", wrapper)
+        authority_section = wrapper[
+            wrapper.index("check-web-runtime") - 300 : wrapper.index(
+                "Hosted runtime authority validation failed."
+            )
+        ]
+        self.assertEqual(2, authority_section.count("env -i"))
+        self.assertEqual(2, authority_section.count("CAREERTRELLIS_DATA_STORE=postgres"))
+        self.assertEqual(2, authority_section.count("CAREERTRELLIS_OBJECT_STORE=r2_encrypted"))
+        self.assertIn("phase=activated", wrapper)
+        self.assertIn("careertrellis-hosted-activation.lease", wrapper)
+        self.assertIn("[[ -e ${activation_lease} || -L ${activation_lease} ]]", wrapper)
+        self.assertIn("systemctl is-active --quiet", wrapper)
+        self.assertIn("systemctl is-enabled --quiet", wrapper)
+        self.assertIn("NeedDaemonReload", wrapper)
+        self.assertIn('readlink -f "/proc/${main_pid}/cwd"', wrapper)
+        self.assertIn("search_worker_main_pid=${main_pid}", wrapper)
+        self.assertIn("erasure_worker_main_pid=${main_pid}", wrapper)
+        self.assertIn('systemctl show --property=User --value "${unit}"', wrapper)
+        self.assertIn('systemctl show --property=Group --value "${unit}"', wrapper)
+        self.assertIn('systemctl show --property=UMask --value "${unit}"', wrapper)
+        self.assertIn("worker_group_gid=$(getent group careertrellis | cut -d: -f3)", wrapper)
+        for unit, user in (
+            (search_unit, "careertrellis-worker"),
+            (erasure_unit, "careertrellis-erasure-worker"),
+        ):
+            self.assertIn(f"User={user}", unit)
+            self.assertIn("Group=careertrellis", unit)
+            self.assertIn("UMask=0077", unit)
+        self.assertIn(
+            "install -d -o careertrellis-worker -g careertrellis -m 0700 "
+            "/var/lib/careertrellis/worker",
+            provision,
+        )
+        self.assertIn(
+            "install -d -o careertrellis-erasure-worker -g careertrellis -m 0700 "
+            "/var/lib/careertrellis/account-erasure",
+            provision,
+        )
+        for variable in (
+            "CAREERTRELLIS_PILOT_ACCEPTANCE_SEARCH_WORKER_PID",
+            "CAREERTRELLIS_PILOT_ACCEPTANCE_ERASURE_WORKER_PID",
+            "CAREERTRELLIS_PILOT_ACCEPTANCE_SEARCH_HEARTBEAT_UID",
+            "CAREERTRELLIS_PILOT_ACCEPTANCE_SEARCH_HEARTBEAT_GID",
+            "CAREERTRELLIS_PILOT_ACCEPTANCE_SEARCH_HEARTBEAT_MODE",
+            "CAREERTRELLIS_PILOT_ACCEPTANCE_ERASURE_HEARTBEAT_UID",
+            "CAREERTRELLIS_PILOT_ACCEPTANCE_ERASURE_HEARTBEAT_GID",
+            "CAREERTRELLIS_PILOT_ACCEPTANCE_ERASURE_HEARTBEAT_MODE",
+        ):
+            self.assertIn(variable, wrapper)
+        self.assertEqual(2, wrapper.count("HEARTBEAT_MODE=600"))
+        self.assertIn("http://127.0.0.1:8001/health/ready", wrapper)
+        self.assertIn("readonly receipt_parent=/var/backups/careertrellis", wrapper)
+        self.assertIn(
+            "readonly receipt_root=${receipt_parent}/pilot-auth-acceptance",
+            wrapper,
+        )
+        self.assertGreaterEqual(wrapper.count("root:root 700"), 2)
+        self.assertIn(
+            '$(stat -c \'%U:%G %a\' "${receipt_parent}") != "root:root 700"',
+            wrapper,
+        )
+        self.assertIn("exec env -i", wrapper)
+        self.assertIn('"${python_command}" -s -B "${release_runner}"', wrapper)
+        self.assertNotIn('"${python_command}" -I -B "${release_runner}"', wrapper)
+        self.assertIn('"${release_runner}" "${operation}"', wrapper)
+        self.assertNotIn("$@", wrapper)
+        self.assertNotIn("staging.env", wrapper)
+        self.assertNotIn("postgres-migration.env", wrapper)
+        self.assertNotIn("provider-secrets.env", wrapper)
+        self.assertNotIn("object-storage.env", wrapper)
+
+        for activation in (deploy, rollback, provision):
+            self.assertIn("manage-pilot-acceptance.sh", activation)
+            self.assertIn("pilot_acceptance.py", activation)
+            self.assertIn("pilot_acceptance_receipts.py", activation)
+            self.assertIn("careertrellis-pilot-acceptance", activation)
+            self.assertIn("-m 0750", activation)
+            self.assertGreaterEqual(activation.count("-m 0640"), 2)
+            self.assertIn("pilot-auth-acceptance", activation)
+            self.assertIn("root:root 700", activation)
+            parent_validation = activation[
+                activation.index("ensure_pilot_acceptance_root() {") : activation.index(
+                    "if [[ -e ${pilot_acceptance_root}",
+                    activation.index("ensure_pilot_acceptance_root() {")
+                )
+            ]
+            self.assertIn("root:root 700", parent_validation)
+            self.assertNotIn('rm -f -- "${pilot_acceptance_root}"', activation)
+            self.assertNotIn('rm -rf -- "${pilot_acceptance_root}"', activation)
+        prepare_exit = deploy.index(
+            "exit 0", deploy.index("if [[ ${prepare_only} == true ]]")
+        )
+        self.assertLess(
+            prepare_exit,
+            deploy.index("ensure_pilot_acceptance_root || return 1"),
+        )
+        for activation in (deploy, rollback):
+            self.assertIn(
+                "pilot_acceptance_state=/var/lib/careertrellis/"
+                "pilot-auth-acceptance/active.json",
+                activation,
+            )
+            activation_start = activation.index("activate_release() {")
+            guard_index = activation.index(
+                "assert_no_active_pilot_acceptance || return 1",
+                activation_start,
+            )
+            current_swap = activation.index(
+                'mv -Tf "${activation_link}" "${current_link}"',
+                activation_start,
+            )
+            first_helper_install = activation.index(
+                "install -o root -g root",
+                activation_start,
+            )
+            first_helper_removal = activation.index(
+                "rm -f -- /usr/local/sbin/",
+                activation_start,
+            )
+            activation_function = activation[
+                activation_start : activation.index(
+                    'mv -Tf "${activation_link}" "${current_link}"'
+                )
+            ]
+            self.assertIn(
+                "assert_no_active_pilot_acceptance || return 1",
+                activation_function,
+            )
+            self.assertLess(guard_index, current_swap)
+            self.assertLess(guard_index, first_helper_install)
+            self.assertLess(guard_index, first_helper_removal)
+            self.assertIn(
+                "[[ -e ${pilot_acceptance_state} || -L ${pilot_acceptance_state} ]]",
+                activation,
+            )
+        for test_target in (
+            "test_pilot_acceptance.py",
+            "test_pilot_acceptance_receipts.py",
+        ):
+            self.assertIn(test_target, deploy)
+            self.assertIn(test_target, web_workflow)
+            self.assertIn(test_target, dependency_workflow)
+        self.assertIn(
+            "The pilot acceptance boundary must be a complete reviewed trio.",
+            deploy,
+        )
+        self.assertIn(
+            "The pilot acceptance boundary must be a complete reviewed trio.",
+            rollback,
+        )
+        for activation in (deploy, rollback):
+            self.assertIn(
+                "rm -f -- /usr/local/sbin/careertrellis-pilot-acceptance "
+                "/usr/local/libexec/careertrellis/pilot_acceptance.py "
+                "/usr/local/libexec/careertrellis/pilot_acceptance_receipts.py",
+                activation,
+            )
 
 
 class LocalBrowserBoundaryTests(unittest.TestCase):

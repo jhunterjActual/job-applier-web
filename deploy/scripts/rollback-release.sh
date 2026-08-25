@@ -23,7 +23,40 @@ release_root=${CAREERTRELLIS_RELEASE_ROOT:-/opt/careertrellis/staging}
 browser_path=/var/lib/careertrellis/shared/ms-playwright
 current_link=${release_root}/current
 previous_link=${release_root}/previous
+pilot_acceptance_parent=/var/backups/careertrellis
+pilot_acceptance_root=${pilot_acceptance_parent}/pilot-auth-acceptance
+pilot_acceptance_state=/var/lib/careertrellis/pilot-auth-acceptance/active.json
 requested_revision=${1:-}
+
+ensure_pilot_acceptance_root() {
+    if [[ -e ${pilot_acceptance_parent} || -L ${pilot_acceptance_parent} ]]; then
+        if [[ ! -d ${pilot_acceptance_parent} || -L ${pilot_acceptance_parent} || \
+              $(realpath "${pilot_acceptance_parent}") != "${pilot_acceptance_parent}" || \
+              $(stat -c '%U:%G %a' "${pilot_acceptance_parent}") != "root:root 700" ]]; then
+            echo "The protected CareerTrellis receipt parent is invalid." >&2
+            return 1
+        fi
+    else
+        install -d -o root -g root -m 0700 "${pilot_acceptance_parent}" || return 1
+    fi
+    if [[ -e ${pilot_acceptance_root} || -L ${pilot_acceptance_root} ]]; then
+        if [[ ! -d ${pilot_acceptance_root} || -L ${pilot_acceptance_root} || \
+              $(realpath "${pilot_acceptance_root}") != "${pilot_acceptance_root}" || \
+              $(stat -c '%U:%G %a' "${pilot_acceptance_root}") != "root:root 700" ]]; then
+            echo "The pilot acceptance receipt root is invalid." >&2
+            return 1
+        fi
+    else
+        install -d -o root -g root -m 0700 "${pilot_acceptance_root}" || return 1
+    fi
+}
+
+assert_no_active_pilot_acceptance() {
+    if [[ -e ${pilot_acceptance_state} || -L ${pilot_acceptance_state} ]]; then
+        echo "An active pilot acceptance attempt prevents rollback." >&2
+        return 1
+    fi
+}
 
 if [[ ! -L ${current_link} ]]; then
     echo "No current release is installed." >&2
@@ -78,7 +111,7 @@ assert_erasure_worker_activation_ready() {
 
 activate_release() {
     local release=$1
-    local revision activation_link environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds erasure_worker_active=false pilot_user_helper_available=false recovery_helper recovery_helpers_available=false
+    local revision activation_link environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds erasure_worker_active=false pilot_acceptance_helper_available=false pilot_user_helper_available=false recovery_helper recovery_helpers_available=false
     local erasure_worker_enabled search_worker_enabled web_erasure_worker_enabled web_search_worker_enabled
     revision=$(basename "${release}")
 
@@ -136,6 +169,27 @@ activate_release() {
             return 1
         fi
         pilot_user_helper_available=true
+    fi
+    if [[ -e ${release}/deploy/scripts/manage-pilot-acceptance.sh || \
+          -L ${release}/deploy/scripts/manage-pilot-acceptance.sh || \
+          -e ${release}/backend/pilot_acceptance.py || \
+          -L ${release}/backend/pilot_acceptance.py || \
+          -e ${release}/backend/pilot_acceptance_receipts.py || \
+          -L ${release}/backend/pilot_acceptance_receipts.py ]]; then
+        if [[ ! -f ${release}/deploy/scripts/manage-pilot-acceptance.sh || \
+              -L ${release}/deploy/scripts/manage-pilot-acceptance.sh || \
+              $(stat -c '%U:%G %a' "${release}/deploy/scripts/manage-pilot-acceptance.sh") != "root:careertrellis 750" || \
+              ! -f ${release}/backend/pilot_acceptance.py || \
+              -L ${release}/backend/pilot_acceptance.py || \
+              $(stat -c '%U:%G %a' "${release}/backend/pilot_acceptance.py") != "root:careertrellis 640" || \
+              ! -f ${release}/backend/pilot_acceptance_receipts.py || \
+              -L ${release}/backend/pilot_acceptance_receipts.py || \
+              $(stat -c '%U:%G %a' "${release}/backend/pilot_acceptance_receipts.py") != "root:careertrellis 640" ]]; then
+            echo "The pilot acceptance boundary must be a complete reviewed trio." >&2
+            return 1
+        fi
+        pilot_acceptance_helper_available=true
+        ensure_pilot_acceptance_root || return 1
     fi
     if grep -Ev '^(#|[[:space:]]*$|CAREERTRELLIS_(ENVIRONMENT|DATA_DIR|DATA_STORE|ACCOUNT_ERASURE_WORKER_(ENABLED|POLL_SECONDS|BATCH_SIZE))=)' \
         /etc/careertrellis/account-erasure-worker.env >/dev/null || \
@@ -199,6 +253,7 @@ activate_release() {
         "${release}/deploy/scripts/manage-pilot-caddy-credential.sh" check >/dev/null || return 1
     fi
 
+    assert_no_active_pilot_acceptance || return 1
     caddy validate \
         --config "${release}/deploy/caddy/Caddyfile.staging" \
         --envfile /etc/caddy/careertrellis-staging.env || return 1
@@ -222,6 +277,13 @@ activate_release() {
         install -o root -g root -m 0640 "${release}/backend/pilot_users.py" /usr/local/libexec/careertrellis/pilot_users.py || return 1
     else
         rm -f -- /usr/local/sbin/careertrellis-pilot-user /usr/local/libexec/careertrellis/pilot_users.py || return 1
+    fi
+    if [[ ${pilot_acceptance_helper_available} == true ]]; then
+        install -o root -g root -m 0750 "${release}/deploy/scripts/manage-pilot-acceptance.sh" /usr/local/sbin/careertrellis-pilot-acceptance || return 1
+        install -o root -g root -m 0640 "${release}/backend/pilot_acceptance.py" /usr/local/libexec/careertrellis/pilot_acceptance.py || return 1
+        install -o root -g root -m 0640 "${release}/backend/pilot_acceptance_receipts.py" /usr/local/libexec/careertrellis/pilot_acceptance_receipts.py || return 1
+    else
+        rm -f -- /usr/local/sbin/careertrellis-pilot-acceptance /usr/local/libexec/careertrellis/pilot_acceptance.py /usr/local/libexec/careertrellis/pilot_acceptance_receipts.py || return 1
     fi
     if [[ ${recovery_helpers_available} == true ]]; then
         install -o root -g root -m 0755 "${release}/deploy/scripts/mirror-generated-objects-onedrive.sh" /usr/local/sbin/careertrellis-mirror-generated-objects || return 1
