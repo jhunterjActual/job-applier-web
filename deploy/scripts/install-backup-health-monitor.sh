@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-if [[ ${EUID} -ne 0 ]]; then
+if [[ ${UID} -ne 0 || ${EUID} -ne 0 ]]; then
     echo "Run this backup-health installer as root." >&2
     exit 1
 fi
@@ -35,6 +35,8 @@ fi
 
 for command_path in \
     /usr/bin/bash \
+    /usr/bin/env \
+    /usr/bin/findmnt \
     /usr/bin/flock \
     /usr/bin/find \
     /usr/bin/jq \
@@ -119,20 +121,47 @@ readonly -a new_timer_units=(
     careertrellis-backup-health.timer
 )
 
-verification_root=$(mktemp -d /run/careertrellis-backup-health-verify.XXXXXX)
+readonly verification_parent=/var/tmp
+if [[ -L ${verification_parent} || ! -d ${verification_parent} || \
+      $(realpath -e "${verification_parent}" 2>/dev/null || true) != "${verification_parent}" || \
+      $(stat -c '%a:%U:%G' "${verification_parent}" 2>/dev/null || true) != 1777:root:root ]]; then
+    echo "The temporary unit-verification parent was unsafe." >&2
+    exit 1
+fi
+if ! verification_mount_options=$(
+    /usr/bin/findmnt --noheadings --output OPTIONS --target "${verification_parent}"
+) || [[ -z ${verification_mount_options} || ${verification_mount_options} == *$'\n'* ]]; then
+    echo "The temporary unit-verification filesystem could not be validated." >&2
+    exit 1
+fi
+case ",${verification_mount_options}," in
+    *,noexec,*)
+        echo "The temporary unit-verification filesystem does not permit executable checks." >&2
+        exit 1
+        ;;
+esac
+readonly verification_mount_options
+
+verification_root=$(mktemp -d "${verification_parent}/careertrellis-backup-health-verify.XXXXXX")
 verification_root=$(realpath -e "${verification_root}")
-if [[ ${verification_root} != /run/careertrellis-backup-health-verify.* || \
+if [[ ${verification_root} != "${verification_parent}"/careertrellis-backup-health-verify.* || \
       -L ${verification_root} || \
     $(stat -c '%a:%U:%G' "${verification_root}" 2>/dev/null || true) != 700:root:root ]]; then
     echo "The temporary unit-verification root was unsafe." >&2
+    exit 1
+fi
+readonly verification_root_identity=$(stat -c '%d:%i' "${verification_root}")
+if [[ ! ${verification_root_identity} =~ ^[0-9]+:[0-9]+$ ]]; then
+    echo "The temporary unit-verification root identity was invalid." >&2
     exit 1
 fi
 cleanup_verification_root() {
     local exit_status=$?
     trap - EXIT
     if [[ -n ${verification_root:-} && \
-          ${verification_root} == /run/careertrellis-backup-health-verify.* && \
+          ${verification_root} == "${verification_parent}"/careertrellis-backup-health-verify.* && \
           ! -L ${verification_root} && -d ${verification_root} && \
+          $(stat -c '%d:%i' "${verification_root}" 2>/dev/null || true) == "${verification_root_identity}" && \
           $(stat -c '%a:%U:%G' "${verification_root}" 2>/dev/null || true) == 700:root:root ]]; then
         if ! rm -rf --one-file-system -- "${verification_root}"; then
             echo "The temporary backup-health verification bundle could not be removed." >&2
@@ -224,7 +253,8 @@ done
 
 # Verify the exact staged units before any installed helper or unit target is
 # changed. The alternate root supplies their fixed absolute helper paths.
-if ! systemd-analyze --root="${verification_root}" verify \
+if ! /usr/bin/env -u SYSTEMD_UNIT_PATH \
+    /usr/bin/systemd-analyze --recursive-errors=no --root="${verification_root}" verify \
     careertrellis-pgbackrest-full.service \
     careertrellis-pgbackrest-full.timer \
     careertrellis-pgbackrest-differential.service \
