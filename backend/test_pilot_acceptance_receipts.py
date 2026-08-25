@@ -262,11 +262,11 @@ class ReceiptPersistenceTests(unittest.TestCase):
     def test_name_collision_never_overwrites_existing_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "receipts"
-            fixed_time = mock.Mock()
-            fixed_time.now.return_value = receipts.datetime(
+            real_datetime = receipts.datetime
+            fixed_time = mock.Mock(wraps=real_datetime)
+            fixed_time.now.return_value = real_datetime(
                 2026, 8, 25, 18, 0, 0, tzinfo=receipts.timezone.utc
             )
-            fixed_time.side_effect = receipts.datetime
             with mock.patch.object(receipts, "datetime", fixed_time), mock.patch.object(
                 receipts.secrets, "token_hex", return_value="0" * 16
             ):
@@ -312,11 +312,11 @@ class ReceiptPersistenceTests(unittest.TestCase):
     def test_interruption_after_receipt_publication_is_nonterminal(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "receipts"
-            fixed_time = mock.Mock()
-            fixed_time.now.return_value = receipts.datetime(
+            real_datetime = receipts.datetime
+            fixed_time = mock.Mock(wraps=real_datetime)
+            fixed_time.now.return_value = real_datetime(
                 2026, 8, 25, 18, 0, 0, tzinfo=receipts.timezone.utc
             )
-            fixed_time.side_effect = receipts.datetime
             original_link = receipts._link_exclusive
             call_count = 0
 
