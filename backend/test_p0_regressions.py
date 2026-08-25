@@ -3380,6 +3380,114 @@ class DependencyLockTests(unittest.TestCase):
             self.assertIn("test_backup_health.py", source)
             self.assertEqual(1, source.count("test_backup_health.py"))
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "systemd verification is Linux-only")
+    def test_backup_health_units_resolve_only_staged_executables(self) -> None:
+        analyzer = Path("/usr/bin/systemd-analyze")
+        self.assertTrue(analyzer.is_file(), "The Linux gate requires systemd-analyze.")
+        project_dir = self.project_dir()
+        systemd = project_dir / "deploy" / "systemd"
+        unit_names = (
+            "careertrellis-pgbackrest-full.service",
+            "careertrellis-pgbackrest-full.timer",
+            "careertrellis-pgbackrest-differential.service",
+            "careertrellis-pgbackrest-differential.timer",
+            "careertrellis-pgbackrest-onedrive.service",
+            "careertrellis-pgbackrest-onedrive.timer",
+            "careertrellis-pgbackrest-inventory.service",
+            "careertrellis-pgbackrest-inventory.timer",
+            "careertrellis-pgbackrest-restore.service",
+            "careertrellis-pgbackrest-restore.timer",
+            "careertrellis-backup-health.service",
+            "careertrellis-backup-health.timer",
+            "careertrellis-backup-health-alert@.service",
+        )
+        helper_paths: set[str] = set()
+        unit_sources: dict[str, str] = {}
+        for unit_name in unit_names:
+            source = (systemd / unit_name).read_text(encoding="utf-8")
+            unit_sources[unit_name] = source
+            helper_paths.update(
+                match.group(1)
+                for match in re.finditer(
+                    r"^ExecStart(?:Post)?=(/usr/local/sbin/[^\s]+)",
+                    source,
+                    re.MULTILINE,
+                )
+            )
+
+        self.assertEqual(
+            {
+                "/usr/local/sbin/careertrellis-backup-health",
+                "/usr/local/sbin/careertrellis-check-pgbackrest-mirror",
+                "/usr/local/sbin/careertrellis-mirror-pgbackrest-onedrive",
+                "/usr/local/sbin/careertrellis-run-pgbackrest-backup",
+                "/usr/local/sbin/careertrellis-test-pgbackrest-restore",
+            },
+            helper_paths,
+        )
+        for unit_name, source in unit_sources.items():
+            for referenced_unit in re.findall(r"^Unit=(\S+)$", source, re.MULTILINE):
+                self.assertIn(referenced_unit, unit_names, unit_name)
+            for failure_unit in re.findall(
+                r"^OnFailure=(\S+)$", source, re.MULTILINE
+            ):
+                self.assertTrue(
+                    failure_unit.startswith("careertrellis-backup-health-alert@")
+                    and "careertrellis-backup-health-alert@.service" in unit_names,
+                    f"{unit_name}: {failure_unit}",
+                )
+
+        with tempfile.TemporaryDirectory(
+            prefix=".systemd-verify-", dir=project_dir
+        ) as temporary:
+            verification_root = Path(temporary)
+            unit_root = verification_root / "etc" / "systemd" / "system"
+            unit_root.mkdir(parents=True)
+            (verification_root / "etc" / "passwd").write_text(
+                "root:x:0:0:root:/root:/usr/sbin/nologin\n", encoding="utf-8"
+            )
+            (verification_root / "etc" / "group").write_text(
+                "root:x:0:\n", encoding="utf-8"
+            )
+            for unit_name, source in unit_sources.items():
+                (unit_root / unit_name).write_text(source, encoding="utf-8")
+            for helper_path in helper_paths:
+                staged_helper = verification_root / helper_path.removeprefix("/")
+                staged_helper.parent.mkdir(parents=True, exist_ok=True)
+                staged_helper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                staged_helper.chmod(0o755)
+
+            environment = os.environ.copy()
+            environment.pop("SYSTEMD_UNIT_PATH", None)
+            command = [
+                str(analyzer),
+                "--recursive-errors=no",
+                f"--root={verification_root}",
+                "verify",
+                *unit_names,
+            ]
+            accepted = subprocess.run(
+                command,
+                cwd=project_dir,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, accepted.returncode, accepted.stderr)
+
+            missing_helper = verification_root / sorted(helper_paths)[0].removeprefix("/")
+            missing_helper.unlink()
+            rejected = subprocess.run(
+                command,
+                cwd=project_dir,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(0, rejected.returncode)
+
     def test_database_backup_health_uses_one_hardened_repository_boundary(self) -> None:
         project_dir = self.project_dir()
         scripts = project_dir / "deploy" / "scripts"
@@ -3594,7 +3702,9 @@ class DependencyLockTests(unittest.TestCase):
         installer = (scripts / "install-backup-health-monitor.sh").read_text(
             encoding="utf-8"
         )
-        verification = installer.index('systemd-analyze --root="${verification_root}"')
+        verification = installer.index(
+            '/usr/bin/systemd-analyze --recursive-errors=no --root="${verification_root}"'
+        )
         rollback_capture = installer.index(
             "rollback_root=$(mktemp -d", verification
         )
@@ -3623,6 +3733,14 @@ class DependencyLockTests(unittest.TestCase):
         self.assertNotIn('"${repository_root}/', installer[ingestion:])
         self.assertNotIn('"${repository_source}/', installer[ingestion:])
         self.assertIn("trap cleanup_verification_root EXIT", installer)
+        self.assertIn("readonly verification_parent=/var/tmp", installer)
+        self.assertIn("1777:root:root", installer)
+        self.assertIn("*,noexec,*", installer)
+        self.assertIn("readonly verification_root_identity=", installer)
+        self.assertIn(
+            '== "${verification_root_identity}"', installer
+        )
+        self.assertIn("/usr/bin/env -u SYSTEMD_UNIT_PATH", installer)
         self.assertIn(
             '"${verification_root}${helper_target_paths[0]}"', installer[ingestion:]
         )
@@ -3633,6 +3751,17 @@ class DependencyLockTests(unittest.TestCase):
         self.assertNotIn(
             'rm -rf --one-file-system -- "${verification_root}"',
             installer[verification:rollback_capture],
+        )
+
+        deploy = (scripts / "deploy-release.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            "object_health_verification_root=${temporary_release}/.object-health-unit-root",
+            deploy,
+        )
+        self.assertIn(
+            "systemd-analyze --recursive-errors=no "
+            '--root="${object_health_verification_root}" verify',
+            deploy,
         )
 
         start_boundary = installer[

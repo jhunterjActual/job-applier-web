@@ -182,7 +182,9 @@ if [[ ! -d ${release_dir} ]]; then
         "${temporary_release}/deploy/scripts/manage-generated-object-backup-health.sh" \
         "${temporary_release}/deploy/scripts/mirror-generated-objects-onedrive.sh" \
         "${temporary_release}/deploy/scripts/test-generated-object-restore.sh"
-    object_health_verification_root=${test_data}/object-health-unit-root
+    # Keep staged executable validation on the same already-proven executable
+    # filesystem as the release. The test-data root may be mounted noexec.
+    object_health_verification_root=${temporary_release}/.object-health-unit-root
     install -d -o root -g root -m 0755 \
         "${object_health_verification_root}/etc" \
         "${object_health_verification_root}/etc/systemd" \
@@ -205,10 +207,12 @@ if [[ ! -d ${release_dir} ]]; then
             "${temporary_release}/deploy/systemd/${object_health_unit}" \
             "${object_health_verification_root}/etc/systemd/system/${object_health_unit}"
     done
-    systemd-analyze --root="${object_health_verification_root}" verify \
+    env -u SYSTEMD_UNIT_PATH \
+        systemd-analyze --recursive-errors=no --root="${object_health_verification_root}" verify \
         careertrellis-generated-object-backup-health.service \
         careertrellis-generated-object-backup-health.timer \
         careertrellis-generated-object-backup-health-alert@.service
+    rm -rf --one-file-system -- "${object_health_verification_root}"
     if [[ -f ${temporary_release}/deploy/scripts/manage-pilot-caddy-credential.sh && \
           ! -L ${temporary_release}/deploy/scripts/manage-pilot-caddy-credential.sh ]]; then
         chmod 0755 "${temporary_release}/deploy/scripts/manage-pilot-caddy-credential.sh"

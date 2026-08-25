@@ -291,16 +291,17 @@ monitoring, changes PostgreSQL/R2 authority, alters provider configuration, or
 starts a precautionary operation.
 
 The `.39` deployer predates the web-host objects-health artifact class. Its
-running shell cannot acquire new activation logic merely because it copies the
-`.40` deployer over the installed helper path. The first `.39` to `.40` upgrade
-therefore uses a reviewed two-phase handoff: the installed `.39` helper prepares
-the exact immutable `.40` release, then the operator verifies and invokes the
-deployer inside that prepared release to perform activation. Re-running the
-installed `.39` helper for activation is forbidden because it can report the app
-ready without installing the new objects-health helper, units, and timer.
+running shell cannot acquire new activation logic merely because it copies a
+newer deployer over the installed helper path. The first `.39` to a
+backup-health-capable release therefore uses a reviewed two-phase handoff: the
+installed `.39` helper prepares the exact immutable forward release, then the
+operator verifies and invokes the deployer inside that prepared release to
+perform activation. Re-running the installed `.39` helper for activation is forbidden
+because it can report the app ready without installing the new objects-health
+helper, units, and timer.
 
 ```text
-revision=<exact reviewed 40-character .40 commit>
+revision=<exact reviewed 40-character forward-release commit>
 sudo -n /usr/local/sbin/careertrellis-deploy --prepare-only "${revision}"
 target="/opt/careertrellis/staging/releases/${revision}/deploy/scripts/deploy-release.sh"
 sudo -n stat -c '%U:%G %a' "${target}"   # must be root:careertrellis 750
@@ -319,6 +320,15 @@ a preceding helper set, or removes a newly created empty parent when the prior
 helper set had no restore root. A successful scheduled database health unit
 clears its own persistent unit alert only from `ExecStartPost`, after systemd has
 recorded the new successful completion.
+
+The `.40` database installer failed closed before installation because its
+private verification tree was created on the staging host's `noexec` `/run`
+mount. The `.41` forward correction retains a root-only staging tree, requires a
+canonical root-owned sticky `/var/tmp` on an executable mount, unsets external
+unit search paths, and asks systemd to validate only the explicitly staged unit
+bundle. The web-side verifier uses the already executable immutable-release
+filesystem. Neither correction widens the staged tree, installs before
+verification, or invents dependency units inside the alternate root.
 
 Activation first reuses compatible retained evidence. It must not take a new
 backup, copy a repository, or repeat a restore merely because the monitor is
