@@ -3469,6 +3469,24 @@ class DependencyLockTests(unittest.TestCase):
             ):
                 self.assertIn(hardening, unit)
 
+        health_unit = (
+            systemd / "careertrellis-backup-health.service"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "ExecStartPost=/usr/local/sbin/careertrellis-backup-health "
+            "clear-unit-alert %n",
+            health_unit,
+        )
+        manager = (scripts / "manage-backup-health.sh").read_text(encoding="utf-8")
+        evaluation = manager[
+            manager.index("evaluate_database_health() {") : manager.index(
+                "acknowledge_wal_failures() {"
+            )
+        ]
+        self.assertNotIn(
+            "clear_unit_alert careertrellis-backup-health.service", evaluation
+        )
+
     def test_backup_health_restore_and_future_timers_fail_closed(self) -> None:
         project_dir = self.project_dir()
         scripts = project_dir / "deploy" / "scripts"
@@ -3492,6 +3510,36 @@ class DependencyLockTests(unittest.TestCase):
         self.assertLess(checksums, cleanup)
         self.assertLess(cleanup, receipt)
         self.assertIn("listen_addresses = ''", restore)
+        start_options = restore[
+            restore.index("readonly postgres_start_options=") : restore.index(
+                'start >>"${private_log}"',
+                restore.index("readonly postgres_start_options="),
+            )
+        ]
+        for fixed_setting in (
+            "-c data_directory=${restore_directory}",
+            "-c hba_file=${test_hba}",
+            "-c ident_file=${test_ident}",
+            "-c listen_addresses=",
+            "-c port=${test_port}",
+            "-c unix_socket_directories=${socket_directory}",
+            "-c ssl=off",
+            "-c shared_preload_libraries=",
+            "-c session_preload_libraries=",
+            "-c local_preload_libraries=",
+            "-c archive_mode=off",
+            "-c recovery_end_command=",
+            "-c log_destination=stderr",
+            "-c external_pid_file=",
+            "-c max_connections=50",
+            "-c shared_buffers=64MB",
+            "-c primary_conninfo=",
+        ):
+            self.assertIn(fixed_setting, start_options)
+        self.assertIn('--options="${postgres_start_options}"', start_options)
+        self.assertIn("710:root:postgres", restore)
+        self.assertIn("restore_device_inode=$(stat -c '%d:%i'", restore)
+        self.assertIn('${current_identity} != "${restore_device_inode}"', restore)
         self.assertIn("--host=\"${socket_directory}\"", restore)
         self.assertIn("--target-action=promote", restore)
         self.assertIn("pg_is_in_recovery()", restore)
@@ -3509,6 +3557,28 @@ class DependencyLockTests(unittest.TestCase):
         self.assertNotIn(
             'chown postgres:postgres "${test_config}" "${test_hba}"', restore
         )
+
+        installer = (scripts / "install-backup-health-monitor.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("restore_root_needs_migration=true", installer)
+        self.assertIn('chown root:postgres "${restore_root}"', installer)
+        self.assertIn('chmod 0710 "${restore_root}"', installer)
+        rollback = installer[
+            installer.index("rollback_installation() {") : installer.index(
+                "trap rollback_installation ERR"
+            )
+        ]
+        self.assertIn('chown postgres:postgres "${restore_root}"', rollback)
+        self.assertIn('chmod 0700 "${restore_root}"', rollback)
+        self.assertIn("restore_root_creation_started", rollback)
+        self.assertIn('rmdir -- "${restore_root}"', rollback)
+        creation = installer[
+            installer.index("if [[ ${restore_root_was_absent} == true ]]") :
+            installer.index("if [[ ${restore_root_needs_migration} == true ]]")
+        ]
+        self.assertIn('install -d -o root -g postgres -m 0710 "${restore_root}"', creation)
+        self.assertIn("restore_root_created_identity", creation)
 
         future_timers = {
             "careertrellis-pgbackrest-inventory.timer": "7d",
@@ -3529,13 +3599,41 @@ class DependencyLockTests(unittest.TestCase):
             "rollback_root=$(mktemp -d", verification
         )
         installed_core = installer.rindex(
-            "/usr/local/libexec/careertrellis/backup_health.py"
+            '"${verification_root}${helper_target_paths[0]}"'
         )
         self.assertLess(verification, rollback_capture)
         self.assertLess(rollback_capture, installed_core)
         self.assertIn("trap rollback_installation ERR", installer)
         self.assertIn("cp --archive --preserve=all --no-dereference", installer)
         self.assertIn("prior installed targets were restored", installer)
+
+        ingestion = installer.index("# Reviewed source ingestion is complete.")
+        self.assertLess(installer.index("validate_source() {"), ingestion)
+        self.assertIn(
+            "readonly repository_source=/proc/self/fd/${repository_fd}", installer
+        )
+        self.assertIn(
+            "A reviewed source directory is missing or is a symbolic link.",
+            installer,
+        )
+        self.assertIn(
+            "A reviewed source directory must be root-owned and not group- or world-writable.",
+            installer,
+        )
+        self.assertNotIn('"${repository_root}/', installer[ingestion:])
+        self.assertNotIn('"${repository_source}/', installer[ingestion:])
+        self.assertIn("trap cleanup_verification_root EXIT", installer)
+        self.assertIn(
+            '"${verification_root}${helper_target_paths[0]}"', installer[ingestion:]
+        )
+        self.assertIn(
+            '"${verification_root}${target_path}"', installer[ingestion:]
+        )
+        self.assertLess(ingestion, verification)
+        self.assertNotIn(
+            'rm -rf --one-file-system -- "${verification_root}"',
+            installer[verification:rollback_capture],
+        )
 
         start_boundary = installer[
             installer.index("# Starting these timer units") : installer.index(
@@ -3611,6 +3709,27 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("${alert_audit_result} -eq 2", status_case)
         self.assertIn("${alert_audit_result} -eq 10", status_case)
         self.assertIn('"result":"alert"', status_case)
+        self.assertIn('"reason":"unit_alert_active"', status_case)
+        self.assertIn('"reason":"monitor_schedule_unavailable"', status_case)
+        self.assertIn("audit_monitor_schedule", status_case)
+        self.assertNotIn("evaluate_database_health status", status_case)
+        schedule_audit = manager[
+            manager.index("audit_monitor_schedule() {") : manager.index(
+                "evaluate_database_health() {"
+            )
+        ]
+        for timer_name in (
+            "careertrellis-pgbackrest-full.timer",
+            "careertrellis-pgbackrest-differential.timer",
+            "careertrellis-pgbackrest-onedrive.timer",
+            "careertrellis-pgbackrest-inventory.timer",
+            "careertrellis-pgbackrest-restore.timer",
+            "careertrellis-backup-health.timer",
+        ):
+            self.assertIn(timer_name, schedule_audit)
+        self.assertIn("/usr/bin/systemctl is-active", schedule_audit)
+        self.assertIn("/usr/bin/systemctl is-enabled", schedule_audit)
+        self.assertIn("--property=LoadState", schedule_audit)
 
     def test_generated_object_health_is_local_receipt_only_and_truthful(self) -> None:
         project_dir = self.project_dir()
@@ -3624,6 +3743,29 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("generated_object_restore", manager)
         self.assertIn("audit_unit_alerts", manager)
         self.assertIn("unit_alert_evidence_invalid", manager)
+        status_case = manager[
+            manager.index("    status)") : manager.index("    alert-unit)")
+        ]
+        self.assertIn('"reason":"unit_alert_active"', status_case)
+        self.assertIn('"reason":"monitor_schedule_unavailable"', status_case)
+        self.assertIn("audit_monitor_schedule", status_case)
+        self.assertNotIn("evaluate_objects_health", status_case)
+        schedule_audit = manager[
+            manager.index("audit_monitor_schedule() {") : manager.index(
+                "record_unit_alert() {"
+            )
+        ]
+        self.assertIn("careertrellis-generated-object-backup-health.timer", manager)
+        self.assertIn("is-active", schedule_audit)
+        self.assertIn("is-enabled", schedule_audit)
+        self.assertIn("LoadState", schedule_audit)
+        clearing = manager[
+            manager.index("clear_unit_alert() {") : manager.index(
+                "operation_state() {"
+            )
+        ]
+        self.assertIn("${service_result} != success", clearing)
+        self.assertIn("${service_exit_epoch} -lt ${observed_epoch}", clearing)
         for provider_traversal in (
             "/usr/local/bin/rclone",
             " rclone ",
@@ -3790,6 +3932,23 @@ class DependencyLockTests(unittest.TestCase):
                         self.assertNotIn(
                             "/var/backups/careertrellis/backup-health", line
                         )
+
+        backup_health_runbook = (
+            project_dir / "docs" / "PILOT_BACKUP_HEALTH.md"
+        ).read_text(encoding="utf-8")
+        handoff_start = backup_health_runbook.index("The `.39` deployer predates")
+        handoff = backup_health_runbook[
+            handoff_start : backup_health_runbook.index(
+                "The database-host installer likewise consumes", handoff_start
+            )
+        ]
+        self.assertIn("--prepare-only", handoff)
+        self.assertIn(
+            "/opt/careertrellis/staging/releases/${revision}/deploy/scripts/deploy-release.sh",
+            handoff,
+        )
+        self.assertIn('sudo -n "${target}" "${revision}"', handoff)
+        self.assertIn("for activation is forbidden", handoff)
 
     def test_auth_and_client_fingerprints_are_excluded_from_host_access_logs(self) -> None:
         project_dir = self.project_dir()

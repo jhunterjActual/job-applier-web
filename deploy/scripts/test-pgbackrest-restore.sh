@@ -52,9 +52,9 @@ if ! flock --nonblock 9; then
 fi
 
 if [[ ! -e ${restore_root} && ! -L ${restore_root} ]]; then
-    install -d -o postgres -g postgres -m 0700 "${restore_root}"
+    install -d -o root -g postgres -m 0710 "${restore_root}"
 fi
-if [[ $(stat -c '%a:%U:%G' "${restore_root}" 2>/dev/null || true) != 700:postgres:postgres ]] || \
+if [[ $(stat -c '%a:%U:%G' "${restore_root}" 2>/dev/null || true) != 710:root:postgres ]] || \
     [[ -L ${restore_root} || ! -d ${restore_root} || \
     $(realpath -e "${restore_root}" 2>/dev/null || true) != "${restore_root}" ]]; then
     echo "The dedicated restore root has an unsafe owner, mode, or location." >&2
@@ -71,11 +71,17 @@ restore_directory=
 
 cleanup_restore() {
     local cleanup_failed=false
+    local current_identity
     if [[ -z ${restore_directory:-} ]]; then
         return 0
     fi
     if [[ ${restore_directory} != "${restore_root}/"* || -L ${restore_directory} ]]; then
         echo "The restore cleanup boundary was invalid; no deletion was attempted." >&2
+        return 1
+    fi
+    current_identity=$(stat -c '%d:%i' "${restore_directory}" 2>/dev/null || true)
+    if [[ -z ${restore_device_inode:-} || ${current_identity} != "${restore_device_inode}" ]]; then
+        echo "The restore cleanup identity changed; no deletion was attempted." >&2
         return 1
     fi
     if runuser -u postgres -- "${pg_ctl}" --pgdata="${restore_directory}" status >/dev/null 2>&1; then
@@ -89,6 +95,11 @@ cleanup_restore() {
         fi
     fi
     if [[ ${cleanup_failed} == false ]]; then
+        current_identity=$(stat -c '%d:%i' "${restore_directory}" 2>/dev/null || true)
+        if [[ ${current_identity} != "${restore_device_inode}" ]]; then
+            echo "The restore cleanup identity changed; no deletion was attempted." >&2
+            return 1
+        fi
         rm -rf --one-file-system -- "${restore_directory}"
         if [[ -e ${restore_directory} || -L ${restore_directory} ]]; then
             cleanup_failed=true
@@ -180,11 +191,18 @@ if [[ ! ${backup_completed_epoch} =~ ^[0-9]+$ ]]; then
 fi
 readonly rpo_seconds=$(( started_epoch > backup_completed_epoch ? started_epoch - backup_completed_epoch : 0 ))
 
-restore_directory=$(runuser -u postgres -- mktemp -d "${restore_root}/restore.XXXXXX")
+restore_directory=$(mktemp -d "${restore_root}/restore.XXXXXX")
+chown postgres:postgres "${restore_directory}"
+chmod 0700 "${restore_directory}"
 restore_directory=$(realpath -e "${restore_directory}")
 if [[ ${restore_directory} != "${restore_root}/"* || -L ${restore_directory} ]] || \
     [[ $(stat -c '%a:%U:%G' "${restore_directory}" 2>/dev/null || true) != 700:postgres:postgres ]]; then
     echo "The disposable restore directory escaped its protected root." >&2
+    exit 1
+fi
+readonly restore_device_inode=$(stat -c '%d:%i' "${restore_directory}")
+if [[ ! ${restore_device_inode} =~ ^[0-9]+:[0-9]+$ ]]; then
+    echo "The disposable restore directory identity was invalid." >&2
     exit 1
 fi
 
@@ -223,9 +241,10 @@ EOF
 runuser -u postgres -- /usr/bin/install -m 0600 /dev/null "${test_ident}"
 runuser -u postgres -- /usr/bin/chmod 0600 "${test_config}" "${test_hba}"
 
+readonly postgres_start_options="-c config_file=${test_config} -c data_directory=${restore_directory} -c hba_file=${test_hba} -c ident_file=${test_ident} -c listen_addresses= -c port=${test_port} -c unix_socket_directories=${socket_directory} -c unix_socket_group= -c unix_socket_permissions=0700 -c ssl=off -c shared_preload_libraries= -c session_preload_libraries= -c local_preload_libraries= -c archive_mode=off -c archive_command= -c archive_cleanup_command= -c recovery_end_command= -c logging_collector=off -c log_destination=stderr -c external_pid_file= -c max_connections=50 -c shared_buffers=64MB -c primary_conninfo= -c primary_slot_name= -c jit=off"
 if ! runuser -u postgres -- "${pg_ctl}" \
     --pgdata="${restore_directory}" \
-    --options="-c config_file=${test_config}" \
+    --options="${postgres_start_options}" \
     --log="${restore_directory}/postgresql.restore-test.log" \
     --wait \
     --timeout=90 \

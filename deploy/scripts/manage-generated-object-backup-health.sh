@@ -10,6 +10,7 @@ readonly alert_root=/var/lib/careertrellis/backup-health/objects/alerts
 readonly unit_alert_root=/var/lib/careertrellis/backup-health/objects/unit-alerts
 readonly lock_path=/run/lock/careertrellis-backup-health-objects.lock
 readonly health_unit=careertrellis-generated-object-backup-health.service
+readonly health_timer=careertrellis-generated-object-backup-health.timer
 readonly unit_alert_path=${unit_alert_root}/${health_unit}.alert.json
 
 if [[ ${EUID} -ne 0 ]]; then
@@ -32,7 +33,8 @@ for command_path in \
     /usr/bin/python3 \
     /usr/bin/realpath \
     /usr/bin/rm \
-    /usr/bin/stat; do
+    /usr/bin/stat \
+    /usr/bin/systemctl; do
     if [[ ! -x ${command_path} ]]; then
         echo "A required generated-object backup-health command is unavailable." >&2
         exit 1
@@ -145,6 +147,14 @@ audit_unit_alerts() {
     return 0
 }
 
+audit_monitor_schedule() {
+    local timer_active timer_enabled timer_loaded
+    timer_active=$(/usr/bin/systemctl is-active "${health_timer}" 2>/dev/null || true)
+    timer_enabled=$(/usr/bin/systemctl is-enabled "${health_timer}" 2>/dev/null || true)
+    timer_loaded=$(/usr/bin/systemctl show "${health_timer}" --property=LoadState --value 2>/dev/null || true)
+    [[ ${timer_active} == active && ${timer_enabled} == enabled && ${timer_loaded} == loaded ]]
+}
+
 record_unit_alert() {
     local unit_name=$1
     local observed_at temporary
@@ -177,13 +187,27 @@ record_unit_alert() {
 
 clear_unit_alert() {
     local unit_name=$1
-    local observed_at status_json
+    local observed_at status_json service_result service_exit_timestamp
+    local service_exit_epoch observed_epoch
     validate_unit_name "${unit_name}"
     if [[ ! -e ${unit_alert_path} && ! -L ${unit_alert_path} ]]; then
         printf '{"operation":"generated_object_backup_health_alert","result":"already_clear","surface":"objects","unit":"%s"}\n' "${health_unit}"
         return 0
     fi
     observed_at=$(validate_unit_alert_file "${unit_alert_path}")
+    service_result=$(systemctl show "${unit_name}" --property=Result --value 2>/dev/null || true)
+    if [[ ${service_result} != success ]]; then
+        echo "The exact failed unit has not returned to success; its alert was retained." >&2
+        return 1
+    fi
+    service_exit_timestamp=$(systemctl show "${unit_name}" --property=ExecMainExitTimestamp --value 2>/dev/null || true)
+    service_exit_epoch=$(date --date="${service_exit_timestamp}" +%s 2>/dev/null || true)
+    observed_epoch=$(date --date="${observed_at}" +%s 2>/dev/null || true)
+    if [[ ! ${service_exit_epoch} =~ ^[0-9]+$ || ! ${observed_epoch} =~ ^[0-9]+$ || \
+          ${service_exit_epoch} -lt ${observed_epoch} ]]; then
+        echo "The exact failed unit has no newer successful completion; its alert was retained." >&2
+        return 1
+    fi
     status_json=$(/usr/bin/mktemp /run/careertrellis-generated-object-health-status.XXXXXX)
     if ! /usr/bin/python3 -B "${core}" status \
         --surface objects \
@@ -298,27 +322,11 @@ case "${command_name}" in
             exit 1
         fi
         if [[ ${alert_audit_result} -eq 10 ]]; then
-            refresh_output=$(/usr/bin/mktemp /run/careertrellis-generated-object-health-refresh.XXXXXX)
-            set +e
-            evaluate_objects_health >"${refresh_output}"
-            refresh_result=$?
-            set -e
-            if [[ ${refresh_result} -eq 0 ]]; then
-                if ! clear_unit_alert "${health_unit}" >/dev/null; then
-                    /usr/bin/rm -f -- "${refresh_output}"
-                    printf '{"operation":"generated_object_backup_health_status","reason":"unit_alert_not_cleared","result":"alert","surface":"objects"}\n'
-                    exit 1
-                fi
-                /usr/bin/cat "${refresh_output}"
-                /usr/bin/rm -f -- "${refresh_output}"
-                exit 0
-            fi
-            if [[ ${refresh_result} -eq 1 ]]; then
-                /usr/bin/cat "${refresh_output}"
-            else
-                printf '{"operation":"generated_object_backup_health_status","reason":"unit_alert_refresh_failed","result":"alert","surface":"objects"}\n'
-            fi
-            /usr/bin/rm -f -- "${refresh_output}"
+            printf '{"operation":"generated_object_backup_health_status","reason":"unit_alert_active","result":"alert","surface":"objects"}\n'
+            exit 1
+        fi
+        if ! audit_monitor_schedule; then
+            printf '{"operation":"generated_object_backup_health_status","reason":"monitor_schedule_unavailable","result":"alert","surface":"objects"}\n'
             exit 1
         fi
         /usr/bin/python3 -B "${core}" status \

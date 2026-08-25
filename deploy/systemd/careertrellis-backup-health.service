@@ -10,6 +10,7 @@ User=root
 Group=root
 UMask=0077
 ExecStart=/usr/local/sbin/careertrellis-backup-health evaluate
+ExecStartPost=/usr/local/sbin/careertrellis-backup-health clear-unit-alert %n
 SuccessExitStatus=1
 TimeoutStartSec=10m
 NoNewPrivileges=true

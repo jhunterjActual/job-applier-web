@@ -23,6 +23,15 @@ if [[ $(stat -c '%U:%G' "${repository_root}") != root:root || \
     echo "The reviewed repository root must be root-owned and not group- or world-writable." >&2
     exit 1
 fi
+readonly repository_identity=$(stat -Lc '%d:%i' "${repository_root}")
+exec {repository_fd}<"${repository_root}"
+readonly repository_fd
+readonly repository_source=/proc/self/fd/${repository_fd}
+if [[ ! ${repository_identity} =~ ^[0-9]+:[0-9]+$ || \
+      $(stat -Lc '%d:%i' "${repository_source}" 2>/dev/null || true) != "${repository_identity}" ]]; then
+    echo "The reviewed repository root changed while it was being bound." >&2
+    exit 1
+fi
 
 for command_path in \
     /usr/bin/bash \
@@ -110,17 +119,74 @@ readonly -a new_timer_units=(
     careertrellis-backup-health.timer
 )
 
+verification_root=$(mktemp -d /run/careertrellis-backup-health-verify.XXXXXX)
+verification_root=$(realpath -e "${verification_root}")
+if [[ ${verification_root} != /run/careertrellis-backup-health-verify.* || \
+      -L ${verification_root} || \
+    $(stat -c '%a:%U:%G' "${verification_root}" 2>/dev/null || true) != 700:root:root ]]; then
+    echo "The temporary unit-verification root was unsafe." >&2
+    exit 1
+fi
+cleanup_verification_root() {
+    local exit_status=$?
+    trap - EXIT
+    if [[ -n ${verification_root:-} && \
+          ${verification_root} == /run/careertrellis-backup-health-verify.* && \
+          ! -L ${verification_root} && -d ${verification_root} && \
+          $(stat -c '%a:%U:%G' "${verification_root}" 2>/dev/null || true) == 700:root:root ]]; then
+        if ! rm -rf --one-file-system -- "${verification_root}"; then
+            echo "The temporary backup-health verification bundle could not be removed." >&2
+            exit_status=1
+        fi
+    elif [[ -n ${verification_root:-} ]]; then
+        echo "The temporary backup-health verification bundle changed unexpectedly." >&2
+        exit_status=1
+    fi
+    exit "${exit_status}"
+}
+trap cleanup_verification_root EXIT
+install -d -o root -g root -m 0755 \
+    "${verification_root}/etc" \
+    "${verification_root}/etc/systemd" \
+    "${verification_root}/etc/systemd/system" \
+    "${verification_root}/usr" \
+    "${verification_root}/usr/local" \
+    "${verification_root}/usr/local/libexec" \
+    "${verification_root}/usr/local/libexec/careertrellis" \
+    "${verification_root}/usr/local/sbin"
+printf 'root:x:0:0:root:/root:/usr/sbin/nologin\n' >"${verification_root}/etc/passwd"
+printf 'root:x:0:\n' >"${verification_root}/etc/group"
+chmod 0600 "${verification_root}/etc/passwd" "${verification_root}/etc/group"
+
 validate_source() {
     local relative_path=$1
-    local path resolved permissions ownership
-    path="${repository_root}/${relative_path}"
-    if [[ -L ${path} || ! -f ${path} ]]; then
-        echo "A required reviewed source is missing or is a symbolic link." >&2
+    local path directory permissions ownership
+    local -a components=()
+    local component_index
+    if [[ ${relative_path} == /* || ${relative_path} == ../* || \
+          ${relative_path} == */../* || ${relative_path} == */.. || \
+          ${relative_path} == *//* ]]; then
+        echo "A reviewed source path was invalid." >&2
         return 1
     fi
-    resolved=$(realpath -e "${path}")
-    if [[ ${resolved} != "${repository_root}/"* ]]; then
-        echo "A reviewed source escaped the repository root." >&2
+    IFS='/' read -r -a components <<<"${relative_path}"
+    directory=${repository_source}
+    for (( component_index=0; component_index < ${#components[@]} - 1; component_index++ )); do
+        directory=${directory}/${components[${component_index}]}
+        if [[ -L ${directory} || ! -d ${directory} ]]; then
+            echo "A reviewed source directory is missing or is a symbolic link." >&2
+            return 1
+        fi
+        permissions=$(stat -c '%A' "${directory}")
+        ownership=$(stat -c '%U:%G' "${directory}")
+        if [[ ${ownership} != root:root || ${permissions:5:1} == w || ${permissions:8:1} == w ]]; then
+            echo "A reviewed source directory must be root-owned and not group- or world-writable." >&2
+            return 1
+        fi
+    done
+    path=${repository_source}/${relative_path}
+    if [[ -L ${path} || ! -f ${path} ]]; then
+        echo "A required reviewed source is missing or is a symbolic link." >&2
         return 1
     fi
     permissions=$(stat -c '%A' "${path}")
@@ -134,65 +200,30 @@ validate_source() {
 for relative_path in "${source_scripts[@]}" "${source_units[@]}" "${source_core}"; do
     validate_source "${relative_path}"
 done
-for relative_path in "${source_scripts[@]}"; do
-    /usr/bin/bash -n "${repository_root}/${relative_path}"
+install -o root -g root -m 0644 \
+    "${repository_source}/${source_core}" \
+    "${verification_root}${helper_target_paths[0]}"
+for source_index in "${!source_scripts[@]}"; do
+    install -o root -g root -m 0755 \
+        "${repository_source}/${source_scripts[${source_index}]}" \
+        "${verification_root}${helper_target_paths[$(( source_index + 1 ))]}"
+done
+for source_index in "${!source_units[@]}"; do
+    install -o root -g root -m 0644 \
+        "${repository_source}/${source_units[${source_index}]}" \
+        "${verification_root}${unit_target_paths[${source_index}]}"
+done
+exec {repository_fd}<&-
+# Reviewed source ingestion is complete. Every later check and installation
+# consumes only these root-owned staged bytes.
+for target_path in "${helper_target_paths[@]:1}"; do
+    /usr/bin/bash -n "${verification_root}${target_path}"
 done
 /usr/bin/python3 -c 'import pathlib, sys; compile(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), sys.argv[1], "exec")' \
-    "${repository_root}/${source_core}"
+    "${verification_root}${helper_target_paths[0]}"
 
-# Verify exact staged copies of the reviewed units before any installed helper
-# or unit target is changed. The alternate root supplies the absolute helper
-# paths referenced by ExecStart without touching the live filesystem.
-verification_root=$(mktemp -d /run/careertrellis-backup-health-verify.XXXXXX)
-verification_root=$(realpath -e "${verification_root}")
-if [[ ${verification_root} != /run/careertrellis-backup-health-verify.* || \
-    -L ${verification_root} || \
-    $(stat -c '%a:%U:%G' "${verification_root}" 2>/dev/null || true) != 700:root:root ]]; then
-    echo "The temporary unit-verification root was unsafe." >&2
-    exit 1
-fi
-cleanup_verification_on_error() {
-    local exit_status=$?
-    trap - ERR
-    rm -rf --one-file-system -- "${verification_root}" 2>/dev/null || true
-    exit "${exit_status}"
-}
-trap cleanup_verification_on_error ERR
-install -d -o root -g root -m 0755 \
-    "${verification_root}/etc" \
-    "${verification_root}/etc/systemd" \
-    "${verification_root}/etc/systemd/system" \
-    "${verification_root}/usr" \
-    "${verification_root}/usr/local" \
-    "${verification_root}/usr/local/libexec" \
-    "${verification_root}/usr/local/libexec/careertrellis" \
-    "${verification_root}/usr/local/sbin"
-printf 'root:x:0:0:root:/root:/usr/sbin/nologin\n' >"${verification_root}/etc/passwd"
-printf 'root:x:0:\n' >"${verification_root}/etc/group"
-chmod 0600 "${verification_root}/etc/passwd" "${verification_root}/etc/group"
-install -o root -g root -m 0644 \
-    "${repository_root}/${source_core}" \
-    "${verification_root}/usr/local/libexec/careertrellis/backup_health.py"
-install -o root -g root -m 0755 \
-    "${repository_root}/deploy/scripts/run-pgbackrest-backup.sh" \
-    "${verification_root}/usr/local/sbin/careertrellis-run-pgbackrest-backup"
-install -o root -g root -m 0755 \
-    "${repository_root}/deploy/scripts/mirror-pgbackrest-onedrive.sh" \
-    "${verification_root}/usr/local/sbin/careertrellis-mirror-pgbackrest-onedrive"
-install -o root -g root -m 0755 \
-    "${repository_root}/deploy/scripts/check-pgbackrest-mirror.sh" \
-    "${verification_root}/usr/local/sbin/careertrellis-check-pgbackrest-mirror"
-install -o root -g root -m 0755 \
-    "${repository_root}/deploy/scripts/test-pgbackrest-restore.sh" \
-    "${verification_root}/usr/local/sbin/careertrellis-test-pgbackrest-restore"
-install -o root -g root -m 0755 \
-    "${repository_root}/deploy/scripts/manage-backup-health.sh" \
-    "${verification_root}/usr/local/sbin/careertrellis-backup-health"
-for relative_path in "${source_units[@]}"; do
-    install -o root -g root -m 0644 \
-        "${repository_root}/${relative_path}" \
-        "${verification_root}/etc/systemd/system/${relative_path##*/}"
-done
+# Verify the exact staged units before any installed helper or unit target is
+# changed. The alternate root supplies their fixed absolute helper paths.
 if ! systemd-analyze --root="${verification_root}" verify \
     careertrellis-pgbackrest-full.service \
     careertrellis-pgbackrest-full.timer \
@@ -207,14 +238,9 @@ if ! systemd-analyze --root="${verification_root}" verify \
     careertrellis-backup-health.service \
     careertrellis-backup-health.timer \
     careertrellis-backup-health-alert@.service; then
-    trap - ERR
-    rm -rf --one-file-system -- "${verification_root}"
     echo "Reviewed backup-health unit verification failed before installation." >&2
     exit 1
 fi
-rm -rf --one-file-system -- "${verification_root}"
-trap - ERR
-verification_root=
 
 for service_name in \
     careertrellis-pgbackrest-full.service \
@@ -287,15 +313,22 @@ ensure_directory /var/lib/careertrellis/backup-health/database 700 root root
 ensure_directory /var/lib/careertrellis/backup-health/database/alerts 700 root root
 ensure_directory /var/lib/careertrellis/backup-health/database/unit-alerts 700 root root
 
-if [[ ! -e /var/lib/postgresql/careertrellis-restore-tests && \
-    ! -L /var/lib/postgresql/careertrellis-restore-tests ]]; then
-    install -d -o postgres -g postgres -m 0700 /var/lib/postgresql/careertrellis-restore-tests
-fi
-if [[ -L /var/lib/postgresql/careertrellis-restore-tests || \
-    ! -d /var/lib/postgresql/careertrellis-restore-tests || \
-    $(stat -c '%a:%U:%G' /var/lib/postgresql/careertrellis-restore-tests 2>/dev/null || true) != 700:postgres:postgres ]]; then
-    echo "The disposable restore root has an unsafe owner, mode, or type." >&2
-    exit 1
+readonly restore_root=/var/lib/postgresql/careertrellis-restore-tests
+restore_root_was_absent=false
+restore_root_needs_migration=false
+if [[ ! -e ${restore_root} && ! -L ${restore_root} ]]; then
+    restore_root_was_absent=true
+else
+    restore_root_state=$(stat -c '%a:%U:%G' "${restore_root}" 2>/dev/null || true)
+    if [[ -L ${restore_root} || ! -d ${restore_root} || \
+          ( ${restore_root_state} != 710:root:postgres && \
+            ${restore_root_state} != 700:postgres:postgres ) ]]; then
+        echo "The disposable restore root has an unsafe owner, mode, or type." >&2
+        exit 1
+    fi
+    if [[ ${restore_root_state} == 700:postgres:postgres ]]; then
+        restore_root_needs_migration=true
+    fi
 fi
 
 if [[ -e /usr/local/libexec/careertrellis || -L /usr/local/libexec/careertrellis ]]; then
@@ -370,10 +403,14 @@ fi
 
 rollback_needed=true
 units_touched=false
+restore_root_creation_started=false
+restore_root_created_identity=
+restore_root_migration_started=false
 trap - ERR
 rollback_installation() {
     local exit_status=$?
     local rollback_failed=false state backup_name target_path backup_path known_target timer_unit
+    local current_restore_root_identity
     trap - ERR
     set +e
     if [[ ${rollback_needed} != true ]]; then
@@ -431,6 +468,22 @@ rollback_installation() {
     if [[ ${units_touched} == true ]]; then
         systemctl daemon-reload >/dev/null 2>&1 || rollback_failed=true
     fi
+    if [[ ${restore_root_creation_started} == true ]]; then
+        current_restore_root_identity=$(stat -c '%d:%i' "${restore_root}" 2>/dev/null || true)
+        if [[ -L ${restore_root} || ! -d ${restore_root} || \
+              ${current_restore_root_identity} != "${restore_root_created_identity}" || \
+              $(stat -c '%a:%U:%G' "${restore_root}" 2>/dev/null || true) != 710:root:postgres ]] || \
+            ! rmdir -- "${restore_root}"; then
+            rollback_failed=true
+        fi
+    elif [[ ${restore_root_migration_started} == true ]]; then
+        if [[ -L ${restore_root} || ! -d ${restore_root} ]] || \
+            ! chown postgres:postgres "${restore_root}" || \
+            ! chmod 0700 "${restore_root}" || \
+            [[ $(stat -c '%a:%U:%G' "${restore_root}" 2>/dev/null || true) != 700:postgres:postgres ]]; then
+            rollback_failed=true
+        fi
+    fi
     if [[ ${rollback_failed} == false ]]; then
         rm -rf --one-file-system -- "${rollback_root}" || rollback_failed=true
     fi
@@ -446,30 +499,41 @@ rollback_installation() {
 }
 trap rollback_installation ERR
 
+if [[ ${restore_root_was_absent} == true ]]; then
+    restore_root_creation_started=true
+    install -d -o root -g postgres -m 0710 "${restore_root}"
+    restore_root_created_identity=$(stat -c '%d:%i' "${restore_root}" 2>/dev/null || true)
+    if [[ ! ${restore_root_created_identity} =~ ^[0-9]+:[0-9]+$ || \
+          -L ${restore_root} || ! -d ${restore_root} || \
+          $(stat -c '%a:%U:%G' "${restore_root}" 2>/dev/null || true) != 710:root:postgres ]]; then
+        echo "The disposable restore root could not be created safely." >&2
+        false
+    fi
+fi
+if [[ ${restore_root_needs_migration} == true ]]; then
+    restore_root_migration_started=true
+    chown root:postgres "${restore_root}"
+    chmod 0710 "${restore_root}"
+    if [[ $(stat -c '%a:%U:%G' "${restore_root}" 2>/dev/null || true) != 710:root:postgres ]]; then
+        echo "The disposable restore root could not be migrated safely." >&2
+        false
+    fi
+fi
+
 install -o root -g root -m 0644 \
-    "${repository_root}/${source_core}" \
-    /usr/local/libexec/careertrellis/backup_health.py
-install -o root -g root -m 0755 \
-    "${repository_root}/deploy/scripts/run-pgbackrest-backup.sh" \
-    /usr/local/sbin/careertrellis-run-pgbackrest-backup
-install -o root -g root -m 0755 \
-    "${repository_root}/deploy/scripts/mirror-pgbackrest-onedrive.sh" \
-    /usr/local/sbin/careertrellis-mirror-pgbackrest-onedrive
-install -o root -g root -m 0755 \
-    "${repository_root}/deploy/scripts/check-pgbackrest-mirror.sh" \
-    /usr/local/sbin/careertrellis-check-pgbackrest-mirror
-install -o root -g root -m 0755 \
-    "${repository_root}/deploy/scripts/test-pgbackrest-restore.sh" \
-    /usr/local/sbin/careertrellis-test-pgbackrest-restore
-install -o root -g root -m 0755 \
-    "${repository_root}/deploy/scripts/manage-backup-health.sh" \
-    /usr/local/sbin/careertrellis-backup-health
+    "${verification_root}${helper_target_paths[0]}" \
+    "${helper_target_paths[0]}"
+for target_path in "${helper_target_paths[@]:1}"; do
+    install -o root -g root -m 0755 \
+        "${verification_root}${target_path}" \
+        "${target_path}"
+done
 
 units_touched=true
-for relative_path in "${source_units[@]}"; do
+for target_path in "${unit_target_paths[@]}"; do
     install -o root -g root -m 0644 \
-        "${repository_root}/${relative_path}" \
-        "/etc/systemd/system/${relative_path##*/}"
+        "${verification_root}${target_path}" \
+        "${target_path}"
 done
 
 systemctl daemon-reload

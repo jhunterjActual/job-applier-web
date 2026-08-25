@@ -320,6 +320,27 @@ operation_unit_state() {
     printf '%s\t%s\n' "${last_result}" "${missed}"
 }
 
+audit_monitor_schedule() {
+    local timer_name timer_active timer_enabled timer_loaded
+    local -a required_timers=(
+        careertrellis-pgbackrest-full.timer
+        careertrellis-pgbackrest-differential.timer
+        careertrellis-pgbackrest-onedrive.timer
+        careertrellis-pgbackrest-inventory.timer
+        careertrellis-pgbackrest-restore.timer
+        careertrellis-backup-health.timer
+    )
+    for timer_name in "${required_timers[@]}"; do
+        timer_active=$(/usr/bin/systemctl is-active "${timer_name}" 2>/dev/null || true)
+        timer_enabled=$(/usr/bin/systemctl is-enabled "${timer_name}" 2>/dev/null || true)
+        timer_loaded=$(/usr/bin/systemctl show "${timer_name}" --property=LoadState --value 2>/dev/null || true)
+        if [[ ${timer_active} != active || ${timer_enabled} != enabled || ${timer_loaded} != loaded ]]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
 evaluate_database_health() {
     local caller_mode=${1:-timer}
     local alert_audit_result
@@ -543,7 +564,6 @@ evaluate_database_health() {
         printf '%s\n' "${failed_count}" >"${baseline_temporary}"
         mv -f -- "${baseline_temporary}" "${wal_baseline_path}"
     fi
-    clear_unit_alert careertrellis-backup-health.service >/dev/null || true
     return "${evaluation_result}"
 }
 
@@ -698,15 +718,12 @@ case "${command_name}" in
             exit 1
         fi
         if [[ ${alert_audit_result} -eq 10 ]]; then
-            set +e
-            evaluate_database_health status
-            evaluation_result=$?
-            set -e
-            if [[ ${evaluation_result} -eq 75 ]]; then
-                printf '{"operation":"backup_health_status","result":"alert","surface":"database","reason":"unit_alert_refresh_deferred"}\n'
-                exit 1
-            fi
-            exit "${evaluation_result}"
+            printf '{"operation":"backup_health_status","result":"alert","surface":"database","reason":"unit_alert_active"}\n'
+            exit 1
+        fi
+        if ! audit_monitor_schedule; then
+            printf '{"operation":"backup_health_status","result":"alert","surface":"database","reason":"monitor_schedule_unavailable"}\n'
+            exit 1
         fi
         /usr/bin/python3 -B "${core}" status \
             --surface database \

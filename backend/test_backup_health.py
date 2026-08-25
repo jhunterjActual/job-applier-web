@@ -593,6 +593,31 @@ class EvaluationTests(TemporaryRoots):
         ):
             self.assertIn(code, status["failure_codes"])
 
+    def test_same_timestamp_failure_outweighs_committed_success(self) -> None:
+        self.publish_healthy_objects()
+        completed = OBSERVED
+        backup_health.publish_receipt(
+            operation_receipt("generated_object_mirror", completed=completed),
+            root=self.receipts,
+            now=completed,
+        )
+        failed = operation_receipt(
+            "generated_object_mirror", completed=completed, result="failed"
+        )
+        failed["divergence_count"] = 1
+        backup_health.publish_receipt(
+            failed,
+            root=self.receipts,
+            now=completed,
+        )
+        status = backup_health.evaluate_backup_health(
+            snapshot("objects"), receipt_root=self.receipts
+        )
+        self.assertIn("generated_object_mirror_failed", status["failure_codes"])
+        self.assertIn(
+            "generated_object_mirror_divergence", status["failure_codes"]
+        )
+
     def test_future_receipt_beyond_clock_skew_alerts(self) -> None:
         self.publish_healthy_objects()
         future = OBSERVED + timedelta(seconds=backup_health.MAX_FUTURE_SKEW_SECONDS + 1)

@@ -126,12 +126,18 @@ the helper emits a fixed privacy-safe error and preserves its nonzero result;
 the operation remains unresolved and blocks invitations pending explicit
 operator investigation.
 
-Alerts are persistent state, not a transient journal line. Once any evaluation
-fails, `status` continues to return nonzero and report the fixed alert code until
-a later complete evaluation validates fresh, compatible terminal evidence for
-every gate. That later success may clear the active alert, but it must not alter
-or erase the earlier failure receipt or journal history. A partial evaluation
-cannot clear an alert.
+Alerts are persistent state, not a transient journal line. Once any scheduled
+unit fails, `status` continues to return nonzero and report the fixed alert code
+until that exact systemd unit completes successfully again and its reviewed
+`ExecStartPost` validates newer compatible terminal evidence. Running the wrapper
+directly may inspect current evidence, but it cannot clear a scheduled-unit alert
+or prove that the timer/service path recovered. A later unit success may clear
+the active alert, but it must not alter or erase the earlier failure receipt or
+journal history. A partial or out-of-service evaluation cannot clear an alert.
+Each `status` command also checks the exact fixed timer allowlist locally and
+fails with the privacy-safe `monitor_schedule_unavailable` reason when a required
+timer is not loaded, enabled, and active. That check never starts a unit or
+traverses a backup repository.
 
 Neither the evaluator nor a scheduled recovery operation automatically retries
 an ambiguous or failed mutation. systemd restart policies and timer catch-up
@@ -283,6 +289,36 @@ changing object authority or launching a mirror/restore. Neither activation
 restarts the CareerTrellis web or worker services merely to activate health
 monitoring, changes PostgreSQL/R2 authority, alters provider configuration, or
 starts a precautionary operation.
+
+The `.39` deployer predates the web-host objects-health artifact class. Its
+running shell cannot acquire new activation logic merely because it copies the
+`.40` deployer over the installed helper path. The first `.39` to `.40` upgrade
+therefore uses a reviewed two-phase handoff: the installed `.39` helper prepares
+the exact immutable `.40` release, then the operator verifies and invokes the
+deployer inside that prepared release to perform activation. Re-running the
+installed `.39` helper for activation is forbidden because it can report the app
+ready without installing the new objects-health helper, units, and timer.
+
+```text
+revision=<exact reviewed 40-character .40 commit>
+sudo -n /usr/local/sbin/careertrellis-deploy --prepare-only "${revision}"
+target="/opt/careertrellis/staging/releases/${revision}/deploy/scripts/deploy-release.sh"
+sudo -n stat -c '%U:%G %a' "${target}"   # must be root:careertrellis 750
+sudo -n "${target}" "${revision}"
+```
+
+The database-host installer likewise consumes only an operator-selected,
+root-owned reviewed source. It binds the repository directory, rejects symlinked
+or writable source components, copies every required artifact once into a
+root-only staging tree, validates those exact staged bytes, and installs only
+from that tree. Its forward migration changes the disposable restore parent from
+`0700 postgres:postgres` to `0710 root:postgres`; PostgreSQL may traverse into
+its random `0700 postgres:postgres` child, but cannot rename or replace that
+child. Installation rollback restores the legacy parent metadata when it restores
+a preceding helper set, or removes a newly created empty parent when the prior
+helper set had no restore root. A successful scheduled database health unit
+clears its own persistent unit alert only from `ExecStartPost`, after systemd has
+recorded the new successful completion.
 
 Activation first reuses compatible retained evidence. It must not take a new
 backup, copy a repository, or repeat a restore merely because the monitor is

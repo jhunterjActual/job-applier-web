@@ -971,7 +971,19 @@ def _latest(
     ]
     if not selected:
         return None
-    return max(selected, key=lambda item: (str(item["completed_at"]), str(item["started_at"])))
+    # A wrapper can retain a committed success and then publish a failure when
+    # later evidence persistence is ambiguous.  Whole-second timestamps may be
+    # identical, so failure must win that tie and canonical bytes provide a
+    # deterministic order for otherwise equivalent terminal evidence.
+    return max(
+        selected,
+        key=lambda item: (
+            str(item["completed_at"]),
+            str(item["started_at"]),
+            item["result"] == "failed",
+            serialize_operation_receipt(item),
+        ),
+    )
 
 
 def _age(
