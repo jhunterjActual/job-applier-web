@@ -1,10 +1,10 @@
 # Friends-and-family pilot authorization
 
 This document defines the smallest reviewed multi-user boundary for the
-invitation-only staging pilot. The currently activated `.36` release remains
-owner-only. A later exact release may implement this contract only after its
-operator tool, authentication changes, two-user tests, and rollback boundary
-are reviewed together. Caddy Basic Authentication remains in front of WorkOS
+invitation-only staging pilot. The activated `.38` release implements the
+operator-preseeded user boundary. The `.39` release adds the root-only live
+acceptance and privacy-safe receipt boundary without changing authentication or
+the PostgreSQL schema. Caddy Basic Authentication remains in front of WorkOS
 through initial pilot acceptance.
 
 ## Authentication invariants
@@ -147,6 +147,79 @@ containment.
 - Owner recovery is outside the pilot-user tool. Loss or replacement of the
   configured owner identity requires a separate owner-migration review.
 
+## Root-only live acceptance contract
+
+The reviewed `/usr/local/sbin/careertrellis-pilot-acceptance` helper has exactly
+`prepare`, `verify-active`, `verify-disabled`, `verify-recovered`, `inspect`,
+`record-browser`, and `cleanup` operations. Every operation requires root and an
+interactive terminal. The wrapper acquires the maintenance and acceptance
+locks, binds its shell and Python files to the exact active immutable release,
+checks hosted authority, activation evidence, units, process working
+directories, Caddy bytes, readiness, and build, then starts the runner with an
+empty environment. It accepts no identity, URL, object key, provider value, or
+arbitrary path through argv or the process environment.
+
+The transient cleanup state is
+`/var/lib/careertrellis/pilot-auth-acceptance/active.json`, root-owned mode
+`0600` under a root-owned mode-`0700` directory. It contains only the release,
+build, random attempt marker, one allowlisted provider-name enum, local numeric
+tenant IDs, and exact synthetic fixture/object IDs needed for cleanup. It never
+contains a WorkOS identity, email, credential, cookie, provider plaintext,
+database URL, user content, or raw response. It is not a receipt and must be
+removed only by a terminal `cleanup` operation.
+
+Use the operations in this order:
+
+1. `prepare` reads the one pilot WorkOS identity from a non-echoing prompt. It
+   requires the configured owner mapping and target pilot mapping to be active
+   with their expected roles, the pilot tenant to be empty, the worker brokers
+   to be empty, and no pilot erasure request. It creates two small synthetic
+   tenant fixtures, one synthetic encrypted provider value per tenant that is
+   never sent to a provider, and one tiny encrypted R2 object per tenant. The
+   provider namespace must be one supported namespace proven absent for both
+   tenants under the protected database lock; preparation fails if no such
+   namespace exists and never overwrites an existing credential. The two R2
+   objects are uploaded, read back, authenticated, and retained only for the
+   bounded acceptance interval. No listing or paid/provider call occurs. While
+   the synthetic provider rows exist, the only allowed browser actions are the
+   required login, dashboard-isolation, logout, and recovery checks; do not
+   start any provider-backed application action.
+2. `verify-active` proves missing-context emptiness, one-slot pool reset,
+   symmetric profile/resume/job/application/write/relate/provider-secret
+   isolation, disjoint owner/pilot IDs across every exported collection,
+   rollback-only erasure acceptance for both tenants, authorized object
+   download, denied cross-tenant download without an R2 read, and fresh idle
+   search and erasure heartbeats bound to the exact checked systemd MainPIDs,
+   file owners, groups, mode, and active build. The immutable release
+   preparation separately runs the complete two-tenant HTTP, RLS, broker,
+   disabled-work, object, export, and erasure suites against a disposable
+   PostgreSQL database. The live runner never publishes a search run, claims
+   worker work, calls a paid provider, or commits account erasure.
+3. After the operator runs `careertrellis-pilot-user disable`, the pilot confirms
+   the existing session and a fresh callback fail closed. `verify-disabled`
+   confirms the selected local mapping is still `role=user` and disabled. After
+   explicit `reinvite`, `verify-recovered` confirms that the same mapping is
+   active again; it never assigns or changes a role.
+4. `record-browser` asks only fixed yes/no questions for owner and pilot
+   login/logout/recovery, pilot dashboard isolation, unlisted denial, disabled
+   denial, reinvite recovery, and the privacy-log review. A `no` answer prevents
+   acceptance. This step writes no receipt.
+5. `cleanup` locks and deletes only rows whose exact stored IDs, owners, and
+   random marker still match the active state; decrypts and value-binds both
+   synthetic provider rows before deleting them; removes only the two
+   predeclared R2 keys; and proves both
+   objects absent. Only after all automated/browser checks and cleanup pass does
+   it durably publish the sanitized receipt, then publish the adjacent digest
+   manifest as the final commit marker, and finally remove transient state. A
+   JSON receipt without its verified adjacent manifest is incomplete and must
+   never be accepted. Cleanup before a complete acceptance is allowed as an
+   abort path and writes no success receipt.
+
+If an operation fails or the connection drops, do not rerun it immediately.
+Run `inspect`, establish whether transient state and a terminal receipt exist,
+and resume only the exact reviewed phase. Never repair the state, delete a
+receipt, or remove an object with an ad hoc command.
+
 ## Rollback, forward correction, and containment
 
 - The owner remains active throughout preparation and acceptance. Seed only one
@@ -160,6 +233,11 @@ containment.
 - If activation or a later mutation is ambiguous, do not retry it. Reconnect,
   identify the original operation and receipt, and prove terminal state first.
   Use a reviewed forward release when rollback is unavailable.
+- Forward activation and rollback must refuse to change `current` or the
+  installed acceptance helper while the protected `active.json` exists or is a
+  symlink. Complete or abort cleanup with the exact originating release first;
+  release preparation may still run because it does not change the active
+  release.
 - Immediate pilot containment is: disable the exact pilot mapping, contain its
   queued work, and rotate or revoke the separate `pilot-01` Caddy credential if
   outer-gate access must be removed. Keep the owner credential and Caddy Basic
@@ -198,8 +276,10 @@ The fixed root required by this contract is
 mode `0700`. A reviewed installer or receipt writer must create and validate
 that root before acceptance; do not improvise it with an ad hoc shell capture.
 Receipt and digest-manifest files are `root:root` mode `0600`, are created
-without following symlinks, and are written atomically without overwriting an
-earlier attempt. The filename contains only UTC time, an allowed operation
+without following symlinks, and each is published without overwriting an
+earlier attempt. The pair is not a single atomic filesystem operation: the
+receipt is durably published first and the manifest is durably published last
+as its commit marker. The filename contains only UTC time, an allowed operation
 name, and a random attempt identifier; it contains no person, email, WorkOS
 identity, database row ID, or tenant identifier.
 
@@ -216,7 +296,12 @@ these fields:
   `mfa_required`, `mapping_present`, `role_expected`, `active`,
   `session_issued`, `local_row_created`, `cross_tenant_exposed`,
   `pooled_context_cleared`, `auth_routes_logged`, and
-  `forbidden_field_present`.
+  `forbidden_field_present`;
+- an optional `counts` object whose keys are a closed aggregate-only allowlist
+  and whose values are bounded nonnegative integers; and
+- optional `notes` containing only reviewed enum values such as
+  `basic_auth_retained`, `mfa_optional`, and `synthetic_data_only`, never free
+  text.
 
 Unknown checks are omitted, never converted to a passing `false`. Receipts must
 not contain identities, emails, timestamps from user records, database URLs,
@@ -225,7 +310,9 @@ profile data, raw logs, exception text, IP addresses, User-Agent values, or
 hashes/fingerprints derived from any of them.
 
 Maintain an adjacent SHA-256 manifest over immutable receipt filenames and
-bytes. After acceptance, copy the sanitized receipt and manifest to the
+bytes. Consumers must start from the manifest, verify the exact adjacent
+canonical JSON filename and digest, and ignore any JSON that has no valid
+manifest. After acceptance, copy the sanitized receipt and manifest to the
 operator-controlled encrypted evidence store and perform a readback. The
 independent store's path and access method remain outside the repository. Do
 not paste receipt contents or digests into chat, a commit, or a public CI log.
@@ -234,8 +321,11 @@ not paste receipt contents or digests into chat, a commit, or a public CI log.
 
 No real pilot data is permitted until one synthetic two-user acceptance run has
 proved owner and pilot login/logout/recovery, unlisted and disabled `403`,
-missing-context and pool-reset negatives, symmetric data/object/worker/export/
-erasure isolation, owner immutability, disabled-work containment, and the full
-privacy-log forbidden-field check. Invite additional friends one at a time only
-after the preceding user's seed, login, isolation smoke, and sanitized receipt
-are accepted.
+missing-context and pool-reset negatives, symmetric live data/object/export/
+provider-secret/erasure isolation, exact worker-process liveness, and the full
+privacy-log forbidden-field check. The manifest-backed live receipt must be
+combined with the same immutable release's passing HTTP, PostgreSQL/RLS,
+broker/worker, disabled-work, owner-role, object, export, and erasure tests; the
+receipt must not claim those separate test properties as live observations.
+Invite additional friends one at a time only after the preceding user's seed,
+login, isolation smoke, and sanitized receipt are accepted.
