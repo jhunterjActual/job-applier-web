@@ -361,6 +361,29 @@ private-device namespace. No provider, timer, wrapper, receipt, lock, recovery,
 or data-authority contract changes, and private repository output is never
 relayed.
 
+The first `.44` evaluator reached the repository inspection but still failed
+closed before producing a health verdict. An exit-code-only live matrix then
+proved that the fixed `setpriv` transition succeeds with the filesystem,
+private-temporary-directory, closed-device, control-group, and
+`NoNewPrivileges` boundaries, but fails as soon as any of the unit's
+syscall-filter features is installed. The failure also reproduced with
+`/usr/bin/true`, without a provider or repository call; the same pgBackRest
+metadata inspection succeeded outside the filtered unit. The `.45` correction
+therefore disables the incompatible hostname, clock, kernel, namespace,
+personality, and architecture filters only on the same six trusted
+identity-transition units. It retains `ProtectSystem=strict`,
+`ProtectHome=true`, `PrivateTmp=true`, `ProtectControlGroups=true`,
+`NoNewPrivileges=true`, `DevicePolicy=closed`, and every existing write-path,
+lock, timer, receipt, and private-output boundary. As a compensating reduction,
+the root capability bounding set is changed from an almost complete set to only
+`CAP_CHOWN`, `CAP_DAC_OVERRIDE`, `CAP_DAC_READ_SEARCH`, `CAP_FOWNER`,
+`CAP_SETGID`, and `CAP_SETUID`. A full-boundary transient probe with that exact
+set passed both the fixed UID/GID transition and the read-only pgBackRest
+metadata inspection. Alert-only and generated-object units retain all of their
+stricter syscall-filter features. No backup, mirror, inventory, restore,
+provider mutation, recovery mutation, or authority change was used to validate
+the correction.
+
 The retained pre-monitor evidence was separately audited before considering a
 fresh operation. Its authenticated encrypted bundle and adjacent digests were
 valid and privacy-safe, but the legacy terminal receipts do not contain every

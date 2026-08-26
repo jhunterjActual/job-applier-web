@@ -3577,16 +3577,28 @@ class DependencyLockTests(unittest.TestCase):
                 "PrivateTmp=true",
                 "ProtectHome=true",
                 "ProtectSystem=strict",
-                "RestrictNamespaces=true",
-                "LockPersonality=true",
-                "SystemCallArchitectures=native",
+                "ProtectControlGroups=true",
             ):
                 self.assertIn(hardening, unit)
+            for disabled_filter in (
+                "ProtectHostname=false",
+                "ProtectClock=false",
+                "ProtectKernelTunables=false",
+                "ProtectKernelModules=false",
+                "ProtectKernelLogs=false",
+                "RestrictNamespaces=false",
+                "LockPersonality=false",
+            ):
+                self.assertIn(disabled_filter, unit)
+                self.assertNotIn(disabled_filter.replace("false", "true"), unit)
+            self.assertNotIn("SystemCallArchitectures=", unit)
             self.assertIn("PrivateDevices=false", unit)
             self.assertNotIn("PrivateDevices=true", unit)
             self.assertIn("DevicePolicy=closed", unit)
             self.assertIn(
-                "CapabilityBoundingSet=~CAP_MKNOD CAP_SYS_RAWIO", unit
+                "CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE "
+                "CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SETGID CAP_SETUID",
+                unit,
             )
             self.assertIn("RestrictSUIDSGID=false", unit)
             self.assertNotIn("RestrictSUIDSGID=true", unit)
@@ -3605,8 +3617,19 @@ class DependencyLockTests(unittest.TestCase):
         self.assertNotIn("PrivateDevices=true", health_unit)
         self.assertIn("DevicePolicy=closed", health_unit)
         self.assertIn(
-            "CapabilityBoundingSet=~CAP_MKNOD CAP_SYS_RAWIO", health_unit
+            "CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE "
+            "CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SETGID CAP_SETUID",
+            health_unit,
         )
+        self.assertIn("ProtectControlGroups=true", health_unit)
+        self.assertIn("ProtectHostname=false", health_unit)
+        self.assertIn("ProtectClock=false", health_unit)
+        self.assertIn("ProtectKernelTunables=false", health_unit)
+        self.assertIn("ProtectKernelModules=false", health_unit)
+        self.assertIn("ProtectKernelLogs=false", health_unit)
+        self.assertIn("RestrictNamespaces=false", health_unit)
+        self.assertIn("LockPersonality=false", health_unit)
+        self.assertNotIn("SystemCallArchitectures=", health_unit)
         self.assertIn("RestrictSUIDSGID=false", health_unit)
         self.assertNotIn("RestrictSUIDSGID=true", health_unit)
         alert_unit = (
