@@ -6334,6 +6334,14 @@ class PilotUserOperatorTests(unittest.TestCase):
             self.assertIn(variable, wrapper)
         self.assertEqual(2, wrapper.count("HEARTBEAT_MODE=600"))
         self.assertIn("http://127.0.0.1:8001/health/ready", wrapper)
+        self.assertIn(
+            'print(value) if isinstance(value,str) else sys.exit(1)',
+            wrapper,
+        )
+        self.assertNotIn(
+            'raise SystemExit(1) if not isinstance(value,str) else print(value)',
+            wrapper,
+        )
         self.assertIn("readonly receipt_parent=/var/backups/careertrellis", wrapper)
         self.assertIn(
             "readonly receipt_root=${receipt_parent}/pilot-auth-acceptance",

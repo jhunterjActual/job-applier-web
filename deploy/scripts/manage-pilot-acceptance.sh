@@ -212,7 +212,7 @@ if [[ ! -f /etc/caddy/Caddyfile || -L /etc/caddy/Caddyfile || \
 fi
 
 expected_build=$("${python_command}" -I -B -c \
-    'import runpy,sys; value=runpy.run_path(sys.argv[1]).get("APP_BUILD"); raise SystemExit(1) if not isinstance(value,str) else print(value)' \
+    'import runpy,sys; value=runpy.run_path(sys.argv[1]).get("APP_BUILD"); print(value) if isinstance(value,str) else sys.exit(1)' \
     "${current_release}/backend/version.py")
 readiness=$(curl --fail --silent --show-error --max-time 2 http://127.0.0.1:8001/health/ready)
 if ! printf '%s' "${readiness}" | CAREERTRELLIS_EXPECTED_BUILD="${expected_build}" \
