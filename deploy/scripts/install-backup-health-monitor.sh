@@ -44,7 +44,7 @@ for command_path in \
     /usr/bin/psql \
     /usr/bin/python3 \
     /usr/bin/sha256sum \
-    /usr/sbin/runuser \
+    /usr/bin/setpriv \
     /usr/bin/systemctl \
     /usr/bin/systemd-analyze \
     /usr/local/bin/rclone \
