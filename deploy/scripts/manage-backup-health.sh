@@ -25,7 +25,7 @@ if [[ -L ${lock_path} || ! -f ${lock_path} || \
     echo "The canonical repository lock has an unsafe owner, mode, or type." >&2
     exit 1
 fi
-for command_path in /usr/bin/date /usr/bin/find /usr/bin/jq /usr/bin/sha256sum /usr/bin/systemctl; do
+for command_path in /usr/bin/date /usr/bin/find /usr/bin/jq /usr/bin/setpriv /usr/bin/sha256sum /usr/bin/systemctl; do
     if [[ ! -x ${command_path} ]]; then
         echo "A required backup-health command is unavailable." >&2
         exit 1
@@ -36,6 +36,11 @@ if [[ -L ${unit_alert_root} || ! -d ${unit_alert_root} || \
     echo "The persistent unit-alert directory has an unsafe owner, mode, or type." >&2
     exit 1
 fi
+
+as_postgres() {
+    /usr/bin/setpriv --reuid=postgres --regid=postgres --init-groups \
+        --reset-env -- "$@"
+}
 
 validate_unit_name() {
     case "$1" in
@@ -350,7 +355,7 @@ evaluate_database_health() {
         /usr/bin/jq \
         /usr/bin/pgbackrest \
         /usr/bin/psql \
-        /usr/sbin/runuser \
+        /usr/bin/setpriv \
         /usr/bin/python3; do
         if [[ ! -x ${command_path} ]]; then
             echo "A required health-check command is unavailable." >&2
@@ -388,7 +393,7 @@ evaluate_database_health() {
     alert_output=$(mktemp /run/careertrellis-backup-health-alert-state.XXXXXX)
     trap 'rm -f -- "${info_json:-}" "${private_log:-}" "${evaluation_output:-}" "${alert_output:-}"' RETURN
 
-    if ! runuser -u postgres -- /usr/bin/pgbackrest \
+    if ! as_postgres /usr/bin/pgbackrest \
         --stanza=careertrellis \
         --output=json \
         info >"${info_json}" 2>"${private_log}"; then
@@ -417,7 +422,7 @@ evaluate_database_health() {
     ' "${info_json}") || repository_archive_max=
 
     local wal_observation failed_count last_archived_wal wal_segment_bytes previous_failed_count
-    wal_observation=$(runuser -u postgres -- /usr/bin/psql \
+    wal_observation=$(as_postgres /usr/bin/psql \
         --dbname=careertrellis \
         --no-psqlrc \
         --tuples-only \
@@ -605,10 +610,10 @@ acknowledge_wal_failures() {
     evaluation_output=$(mktemp /run/careertrellis-backup-health-ack-evaluation.XXXXXX)
     trap 'rm -f -- "${private_log:-}" "${info_json:-}" "${evaluation_output:-}"' RETURN
 
-    if ! runuser -u postgres -- /usr/bin/pgbackrest \
+    if ! as_postgres /usr/bin/pgbackrest \
         --stanza=careertrellis \
         check >"${private_log}" 2>&1 || \
-        ! runuser -u postgres -- /usr/bin/pgbackrest \
+        ! as_postgres /usr/bin/pgbackrest \
         --stanza=careertrellis \
         --output=json \
         info >"${info_json}" 2>>"${private_log}"; then
@@ -630,7 +635,7 @@ acknowledge_wal_failures() {
         | last // ""
     ' "${info_json}") || repository_archive_max=
 
-    wal_observation=$(runuser -u postgres -- /usr/bin/psql \
+    wal_observation=$(as_postgres /usr/bin/psql \
         --dbname=careertrellis \
         --no-psqlrc \
         --tuples-only \

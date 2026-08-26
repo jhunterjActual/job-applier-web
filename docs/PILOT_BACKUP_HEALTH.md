@@ -330,6 +330,25 @@ bundle. The web-side verifier uses the already executable immutable-release
 filesystem. Neither correction widens the staged tree, installs before
 verification, or invents dependency units inside the alternate root.
 
+The first `.41` database evaluation also failed closed while a PAM-bearing
+`runuser` child attempted the read-only repository inspection inside the
+hardened systemd service. The same explicitly configured inspection succeeded
+as the postgres account outside that service. The `.42` correction keeps the
+service root-owned and preserves `NoNewPrivileges` and every existing sandbox
+directive, but launches postgres-only commands through `setpriv` with an exact
+UID/GID drop, initialized supplementary groups, and a reset environment. The
+database evaluator, backup, mirror, inventory, and isolated-restore wrappers all
+use the same launcher so a later scheduled operation cannot repeat the monitor's
+failure boundary. The wrapper never relays the private command output.
+
+The retained pre-monitor evidence was separately audited before considering a
+fresh operation. Its authenticated encrypted bundle and adjacent digests were
+valid and privacy-safe, but the legacy terminal receipts do not contain every
+required closed-schema timing, aggregate, RPO/RTO, and verification field above.
+Those receipts therefore remain preserved evidence but are not published or
+treated as backup-health success. No value is inferred from file modification
+time, helper semantics, an adoption timestamp, or an unrelated manifest.
+
 Activation first reuses compatible retained evidence. It must not take a new
 backup, copy a repository, or repeat a restore merely because the monitor is
 new. Only when a named required gate cannot be validated from compatible
