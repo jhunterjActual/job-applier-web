@@ -339,14 +339,27 @@ an exact UID/GID drop, initialized supplementary groups, and a reset
 environment. Live activation then proved that `NoNewPrivileges=true` and
 `RestrictSUIDSGID=true` each permitted that transition alone, but their combined
 systemd filter rejected it before repository inspection. The `.43` correction
-keeps `NoNewPrivileges` and every filesystem, namespace, device, kernel, lock,
-receipt, and private-output boundary, while explicitly disabling only
+keeps `NoNewPrivileges` and every filesystem, namespace, kernel, lock, receipt,
+and private-output boundary, while explicitly disabling only
 `RestrictSUIDSGID` on the six trusted root units that must drop to postgres.
 Alert-only and generated-object units retain the restriction. The database
 evaluator, backup, mirror, inventory, and isolated-restore wrappers continue to
 use the same fixed launcher, and the installer now checks for `setpriv` rather
-than its retired `runuser` dependency. The wrapper never relays private command
-output.
+than its retired `runuser` dependency.
+
+Live `.43` evaluation isolated a second systemd interaction before repository
+metadata could be evaluated. The same pgBackRest inspection succeeded with
+`NoNewPrivileges`, `RestrictSUIDSGID=false`, `ProtectSystem=strict`,
+`ProtectHome=true`, and `PrivateTmp=true`, but failed when
+`PrivateDevices=true` added its implicit syscall filter. Even a fixed
+`setpriv` transition to `/usr/bin/true` failed with that filter. The `.44`
+correction therefore sets `PrivateDevices=false` only on the same six trusted
+pgBackRest units, while retaining `DevicePolicy=closed` to deny physical-device
+access and removing `CAP_MKNOD` and `CAP_SYS_RAWIO` from their capability
+bounding set. Alert-only and generated-object units continue to use the full
+private-device namespace. No provider, timer, wrapper, receipt, lock, recovery,
+or data-authority contract changes, and private repository output is never
+relayed.
 
 The retained pre-monitor evidence was separately audited before considering a
 fresh operation. Its authenticated encrypted bundle and adjacent digests were

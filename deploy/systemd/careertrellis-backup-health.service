@@ -15,7 +15,12 @@ SuccessExitStatus=1
 TimeoutStartSec=10m
 NoNewPrivileges=true
 PrivateTmp=true
-PrivateDevices=true
+# PrivateDevices implies a syscall filter that rejects this unit's fixed
+# setpriv transition. Preserve physical-device denial and remove raw-device
+# capabilities without that incompatible filter.
+PrivateDevices=false
+DevicePolicy=closed
+CapabilityBoundingSet=~CAP_MKNOD CAP_SYS_RAWIO
 ProtectHome=true
 ProtectSystem=strict
 ProtectHostname=true
