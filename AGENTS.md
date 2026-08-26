@@ -26,6 +26,13 @@ Run these commands from the repository root:
 - Do not modify or commit local/private/generated content: `data/`, database files, `.env*`, `baseresume.*`, `resume.*`, PDFs, `backend/venv/`, caches, IDE settings, or OS metadata. Follow `.gitignore`, and never print or expose API keys or resume/profile data.
 - Do not regenerate brand assets or icons unless the task explicitly requests it.
 
+## Interactive secret prompts
+
+- Treat a Codex-managed exec PTY and the operator's visible secure terminal as different terminals. A background session ID, queued/open-panel result, or tool-side prompt readback is not evidence that the operator can see or type into that prompt.
+- When an operation requires a WorkOS identity, passphrase, recovery key, token, or other non-echoed input, do not start it in a background exec session. Complete all secret-safe preflight first, give the operator the exact command to run in their already-visible secure terminal, and wait for the operator's sanitized result.
+- Never claim that a secret prompt is present or waiting unless the operator has explicitly confirmed seeing it. Never transmit the secret through chat, tool input, `write_stdin`, command arguments, environment variables, clipboard automation, logs, or receipts.
+- If a prompt was mistakenly started in an inaccessible session, first prove the exact PID/session is still waiting for input and no mutation has begun, then interrupt only that process. Prove it exited, any transient state it created is absent or restored to the preflight baseline, every lock acquired by that attempt is released, and all pre-existing unrelated locks remain unchanged before offering the operator-started command. Do not count the inaccessible attempt as authority to retry an ambiguous mutation.
+
 ## Application releases and operational bundles
 
 - Treat immutable application releases and installed operational bundles as separate revision domains. Bind the application to its exact runtime release commit and API version; bind helpers, units, and timers to their separately reviewed source commit plus installed-byte verification. An ops-bundle install must not move the application `current`/`previous` pointers, restart application workers, or change the application build.
