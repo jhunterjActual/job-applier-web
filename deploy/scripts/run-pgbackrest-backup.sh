@@ -27,12 +27,17 @@ readonly lock_path=/run/lock/careertrellis-pgbackrest-repository.lock
 readonly core=/usr/local/libexec/careertrellis/backup_health.py
 readonly receipt_root=/var/backups/careertrellis/backup-health/operations
 
-for command_path in /usr/bin/flock /usr/bin/jq /usr/bin/pgbackrest /usr/sbin/runuser /usr/bin/python3; do
+for command_path in /usr/bin/flock /usr/bin/jq /usr/bin/pgbackrest /usr/bin/setpriv /usr/bin/python3; do
     if [[ ! -x ${command_path} ]]; then
         echo "A required backup command is unavailable." >&2
         exit 1
     fi
 done
+
+as_postgres() {
+    /usr/bin/setpriv --reuid=postgres --regid=postgres --init-groups \
+        --reset-env -- "$@"
+}
 if [[ -L ${core} || ! -f ${core} || ! -r ${core} ]]; then
     echo "The reviewed backup-health core is unavailable." >&2
     exit 1
@@ -59,19 +64,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! runuser -u postgres -- /usr/bin/pgbackrest --stanza="${stanza}" check \
+if ! as_postgres /usr/bin/pgbackrest --stanza="${stanza}" check \
     >"${private_log}" 2>&1; then
     echo "The pgBackRest pre-backup check failed; private output was discarded." >&2
     exit 1
 fi
-if ! runuser -u postgres -- /usr/bin/pgbackrest \
+if ! as_postgres /usr/bin/pgbackrest \
     --stanza="${stanza}" \
     --type="${backup_type}" \
     backup >>"${private_log}" 2>&1; then
     echo "The pgBackRest backup failed; private output was discarded." >&2
     exit 1
 fi
-if ! runuser -u postgres -- /usr/bin/pgbackrest \
+if ! as_postgres /usr/bin/pgbackrest \
     --stanza="${stanza}" \
     --output=json \
     info >"${info_json}" 2>>"${private_log}"; then

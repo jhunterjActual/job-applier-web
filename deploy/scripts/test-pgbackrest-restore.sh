@@ -25,7 +25,7 @@ for command_path in \
     /usr/bin/pgbackrest \
     /usr/bin/psql \
     /usr/bin/tee \
-    /usr/sbin/runuser \
+    /usr/bin/setpriv \
     /usr/bin/python3 \
     "${pg_ctl}" \
     "${pg_checksums}"; do
@@ -34,6 +34,11 @@ for command_path in \
         exit 1
     fi
 done
+
+as_postgres() {
+    /usr/bin/setpriv --reuid=postgres --regid=postgres --init-groups \
+        --reset-env -- "$@"
+}
 if [[ -L ${core} || ! -f ${core} || ! -r ${core} ]]; then
     echo "The reviewed backup-health core is unavailable." >&2
     exit 1
@@ -84,8 +89,8 @@ cleanup_restore() {
         echo "The restore cleanup identity changed; no deletion was attempted." >&2
         return 1
     fi
-    if runuser -u postgres -- "${pg_ctl}" --pgdata="${restore_directory}" status >/dev/null 2>&1; then
-        if ! runuser -u postgres -- "${pg_ctl}" \
+    if as_postgres "${pg_ctl}" --pgdata="${restore_directory}" status >/dev/null 2>&1; then
+        if ! as_postgres "${pg_ctl}" \
             --pgdata="${restore_directory}" \
             --mode=fast \
             --wait \
@@ -168,7 +173,7 @@ fi
 
 # Confirm that the accepted label still exists in a healthy repository. Raw
 # repository metadata never reaches stdout.
-if ! runuser -u postgres -- /usr/bin/pgbackrest \
+if ! as_postgres /usr/bin/pgbackrest \
     --stanza="${stanza}" \
     --output=json \
     info >"${info_json}" 2>"${private_log}"; then
@@ -206,7 +211,7 @@ if [[ ! ${restore_device_inode} =~ ^[0-9]+:[0-9]+$ ]]; then
     exit 1
 fi
 
-if ! runuser -u postgres -- /usr/bin/pgbackrest \
+if ! as_postgres /usr/bin/pgbackrest \
     --stanza="${stanza}" \
     --set="${backup_label}" \
     --pg1-path="${restore_directory}" \
@@ -221,12 +226,12 @@ socket_directory="${restore_directory}/socket"
 test_config="${restore_directory}/postgresql.restore-test.conf"
 test_hba="${restore_directory}/pg_hba.restore-test.conf"
 test_ident="${restore_directory}/pg_ident.restore-test.conf"
-runuser -u postgres -- /usr/bin/install -d -m 0700 "${socket_directory}"
-runuser -u postgres -- /usr/bin/tee -- "${test_hba}" >/dev/null <<'EOF'
+as_postgres /usr/bin/install -d -m 0700 "${socket_directory}"
+as_postgres /usr/bin/tee -- "${test_hba}" >/dev/null <<'EOF'
 local all postgres peer
 local all all reject
 EOF
-runuser -u postgres -- /usr/bin/tee -- "${test_config}" >/dev/null <<EOF
+as_postgres /usr/bin/tee -- "${test_config}" >/dev/null <<EOF
 data_directory = '${restore_directory}'
 hba_file = '${test_hba}'
 ident_file = '${test_ident}'
@@ -238,11 +243,11 @@ shared_buffers = '64MB'
 archive_mode = off
 logging_collector = off
 EOF
-runuser -u postgres -- /usr/bin/install -m 0600 /dev/null "${test_ident}"
-runuser -u postgres -- /usr/bin/chmod 0600 "${test_config}" "${test_hba}"
+as_postgres /usr/bin/install -m 0600 /dev/null "${test_ident}"
+as_postgres /usr/bin/chmod 0600 "${test_config}" "${test_hba}"
 
 readonly postgres_start_options="-c config_file=${test_config} -c data_directory=${restore_directory} -c hba_file=${test_hba} -c ident_file=${test_ident} -c listen_addresses= -c port=${test_port} -c unix_socket_directories=${socket_directory} -c unix_socket_group= -c unix_socket_permissions=0700 -c ssl=off -c shared_preload_libraries= -c session_preload_libraries= -c local_preload_libraries= -c archive_mode=off -c archive_command= -c archive_cleanup_command= -c recovery_end_command= -c logging_collector=off -c log_destination=stderr -c external_pid_file= -c max_connections=50 -c shared_buffers=64MB -c primary_conninfo= -c primary_slot_name= -c jit=off"
-if ! runuser -u postgres -- "${pg_ctl}" \
+if ! as_postgres "${pg_ctl}" \
     --pgdata="${restore_directory}" \
     --options="${postgres_start_options}" \
     --log="${restore_directory}/postgresql.restore-test.log" \
@@ -253,7 +258,7 @@ if ! runuser -u postgres -- "${pg_ctl}" \
     exit 1
 fi
 
-recovery_state=$(runuser -u postgres -- /usr/bin/psql \
+recovery_state=$(as_postgres /usr/bin/psql \
     --host="${socket_directory}" \
     --port="${test_port}" \
     --username=postgres \
@@ -263,7 +268,7 @@ recovery_state=$(runuser -u postgres -- /usr/bin/psql \
     --no-align \
     --command="SELECT pg_is_in_recovery()" 2>>"${private_log}")
 if [[ ${recovery_state} == t ]]; then
-    if ! runuser -u postgres -- "${pg_ctl}" \
+    if ! as_postgres "${pg_ctl}" \
         --pgdata="${restore_directory}" \
         --wait \
         --timeout=60 \
@@ -275,7 +280,7 @@ fi
 
 # A rollback-only temporary write proves that the promoted cluster is writable
 # without retaining any synthetic row in the disposable restore.
-write_result=$(runuser -u postgres -- /usr/bin/psql \
+write_result=$(as_postgres /usr/bin/psql \
     --host="${socket_directory}" \
     --port="${test_port}" \
     --username=postgres \
@@ -290,7 +295,7 @@ if [[ ${write_result} != *$'\nok\n'* && ${write_result} != ok ]]; then
     echo "The restored cluster did not prove isolated writable-primary behavior." >&2
     exit 1
 fi
-if ! runuser -u postgres -- "${pg_ctl}" \
+if ! as_postgres "${pg_ctl}" \
     --pgdata="${restore_directory}" \
     --mode=fast \
     --wait \
@@ -299,7 +304,7 @@ if ! runuser -u postgres -- "${pg_ctl}" \
     echo "The restored cluster could not be stopped before checksum validation." >&2
     exit 1
 fi
-if ! runuser -u postgres -- "${pg_checksums}" \
+if ! as_postgres "${pg_checksums}" \
     --check \
     --pgdata="${restore_directory}" >>"${private_log}" 2>&1; then
     echo "The restored cluster checksum validation failed." >&2

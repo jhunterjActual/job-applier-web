@@ -14,12 +14,17 @@ readonly lock_path=/run/lock/careertrellis-pgbackrest-repository.lock
 readonly core=/usr/local/libexec/careertrellis/backup_health.py
 readonly receipt_root=/var/backups/careertrellis/backup-health/operations
 
-for command_path in /usr/bin/flock /usr/bin/jq /usr/bin/pgbackrest /usr/sbin/runuser /usr/bin/python3; do
+for command_path in /usr/bin/flock /usr/bin/jq /usr/bin/pgbackrest /usr/bin/setpriv /usr/bin/python3; do
     if [[ ! -x ${command_path} ]]; then
         echo "A required inventory command is unavailable." >&2
         exit 1
     fi
 done
+
+as_postgres() {
+    /usr/bin/setpriv --reuid=postgres --regid=postgres --init-groups \
+        --reset-env -- "$@"
+}
 if [[ ! -x ${rclone_binary} ]]; then
     echo "The verified rclone installation is unavailable." >&2
     exit 1
@@ -60,7 +65,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! runuser -u postgres -- /usr/bin/pgbackrest \
+if ! as_postgres /usr/bin/pgbackrest \
     --stanza=careertrellis \
     --output=json \
     info >"${info_json}" 2>"${private_log}"; then

@@ -3511,6 +3511,13 @@ class DependencyLockTests(unittest.TestCase):
             self.assertIn('exec 9<>"${lock_path}"', source)
             self.assertIn("flock --nonblock 9", source)
             self.assertIn(
+                "/usr/bin/setpriv --reuid=postgres --regid=postgres "
+                "--init-groups",
+                source,
+            )
+            self.assertIn('--reset-env -- "$@"', source)
+            self.assertNotIn("runuser", source)
+            self.assertIn(
                 "/usr/local/libexec/careertrellis/backup_health.py", source
             )
             self.assertIn(" publish --receipt-root ", source)
@@ -3586,6 +3593,12 @@ class DependencyLockTests(unittest.TestCase):
             health_unit,
         )
         manager = (scripts / "manage-backup-health.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            "/usr/bin/setpriv --reuid=postgres --regid=postgres --init-groups",
+            manager,
+        )
+        self.assertIn('--reset-env -- "$@"', manager)
+        self.assertNotIn("runuser", manager)
         evaluation = manager[
             manager.index("evaluate_database_health() {") : manager.index(
                 "acknowledge_wal_failures() {"
@@ -3655,10 +3668,10 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("checksum_verified\":true", restore)
         self.assertIn("cleanup_verified\":true", restore)
         self.assertIn(
-            'runuser -u postgres -- /usr/bin/tee -- "${test_hba}"', restore
+            'as_postgres /usr/bin/tee -- "${test_hba}"', restore
         )
         self.assertIn(
-            'runuser -u postgres -- /usr/bin/tee -- "${test_config}"', restore
+            'as_postgres /usr/bin/tee -- "${test_config}"', restore
         )
         self.assertNotIn('cat >"${test_hba}"', restore)
         self.assertNotIn('cat >"${test_config}"', restore)
