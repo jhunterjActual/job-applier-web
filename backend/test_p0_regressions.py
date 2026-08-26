@@ -3517,6 +3517,7 @@ class DependencyLockTests(unittest.TestCase):
             )
             self.assertIn('--reset-env -- "$@"', source)
             self.assertNotIn("runuser", source)
+            self.assertIn("as_postgres /usr/bin/pgbackrest", source)
             self.assertIn(
                 "/usr/local/libexec/careertrellis/backup_health.py", source
             )
@@ -3574,7 +3575,6 @@ class DependencyLockTests(unittest.TestCase):
                 "UMask=0077",
                 "NoNewPrivileges=true",
                 "PrivateTmp=true",
-                "PrivateDevices=true",
                 "ProtectHome=true",
                 "ProtectSystem=strict",
                 "RestrictNamespaces=true",
@@ -3582,6 +3582,12 @@ class DependencyLockTests(unittest.TestCase):
                 "SystemCallArchitectures=native",
             ):
                 self.assertIn(hardening, unit)
+            self.assertIn("PrivateDevices=false", unit)
+            self.assertNotIn("PrivateDevices=true", unit)
+            self.assertIn("DevicePolicy=closed", unit)
+            self.assertIn(
+                "CapabilityBoundingSet=~CAP_MKNOD CAP_SYS_RAWIO", unit
+            )
             self.assertIn("RestrictSUIDSGID=false", unit)
             self.assertNotIn("RestrictSUIDSGID=true", unit)
 
@@ -3594,12 +3600,21 @@ class DependencyLockTests(unittest.TestCase):
             health_unit,
         )
         self.assertIn("NoNewPrivileges=true", health_unit)
+        self.assertIn("PrivateTmp=true", health_unit)
+        self.assertIn("PrivateDevices=false", health_unit)
+        self.assertNotIn("PrivateDevices=true", health_unit)
+        self.assertIn("DevicePolicy=closed", health_unit)
+        self.assertIn(
+            "CapabilityBoundingSet=~CAP_MKNOD CAP_SYS_RAWIO", health_unit
+        )
         self.assertIn("RestrictSUIDSGID=false", health_unit)
         self.assertNotIn("RestrictSUIDSGID=true", health_unit)
         alert_unit = (
             systemd / "careertrellis-backup-health-alert@.service"
         ).read_text(encoding="utf-8")
         self.assertIn("NoNewPrivileges=true", alert_unit)
+        self.assertIn("PrivateDevices=true", alert_unit)
+        self.assertNotIn("PrivateDevices=false", alert_unit)
         self.assertIn("RestrictSUIDSGID=true", alert_unit)
         manager = (scripts / "manage-backup-health.sh").read_text(encoding="utf-8")
         self.assertIn(
@@ -3608,6 +3623,7 @@ class DependencyLockTests(unittest.TestCase):
         )
         self.assertIn('--reset-env -- "$@"', manager)
         self.assertNotIn("runuser", manager)
+        self.assertIn("if ! as_postgres /usr/bin/pgbackrest", manager)
         evaluation = manager[
             manager.index("evaluate_database_health() {") : manager.index(
                 "acknowledge_wal_failures() {"
@@ -3938,7 +3954,10 @@ class DependencyLockTests(unittest.TestCase):
         for unit in (health_service, alert_service):
             self.assertIn("RestrictAddressFamilies=AF_UNIX", unit)
             self.assertIn("NoNewPrivileges=true", unit)
+            self.assertIn("PrivateDevices=true", unit)
+            self.assertNotIn("PrivateDevices=false", unit)
             self.assertIn("ProtectSystem=strict", unit)
+            self.assertIn("RestrictSUIDSGID=true", unit)
         self.assertIn(
             "OnFailure=careertrellis-generated-object-backup-health-alert@%n.service",
             health_service,
