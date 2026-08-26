@@ -15,27 +15,25 @@ SuccessExitStatus=1
 TimeoutStartSec=10m
 NoNewPrivileges=true
 PrivateTmp=true
-# PrivateDevices implies a syscall filter that rejects this unit's fixed
-# setpriv transition. Preserve physical-device denial and remove raw-device
-# capabilities without that incompatible filter.
+# The trusted root wrapper must perform one fixed UID/GID drop. Keep every
+# non-syscall-filter boundary and tightly bound its root capabilities.
 PrivateDevices=false
 DevicePolicy=closed
-CapabilityBoundingSet=~CAP_MKNOD CAP_SYS_RAWIO
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SETGID CAP_SETUID
 ProtectHome=true
 ProtectSystem=strict
-ProtectHostname=true
-ProtectClock=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectKernelLogs=true
+ProtectHostname=false
+ProtectClock=false
+ProtectKernelTunables=false
+ProtectKernelModules=false
+ProtectKernelLogs=false
 ProtectControlGroups=true
-RestrictNamespaces=true
+RestrictNamespaces=false
 # The trusted root wrapper drops to postgres with setpriv. Keep
 # NoNewPrivileges, but do not combine it with RestrictSUIDSGID's incompatible
 # syscall filter on this identity-transition unit.
 RestrictSUIDSGID=false
-LockPersonality=true
-SystemCallArchitectures=native
+LockPersonality=false
 ReadWritePaths=/run/lock
 ReadWritePaths=/var/backups/careertrellis/backup-health
 ReadWritePaths=/var/lib/careertrellis/backup-health
