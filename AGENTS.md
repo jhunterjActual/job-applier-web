@@ -26,6 +26,16 @@ Run these commands from the repository root:
 - Do not modify or commit local/private/generated content: `data/`, database files, `.env*`, `baseresume.*`, `resume.*`, PDFs, `backend/venv/`, caches, IDE settings, or OS metadata. Follow `.gitignore`, and never print or expose API keys or resume/profile data.
 - Do not regenerate brand assets or icons unless the task explicitly requests it.
 
+## Application releases and operational bundles
+
+- Treat immutable application releases and installed operational bundles as separate revision domains. Bind the application to its exact runtime release commit and API version; bind helpers, units, and timers to their separately reviewed source commit plus installed-byte verification. An ops-bundle install must not move the application `current`/`previous` pointers, restart application workers, or change the application build.
+- Create or activate an application release only when user-facing behavior, application/schema/API bytes, or an application security boundary changes. Scripts, service units, timers, diagnostics, and operational documentation alone use an ops-bundle revision and do not justify an application build bump.
+- Before committing a change to systemd identity, capability, device, syscall, namespace, or `NoNewPrivileges` controls, reproduce the minimum fixed transition on a target-OS host under its native systemd and kernel. Prefer an exit-code-only transient probe with no provider call; local syntax checks are not a substitute. Retain only a sanitized result.
+- When a provider failure is hidden by the normal privacy boundary, use only an explicitly authorized, short-lived root diagnostic: disable shell tracing, create a root-owned mode-`0600` file under `/run`, redirect all raw output there, emit only a fixed sanitized classification, inspect it only in the secure terminal, and remove it after terminal state is proved. Keep diagnostics read-only unless the exact mutation is separately authorized; never send raw output to journald, chat, commits, or receipts.
+- After the failure cause is isolated, batch all known related operational corrections into one reviewed PR and one deployment. Do not create one PR or deployment per probed directive; split only an independently reviewable security boundary or urgent containment.
+- Conserve GitHub Actions: run the applicable local tests and reviews first, produce one locally verified commit, push once, and open one PR. Inspect the specific failing log before changing code; never speculatively rerun unchanged checks. Push a follow-up only for a diagnosed correction.
+- For ops-only unit or helper changes, satisfy the completion gate with host-native operational verification of the reviewed artifact; do not start or release the application unless its runtime bytes changed.
+
 ## Subagent tasking for gate-clearing work
 
 - When a request is to review, merge, deploy, proceed to the next stage, or otherwise clear multiple gates, use subagents by default when two or more evidence-gathering tasks can run independently.
