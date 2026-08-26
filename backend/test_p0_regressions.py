@@ -3578,11 +3578,12 @@ class DependencyLockTests(unittest.TestCase):
                 "ProtectHome=true",
                 "ProtectSystem=strict",
                 "RestrictNamespaces=true",
-                "RestrictSUIDSGID=true",
                 "LockPersonality=true",
                 "SystemCallArchitectures=native",
             ):
                 self.assertIn(hardening, unit)
+            self.assertIn("RestrictSUIDSGID=false", unit)
+            self.assertNotIn("RestrictSUIDSGID=true", unit)
 
         health_unit = (
             systemd / "careertrellis-backup-health.service"
@@ -3592,6 +3593,14 @@ class DependencyLockTests(unittest.TestCase):
             "clear-unit-alert %n",
             health_unit,
         )
+        self.assertIn("NoNewPrivileges=true", health_unit)
+        self.assertIn("RestrictSUIDSGID=false", health_unit)
+        self.assertNotIn("RestrictSUIDSGID=true", health_unit)
+        alert_unit = (
+            systemd / "careertrellis-backup-health-alert@.service"
+        ).read_text(encoding="utf-8")
+        self.assertIn("NoNewPrivileges=true", alert_unit)
+        self.assertIn("RestrictSUIDSGID=true", alert_unit)
         manager = (scripts / "manage-backup-health.sh").read_text(encoding="utf-8")
         self.assertIn(
             "/usr/bin/setpriv --reuid=postgres --regid=postgres --init-groups",
@@ -3682,6 +3691,8 @@ class DependencyLockTests(unittest.TestCase):
         installer = (scripts / "install-backup-health-monitor.sh").read_text(
             encoding="utf-8"
         )
+        self.assertIn("/usr/bin/setpriv", installer)
+        self.assertNotIn("/usr/sbin/runuser", installer)
         self.assertIn("restore_root_needs_migration=true", installer)
         self.assertIn('chown root:postgres "${restore_root}"', installer)
         self.assertIn('chmod 0710 "${restore_root}"', installer)

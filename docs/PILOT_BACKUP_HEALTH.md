@@ -334,12 +334,19 @@ The first `.41` database evaluation also failed closed while a PAM-bearing
 `runuser` child attempted the read-only repository inspection inside the
 hardened systemd service. The same explicitly configured inspection succeeded
 as the postgres account outside that service. The `.42` correction keeps the
-service root-owned and preserves `NoNewPrivileges` and every existing sandbox
-directive, but launches postgres-only commands through `setpriv` with an exact
-UID/GID drop, initialized supplementary groups, and a reset environment. The
-database evaluator, backup, mirror, inventory, and isolated-restore wrappers all
-use the same launcher so a later scheduled operation cannot repeat the monitor's
-failure boundary. The wrapper never relays the private command output.
+service root-owned and launched postgres-only commands through `setpriv` with
+an exact UID/GID drop, initialized supplementary groups, and a reset
+environment. Live activation then proved that `NoNewPrivileges=true` and
+`RestrictSUIDSGID=true` each permitted that transition alone, but their combined
+systemd filter rejected it before repository inspection. The `.43` correction
+keeps `NoNewPrivileges` and every filesystem, namespace, device, kernel, lock,
+receipt, and private-output boundary, while explicitly disabling only
+`RestrictSUIDSGID` on the six trusted root units that must drop to postgres.
+Alert-only and generated-object units retain the restriction. The database
+evaluator, backup, mirror, inventory, and isolated-restore wrappers continue to
+use the same fixed launcher, and the installer now checks for `setpriv` rather
+than its retired `runuser` dependency. The wrapper never relays private command
+output.
 
 The retained pre-monitor evidence was separately audited before considering a
 fresh operation. Its authenticated encrypted bundle and adjacent digests were

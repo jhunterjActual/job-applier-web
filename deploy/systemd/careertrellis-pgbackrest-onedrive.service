@@ -27,7 +27,10 @@ ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
 RestrictNamespaces=true
-RestrictSUIDSGID=true
+# The trusted root wrapper drops to postgres with setpriv. Keep
+# NoNewPrivileges, but do not combine it with RestrictSUIDSGID's incompatible
+# syscall filter on this identity-transition unit.
+RestrictSUIDSGID=false
 LockPersonality=true
 SystemCallArchitectures=native
 # rclone refreshes OAuth tokens with an atomic file replacement, so its
