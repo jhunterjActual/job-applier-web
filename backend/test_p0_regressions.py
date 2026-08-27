@@ -6218,6 +6218,9 @@ class PilotUserOperatorTests(unittest.TestCase):
         wrapper = (scripts / "manage-pilot-acceptance.sh").read_text(
             encoding="utf-8"
         )
+        runner = (project_dir / "backend" / "pilot_acceptance.py").read_text(
+            encoding="utf-8"
+        )
         deploy = (scripts / "deploy-release.sh").read_text(encoding="utf-8")
         rollback = (scripts / "rollback-release.sh").read_text(encoding="utf-8")
         provision = (scripts / "provision-staging-host.sh").read_text(
@@ -6353,6 +6356,13 @@ class PilotUserOperatorTests(unittest.TestCase):
             wrapper,
         )
         self.assertIn("exec env -i", wrapper)
+        self.assertNotIn("CAREERTRELLIS_ENVIRONMENT=staging", wrapper)
+        self.assertIn(
+            "STAGING_ENVIRONMENT_FILE, (OWNER_ID_KEY, RUNTIME_ENVIRONMENT_KEY)",
+            runner,
+        )
+        self.assertIn("_validate_operator_runtime_boundary(", runner)
+        self.assertIn("isinstance(runtime_object_backend(), R2ObjectBackend)", runner)
         self.assertIn('"${python_command}" -s -B "${release_runner}"', wrapper)
         self.assertNotIn('"${python_command}" -I -B "${release_runner}"', wrapper)
         self.assertIn('"${release_runner}" "${operation}"', wrapper)
