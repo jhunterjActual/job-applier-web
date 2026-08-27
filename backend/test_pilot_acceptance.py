@@ -9,7 +9,7 @@ import re
 import stat
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 from datetime import datetime, timedelta, timezone
 
 import pilot_acceptance as acceptance
@@ -676,7 +676,7 @@ class VerificationHelperTests(unittest.TestCase):
 
     def test_provider_namespace_recheck_takes_table_lock_and_fails_closed(self) -> None:
         connection = Mock()
-        connection.scalar.return_value = 1
+        connection.scalar.side_effect = [1, 0]
         with self.assertRaises(acceptance.PilotAcceptanceError):
             acceptance._assert_provider_namespace_free(
                 connection, self.state()
@@ -685,6 +685,50 @@ class VerificationHelperTests(unittest.TestCase):
             "LOCK TABLE careertrellis.provider_secrets",
             connection.exec_driver_sql.call_args.args[0],
         )
+        self.assertEqual(2, connection.scalar.call_count)
+        self.assertEqual(
+            ["41", "42"],
+            [
+                call.args[1]["user_id"]
+                for call in connection.execute.call_args_list
+            ],
+        )
+
+    def test_provider_namespace_selection_sets_each_rls_tenant_context(self) -> None:
+        context = MagicMock()
+        connection = Mock()
+        owner_rows = Mock()
+        owner_rows.mappings.return_value.all.return_value = [{
+            "owner_user_id": 41,
+            "provider": "gemini",
+        }]
+        pilot_rows = Mock()
+        pilot_rows.mappings.return_value.all.return_value = [{
+            "owner_user_id": 42,
+            "provider": "openai",
+        }]
+        connection.execute.side_effect = [Mock(), owner_rows, Mock(), pilot_rows]
+        with patch.object(
+            acceptance,
+            "_protected_migration_transaction",
+            return_value=(context, connection),
+        ):
+            self.assertEqual(
+                "google_maps",
+                acceptance.select_provider_namespace(Mock(), 41, 42),
+            )
+        self.assertEqual(
+            ["41", "42"],
+            [
+                connection.execute.call_args_list[index].args[1]["user_id"]
+                for index in (0, 2)
+            ],
+        )
+        for index, owner_user_id in ((1, 41), (3, 42)):
+            self.assertEqual(
+                owner_user_id,
+                connection.execute.call_args_list[index].args[1]["owner"],
+            )
 
     def test_object_upload_and_cleanup_use_predeclared_exact_keys(self) -> None:
         keyring = object_store.ObjectKeyring(
@@ -865,6 +909,57 @@ class VerificationHelperTests(unittest.TestCase):
         self.assertEqual(
             b"synthetic-ciphertext", delete_parameters["ciphertext"]
         )
+
+    def test_crash_cleanup_preserves_unrelated_real_provider_secret(self) -> None:
+        state = self.state()
+        connection = Mock()
+        selected = Mock()
+        selected.mappings.return_value.all.return_value = [{
+            "id": 17,
+            "key_id": "real-key",
+            "ciphertext": b"real-ciphertext",
+            "revoked_at": None,
+        }]
+        connection.execute.side_effect = [Mock(), selected]
+        with patch(
+            "provider_secrets.decrypt_provider_secret",
+            return_value="unrelated-real-secret",
+        ):
+            acceptance._delete_provider_secret(
+                connection,
+                state,
+                Mock(),
+                None,
+                state.owner_user_id,
+                f"{state.marker}-owner-secret",
+            )
+        self.assertEqual(2, connection.execute.call_count)
+
+    def test_crash_cleanup_deletes_matching_synthetic_provider_secret(self) -> None:
+        state = self.state()
+        connection = Mock()
+        selected = Mock()
+        selected.mappings.return_value.all.return_value = [{
+            "id": 17,
+            "key_id": "synthetic-key",
+            "ciphertext": b"synthetic-ciphertext",
+            "revoked_at": None,
+        }]
+        deleted = Mock(rowcount=1)
+        connection.execute.side_effect = [Mock(), selected, deleted]
+        with patch(
+            "provider_secrets.decrypt_provider_secret",
+            return_value=f"{state.marker}-owner-secret",
+        ):
+            acceptance._delete_provider_secret(
+                connection,
+                state,
+                Mock(),
+                None,
+                state.owner_user_id,
+                f"{state.marker}-owner-secret",
+            )
+        self.assertEqual(3, connection.execute.call_count)
 
     def test_marker_search_does_not_stringify_unknown_objects(self) -> None:
         marker = "pilot-acceptance-" + "b" * 32
