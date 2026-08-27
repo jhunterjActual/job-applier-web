@@ -719,16 +719,16 @@ def select_provider_namespace(
             "LOCK TABLE careertrellis.provider_secrets "
             "IN SHARE ROW EXCLUSIVE MODE"
         )
-        rows = connection.execute(text(
-            "SELECT owner_user_id, provider "
-            "FROM careertrellis.provider_secrets "
-            "WHERE owner_user_id IN (:owner, :pilot) "
-            "AND provider IN ('gemini', 'openai', 'google_maps') "
-            "FOR UPDATE"
-        ), {
-            "owner": owner_user_id,
-            "pilot": pilot_user_id,
-        }).mappings().all()
+        rows: list[Mapping[str, object]] = []
+        for tenant_user_id in (owner_user_id, pilot_user_id):
+            set_tenant_context(connection, tenant_user_id)
+            rows.extend(connection.execute(text(
+                "SELECT owner_user_id, provider "
+                "FROM careertrellis.provider_secrets "
+                "WHERE owner_user_id=:owner "
+                "AND provider IN ('gemini', 'openai', 'google_maps') "
+                "FOR UPDATE"
+            ), {"owner": tenant_user_id}).mappings().all())
         provider = _choose_provider_namespace(
             rows, owner_user_id, pilot_user_id
         )
@@ -748,14 +748,16 @@ def _assert_provider_namespace_free(
         "LOCK TABLE careertrellis.provider_secrets "
         "IN SHARE ROW EXCLUSIVE MODE"
     )
-    occupied = int(connection.scalar(text(
-        "SELECT count(*) FROM careertrellis.provider_secrets "
-        "WHERE owner_user_id IN (:owner, :pilot) AND provider=:provider"
-    ), {
-        "owner": state.owner_user_id,
-        "pilot": state.pilot_user_id,
-        "provider": state.provider,
-    }) or 0)
+    occupied = 0
+    for tenant_user_id in (state.owner_user_id, state.pilot_user_id):
+        set_tenant_context(connection, tenant_user_id)
+        occupied += int(connection.scalar(text(
+            "SELECT count(*) FROM careertrellis.provider_secrets "
+            "WHERE owner_user_id=:owner AND provider=:provider"
+        ), {
+            "owner": tenant_user_id,
+            "provider": state.provider,
+        }) or 0)
     if occupied != 0:
         raise PilotAcceptanceError(FIXED_ERROR)
 
@@ -1471,6 +1473,10 @@ def _delete_provider_secret(
         )
     except Exception as exc:
         raise PilotAcceptanceError(FIXED_ERROR) from exc
+    if plaintext != expected_marker and expected_id is None:
+        # A preparing-state crash can precede the synthetic insert. Preserve an
+        # unrelated tenant secret occupying the selected unique namespace.
+        return
     if plaintext != expected_marker:
         raise PilotAcceptanceError(FIXED_ERROR)
     if connection.execute(text(

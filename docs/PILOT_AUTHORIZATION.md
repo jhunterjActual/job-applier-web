@@ -10,6 +10,9 @@ release binds the acceptance interpreter to the already-provisioned staging
 runtime directories and PostgreSQL/R2 mode before application-module import,
 preventing fallback writes inside an immutable release. Caddy Basic
 Authentication remains in front of WorkOS through initial pilot acceptance.
+The `.49` release makes acceptance provider-namespace inspection explicitly
+tenant-scoped under forced RLS and preserves an unrelated real provider secret
+when recovering a crash before the synthetic fixture insert.
 
 ## Authentication invariants
 
