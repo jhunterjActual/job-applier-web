@@ -5,7 +5,10 @@ invitation-only staging pilot. The activated `.38` release implements the
 operator-preseeded user boundary. The `.39` release adds the root-only live
 acceptance and privacy-safe receipt boundary without changing authentication or
 the PostgreSQL schema. The `.47` release adds a pre-prompt, offline
-runtime/storage compatibility guard to that acceptance boundary. Caddy Basic
+runtime/storage compatibility guard to that acceptance boundary. The `.48`
+release binds the acceptance interpreter to the already-provisioned staging
+runtime directories and PostgreSQL/R2 mode before application-module import,
+preventing fallback writes inside an immutable release. Caddy Basic
 Authentication remains in front of WorkOS through initial pilot acceptance.
 
 ## Authentication invariants

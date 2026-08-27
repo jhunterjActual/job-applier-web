@@ -29,6 +29,7 @@ readonly current_link=/opt/careertrellis/staging/current
 readonly release_root=/opt/careertrellis/staging/releases
 readonly receipt_parent=/var/backups/careertrellis
 readonly receipt_root=${receipt_parent}/pilot-auth-acceptance
+readonly runtime_data_root=/var/lib/careertrellis/staging
 readonly authority_helper=/usr/local/sbin/careertrellis-authority
 readonly maintenance_lock_helper=/usr/local/libexec/careertrellis/maintenance-lock.sh
 readonly pending_cutover=/etc/careertrellis/authority/pending-cutover
@@ -236,6 +237,18 @@ if [[ ! -d ${receipt_root} || -L ${receipt_root} || \
     echo "The pilot acceptance receipt root is invalid." >&2
     exit 1
 fi
+for runtime_directory in \
+    "${runtime_data_root}" \
+    "${runtime_data_root}/uploads" \
+    "${runtime_data_root}/output"; do
+    if [[ ! -d ${runtime_directory} || -L ${runtime_directory} || \
+          $(realpath "${runtime_directory}") != "${runtime_directory}" || \
+          $(stat -c '%U:%G %a' "${runtime_directory}") != \
+              "careertrellis:careertrellis 700" ]]; then
+        echo "The staging runtime directory boundary is invalid." >&2
+        exit 1
+    fi
+done
 
 exec env -i \
     PATH="${PATH}" \
@@ -243,6 +256,10 @@ exec env -i \
     LC_ALL=C.UTF-8 \
     PYTHONNOUSERSITE=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    CAREERTRELLIS_ENVIRONMENT=staging \
+    CAREERTRELLIS_DATA_DIR="${runtime_data_root}" \
+    CAREERTRELLIS_DATA_STORE=postgres \
+    CAREERTRELLIS_OBJECT_STORE=r2_encrypted \
     CAREERTRELLIS_PILOT_ACCEPTANCE_RELEASE="${current_revision}" \
     CAREERTRELLIS_PILOT_ACCEPTANCE_SEARCH_WORKER_PID="${search_worker_main_pid}" \
     CAREERTRELLIS_PILOT_ACCEPTANCE_ERASURE_WORKER_PID="${erasure_worker_main_pid}" \
