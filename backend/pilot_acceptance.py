@@ -71,6 +71,7 @@ ERASURE_HEARTBEAT_FILE = Path(
 )
 CURRENT_RELEASE_LINK = Path("/opt/careertrellis/staging/current")
 RELEASE_ROOT = Path("/opt/careertrellis/staging/releases")
+RUNTIME_ENVIRONMENT_KEY = "CAREERTRELLIS_ENVIRONMENT"
 RELEASE_ENVIRONMENT_KEY = "CAREERTRELLIS_PILOT_ACCEPTANCE_RELEASE"
 SEARCH_WORKER_PID_ENVIRONMENT_KEY = (
     "CAREERTRELLIS_PILOT_ACCEPTANCE_SEARCH_WORKER_PID"
@@ -1789,9 +1790,11 @@ def _mapping_state(runtime_engine: Engine, user_id: int, *, active: bool) -> boo
 def _load_operator_boundary() -> tuple[
     str, str, str, dict[str, str], dict[str, str]
 ]:
-    owner = read_protected_environment(
-        STAGING_ENVIRONMENT_FILE, (OWNER_ID_KEY,)
-    )[OWNER_ID_KEY]
+    staging = read_protected_environment(
+        STAGING_ENVIRONMENT_FILE, (OWNER_ID_KEY, RUNTIME_ENVIRONMENT_KEY)
+    )
+    if staging[RUNTIME_ENVIRONMENT_KEY] != "staging":
+        raise PilotAcceptanceError(FIXED_ERROR)
     migration = read_protected_environment(
         MIGRATION_ENVIRONMENT_FILE, (MIGRATION_URL_KEY,)
     )[MIGRATION_URL_KEY]
@@ -1804,7 +1807,11 @@ def _load_operator_boundary() -> tuple[
     object_storage = read_protected_environment(
         OBJECT_ENVIRONMENT_FILE, OBJECT_KEYS
     )
-    return _identity(owner), migration, runtime, provider, object_storage
+    object_storage[RUNTIME_ENVIRONMENT_KEY] = staging[RUNTIME_ENVIRONMENT_KEY]
+    return (
+        _identity(staging[OWNER_ID_KEY]), migration, runtime,
+        provider, object_storage,
+    )
 
 
 @contextmanager
@@ -1819,6 +1826,34 @@ def _temporary_environment(values: Mapping[str, str]):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def _validate_operator_runtime_boundary(
+    provider_environment: Mapping[str, str],
+    object_environment: Mapping[str, str],
+) -> None:
+    """Validate protected crypto and backend configuration without network I/O."""
+    if object_environment.get(RUNTIME_ENVIRONMENT_KEY) != "staging":
+        raise PilotAcceptanceError(FIXED_ERROR)
+    try:
+        from object_store import (
+            R2ObjectBackend,
+            parse_object_keyring,
+            runtime_object_backend,
+        )
+        from provider_secrets import _parse_keyring as parse_provider_keyring
+
+        with _temporary_environment(
+            {**provider_environment, **object_environment}
+        ):
+            parse_provider_keyring()
+            parse_object_keyring()
+            if not isinstance(runtime_object_backend(), R2ObjectBackend):
+                raise PilotAcceptanceError(FIXED_ERROR)
+    except PilotAcceptanceError:
+        raise
+    except Exception as exc:
+        raise PilotAcceptanceError(FIXED_ERROR) from exc
 
 
 def _fixed_result(result: OperationResult) -> None:
@@ -1843,6 +1878,9 @@ def _run_operation(operation: str, store: StateStore) -> OperationResult:
     runtime_engine = _create_engine(runtime_url, "careertrellis_runtime", pooled=True)
     try:
         if operation == "inspect":
+            _validate_operator_runtime_boundary(
+                provider_environment, object_environment
+            )
             if not store.exists():
                 return OperationResult(operation, "absent", "none")
             state = store.read()
@@ -1853,6 +1891,9 @@ def _run_operation(operation: str, store: StateStore) -> OperationResult:
         if operation == "prepare":
             if store.exists():
                 raise PilotAcceptanceError(FIXED_ERROR)
+            _validate_operator_runtime_boundary(
+                provider_environment, object_environment
+            )
             pilot_identity = _interactive_identity()
             owner_id, pilot_id = mapping_preflight(
                 migration_engine, runtime_engine, owner_identity, pilot_identity

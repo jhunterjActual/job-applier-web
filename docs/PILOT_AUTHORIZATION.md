@@ -4,8 +4,9 @@ This document defines the smallest reviewed multi-user boundary for the
 invitation-only staging pilot. The activated `.38` release implements the
 operator-preseeded user boundary. The `.39` release adds the root-only live
 acceptance and privacy-safe receipt boundary without changing authentication or
-the PostgreSQL schema. Caddy Basic Authentication remains in front of WorkOS
-through initial pilot acceptance.
+the PostgreSQL schema. The `.47` release adds a pre-prompt, offline
+runtime/storage compatibility guard to that acceptance boundary. Caddy Basic
+Authentication remains in front of WorkOS through initial pilot acceptance.
 
 ## Authentication invariants
 
@@ -156,8 +157,15 @@ interactive terminal. The wrapper acquires the maintenance and acceptance
 locks, binds its shell and Python files to the exact active immutable release,
 checks hosted authority, activation evidence, units, process working
 directories, Caddy bytes, readiness, and build, then starts the runner with an
-empty environment. It accepts no identity, URL, object key, provider value, or
-arbitrary path through argv or the process environment.
+empty environment. The runner reads only the owner identity and fixed runtime
+mode from the protected staging configuration and requires that mode to be
+exactly `staging`. Before any identity prompt, it parses both protected
+encryption keyrings and lazily constructs the configured R2 backend without
+creating a client or making an object-storage or paid-provider network call.
+`inspect` performs the same offline compatibility check, so a configuration or
+runtime-mode mismatch fails before `prepare` can create transient state. It
+accepts no identity, URL, object key, provider value, or arbitrary path through
+argv or the process environment.
 
 The transient cleanup state is
 `/var/lib/careertrellis/pilot-auth-acceptance/active.json`, root-owned mode

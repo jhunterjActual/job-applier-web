@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -112,6 +113,14 @@ class PilotAcceptanceStateTests(unittest.TestCase):
 
 
 class ProtectedEnvironmentTests(unittest.TestCase):
+    @staticmethod
+    def encoded_keyring(key_id: str) -> str:
+        encoded_key = base64.urlsafe_b64encode(b"k" * 32).decode("ascii")
+        document = json.dumps(
+            {key_id: encoded_key}, separators=(",", ":")
+        ).encode("utf-8")
+        return base64.urlsafe_b64encode(document).decode("ascii")
+
     def test_parser_selects_required_values_without_evaluating_them(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "protected.env"
@@ -209,6 +218,288 @@ class ProtectedEnvironmentTests(unittest.TestCase):
                 acceptance.SEARCH_HEARTBEAT_GID_ENVIRONMENT_KEY,
                 acceptance.SEARCH_HEARTBEAT_MODE_ENVIRONMENT_KEY,
             )
+
+    def test_operator_boundary_loads_only_the_fixed_staging_runtime_mode(self) -> None:
+        owner = "user_owner000"
+        provider = {
+            key: f"provider-{index}"
+            for index, key in enumerate(acceptance.PROVIDER_KEYS)
+        }
+        objects = {
+            key: f"object-{index}"
+            for index, key in enumerate(acceptance.OBJECT_KEYS)
+        }
+        with patch.object(
+            acceptance,
+            "read_protected_environment",
+            side_effect=(
+                {
+                    acceptance.OWNER_ID_KEY: owner,
+                    acceptance.RUNTIME_ENVIRONMENT_KEY: "staging",
+                },
+                {acceptance.MIGRATION_URL_KEY: "migration-url"},
+                {acceptance.RUNTIME_URL_KEY: "runtime-url"},
+                provider,
+                objects,
+            ),
+        ) as reader:
+            loaded = acceptance._load_operator_boundary()
+        self.assertEqual(owner, loaded[0])
+        self.assertEqual("staging", loaded[4][acceptance.RUNTIME_ENVIRONMENT_KEY])
+        self.assertEqual(
+            (acceptance.OWNER_ID_KEY, acceptance.RUNTIME_ENVIRONMENT_KEY),
+            reader.call_args_list[0].args[1],
+        )
+
+    def test_operator_boundary_rejects_a_non_staging_protected_runtime_mode(self) -> None:
+        with patch.object(
+            acceptance,
+            "read_protected_environment",
+            return_value={
+                acceptance.OWNER_ID_KEY: "user_owner000",
+                acceptance.RUNTIME_ENVIRONMENT_KEY: "local",
+            },
+        ), self.assertRaises(acceptance.PilotAcceptanceError):
+            acceptance._load_operator_boundary()
+
+    def test_operator_runtime_boundary_requires_staging_before_backend_validation(self) -> None:
+        provider = {"PROVIDER_TEST_VALUE": "provider-value"}
+        objects = {
+            "OBJECT_TEST_VALUE": "object-value",
+            acceptance.RUNTIME_ENVIRONMENT_KEY: "local",
+        }
+        with (
+            patch("provider_secrets._parse_keyring") as provider_keyring,
+            patch("object_store.parse_object_keyring") as object_keyring,
+            patch("object_store.runtime_object_backend") as object_backend,
+            self.assertRaises(acceptance.PilotAcceptanceError),
+        ):
+            acceptance._validate_operator_runtime_boundary(provider, objects)
+        provider_keyring.assert_not_called()
+        object_keyring.assert_not_called()
+        object_backend.assert_not_called()
+
+    def test_operator_runtime_boundary_validates_crypto_and_constructs_backend_offline(self) -> None:
+        provider = {"PROVIDER_TEST_VALUE": "provider-value"}
+        objects = {
+            "OBJECT_TEST_VALUE": "object-value",
+            acceptance.RUNTIME_ENVIRONMENT_KEY: "staging",
+        }
+        backend = object_store.R2ObjectBackend(
+            object_store.R2ObjectStoreConfiguration(
+                endpoint="https://synthetic.r2.cloudflarestorage.com",
+                bucket="synthetic-bucket",
+                access_key_id="synthetic-access-key",
+                secret_access_key="synthetic-secret-key-value-00000000",
+            )
+        )
+
+        def observe_provider_environment():
+            self.assertEqual("provider-value", os.environ["PROVIDER_TEST_VALUE"])
+            self.assertEqual("object-value", os.environ["OBJECT_TEST_VALUE"])
+
+        with (
+            patch(
+                "provider_secrets._parse_keyring",
+                side_effect=observe_provider_environment,
+            ) as provider_keyring,
+            patch("object_store.parse_object_keyring") as object_keyring,
+            patch(
+                "object_store.runtime_object_backend", return_value=backend
+            ) as object_backend,
+            patch.object(
+                object_store.R2ObjectBackend,
+                "_client",
+                side_effect=AssertionError("network client must stay lazy"),
+            ) as object_client,
+        ):
+            acceptance._validate_operator_runtime_boundary(provider, objects)
+        provider_keyring.assert_called_once_with()
+        object_keyring.assert_called_once_with()
+        object_backend.assert_called_once_with()
+        object_client.assert_not_called()
+        self.assertNotIn("PROVIDER_TEST_VALUE", os.environ)
+        self.assertNotIn("OBJECT_TEST_VALUE", os.environ)
+
+    def test_operator_runtime_boundary_exercises_real_factory_without_creating_client(self) -> None:
+        key_id = "synthetic-key"
+        keyring = self.encoded_keyring(key_id)
+        provider = {
+            "CAREERTRELLIS_PROVIDER_SECRET_STORE": "postgres_encrypted",
+            "CAREERTRELLIS_PROVIDER_SECRET_ACTIVE_KEY_ID": key_id,
+            "CAREERTRELLIS_PROVIDER_SECRET_KEYRING_B64": keyring,
+        }
+        objects = {
+            acceptance.RUNTIME_ENVIRONMENT_KEY: "staging",
+            "CAREERTRELLIS_OBJECT_STORE": "r2_encrypted",
+            "CAREERTRELLIS_OBJECT_STORE_ENDPOINT": (
+                f"https://{'a' * 32}.r2.cloudflarestorage.com"
+            ),
+            "CAREERTRELLIS_OBJECT_STORE_BUCKET": "synthetic-bucket",
+            "CAREERTRELLIS_OBJECT_STORE_ACCESS_KEY_ID": "synthetic-access-key",
+            "CAREERTRELLIS_OBJECT_STORE_SECRET_ACCESS_KEY": (
+                "synthetic-secret-key-value-00000000"
+            ),
+            "CAREERTRELLIS_OBJECT_STORE_ACTIVE_KEY_ID": key_id,
+            "CAREERTRELLIS_OBJECT_STORE_KEYRING_B64": keyring,
+        }
+        with patch(
+            "boto3.client",
+            side_effect=AssertionError("network client must stay lazy"),
+        ) as client:
+            acceptance._validate_operator_runtime_boundary(provider, objects)
+        client.assert_not_called()
+
+    def test_operator_runtime_boundary_maps_backend_details_to_fixed_error(self) -> None:
+        with (
+            patch(
+                "provider_secrets._parse_keyring",
+                side_effect=RuntimeError("sensitive provider detail"),
+            ),
+            self.assertRaisesRegex(
+                acceptance.PilotAcceptanceError,
+                re.escape(acceptance.FIXED_ERROR),
+            ) as raised,
+        ):
+            acceptance._validate_operator_runtime_boundary(
+                {}, {acceptance.RUNTIME_ENVIRONMENT_KEY: "staging"}
+            )
+        self.assertNotIn("sensitive", str(raised.exception))
+
+    def test_operator_runtime_boundary_restores_existing_environment_on_failure(self) -> None:
+        provider_key = "PROVIDER_TEST_VALUE"
+        object_key = "OBJECT_TEST_VALUE"
+        original = {
+            provider_key: "original-provider",
+            object_key: "original-object",
+            acceptance.RUNTIME_ENVIRONMENT_KEY: "original-mode",
+        }
+        provider = {provider_key: "temporary-provider"}
+        objects = {
+            object_key: "temporary-object",
+            acceptance.RUNTIME_ENVIRONMENT_KEY: "staging",
+        }
+        with patch.dict(os.environ, original, clear=False):
+            with (
+                patch(
+                    "provider_secrets._parse_keyring",
+                    side_effect=RuntimeError("sensitive provider detail"),
+                ),
+                self.assertRaises(acceptance.PilotAcceptanceError),
+            ):
+                acceptance._validate_operator_runtime_boundary(provider, objects)
+            self.assertEqual(original[provider_key], os.environ[provider_key])
+            self.assertEqual(original[object_key], os.environ[object_key])
+            self.assertEqual(
+                original[acceptance.RUNTIME_ENVIRONMENT_KEY],
+                os.environ[acceptance.RUNTIME_ENVIRONMENT_KEY],
+            )
+
+    def test_inspect_validates_operator_runtime_boundary_before_state_read(self) -> None:
+        store = Mock()
+        store.exists.return_value = False
+        migration_engine = Mock()
+        runtime_engine = Mock()
+        provider = {"PROVIDER_TEST_VALUE": "provider-value"}
+        objects = {
+            "OBJECT_TEST_VALUE": "object-value",
+            acceptance.RUNTIME_ENVIRONMENT_KEY: "staging",
+        }
+        with (
+            patch.object(acceptance, "_release_binding", return_value=(RELEASE, BUILD)),
+            patch.object(
+                acceptance,
+                "_load_operator_boundary",
+                return_value=(
+                    "user_owner000", "migration-url", "runtime-url",
+                    provider, objects,
+                ),
+            ),
+            patch.object(acceptance, "_validate_operator_runtime_boundary") as validate,
+            patch.object(
+                acceptance,
+                "_create_engine",
+                side_effect=(migration_engine, runtime_engine),
+            ),
+        ):
+            result = acceptance._run_operation("inspect", store)
+        validate.assert_called_once_with(provider, objects)
+        store.exists.assert_called_once_with()
+        self.assertEqual(acceptance.OperationResult("inspect", "absent", "none"), result)
+        migration_engine.dispose.assert_called_once_with()
+        runtime_engine.dispose.assert_called_once_with()
+
+    def test_inspect_offline_failure_never_reads_state(self) -> None:
+        store = Mock()
+        migration_engine = Mock()
+        runtime_engine = Mock()
+        provider = {"PROVIDER_TEST_VALUE": "provider-value"}
+        objects = {acceptance.RUNTIME_ENVIRONMENT_KEY: "staging"}
+        with (
+            patch.object(acceptance, "_release_binding", return_value=(RELEASE, BUILD)),
+            patch.object(
+                acceptance,
+                "_load_operator_boundary",
+                return_value=(
+                    "user_owner000", "migration-url", "runtime-url",
+                    provider, objects,
+                ),
+            ),
+            patch.object(
+                acceptance,
+                "_validate_operator_runtime_boundary",
+                side_effect=acceptance.PilotAcceptanceError(acceptance.FIXED_ERROR),
+            ),
+            patch.object(
+                acceptance,
+                "_create_engine",
+                side_effect=(migration_engine, runtime_engine),
+            ),
+            self.assertRaises(acceptance.PilotAcceptanceError),
+        ):
+            acceptance._run_operation("inspect", store)
+        store.exists.assert_not_called()
+        store.read.assert_not_called()
+        migration_engine.dispose.assert_called_once_with()
+        runtime_engine.dispose.assert_called_once_with()
+
+    def test_prepare_fails_offline_before_identity_prompt_or_state_write(self) -> None:
+        store = Mock()
+        store.exists.return_value = False
+        migration_engine = Mock()
+        runtime_engine = Mock()
+        provider = {"PROVIDER_TEST_VALUE": "provider-value"}
+        objects = {acceptance.RUNTIME_ENVIRONMENT_KEY: "staging"}
+        with (
+            patch.object(acceptance, "_release_binding", return_value=(RELEASE, BUILD)),
+            patch.object(
+                acceptance,
+                "_load_operator_boundary",
+                return_value=(
+                    "user_owner000", "migration-url", "runtime-url",
+                    provider, objects,
+                ),
+            ),
+            patch.object(
+                acceptance,
+                "_validate_operator_runtime_boundary",
+                side_effect=acceptance.PilotAcceptanceError(acceptance.FIXED_ERROR),
+            ),
+            patch.object(acceptance, "_interactive_identity") as identity_prompt,
+            patch.object(acceptance, "mapping_preflight") as mapping_preflight,
+            patch.object(
+                acceptance,
+                "_create_engine",
+                side_effect=(migration_engine, runtime_engine),
+            ),
+            self.assertRaises(acceptance.PilotAcceptanceError),
+        ):
+            acceptance._run_operation("prepare", store)
+        identity_prompt.assert_not_called()
+        mapping_preflight.assert_not_called()
+        store.write.assert_not_called()
+        migration_engine.dispose.assert_called_once_with()
+        runtime_engine.dispose.assert_called_once_with()
 
 
 class ReceiptBoundaryTests(unittest.TestCase):
@@ -636,6 +927,29 @@ class MainBoundaryTests(unittest.TestCase):
         self.assertEqual("", stderr.getvalue())
         self.assertIn("operation=inspect", stdout.getvalue())
         self.assertIn("identity_disclosed=no", stdout.getvalue())
+
+    def test_main_never_prints_nested_exception_details(self) -> None:
+        stdin = Mock()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        stdin.isatty.return_value = True
+        stdout.isatty = Mock(return_value=True)
+        stderr.isatty = Mock(return_value=True)
+        with (
+            patch.object(acceptance, "_effective_uid", return_value=0),
+            patch("sys.stdin", stdin),
+            patch("sys.stdout", stdout),
+            patch("sys.stderr", stderr),
+            patch.object(
+                acceptance,
+                "_run_operation",
+                side_effect=RuntimeError("sensitive nested detail"),
+            ),
+        ):
+            self.assertEqual(1, acceptance.main(["inspect"]))
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual(f"{acceptance.FIXED_ERROR}\n", stderr.getvalue())
+        self.assertNotIn("sensitive", stderr.getvalue())
 
 
 if __name__ == "__main__":
