@@ -6356,7 +6356,24 @@ class PilotUserOperatorTests(unittest.TestCase):
             wrapper,
         )
         self.assertIn("exec env -i", wrapper)
-        self.assertNotIn("CAREERTRELLIS_ENVIRONMENT=staging", wrapper)
+        self.assertIn(
+            "readonly runtime_data_root=/var/lib/careertrellis/staging",
+            wrapper,
+        )
+        self.assertIn('"${runtime_data_root}/uploads"', wrapper)
+        self.assertIn('"${runtime_data_root}/output"', wrapper)
+        self.assertIn("careertrellis:careertrellis 700", wrapper)
+        self.assertLess(
+            wrapper.index("The staging runtime directory boundary is invalid."),
+            wrapper.index("exec env -i"),
+        )
+        for fixed_runtime in (
+            "CAREERTRELLIS_ENVIRONMENT=staging",
+            'CAREERTRELLIS_DATA_DIR="${runtime_data_root}"',
+            "CAREERTRELLIS_DATA_STORE=postgres",
+            "CAREERTRELLIS_OBJECT_STORE=r2_encrypted",
+        ):
+            self.assertIn(fixed_runtime, wrapper)
         self.assertIn(
             "STAGING_ENVIRONMENT_FILE, (OWNER_ID_KEY, RUNTIME_ENVIRONMENT_KEY)",
             runner,
