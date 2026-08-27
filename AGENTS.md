@@ -26,6 +26,13 @@ Run these commands from the repository root:
 - Do not modify or commit local/private/generated content: `data/`, database files, `.env*`, `baseresume.*`, `resume.*`, PDFs, `backend/venv/`, caches, IDE settings, or OS metadata. Follow `.gitignore`, and never print or expose API keys or resume/profile data.
 - Do not regenerate brand assets or icons unless the task explicitly requests it.
 
+## Repository identity and PR destination
+
+- This workspace has two GitHub remotes with similar names. `web` is the hosted CareerTrellis repository `job-applier-web`; `origin` is the older standalone repository `job-applier`. Hosted releases, staging operations, multi-user work, and their pull requests must use `web`, never `origin`.
+- Before creating a branch, committing release work, or pushing, inspect the remote bindings and current base. For hosted work, require the branch to descend from `web/main`, push explicitly with `git push --set-upstream web <branch>`, and verify the resulting upstream is `web/<branch>`. Never infer the destination from the conventional name `origin`, an existing upstream, or a browser tab.
+- Create hosted pull requests only in `job-applier-web`, with base `main` and the exact pushed `web` branch as compare. Before submission, verify the GitHub repository breadcrumb, expected commit count, expected changed-file count, and branch names. An unexpectedly large comparison or a `job-applier` breadcrumb is a hard stop: do not submit the PR or allow checks to run.
+- If a branch is mistakenly pushed to `origin`, do not create a PR there. First verify that the exact commit remains locally and has been pushed to `web`, confirm no legacy-repository PR was created, then remove only the exact mistaken remote branch under separately confirmed cleanup authority. Do not delete or rewrite any other branch.
+
 ## Interactive secret prompts
 
 - Treat a Codex-managed exec PTY and the operator's visible secure terminal as different terminals. A background session ID, queued/open-panel result, or tool-side prompt readback is not evidence that the operator can see or type into that prompt.
