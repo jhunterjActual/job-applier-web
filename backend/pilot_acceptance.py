@@ -1740,14 +1740,14 @@ def _interactive_identity() -> str:
         terminal_attributes = termios.tcgetattr(terminal_fd)
         hidden = terminal_attributes.copy()
         hidden[3] &= ~termios.ECHO
-        print("Immutable WorkOS user ID: ", end="", file=sys.stderr, flush=True)
         termios.tcsetattr(terminal_fd, termios.TCSAFLUSH, hidden)
+        print("Immutable WorkOS user ID: ", end="", file=sys.stderr, flush=True)
         value = sys.stdin.readline(257)
     except (EOFError, KeyboardInterrupt, OSError, ValueError) as exc:
         raise PilotAcceptanceError(FIXED_ERROR) from exc
     finally:
         if terminal_attributes is not None:
-            termios.tcsetattr(terminal_fd, termios.TCSADRAIN, terminal_attributes)
+            termios.tcsetattr(terminal_fd, termios.TCSAFLUSH, terminal_attributes)
             print(file=sys.stderr, flush=True)
     if not value.endswith("\n") or len(value) > 256:
         raise PilotAcceptanceError(FIXED_ERROR)

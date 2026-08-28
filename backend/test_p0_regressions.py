@@ -6009,6 +6009,89 @@ class PilotUserOperatorTests(unittest.TestCase):
     OWNER_ID = "user_01STAGINGOWNER"
     PILOT_ID = "user_01PILOTBOUNDARY"
 
+    def test_operator_hides_terminal_before_prompt_accepts_prompt_timed_input(self) -> None:
+        events: list[str] = []
+
+        class PromptTimedInput:
+            pending = ""
+
+            @staticmethod
+            def isatty() -> bool:
+                return True
+
+            @staticmethod
+            def fileno() -> int:
+                return 41
+
+            def readline(self, limit: int) -> str:
+                self.assert_limit(limit)
+                events.append("read")
+                line, separator, remainder = self.pending.partition("\n")
+                self.pending = remainder
+                return f"{line}{separator}"
+
+            @staticmethod
+            def assert_limit(limit: int) -> None:
+                if limit != 257:
+                    raise AssertionError("unexpected identity input bound")
+
+        class PromptStream:
+            @staticmethod
+            def isatty() -> bool:
+                return True
+
+            def write(self, value: str) -> int:
+                if "Immutable WorkOS user ID:" in value:
+                    events.append("prompt")
+                    terminal_input.pending = (
+                        f"{self_identity}\nsynthetic-surplus-input\n"
+                    )
+                return len(value)
+
+            @staticmethod
+            def flush() -> None:
+                return None
+
+        self_identity = self.PILOT_ID
+        terminal_input = PromptTimedInput()
+        terminal_error = PromptStream()
+        echo_flag = 8
+        flush_action = 1
+        original_attributes = [0, 0, 0, echo_flag, 0, 0, []]
+
+        def terminal_attributes(_file_descriptor: int):
+            return original_attributes
+
+        def set_terminal_attributes(
+            _file_descriptor: int, action: int, attributes
+        ) -> None:
+            self.assertEqual(flush_action, action)
+            if attributes[3] & echo_flag:
+                events.append("restore")
+                terminal_input.pending = ""
+            else:
+                events.append("hide")
+                self.assertEqual(0, attributes[3] & echo_flag)
+                terminal_input.pending = ""
+
+        fake_termios = SimpleNamespace(
+            ECHO=echo_flag,
+            TCSAFLUSH=flush_action,
+            tcgetattr=terminal_attributes,
+            tcsetattr=set_terminal_attributes,
+        )
+        with (
+            patch.object(sys, "stdin", terminal_input),
+            patch.object(sys, "stderr", terminal_error),
+            patch.dict(sys.modules, {"termios": fake_termios}),
+        ):
+            value = pilot_users_module._interactive_identity()
+
+        self.assertEqual(self.PILOT_ID, value)
+        self.assertEqual(["hide", "prompt", "read", "restore"], events)
+        self.assertEqual("", terminal_input.pending)
+        self.assertEqual(echo_flag, original_attributes[3] & echo_flag)
+
     class FakeConnection:
         def __init__(self, rows):
             self.rows = rows
