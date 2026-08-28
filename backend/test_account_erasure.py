@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import io
 import json
 import os
 from pathlib import Path
@@ -21,12 +22,14 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 import app as app_module
+import account_erasure_diagnostics as diagnostics_module
 import account_erasure_execution as execution_module
 import account_erasure_repository as repository_module
 import account_erasure_worker as worker_module
 import config as config_module
 import data_store as data_store_module
 import local_users as local_users_module
+import object_store as object_store_module
 import provider_secrets as provider_secrets_module
 import web_auth as web_auth_module
 
@@ -670,6 +673,127 @@ class AccountErasureExecutionTests(unittest.TestCase):
         self.assertIs(backend, selected)
         r2_configuration.assert_called_once_with()
         r2_backend.assert_called_once_with(configuration)
+
+
+class AccountErasureDiagnosticTests(unittest.TestCase):
+    class SyntheticProviderError(RuntimeError):
+        def __init__(self, status: int, private_detail: str) -> None:
+            super().__init__(private_detail)
+            self.response = {
+                "ResponseMetadata": {"HTTPStatusCode": status},
+                "private": private_detail,
+            }
+
+    @staticmethod
+    def wrapped(error: BaseException) -> BaseException:
+        try:
+            raise error
+        except BaseException as cause:
+            try:
+                raise object_store_module.ObjectStoreBackendError(
+                    "fixed backend failure"
+                ) from cause
+            except BaseException as wrapped:
+                return wrapped
+
+    def test_ready_backend_uses_only_the_readiness_operation(self) -> None:
+        backend = Mock()
+        with patch.object(
+            diagnostics_module,
+            "runtime_account_erasure_delete_backend",
+            return_value=backend,
+        ):
+            result = diagnostics_module.run_diagnostic()
+
+        self.assertEqual(diagnostics_module.DiagnosticResult("ok", "ready"), result)
+        backend.check_ready.assert_called_once_with()
+        for operation in ("put", "get", "delete", "head", "list_object_keys"):
+            getattr(backend, operation).assert_not_called()
+
+    def test_failures_map_to_fixed_privacy_safe_classifications(self) -> None:
+        private_detail = "private-provider-detail@example.invalid"
+        network_error = type("EndpointConnectionError", (RuntimeError,), {})(
+            private_detail
+        )
+        failures = (
+            (
+                object_store_module.ObjectStoreConfigurationError(private_detail),
+                ("blocked", "configuration_invalid"),
+            ),
+            (
+                repository_module.AccountErasureUnavailable(),
+                ("blocked", "configuration_invalid"),
+            ),
+            (
+                self.wrapped(self.SyntheticProviderError(401, private_detail)),
+                ("blocked", "authentication_rejected"),
+            ),
+            (
+                self.wrapped(self.SyntheticProviderError(403, private_detail)),
+                ("indeterminate", "authorization_ambiguous"),
+            ),
+            (
+                self.wrapped(self.SyntheticProviderError(404, private_detail)),
+                ("blocked", "target_unavailable"),
+            ),
+            (
+                self.wrapped(self.SyntheticProviderError(429, private_detail)),
+                ("blocked", "provider_unavailable"),
+            ),
+            (
+                self.wrapped(self.SyntheticProviderError(503, private_detail)),
+                ("blocked", "provider_unavailable"),
+            ),
+            (
+                self.wrapped(network_error),
+                ("blocked", "network_unavailable"),
+            ),
+            (RuntimeError(private_detail), ("blocked", "unexpected_failure")),
+        )
+        for failure, expected in failures:
+            with self.subTest(expected=expected):
+                result = diagnostics_module.classify_failure(failure)
+                self.assertEqual(expected, (result.result, result.classification))
+                self.assertNotIn(private_detail, diagnostics_module._safe_report(result))
+
+    def test_diagnostic_main_never_echoes_private_exception_or_arguments(self) -> None:
+        private_detail = "private-provider-detail@example.invalid"
+        backend = Mock()
+        backend.check_ready.side_effect = self.wrapped(
+            self.SyntheticProviderError(403, private_detail)
+        )
+        output = io.StringIO()
+        with (
+            patch.object(
+                diagnostics_module,
+                "runtime_account_erasure_delete_backend",
+                return_value=backend,
+            ),
+            patch("sys.stdout", output),
+        ):
+            self.assertEqual(2, diagnostics_module.main([]))
+        rendered = output.getvalue()
+        self.assertIn("classification=authorization_ambiguous", rendered)
+        self.assertIn("delete_attempted=no", rendered)
+        self.assertNotIn(private_detail, rendered)
+
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            self.assertEqual(1, diagnostics_module.main([private_detail]))
+        self.assertNotIn(private_detail, output.getvalue())
+
+    def test_cyclic_exception_chain_is_bounded(self) -> None:
+        first = RuntimeError("first-private-detail")
+        second = RuntimeError("second-private-detail")
+        first.__cause__ = second
+        second.__cause__ = first
+
+        result = diagnostics_module.classify_failure(first)
+
+        self.assertEqual("unexpected_failure", result.classification)
+        report = diagnostics_module._safe_report(result)
+        self.assertNotIn("first-private-detail", report)
+        self.assertNotIn("second-private-detail", report)
 
 
 class AccountErasureWorkerBoundaryTests(unittest.TestCase):

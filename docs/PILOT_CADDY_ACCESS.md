@@ -96,6 +96,20 @@ authorization boundary remain mandatory.
    Cookie, Set-Cookie, Referer, or Location fields. A representative non-auth
    record must retain only hashed connection-IP and User-Agent fingerprints.
 
+The exact active `.51` release includes a root-only, read-only check for item
+5. It accepts no arguments, reads only the durable Caddy configuration and
+privacy-filtered access log, and emits bounded counts and fixed result codes:
+
+```bash
+sudo /opt/careertrellis/staging/current/deploy/scripts/check-caddy-access-log-privacy.sh
+```
+
+The check fails closed on malformed records, any `/auth` record, a raw client
+fingerprint, a forbidden request or response field, or a sensitive query/value
+shape. It never prints a record, path, query, header, matched value, or source
+location. It requires a representative non-auth record; an empty log is not
+acceptance evidence.
+
 To rotate the pilot password, create and store a new distinct password and run:
 
 ```bash

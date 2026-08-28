@@ -146,6 +146,24 @@ Never pass a database or R2 secret on a command line, print either environment
 file, source an untrusted credential bundle, reuse the web R2 credential, or
 grant the erasure worker the object keyring.
 
+The exact active `.51` release also provides a root-only, read-only diagnostic
+for the delete-only object boundary:
+
+```bash
+sudo /opt/careertrellis/staging/current/deploy/scripts/diagnose-account-erasure-object-store.sh
+```
+
+The wrapper accepts no arguments, validates the exact root-owned five-setting
+environment allowlist, clears inherited environment state, drops to the
+erasure-worker account, and invokes only the backend readiness operation. Its
+output is limited to fixed classifications and disclosure booleans. It never
+loads the database URL, web object credentials, provider secrets, or object
+keyring, and it never reads, lists, uploads, downloads, or deletes an object.
+A provider authorization rejection is reported as indeterminate: delete-only
+credentials may legitimately lack bucket-metadata permission, so this result
+does not prove an IP-filter or deletion failure. The diagnostic is not a
+deployment, worker-readiness, queue-health, or activation gate.
+
 ## Rollback and no-activation boundary
 
 Migration `20260814_0009` is additive; correct it with a reviewed forward

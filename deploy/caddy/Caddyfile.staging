@@ -48,6 +48,7 @@ staging-app.jhunterj.com {
 			request>headers>True-Client-Ip delete
 			request>headers>X-Forwarded-For delete
 			request>headers>X-Real-Ip delete
+			request>headers>Forwarded delete
 			request>headers>Authorization delete
 			request>headers>Proxy-Authorization delete
 			# Filter paths are case-sensitive after Go canonicalizes header names.

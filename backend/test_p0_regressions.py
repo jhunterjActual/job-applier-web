@@ -23,6 +23,7 @@ import application_read_repository as application_read_repository_module
 import application_workspace_repository as application_workspace_repository_module
 import ai_providers as ai_providers_module
 import backup_restore as backup_restore_module
+import caddy_log_privacy as caddy_log_privacy_module
 import config as config_module
 import maps_providers as maps_providers_module
 import headquarters_cache_repository as headquarters_cache_repository_module
@@ -4167,6 +4168,7 @@ class DependencyLockTests(unittest.TestCase):
             "request>headers>True-Client-Ip delete",
             "request>headers>X-Forwarded-For delete",
             "request>headers>X-Real-Ip delete",
+            "request>headers>Forwarded delete",
             "request>headers>Authorization delete",
             "request>headers>Proxy-Authorization delete",
             "request>headers>X-Careertrellis-Proxy-Token delete",
@@ -4184,6 +4186,176 @@ class DependencyLockTests(unittest.TestCase):
         self.assertNotIn('Referrer-Policy "no-referrer"', caddy_source)
         self.assertIn('response.headers["Referrer-Policy"] = "no-referrer"', app_source)
         self.assertIn("--no-access-log", service_source)
+
+    @staticmethod
+    def _synthetic_caddy_record() -> dict[str, object]:
+        opaque_hash = "a" * 8
+        return {
+            "ts": 1,
+            "request": {
+                "method": "GET",
+                "uri": "/api/version?view=compact",
+                "remote_ip": opaque_hash,
+                "client_ip": opaque_hash,
+                "headers": {
+                    "User-Agent": [opaque_hash],
+                    "Accept": ["application/json"],
+                },
+            },
+            "status": 200,
+            "resp_headers": {"Content-Type": ["application/json"]},
+        }
+
+    def test_caddy_log_privacy_scanner_accepts_only_opaque_synthetic_evidence(self) -> None:
+        summary = caddy_log_privacy_module.scan_json_lines(
+            (json.dumps(self._synthetic_caddy_record()),)
+        )
+
+        self.assertEqual(1, summary.records)
+        self.assertEqual(1, summary.query_records)
+        self.assertEqual(1, summary.representative_records)
+
+    def test_caddy_log_privacy_scanner_rejects_sensitive_shapes_without_echo(self) -> None:
+        private_sentinel = "private-sentinel@example.invalid"
+        mutations = {
+            "auth_root": lambda record: record["request"].update(uri="/auth"),
+            "auth_descendant": lambda record: record["request"].update(
+                uri="/auth/callback?state=opaque"
+            ),
+            "raw_ip": lambda record: record["request"].update(remote_ip="192.0.2.1"),
+            "raw_user_agent": lambda record: record["request"]["headers"].update(
+                {"User-Agent": ["Synthetic Browser"]}
+            ),
+            "request_header": lambda record: record["request"]["headers"].update(
+                {"Forwarded": ["for=192.0.2.1"]}
+            ),
+            "unexpected_request_header": lambda record: record["request"]["headers"].update(
+                {"X-Client-IP": ["192.0.2.1"]}
+            ),
+            "response_header": lambda record: record["resp_headers"].update(
+                {"Set-Cookie": ["private"]}
+            ),
+            "sensitive_query": lambda record: record["request"].update(
+                uri="/api/version?%63ode=private"
+            ),
+            "sensitive_value": lambda record: record.update(detail=private_sentinel),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                record = self._synthetic_caddy_record()
+                mutate(record)
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError) as caught:
+                    caddy_log_privacy_module.scan_json_lines((json.dumps(record),))
+                self.assertEqual(caddy_log_privacy_module.FIXED_ERROR, str(caught.exception))
+                self.assertNotIn(private_sentinel, str(caught.exception))
+
+        for header in caddy_log_privacy_module.FORBIDDEN_REQUEST_HEADERS:
+            with self.subTest(request_header=header):
+                record = self._synthetic_caddy_record()
+                record["request"]["headers"][header.swapcase()] = ["redacted"]
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.scan_json_lines((json.dumps(record),))
+        for header in caddy_log_privacy_module.FORBIDDEN_RESPONSE_HEADERS:
+            with self.subTest(response_header=header):
+                record = self._synthetic_caddy_record()
+                record["resp_headers"][header.swapcase()] = ["redacted"]
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.scan_json_lines((json.dumps(record),))
+
+    def test_caddy_log_privacy_scanner_fails_closed_on_malformed_input(self) -> None:
+        for source in ("not-json", "[]", json.dumps({"request": []}), ""):
+            with self.subTest(source_shape=len(source)):
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.scan_json_lines((source,))
+
+    def test_caddy_log_privacy_cli_never_echoes_arguments_or_invalid_utf8(self) -> None:
+        private_sentinel = "private-source-path@example.invalid"
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            self.assertEqual(1, caddy_log_privacy_module.main([private_sentinel]))
+        self.assertNotIn(private_sentinel, output.getvalue())
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config"
+            log_path = Path(temp_dir) / "log"
+            config_path.write_text(
+                (self.project_dir() / "deploy" / "caddy" / "Caddyfile.staging").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            log_path.write_bytes(b"\xff\xfe\n")
+            output = io.StringIO()
+            with patch("sys.stdout", output):
+                self.assertEqual(
+                    1,
+                    caddy_log_privacy_module.main(
+                        ["--config", str(config_path), "--log", str(log_path)]
+                    ),
+                )
+            rendered = output.getvalue()
+            self.assertIn("result=blocked", rendered)
+            self.assertNotIn(str(config_path), rendered)
+            self.assertNotIn(str(log_path), rendered)
+
+    def test_caddy_log_privacy_static_validator_rejects_missing_or_duplicate_filters(self) -> None:
+        caddy_source = (
+            self.project_dir() / "deploy" / "caddy" / "Caddyfile.staging"
+        ).read_text(encoding="utf-8")
+        caddy_log_privacy_module.validate_caddy_config(caddy_source)
+        for directive in caddy_log_privacy_module.REQUIRED_CONFIG_DIRECTIVES:
+            with self.subTest(directive=directive):
+                without_directive = caddy_source.replace(directive, "", 1)
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.validate_caddy_config(without_directive)
+                duplicated = f"{caddy_source}\n{directive}\n"
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.validate_caddy_config(duplicated)
+
+        commented = caddy_source.replace(
+            "request>headers>Forwarded delete",
+            "# request>headers>Forwarded delete",
+            1,
+        )
+        with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+            caddy_log_privacy_module.validate_caddy_config(commented)
+        misplaced = caddy_source.replace(
+            "\t\t\trequest>headers>Forwarded delete\n",
+            "",
+            1,
+        ) + "\nrequest>headers>Forwarded delete\n"
+        with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+            caddy_log_privacy_module.validate_caddy_config(misplaced)
+        misplaced_log_skip = caddy_source.replace("\tlog_skip /auth*\n", "", 1)
+        misplaced_log_skip += "\nlog_skip /auth*\n"
+        with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+            caddy_log_privacy_module.validate_caddy_config(misplaced_log_skip)
+
+    def test_operator_diagnostics_are_release_bound_read_only_and_privacy_safe(self) -> None:
+        scripts = self.project_dir() / "deploy" / "scripts"
+        caddy_helper = (scripts / "check-caddy-access-log-privacy.sh").read_text(
+            encoding="utf-8"
+        )
+        erasure_helper = (
+            scripts / "diagnose-account-erasure-object-store.sh"
+        ).read_text(encoding="utf-8")
+        deploy = (scripts / "deploy-release.sh").read_text(encoding="utf-8")
+        for name, source in (
+            ("check-caddy-access-log-privacy.sh", caddy_helper),
+            ("diagnose-account-erasure-object-store.sh", erasure_helper),
+        ):
+            with self.subTest(name=name):
+                self.assertIn("${EUID} -ne 0", source)
+                self.assertIn("/opt/careertrellis/staging/releases/[0-9a-f]{40}", source)
+                self.assertIn("source_disclosed=no" if "caddy" in name else "secret_disclosed=no", source)
+                self.assertNotIn("curl ", source)
+                self.assertNotIn("delete_object", source)
+                self.assertIn(f'"${{temporary_release}}/deploy/scripts/{name}"', deploy)
+        self.assertNotIn("source \"${environment_file}\"", erasure_helper)
+        self.assertIn("/usr/bin/env -i", erasure_helper)
+        self.assertIn("careertrellis-erasure-worker", erasure_helper)
+        self.assertNotIn("CAREERTRELLIS_DATABASE_URL", erasure_helper)
+        self.assertNotIn("CAREERTRELLIS_OBJECT_KEYRING", erasure_helper)
 
 
 class ProfileSecretPresenceTests(unittest.TestCase):
