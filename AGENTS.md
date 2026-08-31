@@ -28,6 +28,7 @@ Run these commands from the repository root:
 
 ## Repository identity and PR destination
 
+- CareerTrellis, this repository's hosted project, is owned by `J. Hunter Johnson LLC`. Use that entity in future ownership, policy, legal, and provider-account work unless the operator says otherwise.
 - This workspace has two GitHub remotes with similar names. `web` is the hosted CareerTrellis repository `job-applier-web`; `origin` is the older standalone repository `job-applier`. Hosted releases, staging operations, multi-user work, and their pull requests must use `web`, never `origin`.
 - Before creating a branch, committing release work, or pushing, inspect the remote bindings and current base. For hosted work, require the branch to descend from `web/main`, push explicitly with `git push --set-upstream web <branch>`, and verify the resulting upstream is `web/<branch>`. Never infer the destination from the conventional name `origin`, an existing upstream, or a browser tab.
 - Create hosted pull requests only in `job-applier-web`, with base `main` and the exact pushed `web` branch as compare. Before submission, verify the GitHub repository breadcrumb, expected commit count, expected changed-file count, and branch names. An unexpectedly large comparison or a `job-applier` breadcrumb is a hard stop: do not submit the PR or allow checks to run.
@@ -49,6 +50,102 @@ Run these commands from the repository root:
 - After the failure cause is isolated, batch all known related operational corrections into one reviewed PR and one deployment. Do not create one PR or deployment per probed directive; split only an independently reviewable security boundary or urgent containment.
 - Conserve GitHub Actions: run the applicable local tests and reviews first, produce one locally verified commit, push once, and open one PR. Inspect the specific failing log before changing code; never speculatively rerun unchanged checks. Push a follow-up only for a diagnosed correction.
 - For ops-only unit or helper changes, satisfy the completion gate with host-native operational verification of the reviewed artifact; do not start or release the application unless its runtime bytes changed.
+
+## Shared staging operational inventory
+
+This section gives a new task enough non-secret coordinates to find the staging systems. An inventory entry identifies a target; it does not authorize a write, restart, deployment, provider change, or destructive operation. Treat public addresses and all live state as mutable, and perform a read-only, secret-safe preflight before consequential work.
+
+### Hosts, endpoints, and network roles
+
+| Role | Stable identity | Last-known operator target | Private role |
+|---|---|---|---|
+| Staging web/application host | `careertrellis-staging-web-1` | `hunter@129.212.153.245` | DigitalOcean VPC `10.108.0.2`; WireGuard `10.70.0.1` |
+| Staging database/backup host | `job-applier-db-staging-01` | `hunter@157.245.113.244` | DigitalOcean VPC `10.108.0.3`; WireGuard `10.70.0.2` |
+
+- The public SSH addresses above are last-known observations, not repository contracts. Verify the destination name, role, and fingerprint against the trusted provider inventory before use. Connect as `hunter`, never as root, with `BatchMode=yes`, `ConnectTimeout=15`, `ForwardAgent=no`, and `ClearAllForwardings=yes`; use `sudo -n` only for bounded privileged work.
+- The public application origin is `https://staging-app.jhunterj.com/`. The WorkOS callback is `https://staging-app.jhunterj.com/auth/callback`, and the configured logout return is `https://staging-app.jhunterj.com/`. The last-observed provider-managed AuthKit host was `rapid-bud-68-staging.authkit.app`; rediscover it from the actual redirect rather than treating it as configuration authority.
+- Cloudflare fronts the public origin. Caddy is the only public application ingress on TCP 80/443 and proxies to Uvicorn on `127.0.0.1:8001`. Never expose port 8001 publicly.
+- WireGuard uses UDP 51820 over the VPC. Application database traffic is web `10.70.0.1` to database `10.70.0.2:5432`; PostgreSQL must not be public. Port 55432 is the standard disposable restore-test port, and 55433 has been used by reviewed post-activation restore wrappers. Both are temporary resources, not permanent listeners.
+- Provider source-IP filters must use the current outbound public IPv4 `/32` of the host that actually calls the provider. The web host's last verified R2 egress observation was `134.209.165.107/32`, but query it again immediately before configuring or testing a restriction. Do not substitute an SSH destination, operator ingress address, VPC address, or WireGuard address.
+
+### Release, database, and runtime contracts
+
+- The default source checkout is `/srv/careertrellis/job-applier-web`; the release root is `/opt/careertrellis/staging`; immutable releases are `/opt/careertrellis/staging/releases/<exact-40-character-commit>`. The `current` and `previous` symlinks are mutable and must be resolved live.
+- Local `.worktrees/*` directories may contain reviewed release or operational material that is newer than the main checkout, but no local worktree is deployment authority. Identify the intended branch/commit and compare it with the live exact release before using scripts or documentation from it.
+- The last accepted activated `.31` generation was commit `e7ae1d6c0e8b5bf39e5babe3ef871f1414f5c3bd`, build `20260813.31`, with Alembic head `20260814_0009`. This is a historical binding, not proof of the live release. Bind operations to the full live commit, `/api/version`, database revision, authority state, and matching receipts; a build number alone is insufficient.
+- The accepted database contract is PostgreSQL 18, cluster `main`, database and pgBackRest stanza `careertrellis`, and schema `careertrellis`. Verify the live major/minor version, cluster, listener, HBA, ownership, RLS, and Alembic revision before database work.
+- Database roles are `careertrellis_schema_owner` (NOLOGIN), plus restricted login roles `careertrellis_migration`, `careertrellis_runtime`, `careertrellis_worker`, and `careertrellis_erasure_worker`. Do not confuse database roles with application user roles.
+- Runtime data roots are `/var/lib/careertrellis/staging`, `/var/lib/careertrellis/worker`, `/var/lib/careertrellis/account-erasure`, and `/var/lib/careertrellis/generated-object-recovery`. The PostgreSQL production default is `/var/lib/postgresql/18/main`; disposable restore roots are `/var/lib/postgresql/careertrellis-restore-tests` and `/var/lib/postgresql/careertrellis-onedrive-restore-tests`.
+- The durable Caddy configuration is `/etc/caddy/Caddyfile`, with root-only environment at `/etc/caddy/careertrellis-staging.env`. Older release material referred to `/etc/caddy/Caddyfile.careertrellis-staging`; inspect the live unit/drop-in and do not restore that older path by assumption.
+
+### Units and installed helpers
+
+On the web host, inventory these units:
+
+- `caddy.service`
+- `careertrellis-web.service`
+- `careertrellis-worker.service`
+- `careertrellis-erasure-worker.service`
+- `wg-quick@wg0.service`
+
+On the database host, inventory these units:
+
+- `postgresql.service` and the concrete cluster unit, last known as `postgresql@18-main.service`
+- `wg-quick@wg0.service`
+- `careertrellis-pgbackrest-full.service` and `.timer`
+- `careertrellis-pgbackrest-differential.service` and `.timer`
+- `careertrellis-pgbackrest-onedrive.service` and `.timer`
+
+The checked-in backup schedules are Sunday full at 03:15, Monday-Saturday differential at 03:15, and daily OneDrive mirror at 04:30, each with its configured jitter. Active/enabled state, PID, restart count, fragment/drop-ins, heartbeat age, last result, and next trigger are live facts and must be queried.
+
+The search and erasure heartbeat files are `/var/lib/careertrellis/worker/worker-heartbeat.json` and `/var/lib/careertrellis/account-erasure/account-erasure-worker-heartbeat.json`. Treat them as mutable liveness evidence, validate their schema/owner/age, and do not use a heartbeat alone as proof that queues or provider calls are healthy.
+
+Installed reviewed helpers live under `/usr/local/sbin/`, including `careertrellis-deploy`, `careertrellis-rollback`, `careertrellis-authority`, `careertrellis-finalize-cutover`, `careertrellis-mirror-generated-objects`, `careertrellis-test-generated-object-restore`, `careertrellis-mirror-pgbackrest-onedrive`, and `careertrellis-test-pgbackrest-restore`. Not every historical one-off wrapper is an installed product helper. Verify the chosen helper path and hash against the exact release or reviewed evidence before privileged use.
+
+### Authority, locks, and evidence
+
+- The installed authority helper is `/usr/local/sbin/careertrellis-authority`; obtain state with `sudo -n /usr/local/sbin/careertrellis-authority status`. Authority files are `/etc/careertrellis/authority/data-authority`, `pending-cutover`, and `post-import-recovery`. Known authority values are `sqlite-pre-cutover` and `postgres-r2-authoritative`; the hosted capability is `postgres-r2-authoritative-v1`.
+- The accepted post-cutover observation was authority `postgres-r2-authoritative`, pending phase `activated`, and no activation lease. Rediscover those facts. Never infer authority from service state, environment files, or the `current` symlink, and never rewrite historical recovery evidence to make a gate pass.
+- Canonical coordination paths include `/run/lock/careertrellis-maintenance.lock`, `/run/lock/careertrellis-postgres-migration.lock`, `/run/lock/careertrellis-sqlite-import.lock`, `/run/lock/careertrellis-provider-secret-rotation.lock`, `/run/lock/careertrellis-generated-object-recovery.lock`, and `/run/careertrellis-hosted-activation.lease`. One-off post-activation wrappers have used additional exact operation locks. Never remove a lock or lease merely because it exists; establish its owner PID, boot identity, phase, and receipt first.
+- The protected receipt parent is `/var/backups/careertrellis`, with operational roots `final-cutover-receipts`, `paired-restore-receipts`, `post-activation-db-backup`, `post-activation-db-mirror`, `post-activation-db-restore`, `post-activation-db-restore-cleanup`, `post-activation-object-inventory`, `worker-activation`, and `worker-activation-db-preflight`. Preserve these evidence roots unless the user authorizes an exact deletion.
+- Timestamped attempts, backup labels, object manifests, and receipt SHA-256 values are evidence bindings, not rolling defaults. Discover candidate receipts under the correct fixed root, then validate ownership, mode, schema, operation, release, label, result, and digest before relying on one.
+
+### Provider and storage coordinates
+
+- The pgBackRest R2 repository contract uses bucket `job-applier-staging-db-backups`, prefix `job-applier/staging/postgresql`, and stanza `careertrellis`. Its root-only configuration is `/etc/pgbackrest/pgbackrest.conf`; the root-only rclone configuration is `/etc/careertrellis/rclone.conf`.
+- Persistent rclone remote names are `r2:` and `onedrive:`. The PostgreSQL mirror destination is `onedrive:job-applier-staging/postgresql` and is append-only under the reviewed helper. Do not mirror, restore, check, expire, or traverse it concurrently with another repository operation.
+- Generated-object recovery uses the OneDrive remote name `generated-object-onedrive` and root `careertrellis/generated-objects`, with immutable generations shaped as `generated-object-onedrive:careertrellis/generated-objects/<YYYYMMDD-HHMMSSF>` containing `objects/` and `snapshot-manifest.json`. Internal helper remote names such as `generatedobjectsource:` and `generatedobjectrestore:` are ephemeral, not persistent provider identities.
+- The authoritative live generated-object R2 bucket, provider endpoints, credential identities, and object keys must be read through the correct root-only environment/helper without printing them. Do not infer a deployed bucket from a test fixture.
+- Google Drive replacement of the OneDrive mirrors is backlog work only. No Google Drive remote, destination, credential identity, timer, helper, or receipt is established. Do not invent `gdrive:` or remove OneDrive data until a separately authorized migration is verified and rollback retention is satisfied.
+- Sanitized receipts and their SHA-256 manifest have also been read back from an operator-controlled encrypted evidence store. That independent store is not the live R2 bucket, the disposable R2 bucket, or the OneDrive recovery mirror. Its BitLocker/device/provider path and access method are intentionally not recorded here; ask the operator only when a gate actually requires access to that separately retained copy.
+- Cloudflare DNS/proxy/TLS state, R2 token scopes and IP filters, WorkOS staging environment/capabilities, OneDrive OAuth identity, and DigitalOcean firewall/inventory state are external control-plane facts. Inspect them through their trusted control plane when a gate depends on them; repository examples are not proof of live state.
+
+### Protected configuration locations
+
+Useful root-only configuration paths on the web host are:
+
+- `/etc/careertrellis/staging.env`
+- `/etc/careertrellis/postgres-runtime.env`
+- `/etc/careertrellis/postgres-worker.env`
+- `/etc/careertrellis/postgres-migration.env`
+- `/etc/careertrellis/postgres-erasure-worker.env`
+- `/etc/careertrellis/provider-secrets.env`
+- `/etc/careertrellis/object-storage.env`
+- `/etc/careertrellis/search-worker.env`
+- `/etc/careertrellis/account-erasure-worker.env`
+- `/etc/careertrellis/account-erasure-object-storage.env`
+- `/etc/careertrellis/generated-object-recovery.env`
+- `/var/lib/careertrellis/generated-object-recovery/rclone.conf`
+
+Application, worker, and Caddy runtime logs are available through their systemd journals. The privacy-filtered Caddy access log is `/var/log/caddy/careertrellis-staging-access.log`; all `/auth` and `/auth/*` access records must remain skipped, IP and User-Agent fields pseudonymized, and request Referer and response Location omitted.
+
+Paths may be inventoried, but never place or print their values, hashes that fingerprint rotating secrets, database URLs/passwords, WorkOS user IDs or emails, Cloudflare account/zone/token identifiers, R2 endpoints or access keys, OAuth tokens, cookie/session data, provider keyrings, pgBackRest passphrases, or SSH/WireGuard private keys in `AGENTS.md`, commands, logs, or receipts. Transient recovery keyrings and passphrase files must use the exact reviewed wrapper path, owner, mode, and cleanup contract; do not guess a path from a prior attempt.
+
+### Mandatory rediscovery before action
+
+Before a consequential staging operation, rediscover the public SSH target/fingerprint, outbound egress `/32`, current/previous release targets, `/api/version`, authority/pending/recovery/lease state, operation locks, unit state, PostgreSQL/Alembic/RLS state, pgBackRest health/latest label/WAL state, provider target and token restrictions, queue counts, disk/inode capacity, disposable ports/sockets, and the exact accepted receipt chain needed by that operation.
+
+If SSH disconnects during a one-shot operation, reconnect and identify the original PID, marker, lock, phase, and receipt. A disconnect is not a failure signal. Do not retry until terminal state is proven. When sending reviewed multiline shell from Windows, preserve LF bytes and avoid PowerShell interpolation or CRLF conversion.
 
 ## Subagent tasking for gate-clearing work
 
