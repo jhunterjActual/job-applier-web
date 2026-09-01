@@ -13,6 +13,10 @@ Authentication remains in front of WorkOS through initial pilot acceptance.
 The `.49` release makes acceptance provider-namespace inspection explicitly
 tenant-scoped under forced RLS and preserves an unrelated real provider secret
 when recovering a crash before the synthetic fixture insert.
+The `.50` release enables non-echoing terminal input before displaying either
+root-only WorkOS identity prompt, so prompt-timed paste is retained without an
+echo-enabled interval and surplus queued input is discarded before returning
+to the operator shell.
 
 ## Authentication invariants
 

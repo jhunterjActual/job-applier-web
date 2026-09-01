@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, Mock, patch
@@ -994,6 +995,86 @@ class VerificationHelperTests(unittest.TestCase):
 
 
 class MainBoundaryTests(unittest.TestCase):
+    def test_identity_prompt_hides_terminal_before_accepting_prompt_timed_input(self) -> None:
+        events: list[str] = []
+        identity = "user_01PILOTBOUNDARY"
+
+        class PromptTimedInput:
+            pending = ""
+
+            @staticmethod
+            def isatty() -> bool:
+                return True
+
+            @staticmethod
+            def fileno() -> int:
+                return 42
+
+            def readline(self, limit: int) -> str:
+                if limit != 257:
+                    raise AssertionError("unexpected identity input bound")
+                events.append("read")
+                line, separator, remainder = self.pending.partition("\n")
+                self.pending = remainder
+                return f"{line}{separator}"
+
+        class PromptStream:
+            @staticmethod
+            def isatty() -> bool:
+                return True
+
+            def write(self, value: str) -> int:
+                if "Immutable WorkOS user ID:" in value:
+                    events.append("prompt")
+                    terminal_input.pending = (
+                        f"{identity}\nsynthetic-surplus-input\n"
+                    )
+                return len(value)
+
+            @staticmethod
+            def flush() -> None:
+                return None
+
+        terminal_input = PromptTimedInput()
+        terminal_error = PromptStream()
+        echo_flag = 8
+        flush_action = 1
+        original_attributes = [0, 0, 0, echo_flag, 0, 0, []]
+
+        def set_terminal_attributes(
+            _file_descriptor: int, action: int, attributes
+        ) -> None:
+            self.assertEqual(flush_action, action)
+            if attributes[3] & echo_flag:
+                events.append("restore")
+                terminal_input.pending = ""
+            else:
+                events.append("hide")
+                self.assertEqual(0, attributes[3] & echo_flag)
+                terminal_input.pending = ""
+
+        fake_termios = type(
+            "FakeTermios",
+            (),
+            {
+                "ECHO": echo_flag,
+                "TCSAFLUSH": flush_action,
+                "tcgetattr": staticmethod(lambda _file_descriptor: original_attributes),
+                "tcsetattr": staticmethod(set_terminal_attributes),
+            },
+        )
+        with (
+            patch.object(sys, "stdin", terminal_input),
+            patch.object(sys, "stderr", terminal_error),
+            patch.dict(sys.modules, {"termios": fake_termios}),
+        ):
+            value = acceptance._interactive_identity()
+
+        self.assertEqual(identity, value)
+        self.assertEqual(["hide", "prompt", "read", "restore"], events)
+        self.assertEqual("", terminal_input.pending)
+        self.assertEqual(echo_flag, original_attributes[3] & echo_flag)
+
     def test_main_requires_root_tty_and_one_fixed_operation(self) -> None:
         for arguments in ([], ["unknown"], ["verify-active", "extra"]):
             with self.subTest(arguments=arguments), patch.object(acceptance, "_effective_uid", return_value=0), patch(
