@@ -17,6 +17,10 @@ The `.50` release enables non-echoing terminal input before displaying either
 root-only WorkOS identity prompt, so prompt-timed paste is retained without an
 echo-enabled interval and surplus queued input is discarded before returning
 to the operator shell.
+The `.51` release incorporates privacy-safe, read-only diagnostics for Caddy
+access-log filtering and the delete-only erasure object-storage boundary. It
+also removes the standardized client-supplied `Forwarded` header from Caddy
+records. Neither diagnostic is a deployment, worker-health, or deletion gate.
 
 ## Authentication invariants
 

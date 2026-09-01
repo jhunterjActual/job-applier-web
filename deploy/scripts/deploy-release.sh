@@ -165,7 +165,9 @@ if [[ ! -d ${release_dir} ]]; then
     chmod 0755 \
         "${temporary_release}/deploy/scripts/maintenance-lock.sh" \
         "${temporary_release}/deploy/scripts/apply-postgres-runtime-grants.sh" \
+        "${temporary_release}/deploy/scripts/check-caddy-access-log-privacy.sh" \
         "${temporary_release}/deploy/scripts/deploy-release.sh" \
+        "${temporary_release}/deploy/scripts/diagnose-account-erasure-object-store.sh" \
         "${temporary_release}/deploy/scripts/finalize-postgres-r2-cutover.sh" \
         "${temporary_release}/deploy/scripts/hosted-authority.sh" \
         "${temporary_release}/deploy/scripts/bootstrap-erasure-worker-role.sh" \
@@ -179,6 +181,8 @@ if [[ ! -d ${release_dir} ]]; then
         "${temporary_release}/deploy/scripts/reconcile-sqlite-postgres-import.sh" \
         "${temporary_release}/deploy/scripts/test-generated-object-restore.sh"
     bash -n \
+        "${temporary_release}/deploy/scripts/check-caddy-access-log-privacy.sh" \
+        "${temporary_release}/deploy/scripts/diagnose-account-erasure-object-store.sh" \
         "${temporary_release}/deploy/scripts/manage-generated-object-backup-health.sh" \
         "${temporary_release}/deploy/scripts/mirror-generated-objects-onedrive.sh" \
         "${temporary_release}/deploy/scripts/test-generated-object-restore.sh"
