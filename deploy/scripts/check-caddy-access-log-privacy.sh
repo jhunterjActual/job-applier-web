@@ -40,7 +40,7 @@ fi
 
 config_path=/etc/caddy/Caddyfile
 release_config=${release_dir}/deploy/caddy/Caddyfile.staging
-log_prefix=/var/log/caddy/careertrellis-staging-access-v2
+log_prefix=/var/log/caddy/careertrellis-staging-access-v3
 log_path=${log_prefix}.log
 if [[ ! -f ${config_path} || -L ${config_path} || \
       $(/usr/bin/stat -c '%U:%G %a' "${config_path}" 2>/dev/null) != 'root:root 644' || \

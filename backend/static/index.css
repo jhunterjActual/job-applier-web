@@ -855,6 +855,49 @@ select:focus {
     margin-top: 7px;
 }
 
+.profile-form-divider {
+    border: 0;
+    border-top: 1px solid var(--border-color);
+    margin: 28px 0;
+}
+
+.provider-secrets-heading {
+    gap: 6px;
+}
+
+.provider-secrets-heading h3 {
+    color: var(--text-primary);
+    font-size: 1.05rem;
+    margin: 0;
+}
+
+.provider-secrets-heading p,
+.provider-secret-save-status {
+    margin: 0;
+}
+
+.credential-management-link {
+    color: var(--color-primary);
+    font-size: 12.5px;
+    font-weight: 600;
+}
+
+.credential-management-link:hover {
+    color: var(--text-primary);
+}
+
+.provider-secret-actions {
+    align-items: center;
+}
+
+.provider-secret-save-status.success {
+    color: var(--color-green);
+}
+
+.provider-secret-save-status.error {
+    color: var(--color-red);
+}
+
 .provider-test-status {
     margin: -2px 0 0;
 }

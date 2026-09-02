@@ -19,7 +19,7 @@
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/index.css?v=20260812-1">
+    <link rel="stylesheet" href="/static/index.css?v=20260902-1">
 </head>
 <body>
     <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -208,10 +208,10 @@
                             <h2 data-i18n="profile.heading">Candidate Information</h2>
                         </div>
                         <div class="card-body">
-                            <form id="profile-form" class="form-grid">
+                            <form id="profile-form" class="form-grid" autocomplete="on">
                                 <div class="form-group full-width">
                                     <label for="p-interface-language" data-i18n="profile.language.label">Interface language</label>
-                                    <select id="p-interface-language">
+                                    <select id="p-interface-language" name="interface_language" autocomplete="language">
                                         <option value="en" data-i18n="profile.language.english">English</option>
                                         <option value="es" data-i18n="profile.language.spanish">Spanish / Español</option>
                                     </select>
@@ -219,31 +219,31 @@
                                 </div>
                                 <div class="form-group full-width">
                                     <label for="p-name" data-i18n="profile.name">Full Name</label>
-                                    <input type="text" id="p-name" placeholder="John Doe" required>
+                                    <input type="text" id="p-name" name="full_name" autocomplete="name" placeholder="John Doe" required>
                                 </div>
                                 <div class="form-group">
                                     <label for="p-email" data-i18n="profile.email">Email Address</label>
-                                    <input type="email" id="p-email" placeholder="john.doe@example.com" required>
+                                    <input type="email" id="p-email" name="email" autocomplete="email" placeholder="john.doe@example.com" required>
                                 </div>
                                 <div class="form-group">
                                     <label for="p-phone" data-i18n="profile.phone">Phone Number</label>
-                                    <input type="tel" id="p-phone" placeholder="+1 (555) 123-4567">
+                                    <input type="tel" id="p-phone" name="phone" autocomplete="tel" placeholder="+1 (555) 123-4567">
                                 </div>
                                 <div class="form-group">
                                     <label for="p-github" data-i18n="profile.github">GitHub Profile URL</label>
-                                    <input type="url" id="p-github" placeholder="https://github.com/johndoe">
+                                    <input type="url" id="p-github" name="github_profile_url" autocomplete="off" placeholder="https://github.com/johndoe">
                                 </div>
                                 <div class="form-group">
                                     <label for="p-linkedin" data-i18n="profile.linkedin">LinkedIn Profile URL</label>
-                                    <input type="url" id="p-linkedin" placeholder="https://linkedin.com/in/johndoe">
+                                    <input type="url" id="p-linkedin" name="linkedin_profile_url" autocomplete="off" placeholder="https://linkedin.com/in/johndoe">
                                 </div>
                                 <div class="form-group full-width">
                                     <label for="p-website" data-i18n="profile.website">Portfolio / Personal Website</label>
-                                    <input type="url" id="p-website" placeholder="https://johndoe.com">
+                                    <input type="url" id="p-website" name="portfolio_url" autocomplete="url" placeholder="https://johndoe.com">
                                 </div>
                                 <div class="form-group full-width">
                                     <label for="p-resume-mode" data-i18n="profile.resume_mode">Resume mode</label>
-                                    <select id="p-resume-mode">
+                                    <select id="p-resume-mode" name="resume_mode">
                                         <option value="general_professional">General professional</option>
                                         <option value="it">IT / Technical</option>
                                         <option value="technical_executive">Technical executive</option>
@@ -258,7 +258,7 @@
                                 </div>
                                 <div class="form-group full-width">
                                     <label for="p-ai-provider" data-i18n="profile.ai_provider">AI provider</label>
-                                    <select id="p-ai-provider">
+                                    <select id="p-ai-provider" name="ai_provider">
                                         <option value="gemini">Google Gemini</option>
                                         <option value="openai">OpenAI</option>
                                     </select>
@@ -266,7 +266,7 @@
                                 </div>
                                 <div class="form-group full-width">
                                     <label for="p-ai-model" data-i18n="profile.ai_model">AI model</label>
-                                    <input type="text" id="p-ai-model" list="ai-model-suggestions" maxlength="120" autocomplete="off" spellcheck="false" required pattern="[A-Za-z0-9._:/-]+" placeholder="gemini-2.5-flash">
+                                    <input type="text" id="p-ai-model" name="ai_model" list="ai-model-suggestions" maxlength="120" autocomplete="off" spellcheck="false" required pattern="[A-Za-z0-9._:/-]+" placeholder="gemini-2.5-flash">
                                     <datalist id="ai-model-suggestions">
                                         <option value="gemini-2.5-flash"></option>
                                         <option value="gpt-5-mini"></option>
@@ -274,51 +274,12 @@
                                     <small class="form-help" data-i18n="profile.ai_model.help">Use a model available to your key that supports structured JSON output.</small>
                                 </div>
                                 <div class="form-group full-width">
-                                    <label for="p-apikey">Google Gemini API Key</label>
-                                    <div class="password-input-container">
-                                        <input type="password" id="p-apikey" autocomplete="off" placeholder="Enter Gemini API key" aria-describedby="p-gemini-key-status p-gemini-key-help">
-                                        <button type="button" class="toggle-password" id="toggle-api-visibility" aria-label="Show or hide Gemini API key">
-                                            <i class="fa-solid fa-eye"></i>
-                                        </button>
-                                    </div>
-                                    <div class="secret-key-meta">
-                                        <span class="secret-key-status checking" id="p-gemini-key-status" role="status" aria-live="polite">Checking saved status…</span>
-                                        <small class="form-help" id="p-gemini-key-help">The saved key is never returned to your browser.</small>
-                                    </div>
-                                </div>
-                                <div class="form-group full-width">
-                                    <label for="p-openai-apikey">OpenAI API Key</label>
-                                    <div class="password-input-container">
-                                        <input type="password" id="p-openai-apikey" autocomplete="off" placeholder="Enter OpenAI API key" aria-describedby="p-openai-key-status p-openai-key-help">
-                                        <button type="button" class="toggle-password" id="toggle-openai-api-visibility" aria-label="Show or hide OpenAI API key">
-                                            <i class="fa-solid fa-eye"></i>
-                                        </button>
-                                    </div>
-                                    <div class="secret-key-meta">
-                                        <span class="secret-key-status checking" id="p-openai-key-status" role="status" aria-live="polite">Checking saved status…</span>
-                                        <small class="form-help" id="p-openai-key-help">The saved key is never returned to your browser.</small>
-                                    </div>
-                                </div>
-                                <div class="form-group full-width">
                                     <label for="p-maps-provider">Headquarters address provider</label>
-                                    <select id="p-maps-provider">
+                                    <select id="p-maps-provider" name="maps_provider">
                                         <option value="openstreetmap" selected>OpenStreetMap Nominatim</option>
                                         <option value="google">Google Places</option>
                                     </select>
                                     <small class="form-help">Used only for user-triggered employer headquarters lookups during tailoring.</small>
-                                </div>
-                                <div class="form-group full-width" id="google-maps-key-group">
-                                    <label for="p-google-apikey">Google Places API Key</label>
-                                    <div class="password-input-container">
-                                        <input type="password" id="p-google-apikey" autocomplete="off" placeholder="Enter Google Places API key" aria-describedby="p-google-key-status p-google-key-help">
-                                        <button type="button" class="toggle-password" id="toggle-google-api-visibility" aria-label="Show or hide Google Places API key">
-                                            <i class="fa-solid fa-eye"></i>
-                                        </button>
-                                    </div>
-                                    <div class="secret-key-meta">
-                                        <span class="secret-key-status checking" id="p-google-key-status" role="status" aria-live="polite">Checking saved status…</span>
-                                        <small class="form-help" id="p-google-key-help">Required when Google Places is selected. The saved key is never returned to your browser.</small>
-                                    </div>
                                 </div>
                                 <div class="form-group full-width provider-policy" id="openstreetmap-policy" hidden>
                                     <strong>OpenStreetMap public-service limits</strong>
@@ -327,7 +288,7 @@
                                 </div>
                                 <div class="form-group full-width">
                                     <label>
-                                        <input type="checkbox" id="p-prefer-us-headquarters" checked>
+                                        <input type="checkbox" id="p-prefer-us-headquarters" name="prefer_us_headquarters" checked>
                                         Prefer a U.S. headquarters address when an employer has multiple headquarters
                                     </label>
                                     <small class="form-help">Useful when documenting U.S. unemployment work-search activity. Unverified addresses are shown as Unknown.</small>
@@ -343,8 +304,63 @@
                                         <i class="fa-solid fa-floppy-disk"></i> <span data-i18n="profile.save">Save Settings</span>
                                     </button>
                                 </div>
-                                <p class="form-help full-width provider-test-status" id="ai-provider-test-status" role="status" aria-live="polite">Save provider, model, and key changes before testing.</p>
-                                <p class="form-help full-width provider-test-status" id="maps-provider-test-status" role="status" aria-live="polite">Save maps-provider and key changes before testing.</p>
+                                <p class="form-help full-width provider-test-status" id="ai-provider-test-status" role="status" aria-live="polite">Save AI provider and model changes before testing.</p>
+                                <p class="form-help full-width provider-test-status" id="maps-provider-test-status" role="status" aria-live="polite">Save maps-provider changes before testing.</p>
+                            </form>
+                            <hr class="profile-form-divider">
+                            <form id="provider-secrets-form" class="form-grid provider-secrets-form" autocomplete="off" aria-labelledby="provider-secrets-heading">
+                                <div class="form-group full-width provider-secrets-heading">
+                                    <h3 id="provider-secrets-heading">Provider API Keys</h3>
+                                    <p class="form-help">API keys are saved separately from your contact details. Saved values are never returned to the browser.</p>
+                                </div>
+                                <div class="form-group full-width">
+                                    <label for="p-apikey">Google Gemini API Key</label>
+                                    <div class="password-input-container">
+                                        <input type="password" id="p-apikey" name="gemini_api_key" maxlength="512" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-bwignore="true" data-lpignore="true" placeholder="Enter Gemini API key" aria-describedby="p-gemini-key-status p-gemini-key-help">
+                                        <button type="button" class="toggle-password" id="toggle-api-visibility" aria-label="Show or hide Gemini API key">
+                                            <i class="fa-solid fa-eye"></i>
+                                        </button>
+                                    </div>
+                                    <div class="secret-key-meta">
+                                        <span class="secret-key-status checking" id="p-gemini-key-status" role="status" aria-live="polite">Checking saved status…</span>
+                                        <small class="form-help" id="p-gemini-key-help">The saved key is never returned to your browser.</small>
+                                        <a class="credential-management-link" data-credential-provider="gemini" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Manage Gemini API keys</a>
+                                    </div>
+                                </div>
+                                <div class="form-group full-width">
+                                    <label for="p-openai-apikey">OpenAI API Key</label>
+                                    <div class="password-input-container">
+                                        <input type="password" id="p-openai-apikey" name="openai_api_key" maxlength="512" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-bwignore="true" data-lpignore="true" placeholder="Enter OpenAI API key" aria-describedby="p-openai-key-status p-openai-key-help">
+                                        <button type="button" class="toggle-password" id="toggle-openai-api-visibility" aria-label="Show or hide OpenAI API key">
+                                            <i class="fa-solid fa-eye"></i>
+                                        </button>
+                                    </div>
+                                    <div class="secret-key-meta">
+                                        <span class="secret-key-status checking" id="p-openai-key-status" role="status" aria-live="polite">Checking saved status…</span>
+                                        <small class="form-help" id="p-openai-key-help">The saved key is never returned to your browser.</small>
+                                        <a class="credential-management-link" data-credential-provider="openai" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Manage OpenAI API keys</a>
+                                    </div>
+                                </div>
+                                <div class="form-group full-width" id="google-maps-key-group" hidden>
+                                    <label for="p-google-apikey">Google Places API Key</label>
+                                    <div class="password-input-container">
+                                        <input type="password" id="p-google-apikey" name="google_maps_api_key" maxlength="512" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-bwignore="true" data-lpignore="true" placeholder="Enter Google Places API key" aria-describedby="p-google-key-status p-google-key-help">
+                                        <button type="button" class="toggle-password" id="toggle-google-api-visibility" aria-label="Show or hide Google Places API key">
+                                            <i class="fa-solid fa-eye"></i>
+                                        </button>
+                                    </div>
+                                    <div class="secret-key-meta">
+                                        <span class="secret-key-status checking" id="p-google-key-status" role="status" aria-live="polite">Checking saved status…</span>
+                                        <small class="form-help" id="p-google-key-help">Required when Google Places is selected. The saved key is never returned to your browser.</small>
+                                        <a class="credential-management-link" data-credential-provider="google_maps" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Manage Google Places API keys</a>
+                                    </div>
+                                </div>
+                                <div class="form-actions full-width provider-secret-actions">
+                                    <button type="submit" class="btn btn-primary" id="save-provider-secrets-btn" disabled>
+                                        <i class="fa-solid fa-key"></i> Save API Keys
+                                    </button>
+                                    <p class="form-help provider-secret-save-status" id="provider-secret-save-status" role="status" aria-live="polite">Enter a new key only when adding or replacing a credential.</p>
+                                </div>
                             </form>
                         </div>
                     </div>
@@ -1373,6 +1389,6 @@
     
     <!-- Custom JS -->
     <script src="/static/i18n.js?v=20260812-1"></script>
-    <script src="/static/app.js?v=20260812-1"></script>
+    <script src="/static/app.js?v=20260902-1"></script>
 </body>
 </html>

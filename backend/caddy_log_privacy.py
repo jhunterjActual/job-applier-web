@@ -59,8 +59,12 @@ FORBIDDEN_REQUEST_HEADERS = frozenset(
         "cf-connecting-ipv6",
         "cookie",
         "forwarded",
+        "next-action",
         "proxy-authorization",
         "referer",
+        "sec-ch-ua",
+        "sec-ch-ua-mobile",
+        "sec-ch-ua-platform",
         "true-client-ip",
         "x-careertrellis-proxy-token",
         "x-forwarded-for",
@@ -94,6 +98,10 @@ REQUIRED_SITE_CONFIG_DIRECTIVES = (
     "request>remote_ip hash",
     "request>client_ip hash",
     "request>headers>User-Agent hash",
+    "request>headers>Sec-Ch-Ua delete",
+    "request>headers>Sec-Ch-Ua-Mobile delete",
+    "request>headers>Sec-Ch-Ua-Platform delete",
+    "request>headers>Next-Action delete",
     "request>headers>Referer delete",
     "request>headers>Cf-Connecting-Ip delete",
     "request>headers>Cf-Connecting-Ipv6 delete",
@@ -125,7 +133,7 @@ REQUIRED_CONFIG_DIRECTIVES = (
 )
 SITE_BLOCK_OPENER = "staging-app.jhunterj.com {"
 SITE_LOG_OUTPUT_OPENER = (
-    "output file /var/log/caddy/careertrellis-staging-access-v2.log {"
+    "output file /var/log/caddy/careertrellis-staging-access-v3.log {"
 )
 
 

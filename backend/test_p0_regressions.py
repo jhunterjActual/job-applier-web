@@ -13,8 +13,10 @@ import unittest
 import zipfile
 import asyncio
 from datetime import date, datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
@@ -1346,12 +1348,49 @@ class JobFilterFacetTests(unittest.TestCase):
         self.assertIsNone(facets["travel_required"])
 
 
+class _ProfileFormParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.form_stack: list[str] = []
+        self.forms: dict[str, dict[str, str | None]] = {}
+        self.controls: dict[str, tuple[str | None, dict[str, str | None]]] = {}
+        self.credential_links: dict[str, tuple[str | None, dict[str, str | None]]] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "form":
+            form_id = attributes.get("id") or ""
+            self.form_stack.append(form_id)
+            self.forms[form_id] = attributes
+            return
+
+        form_id = self.form_stack[-1] if self.form_stack else None
+        element_id = attributes.get("id")
+        if element_id:
+            self.controls[element_id] = (form_id, attributes)
+        credential_provider = attributes.get("data-credential-provider")
+        if tag == "a" and credential_provider:
+            self.credential_links[credential_provider] = (form_id, attributes)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form" and self.form_stack:
+            self.form_stack.pop()
+
+
 class FrontendStartupTests(unittest.TestCase):
+    @staticmethod
+    def _profile_form_parser() -> _ProfileFormParser:
+        html_source = (Path(__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+        parser = _ProfileFormParser()
+        parser.feed(html_source)
+        return parser
+
     def test_required_startup_controls_exist_in_dashboard_html(self) -> None:
         static_dir = Path(__file__).parent / "static"
         html_source = (static_dir / "index.html").read_text(encoding="utf-8")
         for element_id in (
-            "profile-form", "resume-file-upload", "search-form", "refresh-jobs-btn",
+            "profile-form", "provider-secrets-form", "save-provider-secrets-btn",
+            "provider-secret-save-status", "resume-file-upload", "search-form", "refresh-jobs-btn",
             "cleanup-jobs-btn", "refresh-logs-btn", "open-manual-application-btn",
             "archive-untouched-btn", "delete-untouched-btn", "restore-archived-btn",
             "lifecycle-form", "undo-lifecycle-btn", "save-materials-btn",
@@ -1419,8 +1458,95 @@ class FrontendStartupTests(unittest.TestCase):
                 self.assertIn(f'id="{element_id}"', html_source)
         self.assertIn("Checking AI Provider", html_source)
         self.assertIn("i18n.js?v=20260812-1", html_source)
-        self.assertIn("app.js?v=20260812-1", html_source)
-        self.assertIn("index.css?v=20260812-1", html_source)
+        self.assertIn("app.js?v=20260902-1", html_source)
+        self.assertIn("index.css?v=20260902-1", html_source)
+
+    def test_profile_and_provider_secrets_use_separate_form_boundaries(self) -> None:
+        parser = self._profile_form_parser()
+        self.assertEqual("on", parser.forms["profile-form"]["autocomplete"])
+        self.assertEqual("off", parser.forms["provider-secrets-form"]["autocomplete"])
+
+        profile_controls = [
+            attributes
+            for form_id, attributes in parser.controls.values()
+            if form_id == "profile-form"
+        ]
+        self.assertTrue(any(control.get("type") == "email" for control in profile_controls))
+        self.assertFalse(any(control.get("type") == "password" for control in profile_controls))
+
+        expected_profile_autocomplete = {
+            "p-name": "name",
+            "p-email": "email",
+            "p-phone": "tel",
+            "p-website": "url",
+        }
+        for element_id, autocomplete in expected_profile_autocomplete.items():
+            form_id, attributes = parser.controls[element_id]
+            self.assertEqual("profile-form", form_id)
+            self.assertEqual(autocomplete, attributes.get("autocomplete"))
+            self.assertTrue(attributes.get("name"))
+
+        secret_ids = {"p-apikey", "p-openai-apikey", "p-google-apikey"}
+        parsed_secret_ids = {
+            element_id
+            for element_id, (form_id, attributes) in parser.controls.items()
+            if form_id == "provider-secrets-form" and attributes.get("type") == "password"
+        }
+        self.assertEqual(secret_ids, parsed_secret_ids)
+        for element_id in secret_ids:
+            form_id, attributes = parser.controls[element_id]
+            self.assertEqual("provider-secrets-form", form_id)
+            self.assertEqual("new-password", attributes.get("autocomplete"))
+            self.assertEqual("512", attributes.get("maxlength"))
+            self.assertEqual("off", attributes.get("autocapitalize"))
+            self.assertEqual("off", attributes.get("autocorrect"))
+            self.assertEqual("false", attributes.get("spellcheck"))
+            self.assertIn("data-1p-ignore", attributes)
+            self.assertEqual("true", attributes.get("data-bwignore"))
+            self.assertEqual("true", attributes.get("data-lpignore"))
+
+    def test_provider_credential_links_are_fixed_reviewed_and_referrer_safe(self) -> None:
+        static_dir = Path(__file__).parent / "static"
+        script_source = (static_dir / "app.js").read_text(encoding="utf-8")
+        documentation = (Path(__file__).parent.parent / "docs" / "PROVIDER_CREDENTIAL_LINKS.md").read_text(encoding="utf-8")
+        parser = self._profile_form_parser()
+        expected_destinations = {
+            "gemini": "https://aistudio.google.com/app/apikey",
+            "openai": "https://platform.openai.com/api-keys",
+            "google_maps": "https://console.cloud.google.com/apis/credentials",
+        }
+
+        self.assertEqual(set(expected_destinations), set(parser.credential_links))
+        for provider, destination in expected_destinations.items():
+            split = urlsplit(destination)
+            self.assertEqual("https", split.scheme)
+            self.assertTrue(split.netloc)
+            self.assertFalse(split.username)
+            self.assertFalse(split.password)
+            self.assertFalse(split.query)
+            self.assertFalse(split.fragment)
+            self.assertEqual(1, script_source.count(destination))
+            self.assertIn(destination, documentation)
+
+            form_id, attributes = parser.credential_links[provider]
+            self.assertEqual("provider-secrets-form", form_id)
+            self.assertNotIn("href", attributes)
+            self.assertIn("hidden", attributes)
+            self.assertEqual("_blank", attributes.get("target"))
+            self.assertEqual("noopener noreferrer", attributes.get("rel"))
+            self.assertEqual("no-referrer", attributes.get("referrerpolicy"))
+
+        reviewed_match = re.search(
+            r'PROVIDER_CREDENTIAL_LINKS_REVIEWED_ON = "(\d{4}-\d{2}-\d{2})"',
+            script_source,
+        )
+        self.assertIsNotNone(reviewed_match)
+        reviewed_on = date.fromisoformat(reviewed_match.group(1))
+        self.assertGreaterEqual(reviewed_on, date.today() - timedelta(days=183))
+        self.assertIn(f"Verified against the providers' official documentation on {reviewed_on.isoformat()}.", documentation)
+        self.assertIn('link.referrerPolicy = "no-referrer"', script_source)
+        self.assertIn('link.rel = "noopener noreferrer"', script_source)
+        self.assertIn('(opens in a new tab)', script_source)
 
     def test_launchers_require_the_current_backend_build(self) -> None:
         project_dir = Path(__file__).parent.parent
@@ -2891,7 +3017,8 @@ class DependencyLockTests(unittest.TestCase):
 
     def test_provisioning_keeps_the_caddy_access_log_service_writable(self) -> None:
         script = (self.project_dir() / "deploy" / "scripts" / "provision-staging-host.sh").read_text(encoding="utf-8")
-        self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access-v2.log", script)
+        self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access-v3.log", script)
+        self.assertNotIn("careertrellis-staging-access-v2", script)
         self.assertIn("-L ${caddy_access_log}", script)
         self.assertIn("caddy:caddy 600", script)
         self.assertIn("root:root 600 0", script)
@@ -2912,7 +3039,8 @@ class DependencyLockTests(unittest.TestCase):
             with self.subTest(name=name):
                 source = (scripts / name).read_text(encoding="utf-8")
                 self.assertIn("ensure_caddy_access_log()", source)
-                self.assertIn("careertrellis-staging-access-v2.log", source)
+                self.assertIn("careertrellis-staging-access-v3.log", source)
+                self.assertNotIn("careertrellis-staging-access-v2", source)
                 self.assertIn("root:root 600 0", source)
                 self.assertIn(
                     'chown --no-dereference --from=root:root caddy:caddy "${log_path}"',
@@ -2921,6 +3049,8 @@ class DependencyLockTests(unittest.TestCase):
                 self.assertNotIn('chmod 0600 "${log_path}"', source)
                 self.assertIn("assert_caddy_runtime_privacy_ready()", source)
                 self.assertIn("--validate-only", source)
+                self.assertIn('"${target_release}/backend/venv/bin/python"', source)
+                self.assertIn('"${target_release}/backend/caddy_log_privacy.py"', source)
                 self.assertLess(source.index("ensure_caddy_access_log || return 1"), source.index(marker))
 
     def test_pilot_caddy_gate_is_fixed_root_only_and_fail_closed(self) -> None:
@@ -4259,6 +4389,14 @@ class DependencyLockTests(unittest.TestCase):
         self.assertEqual(1, summary.records)
 
     def test_caddy_log_privacy_scanner_rejects_sensitive_shapes_without_echo(self) -> None:
+        self.assertTrue(
+            {
+                "next-action",
+                "sec-ch-ua",
+                "sec-ch-ua-mobile",
+                "sec-ch-ua-platform",
+            }.issubset(caddy_log_privacy_module.FORBIDDEN_REQUEST_HEADERS)
+        )
         private_sentinel = "private-sentinel@example.invalid"
         mutations = {
             "auth_root": lambda record: record["request"].update(uri="/auth"),
@@ -4451,7 +4589,7 @@ class DependencyLockTests(unittest.TestCase):
         with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
             caddy_log_privacy_module.validate_caddy_config(misplaced_runtime_filter)
         wrong_log_path = caddy_source.replace(
-            "careertrellis-staging-access-v2.log",
+            "careertrellis-staging-access-v3.log",
             "careertrellis-staging-access.log",
             1,
         )
@@ -4483,7 +4621,8 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("careertrellis-erasure-worker", erasure_helper)
         self.assertNotIn("CAREERTRELLIS_DATABASE_URL", erasure_helper)
         self.assertNotIn("CAREERTRELLIS_OBJECT_KEYRING", erasure_helper)
-        self.assertIn("careertrellis-staging-access-v2", caddy_helper)
+        self.assertIn("careertrellis-staging-access-v3", caddy_helper)
+        self.assertNotIn("careertrellis-staging-access-v2", caddy_helper)
         self.assertIn("*.log.gz", caddy_helper)
         self.assertIn('/usr/bin/cmp -s "${config_path}" "${release_config}"', caddy_helper)
         self.assertIn('"${arguments[@]}"', caddy_helper)
