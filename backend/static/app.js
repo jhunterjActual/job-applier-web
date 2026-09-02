@@ -51,6 +51,7 @@ const sessionSignout = document.getElementById("session-signout");
 
 // Profile Form Elements
 const profileForm = document.getElementById("profile-form");
+const providerSecretsForm = document.getElementById("provider-secrets-form");
 const pName = document.getElementById("p-name");
 const pEmail = document.getElementById("p-email");
 const pPhone = document.getElementById("p-phone");
@@ -101,6 +102,8 @@ const testAIProviderBtn = document.getElementById("test-ai-provider-btn");
 const aiProviderTestStatus = document.getElementById("ai-provider-test-status");
 const testMapsProviderBtn = document.getElementById("test-maps-provider-btn");
 const mapsProviderTestStatus = document.getElementById("maps-provider-test-status");
+const saveProviderSecretsBtn = document.getElementById("save-provider-secrets-btn");
+const providerSecretSaveStatus = document.getElementById("provider-secret-save-status");
 
 const AI_PROVIDERS = {
     gemini: { label: "Google Gemini", defaultModel: "gemini-2.5-flash" },
@@ -111,6 +114,24 @@ const MAPS_PROVIDERS = {
     google: { label: "Google Places", requiresKey: true },
     openstreetmap: { label: "OpenStreetMap Nominatim", requiresKey: false }
 };
+
+// Review these allowlisted destinations against the providers' official documentation
+// at least every six months. Never add user-controlled values or credentials to them.
+const PROVIDER_CREDENTIAL_LINKS_REVIEWED_ON = "2026-09-02";
+const PROVIDER_CREDENTIAL_LINKS = Object.freeze({
+    gemini: Object.freeze({
+        label: "Manage Gemini API keys",
+        url: "https://aistudio.google.com/app/apikey"
+    }),
+    openai: Object.freeze({
+        label: "Manage OpenAI API keys",
+        url: "https://platform.openai.com/api-keys"
+    }),
+    google_maps: Object.freeze({
+        label: "Manage Google Places API keys",
+        url: "https://console.cloud.google.com/apis/credentials"
+    })
+});
 
 const RESUME_EVIDENCE_GUIDANCE = {
     it: "Prioritize technologies, architecture, delivery projects, repositories, technical certifications, and demonstrable work.",
@@ -328,17 +349,19 @@ document.addEventListener("DOMContentLoaded", () => {
     setupAccessibleModals();
     setupTabSwitching();
     setupPasswordToggle();
+    setupCredentialManagementLinks();
 
     // Attach form and click listeners
     bindEvent(profileForm, "submit", saveProfile);
+    bindEvent(providerSecretsForm, "submit", saveProviderSecrets);
     bindEvent(pInterfaceLanguage, "change", () => setInterfaceLanguage(pInterfaceLanguage.value));
     bindEvent(pAiProvider, "change", handleAIProviderChange);
     bindEvent(pAiModel, "input", markAIProviderSettingsDirty);
-    bindEvent(pApiKey, "input", markAIProviderSettingsDirty);
-    bindEvent(pOpenAIApiKey, "input", markAIProviderSettingsDirty);
+    bindEvent(pApiKey, "input", handleProviderSecretInput);
+    bindEvent(pOpenAIApiKey, "input", handleProviderSecretInput);
     bindEvent(testAIProviderBtn, "click", testSavedAIProvider);
     bindEvent(pMapsProvider, "change", handleMapsProviderChange);
-    bindEvent(pGoogleApiKey, "input", markMapsProviderSettingsDirty);
+    bindEvent(pGoogleApiKey, "input", handleProviderSecretInput);
     bindEvent(testMapsProviderBtn, "click", testSavedMapsProvider);
     bindEvent(resumeFileUpload, "change", handleResumeUpload);
     bindEvent(pResume, "input", updateBaseResumeActions);
@@ -1461,6 +1484,33 @@ function logActivity(title, desc, type = "info") {
 }
 
 // Fetch & Update API Key status indicator
+function setupCredentialManagementLinks() {
+    document.querySelectorAll("[data-credential-provider]").forEach(link => {
+        const provider = link.dataset.credentialProvider;
+        const metadata = PROVIDER_CREDENTIAL_LINKS[provider];
+        if (!metadata) {
+            link.removeAttribute("href");
+            link.hidden = true;
+            return;
+        }
+
+        const destination = new URL(metadata.url);
+        if (destination.protocol !== "https:" || destination.username || destination.password) {
+            link.removeAttribute("href");
+            link.hidden = true;
+            return;
+        }
+
+        link.href = destination.href;
+        link.textContent = metadata.label;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.referrerPolicy = "no-referrer";
+        link.setAttribute("aria-label", `${metadata.label} (opens in a new tab)`);
+        link.hidden = false;
+    });
+}
+
 function selectedAIProvider() {
     return AI_PROVIDERS[pAiProvider?.value] ? pAiProvider.value : "gemini";
 }
@@ -1487,6 +1537,11 @@ function markAIProviderSettingsDirty() {
     updateProviderTestAvailability();
 }
 
+function selectedAIKeyPending() {
+    const input = selectedAIProvider() === "openai" ? pOpenAIApiKey : pApiKey;
+    return !!input?.value.trim();
+}
+
 function selectedMapsProvider() {
     return MAPS_PROVIDERS[pMapsProvider?.value] ? pMapsProvider.value : "openstreetmap";
 }
@@ -1505,6 +1560,22 @@ function markMapsProviderSettingsDirty() {
     updateMapsProviderTestAvailability();
 }
 
+function selectedMapsKeyPending() {
+    return selectedMapsProvider() === "google" && !!pGoogleApiKey?.value.trim();
+}
+
+function handleProviderSecretInput() {
+    updateSecretSaveAvailability();
+    updateProviderTestAvailability();
+    updateMapsProviderTestAvailability();
+}
+
+function updateSecretSaveAvailability() {
+    if (!saveProviderSecretsBtn) return;
+    saveProviderSecretsBtn.disabled = ![pApiKey, pOpenAIApiKey, pGoogleApiKey]
+        .some(input => input?.value.trim());
+}
+
 function updateMapsProviderControls() {
     const isGoogle = selectedMapsProvider() === "google";
     if (googleMapsKeyGroup) googleMapsKeyGroup.hidden = !isGoogle;
@@ -1516,10 +1587,13 @@ function updateMapsProviderTestAvailability() {
     if (!testMapsProviderBtn || !mapsProviderTestStatus) return;
     const provider = selectedMapsProviderMeta();
     const hasCredential = !provider.requiresKey || googleMapsKeyConfigured;
-    testMapsProviderBtn.disabled = !mapsProviderSettingsSaved || !hasCredential;
+    const keyPending = selectedMapsKeyPending();
+    testMapsProviderBtn.disabled = !mapsProviderSettingsSaved || !hasCredential || keyPending;
     mapsProviderTestStatus.className = "form-help full-width provider-test-status";
     if (!mapsProviderSettingsSaved) {
-        mapsProviderTestStatus.textContent = "Save maps-provider and key changes before testing.";
+        mapsProviderTestStatus.textContent = "Save maps-provider changes before testing.";
+    } else if (keyPending) {
+        mapsProviderTestStatus.textContent = "Save the Google Places API key change before testing.";
     } else if (!hasCredential) {
         mapsProviderTestStatus.textContent = "Save a Google Places API key before testing.";
     } else if (selectedMapsProvider() === "openstreetmap") {
@@ -1533,10 +1607,13 @@ function updateProviderTestAvailability() {
     if (!testAIProviderBtn || !aiProviderTestStatus) return;
     const provider = selectedAIProviderMeta();
     const hasKey = selectedAIKeyConfigured();
-    testAIProviderBtn.disabled = !aiProviderSettingsSaved || !hasKey;
+    const keyPending = selectedAIKeyPending();
+    testAIProviderBtn.disabled = !aiProviderSettingsSaved || !hasKey || keyPending;
     aiProviderTestStatus.className = "form-help full-width provider-test-status";
     if (!aiProviderSettingsSaved) {
-        aiProviderTestStatus.textContent = "Save provider, model, and key changes before testing.";
+        aiProviderTestStatus.textContent = "Save AI provider and model changes before testing.";
+    } else if (keyPending) {
+        aiProviderTestStatus.textContent = `Save the ${provider.label} API key change before testing.`;
     } else if (!hasKey) {
         aiProviderTestStatus.textContent = `Save a ${provider.label} API key before testing.`;
     } else {
@@ -1595,6 +1672,7 @@ function updateSecretStatuses() {
         "Required when Google Places is selected. A saved key is never returned to your browser.",
     );
     updateApiKeyStatus();
+    updateSecretSaveAvailability();
     updateProviderTestAvailability();
     updateMapsProviderControls();
 }
@@ -1706,6 +1784,47 @@ function updateProfessionalEvidenceSummary() {
     updateBaseResumeActions();
 }
 
+async function saveProviderSecrets(e) {
+    e.preventDefault();
+    const secretPayload = {};
+    if (pApiKey.value.trim()) secretPayload.gemini_api_key = pApiKey.value.trim();
+    if (pOpenAIApiKey.value.trim()) secretPayload.openai_api_key = pOpenAIApiKey.value.trim();
+    if (pGoogleApiKey.value.trim()) secretPayload.google_maps_api_key = pGoogleApiKey.value.trim();
+    if (!Object.keys(secretPayload).length) return;
+
+    saveProviderSecretsBtn.disabled = true;
+    providerSecretSaveStatus.className = "form-help provider-secret-save-status";
+    providerSecretSaveStatus.textContent = "Saving API keys securely…";
+
+    try {
+        const response = await fetch(`${API_URL}/api/profile/secrets`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(secretPayload)
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || "Could not update API keys.");
+
+        geminiKeyConfigured = !!result.gemini_api_key_configured;
+        openAIKeyConfigured = !!result.openai_api_key_configured;
+        googleMapsKeyConfigured = !!result.google_maps_api_key_configured;
+        pApiKey.value = "";
+        pOpenAIApiKey.value = "";
+        pGoogleApiKey.value = "";
+        updateSecretStatuses();
+        updateStartupActivity(loadedProfile);
+        providerSecretSaveStatus.className = "form-help provider-secret-save-status success";
+        providerSecretSaveStatus.textContent = "API keys saved securely. Entered values were cleared from this page.";
+        logActivity("API Keys Saved", "Provider credentials were added or replaced without exposing their values.", "success");
+    } catch (err) {
+        console.error(err);
+        updateSecretSaveAvailability();
+        providerSecretSaveStatus.className = "form-help provider-secret-save-status error";
+        providerSecretSaveStatus.textContent = err.message || "Could not update API keys.";
+        logActivity("API Key Save Failed", "Provider credentials could not be updated.", "error");
+    }
+}
+
 function professionalEvidencePreview(evidence = {}) {
     const labels = {
         skills: "SKILLS", projects: "PROJECTS", portfolio: "PORTFOLIO LINKS",
@@ -1755,26 +1874,6 @@ async function saveProfile(e) {
         });
         const result = await res.json();
         if (!res.ok) throw new Error(result.detail || t("profile.save.failed"));
-
-        const secretPayload = {};
-        if (pApiKey.value.trim()) secretPayload.gemini_api_key = pApiKey.value.trim();
-        if (pOpenAIApiKey.value.trim()) secretPayload.openai_api_key = pOpenAIApiKey.value.trim();
-        if (pGoogleApiKey.value.trim()) secretPayload.google_maps_api_key = pGoogleApiKey.value.trim();
-        if (Object.keys(secretPayload).length) {
-            const secretResponse = await fetch(`${API_URL}/api/profile/secrets`, {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(secretPayload)
-            });
-            const secretResult = await secretResponse.json();
-            if (!secretResponse.ok) throw new Error(secretResult.detail || "Could not update API keys.");
-            geminiKeyConfigured = !!secretResult.gemini_api_key_configured;
-            openAIKeyConfigured = !!secretResult.openai_api_key_configured;
-            googleMapsKeyConfigured = !!secretResult.google_maps_api_key_configured;
-            pApiKey.value = "";
-            pOpenAIApiKey.value = "";
-            pGoogleApiKey.value = "";
-        }
         
         if (result.success) {
             currentBaseResumeId = result.base_resume_id || currentBaseResumeId;
