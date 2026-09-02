@@ -93,7 +93,7 @@ ensure_object_backup_health_roots() {
 
 ensure_caddy_access_log() {
     local log_directory=/var/log/caddy
-    local log_path=${log_directory}/careertrellis-staging-access-v4.log
+    local log_path=${log_directory}/careertrellis-staging-access-v5.log
     if [[ -e ${log_directory} || -L ${log_directory} ]]; then
         if [[ ! -d ${log_directory} || -L ${log_directory} || \
               $(realpath "${log_directory}") != "${log_directory}" || \

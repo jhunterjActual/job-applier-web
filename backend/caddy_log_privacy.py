@@ -68,8 +68,15 @@ FORBIDDEN_REQUEST_HEADERS = frozenset(
         "sec-ch-ua-mobile",
         "sec-ch-ua-platform",
         "sec-purpose",
+        "traceparent",
+        "tracestate",
         "true-client-ip",
+        "x-careertrellis-operation",
         "x-careertrellis-proxy-token",
+        "x-datadog-parent-id",
+        "x-datadog-sampling-priority",
+        "x-datadog-tags",
+        "x-datadog-trace-id",
         "x-forwarded-for",
         "x-openai-host-hash",
         "x-real-ip",
@@ -111,6 +118,13 @@ REQUIRED_SITE_CONFIG_DIRECTIVES = (
     "request>headers>Range delete",
     "request>headers>Sec-Purpose delete",
     "request>headers>X-Openai-Host-Hash delete",
+    "request>headers>Traceparent delete",
+    "request>headers>Tracestate delete",
+    "request>headers>X-Careertrellis-Operation delete",
+    "request>headers>X-Datadog-Parent-Id delete",
+    "request>headers>X-Datadog-Sampling-Priority delete",
+    "request>headers>X-Datadog-Tags delete",
+    "request>headers>X-Datadog-Trace-Id delete",
     "request>headers>Cf-Connecting-Ip delete",
     "request>headers>Cf-Connecting-Ipv6 delete",
     "request>headers>True-Client-Ip delete",
@@ -139,6 +153,13 @@ MINIMUM_SITE_PRIVACY_DIRECTIVES = (
     "request>headers>From delete",
     "request>headers>Range delete",
     "request>headers>Sec-Purpose delete",
+    "request>headers>Traceparent delete",
+    "request>headers>Tracestate delete",
+    "request>headers>X-Careertrellis-Operation delete",
+    "request>headers>X-Datadog-Parent-Id delete",
+    "request>headers>X-Datadog-Sampling-Priority delete",
+    "request>headers>X-Datadog-Tags delete",
+    "request>headers>X-Datadog-Trace-Id delete",
     "request>headers>X-Openai-Host-Hash delete",
 )
 REQUIRED_CONFIG_DIRECTIVES = (
@@ -147,7 +168,7 @@ REQUIRED_CONFIG_DIRECTIVES = (
 )
 SITE_BLOCK_OPENER = "staging-app.jhunterj.com {"
 SITE_LOG_OUTPUT_OPENER = (
-    "output file /var/log/caddy/careertrellis-staging-access-v4.log {"
+    "output file /var/log/caddy/careertrellis-staging-access-v5.log {"
 )
 
 

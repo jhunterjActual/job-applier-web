@@ -104,7 +104,9 @@ authorization boundary remain mandatory.
    `X-Openai-Host-Hash`, or Location fields. A representative non-auth record
    must retain only hashed connection-IP and User-Agent fingerprints.
 
-The `.56` forward correction starts a new `v4` access-log generation and
+The `.57` forward correction starts a new `v5` access-log generation, removes
+observed browser and tracing request fields (including W3C trace context,
+CareerTrellis operation IDs, and Datadog trace metadata), and
 includes a root-only, read-only check for item
 5. It accepts no arguments, requires the durable Caddy configuration to match
 the current immutable release, reads the privacy-filtered active log plus its
@@ -122,13 +124,14 @@ It never prints a record, path, query, header, matched value, or source
 location, and never rewrites a log. It requires representative non-auth
 evidence across the aggregate; an empty set is not acceptance evidence.
 
-The superseded `v3` log and rotations remain restricted evidence and are not
-renamed, truncated, or deleted by this release. After `.56` activation, verify
-with count-only metadata that `v4` grows and `v3` does not. Retire `v3` only
-through a separately authorized, exact-target retention procedure. Because
-`.55` lacks these four deletions, the `.56` deploy and rollback helpers reject
-it at the forward-only privacy floor. Use a reviewed forward correction rather
-than attempting to reactivate it.
+The superseded `v4` and earlier logs and rotations remain restricted evidence
+and are not renamed, truncated, or deleted by this release. After `.57`
+activation, verify with count-only metadata that `v5` grows and `v4` does not.
+Retire an older generation only through a separately authorized, exact-target
+retention procedure. Because `.56` lacks the seven tracing and operation-field
+deletions, the `.57` deploy and rollback helpers reject it at the forward-only
+privacy floor. Use a reviewed forward correction rather than attempting to
+reactivate it.
 
 To rotate the pilot password, create and store a new distinct password and run:
 

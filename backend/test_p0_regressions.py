@@ -3017,8 +3017,8 @@ class DependencyLockTests(unittest.TestCase):
 
     def test_provisioning_keeps_the_caddy_access_log_service_writable(self) -> None:
         script = (self.project_dir() / "deploy" / "scripts" / "provision-staging-host.sh").read_text(encoding="utf-8")
-        self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access-v4.log", script)
-        self.assertNotIn("careertrellis-staging-access-v3", script)
+        self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access-v5.log", script)
+        self.assertNotIn("careertrellis-staging-access-v4", script)
         self.assertIn("-L ${caddy_access_log}", script)
         self.assertIn("caddy:caddy 600", script)
         self.assertIn("root:root 600 0", script)
@@ -3039,8 +3039,8 @@ class DependencyLockTests(unittest.TestCase):
             with self.subTest(name=name):
                 source = (scripts / name).read_text(encoding="utf-8")
                 self.assertIn("ensure_caddy_access_log()", source)
-                self.assertIn("careertrellis-staging-access-v4.log", source)
-                self.assertNotIn("careertrellis-staging-access-v3", source)
+                self.assertIn("careertrellis-staging-access-v5.log", source)
+                self.assertNotIn("careertrellis-staging-access-v4", source)
                 self.assertIn("root:root 600 0", source)
                 self.assertIn(
                     'chown --no-dereference --from=root:root caddy:caddy "${log_path}"',
@@ -4444,6 +4444,13 @@ class DependencyLockTests(unittest.TestCase):
                 "sec-ch-ua-mobile",
                 "sec-ch-ua-platform",
                 "sec-purpose",
+                "traceparent",
+                "tracestate",
+                "x-careertrellis-operation",
+                "x-datadog-parent-id",
+                "x-datadog-sampling-priority",
+                "x-datadog-tags",
+                "x-datadog-trace-id",
                 "x-openai-host-hash",
             }.issubset(caddy_log_privacy_module.FORBIDDEN_REQUEST_HEADERS)
         )
@@ -4644,12 +4651,12 @@ class DependencyLockTests(unittest.TestCase):
         with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
             caddy_log_privacy_module.validate_caddy_config(misplaced_runtime_filter)
         for wrong_name in (
-            "careertrellis-staging-access-v3.log",
+            "careertrellis-staging-access-v4.log",
             "careertrellis-staging-access.log",
         ):
             with self.subTest(wrong_name=wrong_name):
                 wrong_log_path = caddy_source.replace(
-                    "careertrellis-staging-access-v4.log",
+                    "careertrellis-staging-access-v5.log",
                     wrong_name,
                     1,
                 )
@@ -4662,8 +4669,8 @@ class DependencyLockTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         caddy_log_privacy_module.validate_caddy_privacy_floor(caddy_source)
         legacy_sink = caddy_source.replace(
+            "careertrellis-staging-access-v5.log",
             "careertrellis-staging-access-v4.log",
-            "careertrellis-staging-access-v3.log",
             1,
         )
         caddy_log_privacy_module.validate_caddy_privacy_floor(legacy_sink)
@@ -4730,8 +4737,8 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("careertrellis-erasure-worker", erasure_helper)
         self.assertNotIn("CAREERTRELLIS_DATABASE_URL", erasure_helper)
         self.assertNotIn("CAREERTRELLIS_OBJECT_KEYRING", erasure_helper)
-        self.assertIn("careertrellis-staging-access-v4", caddy_helper)
-        self.assertNotIn("careertrellis-staging-access-v3", caddy_helper)
+        self.assertIn("careertrellis-staging-access-v5", caddy_helper)
+        self.assertNotIn("careertrellis-staging-access-v4", caddy_helper)
         self.assertIn("*.log.gz", caddy_helper)
         self.assertIn('/usr/bin/cmp -s "${config_path}" "${release_config}"', caddy_helper)
         self.assertIn('"${arguments[@]}"', caddy_helper)

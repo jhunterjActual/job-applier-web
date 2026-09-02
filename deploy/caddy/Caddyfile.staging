@@ -49,7 +49,7 @@ staging-app.jhunterj.com {
 	}
 
 	log {
-		output file /var/log/caddy/careertrellis-staging-access-v4.log {
+		output file /var/log/caddy/careertrellis-staging-access-v5.log {
 			roll_size 10MiB
 			roll_keep 5
 			roll_keep_for 168h
@@ -68,6 +68,13 @@ staging-app.jhunterj.com {
 			request>headers>Range delete
 			request>headers>Sec-Purpose delete
 			request>headers>X-Openai-Host-Hash delete
+			request>headers>Traceparent delete
+			request>headers>Tracestate delete
+			request>headers>X-Careertrellis-Operation delete
+			request>headers>X-Datadog-Parent-Id delete
+			request>headers>X-Datadog-Sampling-Priority delete
+			request>headers>X-Datadog-Tags delete
+			request>headers>X-Datadog-Trace-Id delete
 			request>headers>Cf-Connecting-Ip delete
 			request>headers>Cf-Connecting-Ipv6 delete
 			request>headers>True-Client-Ip delete
