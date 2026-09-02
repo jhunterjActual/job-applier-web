@@ -101,7 +101,7 @@ authorization boundary remain mandatory.
    Cookie, Set-Cookie, Referer, or Location fields. A representative non-auth
    record must retain only hashed connection-IP and User-Agent fingerprints.
 
-The exact active `.52` release includes a root-only, read-only check for item
+The exact active `.53` release includes a root-only, read-only check for item
 5. It accepts no arguments, requires the durable Caddy configuration to match
 the current immutable release, reads the privacy-filtered active log plus its
 plain or gzip rotations, and emits bounded counts and fixed result codes:

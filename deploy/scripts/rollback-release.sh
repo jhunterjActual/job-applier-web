@@ -105,6 +105,10 @@ ensure_caddy_access_log() {
         install -d -o caddy -g caddy -m 0750 "${log_directory}" || return 1
     fi
     if [[ -e ${log_path} || -L ${log_path} ]]; then
+        if [[ -f ${log_path} && ! -L ${log_path} && \
+              $(stat -c '%U:%G %a %s' "${log_path}") == "root:root 600 0" ]]; then
+            chown --no-dereference --from=root:root caddy:caddy "${log_path}" || return 1
+        fi
         if [[ ! -f ${log_path} || -L ${log_path} || \
               $(stat -c '%U:%G %a' "${log_path}") != "caddy:caddy 600" ]]; then
             echo "The Caddy access log is invalid." >&2

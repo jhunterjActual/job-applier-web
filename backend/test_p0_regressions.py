@@ -2894,6 +2894,11 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access-v2.log", script)
         self.assertIn("-L ${caddy_access_log}", script)
         self.assertIn("caddy:caddy 600", script)
+        self.assertIn("root:root 600 0", script)
+        self.assertIn(
+            'chown --no-dereference --from=root:root caddy:caddy "${caddy_access_log}"',
+            script,
+        )
         self.assertNotIn('chown caddy:caddy "${caddy_access_log}"', script)
         self.assertNotIn('chmod 0600 "${caddy_access_log}"', script)
         self.assertIn('install -o caddy -g caddy -m 0600 /dev/null "${caddy_access_log}"', script)
@@ -2908,6 +2913,12 @@ class DependencyLockTests(unittest.TestCase):
                 source = (scripts / name).read_text(encoding="utf-8")
                 self.assertIn("ensure_caddy_access_log()", source)
                 self.assertIn("careertrellis-staging-access-v2.log", source)
+                self.assertIn("root:root 600 0", source)
+                self.assertIn(
+                    'chown --no-dereference --from=root:root caddy:caddy "${log_path}"',
+                    source,
+                )
+                self.assertNotIn('chmod 0600 "${log_path}"', source)
                 self.assertIn("assert_caddy_runtime_privacy_ready()", source)
                 self.assertIn("--validate-only", source)
                 self.assertLess(source.index("ensure_caddy_access_log || return 1"), source.index(marker))
