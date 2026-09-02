@@ -6,10 +6,14 @@ additional principal is the opaque, fixed username `pilot-01`; it is not a
 WorkOS identity, CareerTrellis account, tenant, or role and cannot provision
 one.
 
-The access log skips every `/auth` route, hashes connection-IP and User-Agent
-fields, and removes request Referer and response Location. This keeps the
-outer-gate acceptance receipt useful without retaining identity-provider paths
-or raw client fingerprints.
+The versioned access log skips every `/auth` route, hashes connection-IP and
+User-Agent fields, and removes request Referer and response Location. The
+default Caddy runtime logger separately removes complete request URI/header and
+response-header maps and hashes client addresses before systemd records it.
+This keeps both sinks useful without retaining identity-provider paths or raw
+client fingerprints. The superseded unsuffixed file and historical journal
+records remain preserved evidence; they are not rewritten or treated as new
+acceptance evidence.
 
 The password and its Argon2id verifier must never appear in a command argument,
 shell history, chat, receipt, commit, or access log. Store the distinct
@@ -90,25 +94,29 @@ authorization boundary remain mandatory.
 4. Before any CareerTrellis mapping exists, the pilot's verified WorkOS
    identity still receives the fixed application `403` and no application
    session or local user row.
-5. Using only boolean field-presence results, confirm access logs contain no
+5. Using only boolean field-presence results, confirm the versioned access log
+   and every retained versioned rotation contain no
    `/auth` entries; no raw connection, forwarded-IP, or User-Agent values; and
    no Authorization, Proxy-Authorization, `X-CareerTrellis-Proxy-Token`,
    Cookie, Set-Cookie, Referer, or Location fields. A representative non-auth
    record must retain only hashed connection-IP and User-Agent fingerprints.
 
-The exact active `.51` release includes a root-only, read-only check for item
-5. It accepts no arguments, reads only the durable Caddy configuration and
-privacy-filtered access log, and emits bounded counts and fixed result codes:
+The exact active `.52` release includes a root-only, read-only check for item
+5. It accepts no arguments, requires the durable Caddy configuration to match
+the current immutable release, reads the privacy-filtered active log plus its
+plain or gzip rotations, and emits bounded counts and fixed result codes:
 
 ```bash
 sudo /opt/careertrellis/staging/current/deploy/scripts/check-caddy-access-log-privacy.sh
 ```
 
-The check fails closed on malformed records, any `/auth` record, a raw client
-fingerprint, a forbidden request or response field, or a sensitive query/value
-shape. It never prints a record, path, query, header, matched value, or source
-location. It requires a representative non-auth record; an empty log is not
-acceptance evidence.
+The check fails closed on malformed records, unsafe file metadata, any `/auth`
+record, a raw client fingerprint, a forbidden request or response field, or a
+sensitive query/value shape at any bounded percent-decoding layer. The exact
+fixed Basic Auth challenge is permitted only in its response-header context.
+It never prints a record, path, query, header, matched value, or source
+location, and never rewrites a log. It requires representative non-auth
+evidence across the aggregate; an empty set is not acceptance evidence.
 
 To rotate the pilot password, create and store a new distinct password and run:
 

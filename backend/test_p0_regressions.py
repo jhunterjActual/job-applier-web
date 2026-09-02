@@ -1,4 +1,5 @@
 import base64
+import gzip
 import importlib
 import json
 import io
@@ -2890,10 +2891,26 @@ class DependencyLockTests(unittest.TestCase):
 
     def test_provisioning_keeps_the_caddy_access_log_service_writable(self) -> None:
         script = (self.project_dir() / "deploy" / "scripts" / "provision-staging-host.sh").read_text(encoding="utf-8")
-        self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access.log", script)
-        self.assertIn('chown caddy:caddy "${caddy_access_log}"', script)
-        self.assertIn('chmod 0600 "${caddy_access_log}"', script)
+        self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access-v2.log", script)
+        self.assertIn("-L ${caddy_access_log}", script)
+        self.assertIn("caddy:caddy 600", script)
+        self.assertNotIn('chown caddy:caddy "${caddy_access_log}"', script)
+        self.assertNotIn('chmod 0600 "${caddy_access_log}"', script)
         self.assertIn('install -o caddy -g caddy -m 0600 /dev/null "${caddy_access_log}"', script)
+
+    def test_release_transitions_prepare_the_versioned_caddy_access_log(self) -> None:
+        scripts = self.project_dir() / "deploy" / "scripts"
+        for name, marker in (
+            ("deploy-release.sh", "activation_link=${release_root}/.activate-"),
+            ("rollback-release.sh", "caddy validate"),
+        ):
+            with self.subTest(name=name):
+                source = (scripts / name).read_text(encoding="utf-8")
+                self.assertIn("ensure_caddy_access_log()", source)
+                self.assertIn("careertrellis-staging-access-v2.log", source)
+                self.assertIn("assert_caddy_runtime_privacy_ready()", source)
+                self.assertIn("--validate-only", source)
+                self.assertLess(source.index("ensure_caddy_access_log || return 1"), source.index(marker))
 
     def test_pilot_caddy_gate_is_fixed_root_only_and_fail_closed(self) -> None:
         project_dir = self.project_dir()
@@ -4177,6 +4194,13 @@ class DependencyLockTests(unittest.TestCase):
             "resp_headers>Location delete",
         ):
             self.assertIn(field, caddy_source)
+        for field in (
+            "log default {",
+            "request>uri delete",
+            "request>headers delete",
+            "resp_headers delete",
+        ):
+            self.assertIn(field, caddy_source)
         self.assertNotIn(
             "request>headers>X-CareerTrellis-Proxy-Token delete", caddy_source
         )
@@ -4215,6 +4239,14 @@ class DependencyLockTests(unittest.TestCase):
         self.assertEqual(1, summary.query_records)
         self.assertEqual(1, summary.representative_records)
 
+        challenge = self._synthetic_caddy_record()
+        challenge["status"] = 401
+        challenge["resp_headers"]["Www-Authenticate"] = [
+            caddy_log_privacy_module.ALLOWED_BASIC_CHALLENGE
+        ]
+        summary = caddy_log_privacy_module.scan_json_lines((json.dumps(challenge),))
+        self.assertEqual(1, summary.records)
+
     def test_caddy_log_privacy_scanner_rejects_sensitive_shapes_without_echo(self) -> None:
         private_sentinel = "private-sentinel@example.invalid"
         mutations = {
@@ -4237,6 +4269,30 @@ class DependencyLockTests(unittest.TestCase):
             ),
             "sensitive_query": lambda record: record["request"].update(
                 uri="/api/version?%63ode=private"
+            ),
+            "encoded_auth_path": lambda record: record["request"].update(
+                uri="/%61uth/callback"
+            ),
+            "double_encoded_auth_path": lambda record: record["request"].update(
+                uri="/%2561uth/callback"
+            ),
+            "encoded_sensitive_value": lambda record: record["request"].update(
+                uri="/api/version?view=private%40example.invalid"
+            ),
+            "double_encoded_sensitive_key": lambda record: record["request"].update(
+                uri="/api/version?%2563ode=private"
+            ),
+            "nested_encoded_sensitive_key": lambda record: record["request"].update(
+                uri="/api/version?next=%252Fcallback%253Fcode%253Dprivate"
+            ),
+            "malformed_encoding": lambda record: record["request"].update(
+                uri="/api/version?view=%ZZ"
+            ),
+            "excessive_encoding": lambda record: record["request"].update(
+                uri="/api/version?view=%2525252540"
+            ),
+            "credential_challenge": lambda record: record["resp_headers"].update(
+                {"Www-Authenticate": ["Basic private-token"]}
             ),
             "sensitive_value": lambda record: record.update(detail=private_sentinel),
         }
@@ -4298,6 +4354,54 @@ class DependencyLockTests(unittest.TestCase):
             self.assertNotIn(str(config_path), rendered)
             self.assertNotIn(str(log_path), rendered)
 
+    def test_caddy_log_privacy_cli_aggregates_plain_and_gzip_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config"
+            active_path = Path(temp_dir) / "active.log"
+            rotated_path = Path(temp_dir) / "rotated.log.gz"
+            config_path.write_text(
+                (self.project_dir() / "deploy" / "caddy" / "Caddyfile.staging").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            active_path.write_text(
+                json.dumps(self._synthetic_caddy_record()) + "\n", encoding="utf-8"
+            )
+            with gzip.open(rotated_path, "wt", encoding="utf-8") as handle:
+                handle.write(json.dumps(self._synthetic_caddy_record()) + "\n")
+            output = io.StringIO()
+            with patch("sys.stdout", output):
+                result = caddy_log_privacy_module.main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "--log",
+                        str(active_path),
+                        "--log",
+                        str(rotated_path),
+                    ]
+                )
+            self.assertEqual(0, result)
+            self.assertIn("records=2", output.getvalue())
+
+            before = rotated_path.read_bytes()
+            with patch("sys.stdout", io.StringIO()):
+                self.assertEqual(
+                    1,
+                    caddy_log_privacy_module.main(
+                        [
+                            "--config",
+                            str(config_path),
+                            "--log",
+                            str(active_path),
+                            "--log",
+                            str(active_path),
+                        ]
+                    ),
+                )
+            self.assertEqual(before, rotated_path.read_bytes())
+
     def test_caddy_log_privacy_static_validator_rejects_missing_or_duplicate_filters(self) -> None:
         caddy_source = (
             self.project_dir() / "deploy" / "caddy" / "Caddyfile.staging"
@@ -4330,6 +4434,18 @@ class DependencyLockTests(unittest.TestCase):
         misplaced_log_skip += "\nlog_skip /auth*\n"
         with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
             caddy_log_privacy_module.validate_caddy_config(misplaced_log_skip)
+        misplaced_runtime_filter = caddy_source.replace(
+            "\t\t\trequest>uri delete\n", "", 1
+        ) + "\nrequest>uri delete\n"
+        with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+            caddy_log_privacy_module.validate_caddy_config(misplaced_runtime_filter)
+        wrong_log_path = caddy_source.replace(
+            "careertrellis-staging-access-v2.log",
+            "careertrellis-staging-access.log",
+            1,
+        )
+        with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+            caddy_log_privacy_module.validate_caddy_config(wrong_log_path)
 
     def test_operator_diagnostics_are_release_bound_read_only_and_privacy_safe(self) -> None:
         scripts = self.project_dir() / "deploy" / "scripts"
@@ -4356,6 +4472,12 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("careertrellis-erasure-worker", erasure_helper)
         self.assertNotIn("CAREERTRELLIS_DATABASE_URL", erasure_helper)
         self.assertNotIn("CAREERTRELLIS_OBJECT_KEYRING", erasure_helper)
+        self.assertIn("careertrellis-staging-access-v2", caddy_helper)
+        self.assertIn("*.log.gz", caddy_helper)
+        self.assertIn('/usr/bin/cmp -s "${config_path}" "${release_config}"', caddy_helper)
+        self.assertIn('"${arguments[@]}"', caddy_helper)
+        self.assertIn("before_metadata=$(snapshot_metadata)", caddy_helper)
+        self.assertIn('[[ ${after_metadata} != "${before_metadata}" ]]', caddy_helper)
 
 
 class ProfileSecretPresenceTests(unittest.TestCase):

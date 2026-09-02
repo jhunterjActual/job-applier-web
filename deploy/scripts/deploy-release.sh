@@ -106,6 +106,46 @@ ensure_object_backup_health_roots() {
     fi
 }
 
+ensure_caddy_access_log() {
+    local log_directory=/var/log/caddy
+    local log_path=${log_directory}/careertrellis-staging-access-v2.log
+    if [[ -e ${log_directory} || -L ${log_directory} ]]; then
+        if [[ ! -d ${log_directory} || -L ${log_directory} || \
+              $(realpath "${log_directory}") != "${log_directory}" || \
+              $(stat -c '%U:%G %a' "${log_directory}") != "caddy:caddy 750" ]]; then
+            echo "The Caddy access-log directory is invalid." >&2
+            return 1
+        fi
+    else
+        install -d -o caddy -g caddy -m 0750 "${log_directory}" || return 1
+    fi
+    if [[ -e ${log_path} || -L ${log_path} ]]; then
+        if [[ ! -f ${log_path} || -L ${log_path} || \
+              $(stat -c '%U:%G %a' "${log_path}") != "caddy:caddy 600" ]]; then
+            echo "The Caddy access log is invalid." >&2
+            return 1
+        fi
+    else
+        install -o caddy -g caddy -m 0600 /dev/null "${log_path}" || return 1
+    fi
+}
+
+assert_caddy_runtime_privacy_ready() {
+    local target_release=$1
+    if [[ ! -x ${release_dir}/backend/venv/bin/python || \
+          ! -f ${release_dir}/backend/caddy_log_privacy.py || \
+          -L ${release_dir}/backend/caddy_log_privacy.py || \
+          ! -f ${target_release}/deploy/caddy/Caddyfile.staging || \
+          -L ${target_release}/deploy/caddy/Caddyfile.staging ]]; then
+        echo "The Caddy runtime privacy validator is unavailable." >&2
+        return 1
+    fi
+    "${release_dir}/backend/venv/bin/python" -B \
+        "${release_dir}/backend/caddy_log_privacy.py" \
+        --config "${target_release}/deploy/caddy/Caddyfile.staging" \
+        --validate-only >/dev/null
+}
+
 assert_no_active_pilot_acceptance() {
     if [[ -e ${pilot_acceptance_state} || -L ${pilot_acceptance_state} ]]; then
         echo "An active pilot acceptance attempt prevents release activation." >&2
@@ -470,6 +510,7 @@ activate_release() {
     local target_revision activation_link erasure_worker_active=false object_backup_health_available=false object_health_target pilot_acceptance_helper_available=false pilot_user_helper_available=false recovery_helpers_available=false
     local erasure_worker_enabled object_health_active_state search_worker_enabled
     target_revision=$(basename "${target_release}")
+    assert_caddy_runtime_privacy_ready "${target_release}" || return 1
 
     if systemctl is-active --quiet careertrellis-erasure-worker.service; then
         erasure_worker_active=true
@@ -537,6 +578,7 @@ activate_release() {
     fi
 
     assert_no_active_pilot_acceptance || return 1
+    ensure_caddy_access_log || return 1
     activation_link=${release_root}/.activate-${target_revision}-$$
     rm -f -- "${activation_link}"
     ln -s "${target_release}" "${activation_link}" || return 1
@@ -649,6 +691,7 @@ if ! activate_release "${release_dir}"; then
         echo "Restoring the prior code release." >&2
         if ! activate_release "${old_release}"; then
             echo "Critical: the prior release also failed readiness after restoration." >&2
+            systemctl stop careertrellis-erasure-worker.service careertrellis-worker.service careertrellis-web.service
         fi
     else
         systemctl stop careertrellis-erasure-worker.service careertrellis-worker.service careertrellis-web.service
