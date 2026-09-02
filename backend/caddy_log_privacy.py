@@ -59,15 +59,19 @@ FORBIDDEN_REQUEST_HEADERS = frozenset(
         "cf-connecting-ipv6",
         "cookie",
         "forwarded",
+        "from",
         "next-action",
         "proxy-authorization",
+        "range",
         "referer",
         "sec-ch-ua",
         "sec-ch-ua-mobile",
         "sec-ch-ua-platform",
+        "sec-purpose",
         "true-client-ip",
         "x-careertrellis-proxy-token",
         "x-forwarded-for",
+        "x-openai-host-hash",
         "x-real-ip",
     }
 )
@@ -103,6 +107,10 @@ REQUIRED_SITE_CONFIG_DIRECTIVES = (
     "request>headers>Sec-Ch-Ua-Platform delete",
     "request>headers>Next-Action delete",
     "request>headers>Referer delete",
+    "request>headers>From delete",
+    "request>headers>Range delete",
+    "request>headers>Sec-Purpose delete",
+    "request>headers>X-Openai-Host-Hash delete",
     "request>headers>Cf-Connecting-Ip delete",
     "request>headers>Cf-Connecting-Ipv6 delete",
     "request>headers>True-Client-Ip delete",
@@ -127,13 +135,19 @@ REQUIRED_RUNTIME_CONFIG_DIRECTIVES = (
     "resp_headers delete",
     "wrap json",
 )
+MINIMUM_SITE_PRIVACY_DIRECTIVES = (
+    "request>headers>From delete",
+    "request>headers>Range delete",
+    "request>headers>Sec-Purpose delete",
+    "request>headers>X-Openai-Host-Hash delete",
+)
 REQUIRED_CONFIG_DIRECTIVES = (
     *REQUIRED_SITE_CONFIG_DIRECTIVES,
     *REQUIRED_RUNTIME_CONFIG_DIRECTIVES,
 )
 SITE_BLOCK_OPENER = "staging-app.jhunterj.com {"
 SITE_LOG_OUTPUT_OPENER = (
-    "output file /var/log/caddy/careertrellis-staging-access-v3.log {"
+    "output file /var/log/caddy/careertrellis-staging-access-v4.log {"
 )
 
 
@@ -251,6 +265,35 @@ def validate_caddy_config(source: str) -> None:
         raise CaddyPrivacyError("config_contract_invalid")
     if any(line == "output discard" for line in lines):
         raise CaddyPrivacyError("config_contract_invalid")
+
+
+def validate_caddy_privacy_floor(source: str) -> None:
+    """Require the forward-only header-removal floor in the site log filter."""
+    lines = _active_config_lines(source)
+    site_start, site_end = _block_bounds(lines, SITE_BLOCK_OPENER)
+    log_start, log_end = _block_bounds(lines, "log {")
+    filter_starts = tuple(
+        index
+        for index, line in enumerate(lines)
+        if line == "format filter {" and log_start < index < log_end
+    )
+    if len(filter_starts) != 1:
+        raise CaddyPrivacyError("config_contract_invalid")
+    filter_start = filter_starts[0]
+    filter_end = _block_end(lines, filter_start)
+    if not (
+        site_start
+        < log_start
+        < filter_start
+        < filter_end
+        < log_end
+        < site_end
+    ):
+        raise CaddyPrivacyError("config_contract_invalid")
+    filter_lines = lines[filter_start + 1 : filter_end]
+    for directive in MINIMUM_SITE_PRIVACY_DIRECTIVES:
+        if filter_lines.count(directive) != 1 or lines.count(directive) != 1:
+            raise CaddyPrivacyError("config_contract_invalid")
 
 
 def _object(value: object, code: str) -> dict[str, object]:
@@ -468,16 +511,21 @@ def main(argv: list[str] | None = None) -> int:
             allow_no_representative = True
             argv = argv[:-1]
         validate_only = len(argv) == 3 and argv[2] == "--validate-only"
+        privacy_floor_only = (
+            len(argv) == 3 and argv[2] == "--validate-privacy-floor-only"
+        )
         if (
-            not validate_only
+            not (validate_only or privacy_floor_only)
             and (len(argv) < 4 or argv[0] != "--config" or len(argv[2:]) % 2)
         ):
             raise CaddyPrivacyError("arguments_invalid")
-        if validate_only and argv[0] != "--config":
+        if (validate_only or privacy_floor_only) and argv[0] != "--config":
             raise CaddyPrivacyError("arguments_invalid")
         config_path = Path(argv[1])
         log_paths: list[Path] = []
-        for index in range(2, 2 if validate_only else len(argv), 2):
+        for index in range(
+            2, 2 if validate_only or privacy_floor_only else len(argv), 2
+        ):
             if argv[index] != "--log":
                 raise CaddyPrivacyError("arguments_invalid")
             log_paths.append(Path(argv[index + 1]))
@@ -485,8 +533,12 @@ def main(argv: list[str] | None = None) -> int:
             raise CaddyPrivacyError("arguments_invalid")
         if config_path.is_symlink() or any(path.is_symlink() for path in log_paths):
             raise CaddyPrivacyError("source_invalid")
-        validate_caddy_config(config_path.read_text(encoding="utf-8"))
-        if validate_only:
+        config_source = config_path.read_text(encoding="utf-8")
+        if privacy_floor_only:
+            validate_caddy_privacy_floor(config_source)
+        else:
+            validate_caddy_config(config_source)
+        if validate_only or privacy_floor_only:
             summary = CaddyPrivacySummary(0, 0, 0)
         else:
             with ExitStack() as stack:

@@ -66,10 +66,12 @@ forward correction.
 
 If a hosted activation fails, do not rerun that release, invoke rollback,
 rotate or reinstall the pilot credential, rewrite cutover/recovery evidence, or
-manually start an application service. Leave the existing staged verifier in
+manually start Caddy or an application service. Leave the existing staged verifier in
 place, prepare and review a forward release, and use that exact target's deploy
 helper once. The forward deploy performs a privacy-safe credential `check` and
-starts both enabled consumers before the web producer.
+starts both enabled consumers before the web producer. Failed activation
+containment disables and stops Caddy as well as stopping the application
+services; only a reviewed forward activation may re-enable the public edge.
 
 ```bash
 sudo CAREERTRELLIS_SOURCE_DIR=/srv/careertrellis/job-applier-web \
@@ -98,10 +100,12 @@ authorization boundary remain mandatory.
    and every retained versioned rotation contain no
    `/auth` entries; no raw connection, forwarded-IP, or User-Agent values; and
    no Authorization, Proxy-Authorization, `X-CareerTrellis-Proxy-Token`,
-   Cookie, Set-Cookie, Referer, or Location fields. A representative non-auth
-   record must retain only hashed connection-IP and User-Agent fingerprints.
+   Cookie, Set-Cookie, Referer, From, Range, Sec-Purpose,
+   `X-Openai-Host-Hash`, or Location fields. A representative non-auth record
+   must retain only hashed connection-IP and User-Agent fingerprints.
 
-The exact active `.53` release includes a root-only, read-only check for item
+The `.56` forward correction starts a new `v4` access-log generation and
+includes a root-only, read-only check for item
 5. It accepts no arguments, requires the durable Caddy configuration to match
 the current immutable release, reads the privacy-filtered active log plus its
 plain or gzip rotations, and emits bounded counts and fixed result codes:
@@ -117,6 +121,14 @@ fixed Basic Auth challenge is permitted only in its response-header context.
 It never prints a record, path, query, header, matched value, or source
 location, and never rewrites a log. It requires representative non-auth
 evidence across the aggregate; an empty set is not acceptance evidence.
+
+The superseded `v3` log and rotations remain restricted evidence and are not
+renamed, truncated, or deleted by this release. After `.56` activation, verify
+with count-only metadata that `v4` grows and `v3` does not. Retire `v3` only
+through a separately authorized, exact-target retention procedure. Because
+`.55` lacks these four deletions, the `.56` deploy and rollback helpers reject
+it at the forward-only privacy floor. Use a reviewed forward correction rather
+than attempting to reactivate it.
 
 To rotate the pilot password, create and store a new distinct password and run:
 

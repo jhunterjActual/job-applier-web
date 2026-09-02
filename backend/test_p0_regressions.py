@@ -3017,8 +3017,8 @@ class DependencyLockTests(unittest.TestCase):
 
     def test_provisioning_keeps_the_caddy_access_log_service_writable(self) -> None:
         script = (self.project_dir() / "deploy" / "scripts" / "provision-staging-host.sh").read_text(encoding="utf-8")
-        self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access-v3.log", script)
-        self.assertNotIn("careertrellis-staging-access-v2", script)
+        self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access-v4.log", script)
+        self.assertNotIn("careertrellis-staging-access-v3", script)
         self.assertIn("-L ${caddy_access_log}", script)
         self.assertIn("caddy:caddy 600", script)
         self.assertIn("root:root 600 0", script)
@@ -3039,8 +3039,8 @@ class DependencyLockTests(unittest.TestCase):
             with self.subTest(name=name):
                 source = (scripts / name).read_text(encoding="utf-8")
                 self.assertIn("ensure_caddy_access_log()", source)
-                self.assertIn("careertrellis-staging-access-v3.log", source)
-                self.assertNotIn("careertrellis-staging-access-v2", source)
+                self.assertIn("careertrellis-staging-access-v4.log", source)
+                self.assertNotIn("careertrellis-staging-access-v3", source)
                 self.assertIn("root:root 600 0", source)
                 self.assertIn(
                     'chown --no-dereference --from=root:root caddy:caddy "${log_path}"',
@@ -3049,8 +3049,15 @@ class DependencyLockTests(unittest.TestCase):
                 self.assertNotIn('chmod 0600 "${log_path}"', source)
                 self.assertIn("assert_caddy_runtime_privacy_ready()", source)
                 self.assertIn("--validate-only", source)
+                self.assertIn("--validate-privacy-floor-only", source)
                 self.assertIn('"${target_release}/backend/venv/bin/python"', source)
                 self.assertIn('"${target_release}/backend/caddy_log_privacy.py"', source)
+                privacy_floor_runtime = (
+                    '"${release_dir}/backend/venv/bin/python"'
+                    if name == "deploy-release.sh"
+                    else '"${current_release}/backend/venv/bin/python"'
+                )
+                self.assertIn(privacy_floor_runtime, source)
                 self.assertLess(source.index("ensure_caddy_access_log || return 1"), source.index(marker))
 
     def test_pilot_caddy_gate_is_fixed_root_only_and_fail_closed(self) -> None:
@@ -3330,10 +3337,7 @@ class DependencyLockTests(unittest.TestCase):
         self.assertLess(erasure_active, web_restart)
 
         failure = deploy[deploy.index('if ! activate_release "${release_dir}"') :]
-        self.assertIn(
-            "systemctl stop careertrellis-erasure-worker.service careertrellis-worker.service careertrellis-web.service",
-            failure,
-        )
+        self.assertEqual(2, failure.count("contain_failed_activation || true"))
         self.assertIn("requires a reviewed forward correction", failure)
         self.assertNotIn("pending-cutover", failure)
         self.assertNotIn("post-import-recovery", failure)
@@ -3343,6 +3347,44 @@ class DependencyLockTests(unittest.TestCase):
         self.assertNotIn("systemctl ", prepare_prefix)
         self.assertNotIn("caddy validate", prepare_prefix)
         self.assertNotIn("ln -s", prepare_prefix)
+
+    def test_failed_forward_activation_contains_caddy_and_application_services(self) -> None:
+        deploy = (
+            self.project_dir() / "deploy" / "scripts" / "deploy-release.sh"
+        ).read_text(encoding="utf-8")
+        containment = deploy[
+            deploy.index("contain_failed_activation() {") : deploy.index(
+                'if ! activate_release "${release_dir}"'
+            )
+        ]
+        self.assertIn("systemctl disable --now caddy.service", containment)
+        self.assertLess(
+            containment.index("systemctl disable --now caddy.service"),
+            containment.index("careertrellis-web.service"),
+        )
+        for unit in (
+            "caddy.service",
+            "careertrellis-erasure-worker.service",
+            "careertrellis-worker.service",
+            "careertrellis-web.service",
+        ):
+            self.assertIn(unit, containment)
+        self.assertIn(
+            'systemctl show "${unit}" --property=ActiveState --value',
+            containment,
+        )
+        self.assertIn("unit_active_state} != inactive", containment)
+        self.assertIn("systemctl is-enabled caddy.service", containment)
+        self.assertIn("caddy_enabled_state} != disabled", containment)
+        self.assertIn("containment could not confirm", containment)
+
+        failure = deploy[deploy.index('if ! activate_release "${release_dir}"') :]
+        self.assertEqual(2, failure.count("contain_failed_activation || true"))
+        self.assertNotIn(
+            "systemctl stop careertrellis-erasure-worker.service "
+            "careertrellis-worker.service careertrellis-web.service",
+            failure,
+        )
 
     def test_generated_object_recovery_is_manual_append_only_and_identity_bounded(self) -> None:
         project_dir = self.project_dir()
@@ -4321,6 +4363,10 @@ class DependencyLockTests(unittest.TestCase):
             "request>client_ip hash",
             "request>headers>User-Agent hash",
             "request>headers>Referer delete",
+            "request>headers>From delete",
+            "request>headers>Range delete",
+            "request>headers>Sec-Purpose delete",
+            "request>headers>X-Openai-Host-Hash delete",
             "request>headers>Cf-Connecting-Ip delete",
             "request>headers>Cf-Connecting-Ipv6 delete",
             "request>headers>True-Client-Ip delete",
@@ -4392,10 +4438,19 @@ class DependencyLockTests(unittest.TestCase):
         self.assertTrue(
             {
                 "next-action",
+                "from",
+                "range",
                 "sec-ch-ua",
                 "sec-ch-ua-mobile",
                 "sec-ch-ua-platform",
+                "sec-purpose",
+                "x-openai-host-hash",
             }.issubset(caddy_log_privacy_module.FORBIDDEN_REQUEST_HEADERS)
+        )
+        self.assertTrue(
+            caddy_log_privacy_module.FORBIDDEN_REQUEST_HEADERS.isdisjoint(
+                caddy_log_privacy_module.ALLOWED_REQUEST_HEADERS
+            )
         )
         private_sentinel = "private-sentinel@example.invalid"
         mutations = {
@@ -4588,13 +4643,67 @@ class DependencyLockTests(unittest.TestCase):
         ) + "\nrequest>uri delete\n"
         with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
             caddy_log_privacy_module.validate_caddy_config(misplaced_runtime_filter)
-        wrong_log_path = caddy_source.replace(
+        for wrong_name in (
             "careertrellis-staging-access-v3.log",
             "careertrellis-staging-access.log",
+        ):
+            with self.subTest(wrong_name=wrong_name):
+                wrong_log_path = caddy_source.replace(
+                    "careertrellis-staging-access-v4.log",
+                    wrong_name,
+                    1,
+                )
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.validate_caddy_config(wrong_log_path)
+
+    def test_caddy_privacy_floor_blocks_pre_correction_release_contracts(self) -> None:
+        caddy_source = (
+            self.project_dir() / "deploy" / "caddy" / "Caddyfile.staging"
+        ).read_text(encoding="utf-8")
+        caddy_log_privacy_module.validate_caddy_privacy_floor(caddy_source)
+        legacy_sink = caddy_source.replace(
+            "careertrellis-staging-access-v4.log",
+            "careertrellis-staging-access-v3.log",
             1,
         )
-        with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
-            caddy_log_privacy_module.validate_caddy_config(wrong_log_path)
+        caddy_log_privacy_module.validate_caddy_privacy_floor(legacy_sink)
+        for directive in caddy_log_privacy_module.MINIMUM_SITE_PRIVACY_DIRECTIVES:
+            with self.subTest(directive=directive):
+                missing = caddy_source.replace(directive, "", 1)
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.validate_caddy_privacy_floor(missing)
+                duplicated = caddy_source.replace(
+                    directive,
+                    f"{directive}\n\t\t\t{directive}",
+                    1,
+                )
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.validate_caddy_privacy_floor(duplicated)
+                commented = caddy_source.replace(directive, f"# {directive}", 1)
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.validate_caddy_privacy_floor(commented)
+                misplaced = caddy_source.replace(
+                    f"\t\t\t{directive}\n",
+                    "",
+                    1,
+                ) + f"\n{directive}\n"
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.validate_caddy_privacy_floor(misplaced)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "Caddyfile"
+            config_path.write_text(caddy_source, encoding="utf-8")
+            with patch("sys.stdout", io.StringIO()):
+                self.assertEqual(
+                    0,
+                    caddy_log_privacy_module.main(
+                        [
+                            "--config",
+                            str(config_path),
+                            "--validate-privacy-floor-only",
+                        ]
+                    ),
+                )
 
     def test_operator_diagnostics_are_release_bound_read_only_and_privacy_safe(self) -> None:
         scripts = self.project_dir() / "deploy" / "scripts"
@@ -4621,8 +4730,8 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("careertrellis-erasure-worker", erasure_helper)
         self.assertNotIn("CAREERTRELLIS_DATABASE_URL", erasure_helper)
         self.assertNotIn("CAREERTRELLIS_OBJECT_KEYRING", erasure_helper)
-        self.assertIn("careertrellis-staging-access-v3", caddy_helper)
-        self.assertNotIn("careertrellis-staging-access-v2", caddy_helper)
+        self.assertIn("careertrellis-staging-access-v4", caddy_helper)
+        self.assertNotIn("careertrellis-staging-access-v3", caddy_helper)
         self.assertIn("*.log.gz", caddy_helper)
         self.assertIn('/usr/bin/cmp -s "${config_path}" "${release_config}"', caddy_helper)
         self.assertIn('"${arguments[@]}"', caddy_helper)

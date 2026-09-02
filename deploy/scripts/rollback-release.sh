@@ -93,7 +93,7 @@ ensure_object_backup_health_roots() {
 
 ensure_caddy_access_log() {
     local log_directory=/var/log/caddy
-    local log_path=${log_directory}/careertrellis-staging-access-v3.log
+    local log_path=${log_directory}/careertrellis-staging-access-v4.log
     if [[ -e ${log_directory} || -L ${log_directory} ]]; then
         if [[ ! -d ${log_directory} || -L ${log_directory} || \
               $(realpath "${log_directory}") != "${log_directory}" || \
@@ -132,7 +132,11 @@ assert_caddy_runtime_privacy_ready() {
     "${target_release}/backend/venv/bin/python" -B \
         "${target_release}/backend/caddy_log_privacy.py" \
         --config "${target_release}/deploy/caddy/Caddyfile.staging" \
-        --validate-only >/dev/null
+        --validate-only >/dev/null || return 1
+    "${current_release}/backend/venv/bin/python" -B \
+        "${current_release}/backend/caddy_log_privacy.py" \
+        --config "${target_release}/deploy/caddy/Caddyfile.staging" \
+        --validate-privacy-floor-only >/dev/null
 }
 
 assert_no_active_pilot_acceptance() {
