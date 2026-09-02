@@ -34,6 +34,12 @@ SEARCH_CANCELLED_MESSAGE = (
     "Search stopped. Any jobs committed before the stop request were kept."
 )
 ERROR_CODES = frozenset({"search_failed", "provider_search_failed", "attempts_exhausted"})
+SEARCH_PHASE_MESSAGES = {
+    "preparing": "Preparing the search request.",
+    "queued": "Waiting for the search worker.",
+    "running": "Searching job sources and analyzing matches.",
+    "cancel_requested": "Stopping safely after the current search step.",
+}
 
 
 class SearchRunUnavailable(RuntimeError):
@@ -74,6 +80,8 @@ class SearchRunRepository(Protocol):
     def has_active(self) -> bool: ...
 
     def request_cancel(self, operation_id: object) -> bool: ...
+
+    def request_cancel_active(self) -> bool: ...
 
     def claim(self, run_id: object, worker_id: object, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> SearchRunClaim | None: ...
 
@@ -175,12 +183,40 @@ def _public_result(status: str, result_json: object) -> dict[str, object] | None
     return minimized_search_result(parsed if isinstance(parsed, dict) else {})
 
 
+def _public_timestamp(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _status(row: Mapping[str, Any] | None) -> dict[str, object]:
     if row is None:
-        return {"searching": False, "last_result": None}
+        return {"searching": False, "active_search": None, "last_result": None}
     run_status = str(row["status"])
+    active = run_status in ACTIVE_STATUSES
+    active_search = None
+    if active:
+        active_search = {
+            "phase": run_status,
+            "message": SEARCH_PHASE_MESSAGES[run_status],
+            "started_at": _public_timestamp(
+                row.get("started_at") or row.get("created_at")
+            ),
+            "last_activity_at": _public_timestamp(row.get("updated_at")),
+            "stop_requested": run_status == "cancel_requested",
+        }
     return {
-        "searching": run_status in ACTIVE_STATUSES,
+        "searching": active,
+        "active_search": active_search,
         "last_result": _public_result(run_status, row.get("result_json")),
     }
 
@@ -270,8 +306,9 @@ class SQLiteSearchRunRepository:
         connection = self._connection_factory()
         try:
             row = connection.execute(
-                """SELECT status, result_json FROM search_runs
-                   WHERE owner_user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                """SELECT status, result_json, created_at, started_at, updated_at
+                   FROM search_runs WHERE owner_user_id = ?
+                   ORDER BY created_at DESC, rowid DESC LIMIT 1""",
                 (self._owner_user_id,),
             ).fetchone()
             return _status(dict(row) if row else None)
@@ -301,22 +338,13 @@ class SQLiteSearchRunRepository:
         try:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT id, status FROM search_runs WHERE owner_user_id = ? AND operation_id = ?",
+                "SELECT id, status, lease_expires_at FROM search_runs WHERE owner_user_id = ? AND operation_id = ?",
                 (self._owner_user_id, operation),
             ).fetchone()
             if row is None or row["status"] not in ACTIVE_STATUSES:
                 connection.commit()
                 return False
-            if row["status"] in ("preparing", "queued"):
-                connection.execute(
-                    "UPDATE search_runs SET status='cancelled', completed_at=?, updated_at=? WHERE id=?",
-                    (now, now, row["id"]),
-                )
-            else:
-                connection.execute(
-                    "UPDATE search_runs SET status='cancel_requested', updated_at=? WHERE id=?",
-                    (now, row["id"]),
-                )
+            self._cancel_row(connection, row, now)
             connection.commit()
             return True
         except sqlite3.DatabaseError as exc:
@@ -324,6 +352,56 @@ class SQLiteSearchRunRepository:
             raise SearchRunUnavailable() from exc
         finally:
             connection.close()
+
+    def request_cancel_active(self) -> bool:
+        connection = self._connection_factory()
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT id, status, lease_expires_at FROM search_runs
+                   WHERE owner_user_id = ?
+                     AND status IN ('preparing','queued','running','cancel_requested')
+                   ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                (self._owner_user_id,),
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return False
+            self._cancel_row(connection, row, now)
+            connection.commit()
+            return True
+        except sqlite3.DatabaseError as exc:
+            connection.rollback()
+            raise SearchRunUnavailable() from exc
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _cancel_row(connection: Any, row: Mapping[str, Any], now: str) -> None:
+        lease_expires_at = row["lease_expires_at"]
+        terminal = row["status"] in ("preparing", "queued")
+        if lease_expires_at:
+            try:
+                terminal = terminal or datetime.fromisoformat(
+                    lease_expires_at
+                ) <= datetime.fromisoformat(now)
+            except (TypeError, ValueError):
+                terminal = True
+        elif row["status"] in ("running", "cancel_requested"):
+            terminal = True
+        if terminal:
+            connection.execute(
+                """UPDATE search_runs SET status='cancelled', completed_at=?,
+                   lease_expires_at=NULL, lease_token=NULL, worker_id=NULL, updated_at=?
+                   WHERE id=?""",
+                (now, now, row["id"]),
+            )
+        else:
+            connection.execute(
+                "UPDATE search_runs SET status='cancel_requested', updated_at=? WHERE id=?",
+                (now, row["id"]),
+            )
 
     def claim(self, run_id: object, worker_id: object, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> SearchRunClaim | None:
         run = _uuid(run_id, "run ID")
@@ -510,7 +588,8 @@ class PostgreSQLSearchRunRepository:
     def status(self) -> dict[str, object]:
         try:
             with tenant_transaction(self._engine, self._owner_user_id) as connection:
-                row = connection.execute(text("""SELECT status, result_json
+                row = connection.execute(text("""SELECT status, result_json,
+                        created_at, started_at, updated_at
                     FROM careertrellis.search_runs WHERE owner_user_id=:owner
                     ORDER BY created_at DESC, id DESC LIMIT 1"""), {"owner": self._owner_user_id}).mappings().first()
             return _status(row)
@@ -532,20 +611,51 @@ class PostgreSQLSearchRunRepository:
             return False
         try:
             with tenant_transaction(self._engine, self._owner_user_id) as connection:
-                row = connection.execute(text("""SELECT id, status FROM careertrellis.search_runs
+                row = connection.execute(text("""SELECT id, status, lease_expires_at,
+                        (lease_expires_at IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP)
+                            AS lease_expired
+                    FROM careertrellis.search_runs
                     WHERE owner_user_id=:owner AND operation_id=CAST(:operation AS uuid) FOR UPDATE"""),
                     {"owner": self._owner_user_id, "operation": operation}).mappings().first()
                 if row is None or row["status"] not in ACTIVE_STATUSES:
                     return False
-                terminal = row["status"] in ("preparing", "queued")
-                connection.execute(text("""UPDATE careertrellis.search_runs SET
-                    status=:status, completed_at=CASE WHEN :terminal THEN CURRENT_TIMESTAMP ELSE completed_at END,
-                    updated_at=CURRENT_TIMESTAMP WHERE id=:run_id AND owner_user_id=:owner"""),
-                    {"status": "cancelled" if terminal else "cancel_requested", "terminal": terminal,
-                     "run_id": row["id"], "owner": self._owner_user_id})
+                self._cancel_row(connection, row)
                 return True
         except SQLAlchemyError as exc:
             raise SearchRunUnavailable() from exc
+
+    def request_cancel_active(self) -> bool:
+        try:
+            with tenant_transaction(self._engine, self._owner_user_id) as connection:
+                row = connection.execute(text("""SELECT id, status, lease_expires_at,
+                        (lease_expires_at IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP)
+                            AS lease_expired
+                    FROM careertrellis.search_runs
+                    WHERE owner_user_id=:owner
+                      AND status IN ('preparing','queued','running','cancel_requested')
+                    ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE"""),
+                    {"owner": self._owner_user_id}).mappings().first()
+                if row is None:
+                    return False
+                self._cancel_row(connection, row)
+                return True
+        except SQLAlchemyError as exc:
+            raise SearchRunUnavailable() from exc
+
+    def _cancel_row(self, connection: Any, row: Mapping[str, Any]) -> None:
+        terminal = row["status"] in ("preparing", "queued")
+        if row["status"] in ("running", "cancel_requested"):
+            terminal = terminal or row["lease_expired"] is True
+        connection.execute(text("""UPDATE careertrellis.search_runs SET
+            status=:status,
+            completed_at=CASE WHEN :terminal THEN CURRENT_TIMESTAMP ELSE completed_at END,
+            lease_expires_at=CASE WHEN :terminal THEN NULL ELSE lease_expires_at END,
+            lease_token=CASE WHEN :terminal THEN NULL ELSE lease_token END,
+            worker_id=CASE WHEN :terminal THEN NULL ELSE worker_id END,
+            updated_at=CURRENT_TIMESTAMP
+            WHERE id=:run_id AND owner_user_id=:owner"""),
+            {"status": "cancelled" if terminal else "cancel_requested", "terminal": terminal,
+             "run_id": row["id"], "owner": self._owner_user_id})
 
     def claim(self, run_id: object, worker_id: object, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> SearchRunClaim | None:
         run = _uuid(run_id, "run ID")

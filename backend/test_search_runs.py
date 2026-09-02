@@ -17,6 +17,7 @@ import search_run_execution as execution_module
 import worker as worker_module
 from operations import OperationCancelled
 from search_run_repository import (
+    PostgreSQLSearchRunRepository,
     SQLiteSearchRunRepository,
     SearchRunAlreadyActive,
     SearchRunLeaseLost,
@@ -103,6 +104,101 @@ class SQLiteSearchRunTests(unittest.TestCase):
         repository.request_cancel(race_operation)
         repository.succeed(race_claim, {"success": True, "jobs_added": 10})
         self.assertTrue(repository.status()["last_result"]["cancelled"])
+
+    def test_active_search_can_be_recovered_and_cancelled_without_operation_id(self) -> None:
+        repository = self.repository()
+        other_owner = self.repository(2)
+        other_owner.enqueue(
+            "00000000-0000-4000-8000-000000000114", "other owner", ""
+        )
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000014", "private keywords", "Private place"
+        )
+        preparing = repository.status()
+        self.assertTrue(preparing["searching"])
+        self.assertEqual("preparing", preparing["active_search"]["phase"])
+        self.assertIsNotNone(preparing["active_search"]["started_at"])
+        self.assertIsNotNone(preparing["active_search"]["last_activity_at"])
+        self.assertNotIn("private keywords", json.dumps(preparing).lower())
+        self.assertNotIn("private place", json.dumps(preparing).lower())
+        self.assertNotIn("00000000-0000-4000-8000-000000000014", json.dumps(preparing))
+
+        repository.publish_prepared(run_id, "private keywords", "Private place")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000014"
+        )
+        running = repository.status()
+        self.assertEqual("running", running["active_search"]["phase"])
+        self.assertFalse(running["active_search"]["stop_requested"])
+
+        self.assertTrue(repository.request_cancel_active())
+        stopping = repository.status()
+        self.assertEqual("cancel_requested", stopping["active_search"]["phase"])
+        self.assertTrue(stopping["active_search"]["stop_requested"])
+        with self.assertRaises(OperationCancelled):
+            repository.heartbeat(claim)
+        repository.cancel(claim)
+        self.assertFalse(repository.status()["searching"])
+        self.assertTrue(repository.status()["last_result"]["cancelled"])
+        self.assertTrue(other_owner.status()["searching"])
+        self.assertFalse(repository.request_cancel_active())
+
+    def test_expired_orphaned_search_is_cancelled_immediately(self) -> None:
+        repository = self.repository()
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000015", "orphan", ""
+        )
+        repository.publish_prepared(run_id, "orphan", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000015"
+        )
+        connection = self.connection()
+        connection.execute(
+            "UPDATE search_runs SET lease_expires_at='2000-01-01T00:00:00+00:00' WHERE id=?",
+            (run_id,),
+        )
+        connection.commit()
+        connection.close()
+
+        self.assertTrue(repository.request_cancel_active())
+        self.assertFalse(repository.status()["searching"])
+        self.assertTrue(repository.status()["last_result"]["cancelled"])
+        with self.assertRaises(SearchRunLeaseLost):
+            repository.succeed(claim, {"success": True, "jobs_added": 99})
+
+    def test_postgres_active_cancel_is_owner_scoped_and_uses_database_lease_time(self) -> None:
+        for lease_expired, expected_status in (
+            (False, "cancel_requested"),
+            (True, "cancelled"),
+        ):
+            with self.subTest(lease_expired=lease_expired):
+                connection = Mock()
+                selected = Mock()
+                selected.mappings.return_value.first.return_value = {
+                    "id": "00000000-0000-4000-8000-000000000016",
+                    "status": "running",
+                    "lease_expires_at": object(),
+                    "lease_expired": lease_expired,
+                }
+                connection.execute.side_effect = [selected, Mock()]
+                transaction = Mock()
+                transaction.__enter__ = Mock(return_value=connection)
+                transaction.__exit__ = Mock(return_value=False)
+                with patch(
+                    "search_run_repository.tenant_transaction",
+                    return_value=transaction,
+                ):
+                    repository = PostgreSQLSearchRunRepository(42, engine=Mock())
+                    self.assertTrue(repository.request_cancel_active())
+
+                select_sql = str(connection.execute.call_args_list[0].args[0])
+                self.assertIn("owner_user_id=:owner", select_sql)
+                self.assertIn("lease_expires_at <= CURRENT_TIMESTAMP", select_sql)
+                self.assertIn("FOR UPDATE", select_sql)
+                update_parameters = connection.execute.call_args_list[1].args[1]
+                self.assertEqual(42, update_parameters["owner"])
+                self.assertEqual(expected_status, update_parameters["status"])
+                self.assertEqual(lease_expired, update_parameters["terminal"])
 
     def test_two_workers_cannot_claim_the_same_run(self) -> None:
         repository = self.repository()

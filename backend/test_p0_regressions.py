@@ -1458,7 +1458,7 @@ class FrontendStartupTests(unittest.TestCase):
                 self.assertIn(f'id="{element_id}"', html_source)
         self.assertIn("Checking AI Provider", html_source)
         self.assertIn("i18n.js?v=20260812-1", html_source)
-        self.assertIn("app.js?v=20260902-1", html_source)
+        self.assertIn("app.js?v=20260902-2", html_source)
         self.assertIn("index.css?v=20260902-1", html_source)
 
     def test_profile_and_provider_secrets_use_separate_form_boundaries(self) -> None:
@@ -5746,6 +5746,7 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
             )
 
         self.assertFalse(raced["success"])
+        self.assertTrue(raced["active"])
         repository.upsert_saved_search.assert_not_called()
         search_runs.enqueue.assert_called_once_with(None, "submitted", "")
         search_runs.publish_prepared.assert_not_called()
@@ -5798,8 +5799,19 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
 
     def test_search_status_and_cancel_dispatch_to_durable_repository(self) -> None:
         repository = Mock()
-        repository.status.return_value = {"searching": True, "last_result": None}
+        repository.status.return_value = {
+            "searching": True,
+            "active_search": {
+                "phase": "running",
+                "message": "Searching job sources and analyzing matches.",
+                "started_at": "2026-09-02T20:00:00Z",
+                "last_activity_at": "2026-09-02T20:01:00Z",
+                "stop_requested": False,
+            },
+            "last_result": None,
+        }
         repository.request_cancel.return_value = True
+        repository.request_cancel_active.return_value = True
         operation_id = "00000000-0000-4000-8000-000000000103"
         with (
             patch.object(app_module, "runtime_search_run_repository", return_value=repository),
@@ -5807,8 +5819,29 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
         ):
             self.assertEqual(repository.status.return_value, app_module.get_search_status())
             cancelled = app_module.cancel_operation(operation_id)
+            recovered_cancel = app_module.cancel_active_search()
         self.assertTrue(cancelled["active"])
+        self.assertTrue(recovered_cancel["active"])
         repository.request_cancel.assert_called_once_with(operation_id)
+        repository.request_cancel_active.assert_called_once_with()
+
+    def test_search_frontend_recovers_status_and_owner_scoped_stop_after_reload(self) -> None:
+        script_source = (Path(__file__).parent / "static" / "app.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("startSearchStatusPolling();", script_source)
+        self.assertIn("function searchProgressSubtitle(activeSearch)", script_source)
+        self.assertIn("Last activity ${formatSearchDuration", script_source)
+        self.assertIn("/api/jobs/search/cancel", script_source)
+        self.assertIn("status.active_search?.stop_requested", script_source)
+        self.assertIn("searchStatusPollGeneration += 1", script_source)
+        self.assertIn(
+            "if (generation !== searchStatusPollGeneration) return;", script_source
+        )
+        self.assertIn(
+            "setInterval(() => void pollSearchStatus(generation), 3000)", script_source
+        )
+        self.assertIn("announcedPhase !== lastAnnouncedSearchPhase", script_source)
 
 
 class WebAuthenticationTests(unittest.TestCase):

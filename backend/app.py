@@ -1556,6 +1556,29 @@ def get_search_status() -> dict:
         ) from exc
 
 
+@app.post("/api/jobs/search/cancel")
+def cancel_active_search() -> dict:
+    """Stop the authenticated owner's current durable search after a reload."""
+    try:
+        active = runtime_search_run_repository(
+            sqlite_connection_factory=get_db_connection
+        ).request_cancel_active()
+    except SearchRunUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Search cancellation is temporarily unavailable.",
+        ) from exc
+    return {
+        "success": True,
+        "active": active,
+        "message": (
+            "Stopping safely after the current search step."
+            if active else
+            "The search has already finished."
+        ),
+    }
+
+
 @app.get("/api/source-diagnostics")
 def get_source_diagnostic_history(limit: int = 100) -> JSONResponse:
     """Retrieve recent privacy-minimized source notices for troubleshooting."""
@@ -1985,7 +2008,11 @@ def search_jobs(
         )
         run_id = search_run_repository.enqueue(operation_id, req.keywords, req.location)
     except SearchRunAlreadyActive:
-        return {"success": False, "message": "A job search is already in progress."}
+        return {
+            "success": False,
+            "active": True,
+            "message": "A job search is already in progress.",
+        }
     except SearchRunUnavailable as exc:
         raise HTTPException(
             status_code=503,

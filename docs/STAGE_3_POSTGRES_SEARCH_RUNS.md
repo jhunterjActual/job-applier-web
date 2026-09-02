@@ -88,6 +88,18 @@ Statuses are `preparing`, `queued`, `running`, `cancel_requested`, `succeeded`,
 cancellation becomes durable and is observed at the next existing safe search
 checkpoint. Jobs committed before that checkpoint remain committed.
 
+`GET /api/jobs/status` exposes only the active phase plus UTC start and
+last-activity timestamps; it never returns the operation ID, request terms,
+location, owner, worker, or lease. The browser recreates its progress modal and
+poller from that owner-scoped status after a reload, shows elapsed time and the
+age of the latest durable heartbeat, and keeps Stop available. The normal
+operation-ID cancellation route remains available to the tab that submitted
+the run. `POST /api/jobs/search/cancel` addresses only the authenticated
+owner's current active run, so a restarted browser can stop work without the
+lost tab-local operation ID. It immediately closes preparing, queued, and
+expired-lease work; a live running lease becomes `cancel_requested` until the
+worker reaches its next safe checkpoint.
+
 A claim receives a random lease token, bounded expiry, and incremented attempt.
 Heartbeats renew only the matching owner/run/token. After a crash, the broker
 makes the expired row eligible; a new worker atomically replaces the lease.
