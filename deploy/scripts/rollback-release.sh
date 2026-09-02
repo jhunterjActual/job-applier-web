@@ -91,6 +91,50 @@ ensure_object_backup_health_roots() {
     fi
 }
 
+ensure_caddy_access_log() {
+    local log_directory=/var/log/caddy
+    local log_path=${log_directory}/careertrellis-staging-access-v2.log
+    if [[ -e ${log_directory} || -L ${log_directory} ]]; then
+        if [[ ! -d ${log_directory} || -L ${log_directory} || \
+              $(realpath "${log_directory}") != "${log_directory}" || \
+              $(stat -c '%U:%G %a' "${log_directory}") != "caddy:caddy 750" ]]; then
+            echo "The Caddy access-log directory is invalid." >&2
+            return 1
+        fi
+    else
+        install -d -o caddy -g caddy -m 0750 "${log_directory}" || return 1
+    fi
+    if [[ -e ${log_path} || -L ${log_path} ]]; then
+        if [[ -f ${log_path} && ! -L ${log_path} && \
+              $(stat -c '%U:%G %a %s' "${log_path}") == "root:root 600 0" ]]; then
+            chown --no-dereference --from=root:root caddy:caddy "${log_path}" || return 1
+        fi
+        if [[ ! -f ${log_path} || -L ${log_path} || \
+              $(stat -c '%U:%G %a' "${log_path}") != "caddy:caddy 600" ]]; then
+            echo "The Caddy access log is invalid." >&2
+            return 1
+        fi
+    else
+        install -o caddy -g caddy -m 0600 /dev/null "${log_path}" || return 1
+    fi
+}
+
+assert_caddy_runtime_privacy_ready() {
+    local target_release=$1
+    if [[ ! -x ${current_release}/backend/venv/bin/python || \
+          ! -f ${current_release}/backend/caddy_log_privacy.py || \
+          -L ${current_release}/backend/caddy_log_privacy.py || \
+          ! -f ${target_release}/deploy/caddy/Caddyfile.staging || \
+          -L ${target_release}/deploy/caddy/Caddyfile.staging ]]; then
+        echo "The Caddy runtime privacy validator is unavailable." >&2
+        return 1
+    fi
+    "${current_release}/backend/venv/bin/python" -B \
+        "${current_release}/backend/caddy_log_privacy.py" \
+        --config "${target_release}/deploy/caddy/Caddyfile.staging" \
+        --validate-only >/dev/null
+}
+
 assert_no_active_pilot_acceptance() {
     if [[ -e ${pilot_acceptance_state} || -L ${pilot_acceptance_state} ]]; then
         echo "An active pilot acceptance attempt prevents rollback." >&2
@@ -154,6 +198,8 @@ activate_release() {
     local revision activation_link environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds erasure_worker_active=false object_backup_health_available=false object_health_active_state object_health_file object_health_target pilot_acceptance_helper_available=false pilot_user_helper_available=false recovery_helper recovery_helpers_available=false
     local erasure_worker_enabled search_worker_enabled web_erasure_worker_enabled web_search_worker_enabled
     revision=$(basename "${release}")
+
+    assert_caddy_runtime_privacy_ready "${release}" || return 1
 
     /usr/local/sbin/careertrellis-authority assert-release-startable "${release}" || return 1
 
@@ -351,6 +397,7 @@ activate_release() {
     fi
 
     assert_no_active_pilot_acceptance || return 1
+    ensure_caddy_access_log || return 1
     caddy validate \
         --config "${release}/deploy/caddy/Caddyfile.staging" \
         --envfile /etc/caddy/careertrellis-staging.env || return 1

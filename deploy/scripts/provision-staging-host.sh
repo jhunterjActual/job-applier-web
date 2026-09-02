@@ -176,10 +176,17 @@ else
 fi
 install -d -o root -g root -m 0755 /etc/careertrellis
 install -d -o caddy -g caddy -m 0750 /var/log/caddy
-caddy_access_log=/var/log/caddy/careertrellis-staging-access.log
-if [[ -e ${caddy_access_log} ]]; then
-    chown caddy:caddy "${caddy_access_log}"
-    chmod 0600 "${caddy_access_log}"
+caddy_access_log=/var/log/caddy/careertrellis-staging-access-v2.log
+if [[ -e ${caddy_access_log} || -L ${caddy_access_log} ]]; then
+    if [[ -f ${caddy_access_log} && ! -L ${caddy_access_log} && \
+          $(stat -c '%U:%G %a %s' "${caddy_access_log}") == "root:root 600 0" ]]; then
+        chown --no-dereference --from=root:root caddy:caddy "${caddy_access_log}"
+    fi
+    if [[ ! -f ${caddy_access_log} || -L ${caddy_access_log} || \
+          $(stat -c '%U:%G %a' "${caddy_access_log}") != "caddy:caddy 600" ]]; then
+        echo "The Caddy access log is invalid." >&2
+        exit 1
+    fi
 else
     install -o caddy -g caddy -m 0600 /dev/null "${caddy_access_log}"
 fi

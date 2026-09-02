@@ -1,3 +1,20 @@
+{
+	# The site access log has its own filtered file sink below. Caddy may also
+	# emit HTTP records through its default process logger, which systemd sends
+	# to journald. Keep those records useful while removing every request value.
+	log default {
+		format filter {
+			user_id delete
+			request>remote_ip hash
+			request>client_ip hash
+			request>uri delete
+			request>headers delete
+			resp_headers delete
+			wrap json
+		}
+	}
+}
+
 staging-app.jhunterj.com {
 	encode zstd gzip
 
@@ -32,7 +49,7 @@ staging-app.jhunterj.com {
 	}
 
 	log {
-		output file /var/log/caddy/careertrellis-staging-access.log {
+		output file /var/log/caddy/careertrellis-staging-access-v2.log {
 			roll_size 10MiB
 			roll_keep 5
 			roll_keep_for 168h
