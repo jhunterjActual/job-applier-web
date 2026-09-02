@@ -108,7 +108,7 @@ ensure_object_backup_health_roots() {
 
 ensure_caddy_access_log() {
     local log_directory=/var/log/caddy
-    local log_path=${log_directory}/careertrellis-staging-access-v2.log
+    local log_path=${log_directory}/careertrellis-staging-access-v3.log
     if [[ -e ${log_directory} || -L ${log_directory} ]]; then
         if [[ ! -d ${log_directory} || -L ${log_directory} || \
               $(realpath "${log_directory}") != "${log_directory}" || \
@@ -136,16 +136,16 @@ ensure_caddy_access_log() {
 
 assert_caddy_runtime_privacy_ready() {
     local target_release=$1
-    if [[ ! -x ${release_dir}/backend/venv/bin/python || \
-          ! -f ${release_dir}/backend/caddy_log_privacy.py || \
-          -L ${release_dir}/backend/caddy_log_privacy.py || \
+    if [[ ! -x ${target_release}/backend/venv/bin/python || \
+          ! -f ${target_release}/backend/caddy_log_privacy.py || \
+          -L ${target_release}/backend/caddy_log_privacy.py || \
           ! -f ${target_release}/deploy/caddy/Caddyfile.staging || \
           -L ${target_release}/deploy/caddy/Caddyfile.staging ]]; then
         echo "The Caddy runtime privacy validator is unavailable." >&2
         return 1
     fi
-    "${release_dir}/backend/venv/bin/python" -B \
-        "${release_dir}/backend/caddy_log_privacy.py" \
+    "${target_release}/backend/venv/bin/python" -B \
+        "${target_release}/backend/caddy_log_privacy.py" \
         --config "${target_release}/deploy/caddy/Caddyfile.staging" \
         --validate-only >/dev/null
 }

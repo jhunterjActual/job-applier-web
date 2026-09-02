@@ -3017,7 +3017,8 @@ class DependencyLockTests(unittest.TestCase):
 
     def test_provisioning_keeps_the_caddy_access_log_service_writable(self) -> None:
         script = (self.project_dir() / "deploy" / "scripts" / "provision-staging-host.sh").read_text(encoding="utf-8")
-        self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access-v2.log", script)
+        self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access-v3.log", script)
+        self.assertNotIn("careertrellis-staging-access-v2", script)
         self.assertIn("-L ${caddy_access_log}", script)
         self.assertIn("caddy:caddy 600", script)
         self.assertIn("root:root 600 0", script)
@@ -3038,7 +3039,8 @@ class DependencyLockTests(unittest.TestCase):
             with self.subTest(name=name):
                 source = (scripts / name).read_text(encoding="utf-8")
                 self.assertIn("ensure_caddy_access_log()", source)
-                self.assertIn("careertrellis-staging-access-v2.log", source)
+                self.assertIn("careertrellis-staging-access-v3.log", source)
+                self.assertNotIn("careertrellis-staging-access-v2", source)
                 self.assertIn("root:root 600 0", source)
                 self.assertIn(
                     'chown --no-dereference --from=root:root caddy:caddy "${log_path}"',
@@ -3047,6 +3049,8 @@ class DependencyLockTests(unittest.TestCase):
                 self.assertNotIn('chmod 0600 "${log_path}"', source)
                 self.assertIn("assert_caddy_runtime_privacy_ready()", source)
                 self.assertIn("--validate-only", source)
+                self.assertIn('"${target_release}/backend/venv/bin/python"', source)
+                self.assertIn('"${target_release}/backend/caddy_log_privacy.py"', source)
                 self.assertLess(source.index("ensure_caddy_access_log || return 1"), source.index(marker))
 
     def test_pilot_caddy_gate_is_fixed_root_only_and_fail_closed(self) -> None:
@@ -4385,6 +4389,14 @@ class DependencyLockTests(unittest.TestCase):
         self.assertEqual(1, summary.records)
 
     def test_caddy_log_privacy_scanner_rejects_sensitive_shapes_without_echo(self) -> None:
+        self.assertTrue(
+            {
+                "next-action",
+                "sec-ch-ua",
+                "sec-ch-ua-mobile",
+                "sec-ch-ua-platform",
+            }.issubset(caddy_log_privacy_module.FORBIDDEN_REQUEST_HEADERS)
+        )
         private_sentinel = "private-sentinel@example.invalid"
         mutations = {
             "auth_root": lambda record: record["request"].update(uri="/auth"),
@@ -4577,7 +4589,7 @@ class DependencyLockTests(unittest.TestCase):
         with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
             caddy_log_privacy_module.validate_caddy_config(misplaced_runtime_filter)
         wrong_log_path = caddy_source.replace(
-            "careertrellis-staging-access-v2.log",
+            "careertrellis-staging-access-v3.log",
             "careertrellis-staging-access.log",
             1,
         )
@@ -4609,7 +4621,8 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("careertrellis-erasure-worker", erasure_helper)
         self.assertNotIn("CAREERTRELLIS_DATABASE_URL", erasure_helper)
         self.assertNotIn("CAREERTRELLIS_OBJECT_KEYRING", erasure_helper)
-        self.assertIn("careertrellis-staging-access-v2", caddy_helper)
+        self.assertIn("careertrellis-staging-access-v3", caddy_helper)
+        self.assertNotIn("careertrellis-staging-access-v2", caddy_helper)
         self.assertIn("*.log.gz", caddy_helper)
         self.assertIn('/usr/bin/cmp -s "${config_path}" "${release_config}"', caddy_helper)
         self.assertIn('"${arguments[@]}"', caddy_helper)

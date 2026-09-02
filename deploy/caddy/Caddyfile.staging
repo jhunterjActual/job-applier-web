@@ -49,7 +49,7 @@ staging-app.jhunterj.com {
 	}
 
 	log {
-		output file /var/log/caddy/careertrellis-staging-access-v2.log {
+		output file /var/log/caddy/careertrellis-staging-access-v3.log {
 			roll_size 10MiB
 			roll_keep 5
 			roll_keep_for 168h
@@ -59,6 +59,10 @@ staging-app.jhunterj.com {
 			request>remote_ip hash
 			request>client_ip hash
 			request>headers>User-Agent hash
+			request>headers>Sec-Ch-Ua delete
+			request>headers>Sec-Ch-Ua-Mobile delete
+			request>headers>Sec-Ch-Ua-Platform delete
+			request>headers>Next-Action delete
 			request>headers>Referer delete
 			request>headers>Cf-Connecting-Ip delete
 			request>headers>Cf-Connecting-Ipv6 delete
