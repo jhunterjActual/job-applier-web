@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event, Lock
 from unittest.mock import ANY, Mock, patch
 
 import database as database_module
@@ -315,6 +315,76 @@ class SQLiteSearchRunTests(unittest.TestCase):
         with patch.object(execution_module, "run_job_search_and_matching", provider):
             execution_module.execute_search_claim(claim, repository)
         self.assertEqual([], open_connections)
+
+    def test_execution_renews_lease_during_a_blocked_provider_step(self) -> None:
+        repository = self.repository()
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000063", "long search", ""
+        )
+        repository.publish_prepared(run_id, "long search", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000063"
+        )
+        original_heartbeat = repository.heartbeat
+        heartbeat_lock = Lock()
+        heartbeat_count = 0
+        background_heartbeat = Event()
+
+        def heartbeat(target_claim, lease_seconds=300):
+            nonlocal heartbeat_count
+            original_heartbeat(target_claim, lease_seconds)
+            with heartbeat_lock:
+                heartbeat_count += 1
+                if heartbeat_count >= 2:
+                    background_heartbeat.set()
+
+        def provider(_keywords, _location, _checkpoint):
+            self.assertTrue(background_heartbeat.wait(1))
+            return {"success": True, "jobs_added": 1, "provider_alerts": []}
+
+        repository.heartbeat = heartbeat
+        with (
+            patch.object(execution_module, "LEASE_HEARTBEAT_SECONDS", 0.01),
+            patch.object(execution_module, "run_job_search_and_matching", provider),
+        ):
+            execution_module.execute_search_claim(claim, repository)
+
+        self.assertGreaterEqual(heartbeat_count, 2)
+        self.assertEqual(1, repository.status()["last_result"]["jobs_added"])
+
+    def test_background_heartbeat_observes_cancel_during_provider_step(self) -> None:
+        repository = self.repository()
+        operation = "00000000-0000-4000-8000-000000000064"
+        run_id = repository.enqueue(operation, "long cancellation", "")
+        repository.publish_prepared(run_id, "long cancellation", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000064"
+        )
+        original_heartbeat = repository.heartbeat
+        cancellation_observed = Event()
+
+        def heartbeat(target_claim, lease_seconds=300):
+            try:
+                original_heartbeat(target_claim, lease_seconds)
+            except OperationCancelled:
+                cancellation_observed.set()
+                raise
+
+        def provider(_keywords, _location, _checkpoint):
+            self.assertTrue(repository.request_cancel(operation))
+            self.assertTrue(cancellation_observed.wait(1))
+            return {"success": True, "jobs_added": 99, "provider_alerts": []}
+
+        repository.heartbeat = heartbeat
+        with (
+            patch.object(execution_module, "LEASE_HEARTBEAT_SECONDS", 0.01),
+            patch.object(execution_module, "run_job_search_and_matching", provider),
+        ):
+            execution_module.execute_search_claim(claim, repository)
+
+        result = repository.status()["last_result"]
+        self.assertTrue(result["cancelled"])
+        self.assertNotIn("jobs_added", result)
 
     def test_preparing_is_active_but_not_claimable_until_published(self) -> None:
         repository = self.repository()

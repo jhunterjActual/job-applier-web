@@ -101,11 +101,16 @@ expired-lease work; a live running lease becomes `cancel_requested` until the
 worker reaches its next safe checkpoint.
 
 A claim receives a random lease token, bounded expiry, and incremented attempt.
-Heartbeats renew only the matching owner/run/token. After a crash, the broker
-makes the expired row eligible; a new worker atomically replaces the lease.
-The stale worker can no longer complete it. At three attempts the broker moves
-the run to fixed-error `failed` instead of retrying forever. Cancellation on an
-expired worker becomes `cancelled`, not a fresh provider attempt.
+Heartbeats renew only the matching owner/run/token. A dedicated lease heartbeat
+runs while bounded provider calls are in progress, so a multi-step search does
+not lose its lease merely because one browser or AI step spans the normal
+checkpoint interval. It holds no connection between pulses and propagates
+durable cancellation, lease loss, or worker stop state to the main execution
+path. After a crash, the broker makes the expired row eligible; a new worker
+atomically replaces the lease. The stale worker can no longer complete it. At
+three attempts the broker moves the run to fixed-error `failed` instead of
+retrying forever. Cancellation on an expired worker becomes `cancelled`, not a
+fresh provider attempt.
 
 Worker SIGTERM and deploy shutdown are infrastructure events, not user
 cancellation. At the next safe checkpoint the worker exits claim execution
