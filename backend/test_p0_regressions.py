@@ -9953,6 +9953,21 @@ class SearchQualityTests(unittest.TestCase):
         self.assertFalse(is_specific_job_url("https://careers.smartrecruiters.com/QADInc/corporate-careers"))
         self.assertTrue(is_specific_job_url("https://jobs.smartrecruiters.com/Example/12345-data-analyst"))
 
+    def test_greenhouse_posting_redirect_to_company_board_is_rejected(self) -> None:
+        requested = "https://job-boards.greenhouse.io/synthetic/jobs/123456"
+        company_board = "https://job-boards.greenhouse.io/synthetic"
+
+        self.assertTrue(is_specific_job_url(requested))
+        self.assertFalse(is_specific_job_url(company_board))
+        self.assertEqual(
+            "",
+            searcher_module._canonical_redirected_job_url(requested, company_board),
+        )
+        self.assertEqual(
+            requested,
+            searcher_module._canonical_redirected_job_url(requested, requested),
+        )
+
     def test_tracking_variants_share_one_canonical_url(self) -> None:
         base = "https://jobs.lever.co/example/abc-123"
         self.assertEqual(base, canonicalize_job_url(base + "/?source=linkedin#apply"))

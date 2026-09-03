@@ -149,8 +149,10 @@ subsequent queries use Bing instead of repeating the same degraded source. Bing
 also serves as the immediate fallback for the failed query. Result links are
 accepted only after unwrapping known Yahoo or Bing redirect formats and passing
 the existing ATS-domain, specific-posting, canonicalization, and per-provider
-candidate limits. Fallback logs contain only the source transition and a fixed
-failure class.
+candidate limits. A posting that later redirects to a provider's company-wide
+board is rejected as stale before matching rather than treating the board title
+and contents as one position. Fallback logs contain only the source transition
+and a fixed failure class.
 
 Worker SIGTERM and deploy shutdown are infrastructure events, not user
 cancellation. At the next safe checkpoint the worker exits claim execution

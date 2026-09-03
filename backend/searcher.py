@@ -643,6 +643,21 @@ def is_specific_job_url(url: str) -> bool:
         return False
 
 
+def _canonical_redirected_job_url(requested_url: str, final_url: str) -> str:
+    """Reject known-provider redirects that no longer identify one posting."""
+    canonical_url = canonicalize_job_url(final_url)
+    if not canonical_url:
+        return ""
+    requested_provider = provider_for_url(requested_url)
+    if requested_provider in PROVIDER_DOMAINS:
+        if (
+            provider_for_url(canonical_url) != requested_provider
+            or not is_specific_job_url(canonical_url)
+        ):
+            return ""
+    return canonical_url
+
+
 def _decoded_search_result_url(link: str) -> str:
     """Unwrap only the known Yahoo and Bing result-link formats."""
     decoded = html.unescape(str(link or ""))
@@ -918,9 +933,14 @@ def _scrape_job_details_browser(url: str, allow_partial: bool = False, diagnosti
                 return _reject_job_fetch(diagnostic, "provider_error", f"Posting returned HTTP {response.status}.")
             if not is_public_http_url(page.url):
                 return _reject_job_fetch(diagnostic, "unsafe_url", "Posting redirected to a non-public destination.")
-            final_url = canonicalize_job_url(page.url)
-            if final_url:
-                details["url"] = final_url
+            final_url = _canonical_redirected_job_url(url, page.url)
+            if not final_url:
+                return _reject_job_fetch(
+                    diagnostic,
+                    "stale",
+                    "The posting redirected to a page that no longer identifies one job.",
+                )
+            details["url"] = final_url
             
             # Wait for content or title elements to load dynamically
             try:
