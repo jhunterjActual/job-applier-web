@@ -9860,7 +9860,10 @@ class SearchQualityTests(unittest.TestCase):
         self.assertIn(("retrying_match_analysis", 2, 3), progress)
 
     def test_match_provider_retries_the_same_inspected_batch_before_saving(self) -> None:
-        posting_url = "https://jobs.lever.co/synthetic/retry-match"
+        posting_urls = [
+            f"https://jobs.lever.co/synthetic/retry-match-{index}"
+            for index in range(searcher_module.MATCH_BATCH_SIZE + 1)
+        ]
         repository = Mock()
         repository.search_catalog_context.return_value = {
             "known_status_by_url": {},
@@ -9875,10 +9878,21 @@ class SearchQualityTests(unittest.TestCase):
             {"success": False, "error": "temporary", "error_code": "network"},
             {
                 "success": True,
+                "matches": [
+                    {
+                        "index": index,
+                        "match_score": 90,
+                        "match_analysis": "Synthetic match",
+                    }
+                    for index in range(searcher_module.MATCH_BATCH_SIZE)
+                ],
+            },
+            {
+                "success": True,
                 "matches": [{
                     "index": 0,
                     "match_score": 90,
-                    "match_analysis": "Synthetic match",
+                    "match_analysis": "Synthetic trailing match",
                 }],
             },
         ])
@@ -9894,18 +9908,22 @@ class SearchQualityTests(unittest.TestCase):
             patch.object(
                 searcher_module,
                 "search_yahoo_jobs",
-                return_value=[{"url": posting_url}],
+                return_value=[{"url": url} for url in posting_urls],
             ) as source_search,
-            patch.object(searcher_module, "inspect_job_posting", return_value={
-                "status": "ok",
-                "details": {
-                    "url": posting_url,
-                    "title": "Data Director",
-                    "company": "Synthetic Employer",
-                    "description": "Synthetic description",
-                    "source": "lever",
+            patch.object(
+                searcher_module,
+                "inspect_job_posting",
+                side_effect=lambda url, **_kwargs: {
+                    "status": "ok",
+                    "details": {
+                        "url": url,
+                        "title": "Data Director",
+                        "company": "Synthetic Employer",
+                        "description": "Synthetic description",
+                        "source": "lever",
+                    },
                 },
-            }),
+            ),
             patch.object(searcher_module, "analyze_job_matches_batch", matcher),
             patch.object(searcher_module, "_wait_for_match_retry") as retry_wait,
         ):
@@ -9921,8 +9939,11 @@ class SearchQualityTests(unittest.TestCase):
             )
 
         self.assertTrue(result["success"])
-        self.assertEqual(1, result["jobs_added"])
-        self.assertEqual(3, matcher.call_count)
+        self.assertFalse(result["partial"])
+        self.assertIsNone(result["error"])
+        self.assertIsNone(result["failure_code"])
+        self.assertEqual(6, result["jobs_added"])
+        self.assertEqual(4, matcher.call_count)
         self.assertEqual(1, source_search.call_count)
         self.assertEqual(2, retry_wait.call_count)
         self.assertIn(("retrying_match_analysis", 1, 3), progress)

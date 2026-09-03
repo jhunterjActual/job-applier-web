@@ -1326,17 +1326,22 @@ def run_job_search_and_matching(
             if batch_res.get("success"):
                 break
 
-            ai_error = batch_res.get("error") or "The selected AI provider could not score the discovered jobs."
+            attempt_error = (
+                batch_res.get("error")
+                or "The selected AI provider could not score the discovered jobs."
+            )
             candidate_code = str(
                 batch_res.get("error_code") or "provider_error"
             ).strip().lower()
-            ai_error_code = (
+            attempt_error_code = (
                 candidate_code
                 if candidate_code in MATCH_PROVIDER_FAILURE_CODES
                 else "provider_error"
             )
-            retryable = ai_error_code in MATCH_PROVIDER_RETRYABLE_ERRORS
+            retryable = attempt_error_code in MATCH_PROVIDER_RETRYABLE_ERRORS
             if not retryable or provider_attempt >= MATCH_PROVIDER_MAX_ATTEMPTS:
+                ai_error = attempt_error
+                ai_error_code = attempt_error_code
                 print(json.dumps({
                     "event": "search_match_provider_failed",
                     "provider": normalize_provider(ai_settings.provider),
@@ -1348,7 +1353,7 @@ def run_job_search_and_matching(
             print(json.dumps({
                 "event": "search_match_provider_retry_scheduled",
                 "provider": normalize_provider(ai_settings.provider),
-                "error_code": ai_error_code,
+                "error_code": attempt_error_code,
                 "attempt": provider_attempt,
                 "max_attempts": MATCH_PROVIDER_MAX_ATTEMPTS,
             }, separators=(",", ":")), flush=True)
