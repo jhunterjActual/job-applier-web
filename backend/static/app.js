@@ -2705,7 +2705,7 @@ function renderSearchProgress(activeSearch) {
         : "in progress");
     const attempt = Number(activeSearch?.attempt);
     const maxAttempts = Number(activeSearch?.max_attempts);
-    addMetric("Attempt", Number.isFinite(attempt) && Number.isFinite(maxAttempts) && attempt > 0
+    addMetric("Worker claim", Number.isFinite(attempt) && Number.isFinite(maxAttempts) && attempt > 0
         ? `${attempt} / ${maxAttempts}`
         : "waiting");
     loadingSubtitle.classList.add("search-progress-status");

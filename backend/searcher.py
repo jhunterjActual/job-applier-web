@@ -1,8 +1,10 @@
+import base64
 import html
 import ipaddress
 import json
 import re
 import socket
+import time
 import urllib.parse
 import urllib.error
 import urllib.request
@@ -30,6 +32,24 @@ MAX_SEARCH_RESPONSE_BYTES = 1 * 1024 * 1024
 MAX_PROVIDER_CANDIDATES = 25
 SEARCH_HTTP_TIMEOUT_SECONDS = 12
 MATCH_BATCH_SIZE = 5
+MATCH_PROVIDER_MAX_ATTEMPTS = 3
+MATCH_PROVIDER_RETRY_DELAYS_SECONDS = (5.0, 15.0)
+MATCH_PROVIDER_RETRYABLE_ERRORS = frozenset({
+    "empty_response",
+    "invalid_response",
+    "network",
+    "oversized_response",
+    "provider_error",
+    "rate_limit",
+    "timeout",
+})
+MATCH_PROVIDER_FAILURE_CODES = MATCH_PROVIDER_RETRYABLE_ERRORS | frozenset({
+    "authentication",
+    "missing_key",
+    "model_unavailable",
+    "permission",
+    "unsupported_request",
+})
 TRACKING_QUERY_KEYS = {
     "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "referrer", "source",
 }
@@ -43,6 +63,19 @@ PROVIDER_DOMAINS = {
 
 class SearchKeywordResponse(BaseModel):
     titles: list[str]
+
+
+def _wait_for_match_retry(seconds: float, check_cancelled: Callable[[], None]) -> None:
+    """Keep bounded retry waits responsive to a durable stop request."""
+    deadline = time.monotonic() + max(0.0, seconds)
+    while True:
+        check_cancelled()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(1.0, remaining))
+
+
 INVALID_JOB_TEXT = (
     "internet explorer 11 is no longer supported",
     "consent to cookies",
@@ -609,11 +642,94 @@ def is_specific_job_url(url: str) -> bool:
     except Exception:
         return False
 
-def search_yahoo_jobs(keywords: str, location: str = "", diagnostics: dict | None = None) -> list:
+
+def _decoded_search_result_url(link: str) -> str:
+    """Unwrap only the known Yahoo and Bing result-link formats."""
+    decoded = html.unescape(str(link or ""))
+    try:
+        parsed = urllib.parse.urlsplit(decoded)
+    except ValueError:
+        return ""
+    if (parsed.hostname or "").lower() == "r.search.yahoo.com":
+        match = re.search(r"/RU=([^/]+)", decoded)
+        if match:
+            return urllib.parse.unquote(match.group(1))
+    try:
+        if (
+            (parsed.hostname or "").lower() in {"bing.com", "www.bing.com"}
+            and parsed.path == "/ck/a"
+        ):
+            token = urllib.parse.parse_qs(parsed.query).get("u", [""])[0]
+            if token.startswith("a1"):
+                encoded = token[2:]
+                encoded += "=" * (-len(encoded) % 4)
+                return base64.urlsafe_b64decode(encoded).decode("utf-8")
+            if token.startswith(("http://", "https://")):
+                return token
+    except (UnicodeDecodeError, ValueError):
+        return ""
+    return decoded
+
+
+def _search_result_candidates(
+    url: str,
+    provider: str,
+    health: dict | None,
+) -> list[str]:
+    request = urllib.request.Request(url, headers={
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 Chrome/130 Safari/537.36"
+        ),
+    })
+    with urllib.request.urlopen(request, timeout=SEARCH_HTTP_TIMEOUT_SECONDS) as response:
+        payload = response.read(MAX_SEARCH_RESPONSE_BYTES + 1)
+    if len(payload) > MAX_SEARCH_RESPONSE_BYTES:
+        if health is not None:
+            health["partial_results"]["oversized_responses"] += 1
+        payload = payload[:MAX_SEARCH_RESPONSE_BYTES]
+    document = payload.decode("utf-8", errors="replace")
+    candidates = []
+    for link in re.findall(r'href="([^"]+)"', document):
+        decoded = _decoded_search_result_url(link)
+        if provider_for_url(decoded) != provider or "/embed/" in decoded:
+            continue
+        if health is not None:
+            health["raw_candidates"] += 1
+        if not is_specific_job_url(decoded):
+            continue
+        canonical_url = canonicalize_job_url(decoded)
+        if not canonical_url or canonical_url in candidates:
+            continue
+        if len(candidates) >= MAX_PROVIDER_CANDIDATES:
+            if health is not None:
+                health["partial_results"]["candidate_limit_hits"] += 1
+            break
+        candidates.append(canonical_url)
+    return candidates
+
+
+def _source_failure_code(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return "http_5xx" if 500 <= exc.code <= 599 else "http_error"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "timeout"
+    if isinstance(exc, urllib.error.URLError):
+        return "timeout" if isinstance(exc.reason, (TimeoutError, socket.timeout)) else "network"
+    return "unexpected"
+
+
+def search_yahoo_jobs(
+    keywords: str,
+    location: str = "",
+    diagnostics: dict | None = None,
+    source_state: dict | None = None,
+) -> list:
     """
-    Queries Yahoo Search (which has relaxed bot blockages) across Greenhouse,
-    Lever, Ashby, and SmartRecruiters for the given keywords and location filters.
-    To avoid search engine query truncation, queries are run per domain.
+    Query Yahoo per ATS domain, failing over to Bing after a source error.
+
+    A run-scoped circuit breaker prevents a blanket Yahoo failure from being
+    repeated for every keyword, location, and ATS domain.
     
     Args:
         keywords (str): The search phrase / job title keywords.
@@ -623,10 +739,8 @@ def search_yahoo_jobs(keywords: str, location: str = "", diagnostics: dict | Non
         list: A list of dictionaries representing the found job posting URLs.
     """
     domains = list(PROVIDER_DOMAINS.values())
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
-    }
-    
+    state = source_state if source_state is not None else {"yahoo_available": True}
+    state.setdefault("yahoo_available", True)
     jobs = []
     seen_urls = set()
     
@@ -640,70 +754,57 @@ def search_yahoo_jobs(keywords: str, location: str = "", diagnostics: dict | Non
             query += f" {location}"
             
         encoded_query = urllib.parse.quote_plus(query)
-        url = f"https://search.yahoo.com/search?p={encoded_query}"
-        
-        req = urllib.request.Request(url, headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=SEARCH_HTTP_TIMEOUT_SECONDS) as response:
-                payload = response.read(MAX_SEARCH_RESPONSE_BYTES + 1)
-                if len(payload) > MAX_SEARCH_RESPONSE_BYTES:
-                    if health is not None:
-                        health["partial_results"]["oversized_responses"] += 1
-                    payload = payload[:MAX_SEARCH_RESPONSE_BYTES]
-                html = payload.decode('utf-8', errors='replace')
-                
-                # Find all href links
-                found_links = re.findall(r'href="([^"]+)"', html)
-                matching_urls = []
-                for link in found_links:
-                    decoded = link
-                    # Yahoo search result links are wrapped in redirects starting with r.search.yahoo.com
-                    if "r.search.yahoo.com" in link:
-                        match = re.search(r'/RU=([^/]+)', link)
-                        if match:
-                            decoded = urllib.parse.unquote(match.group(1))
-                    
-                    # Check for direct Lever, Greenhouse, Ashby, or SmartRecruiters job posting boards
-                    if provider_for_url(decoded) == provider and "yahoo.com" not in decoded and "/embed/" not in decoded:
-                        if health is not None:
-                            health["raw_candidates"] += 1
-                        if is_specific_job_url(decoded):
-                            canonical_url = canonicalize_job_url(decoded)
-                            if canonical_url and canonical_url not in matching_urls:
-                                if len(matching_urls) >= MAX_PROVIDER_CANDIDATES:
-                                    if health is not None:
-                                        health["partial_results"]["candidate_limit_hits"] += 1
-                                    break
-                                matching_urls.append(canonical_url)
-                
-                # Deduplicate and format results for this domain
-                for actual_url in matching_urls:
-                    if not actual_url:
-                        continue
-                    if actual_url not in seen_urls:
-                        seen_urls.add(actual_url)
-                        jobs.append({
-                            "title": "Job Posting",
-                            "url": actual_url,
-                            "snippet": ""
-                        })
-                        if health is not None:
-                            health["valid_discovered"] += 1
-        except (TimeoutError, socket.timeout):
-            if health is not None:
-                health["partial_results"]["timeouts"] += 1
-        except urllib.error.URLError as e:
-            if isinstance(getattr(e, "reason", None), (TimeoutError, socket.timeout)):
+        candidates = None
+        yahoo_error = None
+        if state["yahoo_available"]:
+            try:
+                candidates = _search_result_candidates(
+                    f"https://search.yahoo.com/search?p={encoded_query}",
+                    provider,
+                    health,
+                )
+            except Exception as exc:
+                yahoo_error = _source_failure_code(exc)
+                state["yahoo_available"] = False
+                print(json.dumps({
+                    "event": "search_source_fallback_activated",
+                    "from": "yahoo",
+                    "to": "bing",
+                    "error_code": yahoo_error,
+                }, separators=(",", ":")), flush=True)
+
+        if candidates is None:
+            try:
+                candidates = _search_result_candidates(
+                    f"https://www.bing.com/search?q={encoded_query}",
+                    provider,
+                    health,
+                )
+            except Exception as exc:
+                fallback_error = _source_failure_code(exc)
                 if health is not None:
-                    health["partial_results"]["timeouts"] += 1
-            else:
-                print(f"Error during Yahoo search for {domain}: {e}")
+                    if "timeout" in {yahoo_error, fallback_error}:
+                        health["partial_results"]["timeouts"] += 1
+                    else:
+                        health["errors"].append(fallback_error)
+                print(json.dumps({
+                    "event": "search_source_request_failed",
+                    "provider": provider,
+                    "source": "bing",
+                    "error_code": fallback_error,
+                }, separators=(",", ":")), flush=True)
+                candidates = []
+
+        for actual_url in candidates:
+            if actual_url not in seen_urls:
+                seen_urls.add(actual_url)
+                jobs.append({
+                    "title": "Job Posting",
+                    "url": actual_url,
+                    "snippet": "",
+                })
                 if health is not None:
-                    health["errors"].append(type(e).__name__)
-        except Exception as e:
-            print(f"Error during Yahoo search for {domain}: {e}")
-            if health is not None:
-                health["errors"].append(type(e).__name__)
+                    health["valid_discovered"] += 1
             
     return jobs
 
@@ -1159,11 +1260,17 @@ def run_job_search_and_matching(
     provider_candidate_counts = {provider: 0 for provider in PROVIDER_DOMAINS}
     source_total = len(search_keywords) * len(locs)
     source_completed = 0
+    source_state = {"yahoo_available": True}
     report_progress("searching_sources", source_completed, source_total)
     for kw in search_keywords:
         for loc in locs:
             check_cancelled()
-            kw_results = search_yahoo_jobs(kw, loc, provider_health)
+            kw_results = search_yahoo_jobs(
+                kw,
+                loc,
+                provider_health,
+                source_state=source_state,
+            )
             check_cancelled()
             for item in kw_results:
                 check_cancelled()
@@ -1185,34 +1292,78 @@ def run_job_search_and_matching(
     saved_count = 0
     matches_added = 0
     ai_error = None
+    ai_error_code = None
     report_progress("inspecting_postings", inspected_count, len(results))
 
     def process_pending_jobs() -> bool:
-        nonlocal analyzed_count, saved_count, matches_added, ai_error
+        nonlocal analyzed_count, saved_count, matches_added, ai_error, ai_error_code
         if not pending_jobs:
             return True
         batch = list(pending_jobs)
         pending_jobs.clear()
         report_progress("analyzing_matches", analyzed_count, len(results))
-        try:
-            check_cancelled()
-            batch_res = analyze_job_matches_batch(
-                resume_text,
-                batch,
-                api_key,
-                ai_provider=ai_settings.provider,
-                ai_model=ai_settings.model,
+        batch_res = None
+        for provider_attempt in range(1, MATCH_PROVIDER_MAX_ATTEMPTS + 1):
+            try:
+                check_cancelled()
+                batch_res = analyze_job_matches_batch(
+                    resume_text,
+                    batch,
+                    api_key,
+                    ai_provider=ai_settings.provider,
+                    ai_model=ai_settings.model,
+                )
+                check_cancelled()
+            except OperationCancelled:
+                raise
+            except Exception:
+                batch_res = {
+                    "success": False,
+                    "error": "The selected AI provider could not score the discovered jobs.",
+                    "error_code": "provider_error",
+                }
+
+            if batch_res.get("success"):
+                break
+
+            ai_error = batch_res.get("error") or "The selected AI provider could not score the discovered jobs."
+            candidate_code = str(
+                batch_res.get("error_code") or "provider_error"
+            ).strip().lower()
+            ai_error_code = (
+                candidate_code
+                if candidate_code in MATCH_PROVIDER_FAILURE_CODES
+                else "provider_error"
             )
-            check_cancelled()
-            if not batch_res.get("success"):
-                ai_error = batch_res.get("error") or "The selected AI provider could not score the discovered jobs."
-                print(json.dumps({"event": "search_match_provider_failed"}), flush=True)
+            retryable = ai_error_code in MATCH_PROVIDER_RETRYABLE_ERRORS
+            if not retryable or provider_attempt >= MATCH_PROVIDER_MAX_ATTEMPTS:
+                print(json.dumps({
+                    "event": "search_match_provider_failed",
+                    "provider": normalize_provider(ai_settings.provider),
+                    "error_code": ai_error_code,
+                    "attempt": provider_attempt,
+                }, separators=(",", ":")), flush=True)
                 return False
-        except OperationCancelled:
-            raise
-        except Exception:
-            ai_error = "The selected AI provider could not score the discovered jobs."
-            print(json.dumps({"event": "search_match_response_invalid"}), flush=True)
+
+            print(json.dumps({
+                "event": "search_match_provider_retry_scheduled",
+                "provider": normalize_provider(ai_settings.provider),
+                "error_code": ai_error_code,
+                "attempt": provider_attempt,
+                "max_attempts": MATCH_PROVIDER_MAX_ATTEMPTS,
+            }, separators=(",", ":")), flush=True)
+            report_progress(
+                "retrying_match_analysis",
+                provider_attempt,
+                MATCH_PROVIDER_MAX_ATTEMPTS,
+            )
+            _wait_for_match_retry(
+                MATCH_PROVIDER_RETRY_DELAYS_SECONDS[provider_attempt - 1],
+                check_cancelled,
+            )
+            report_progress("analyzing_matches", analyzed_count, len(results))
+
+        if not batch_res or not batch_res.get("success"):
             return False
 
         batch_results = {
@@ -1309,6 +1460,7 @@ def run_job_search_and_matching(
         "partial": partial,
         "jobs_added": matches_added,
         "error": ai_error,
+        "failure_code": ai_error_code,
         "provider_health": provider_health,
         "provider_alerts": alerts,
     }

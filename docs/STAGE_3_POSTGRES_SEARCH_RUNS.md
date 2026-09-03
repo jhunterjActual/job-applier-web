@@ -98,7 +98,7 @@ cancellation becomes durable and is observed at the next existing safe search
 checkpoint. Jobs committed before that checkpoint remain committed.
 
 `GET /api/jobs/status` exposes only the active phase, bounded completed/total
-counters, attempt count, UTC start time, latest productive-progress time, and
+counters, worker-claim count, UTC start time, latest productive-progress time, and
 latest lease-heartbeat time; it never returns the operation ID, request terms,
 location, owner, worker, or lease. Productive progress is deliberately distinct
 from worker liveness, so a fresh check-in no longer makes stalled provider work
@@ -126,13 +126,31 @@ fresh provider attempt.
 
 Keyword generation has its own 45-second provider timeout and disables Gemini
 thinking for that small extraction task. Other structured AI calls remain
-bounded at 90 seconds. Discovered postings are inspected, scored, and saved in
-chunks of five instead of retaining the entire search in memory until one final
-AI response. Successfully committed chunks therefore remain useful if a later
-provider call fails; the terminal result reports a privacy-safe partial success
-instead of discarding the work. Worker logs contain fixed event names and
-exception classes, never search terms, locations, posting URLs, resumes, or
-provider payloads.
+bounded at 90 seconds. A failed match-scoring call retries the same already
+inspected five-posting batch up to three total attempts, with cancellation-aware
+5- and 15-second waits. The durable `retrying_match_analysis` phase distinguishes
+those bounded provider retries from the separately labelled worker-claim count.
+Only an allowlisted provider failure classification is logged or retained; raw
+provider responses and exceptions remain excluded.
+
+Discovered postings are inspected, scored, and saved in chunks of five instead
+of retaining the entire search in memory until one final AI response.
+Successfully committed chunks therefore remain useful if a later provider call
+fails; the terminal result reports a privacy-safe partial success instead of
+discarding the work. If no chunk was saved, the terminal result gives a bounded,
+actionable provider classification while preserving source diagnostics. Worker
+logs contain fixed event names and allowlisted error codes, never search terms,
+locations, posting URLs, resumes, credentials, or provider payloads.
+
+Source discovery still uses bounded public search-result HTML rather than a
+supported Yahoo API contract. Yahoo is attempted first for each ATS-domain
+query. The first Yahoo request failure opens a run-scoped circuit breaker, so
+subsequent queries use Bing instead of repeating the same degraded source. Bing
+also serves as the immediate fallback for the failed query. Result links are
+accepted only after unwrapping known Yahoo or Bing redirect formats and passing
+the existing ATS-domain, specific-posting, canonicalization, and per-provider
+candidate limits. Fallback logs contain only the source transition and a fixed
+failure class.
 
 Worker SIGTERM and deploy shutdown are infrastructure events, not user
 cancellation. At the next safe checkpoint the worker exits claim execution
@@ -152,7 +170,9 @@ and explicit grants/revokes. Migration `20260902_0011` adds the privacy-safe
 progress, heartbeat, and last-attempt fields plus bounded database constraints;
 its claim trigger initializes each retry without widening runtime or worker
 privileges. Migration `20260903_0012` adds the worker-only claim-lock broker and
-explicitly removes direct worker access to authentication rows. These changes
+explicitly removes direct worker access to authentication rows. Migration
+`20260903_0013` adds the durable `retrying_match_analysis` phase without new
+columns, role grants, or data-plane access. These changes
 do not modify existing authoritative business rows or migrate process memory,
 because memory has no durable recovery value.
 
@@ -169,7 +189,9 @@ The legacy `20260813_0007` downgrade drops the claim function, broker trigger
 and function, broker table, indexes, and `search_runs`. The additive
 `20260902_0011` downgrade drops only its progress trigger/function,
 constraints, and six progress-related columns. The `20260903_0012` downgrade
-drops only its claim-lock function and does not broaden worker privileges.
+drops only its claim-lock function and does not broaden worker privileges. The
+`20260903_0013` downgrade first normalizes an active retry phase to
+`analyzing_matches`, then restores the prior phase constraint.
 All downgrade paths are for disposable rehearsal only. Because PostgreSQL is
 authoritative, staging must never downgrade or resume writable SQLite; use a
 reviewed forward correction.
@@ -180,7 +202,8 @@ The follow-up documented in `STAGE_3_POSTGRES_SCHEDULED_SEARCH_DISPATCH.md`
 adds only bounded due saved-search publication into this existing run path.
 The combined boundary still does not add prioritization, multiple general
 queue types, per-provider rate-limit coordination, durable source
-diagnostic retries, distributed cancellation during a single blocking network
+diagnostic retries beyond the run-scoped Yahoo-to-Bing failover, distributed
+cancellation during a single blocking network
 call, job-write transactions spanning a search, object-storage access, web or
 R2 credentials in workers, account deletion/export conversion, backup/restore
 activation, permanent import, authority cutover, Caddy changes, public signup,
@@ -206,7 +229,7 @@ or additional users.
 - [ ] P0, focused search-run, syntax, dependency-lock, migration, launcher,
       protected-file, and exact-diff security checks pass.
 - [ ] Build strings agree at the candidate build, Alembic has one head at
-      `20260903_0012`, and `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains true.
+      `20260903_0013`, and `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains true.
 
 Final authority transition and remaining repository gates stay in
 `STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md`.

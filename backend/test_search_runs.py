@@ -17,10 +17,12 @@ import search_run_execution as execution_module
 import worker as worker_module
 from operations import OperationCancelled
 from search_run_repository import (
+    SEARCH_FAILED_MESSAGE,
     PostgreSQLSearchRunRepository,
     SQLiteSearchRunRepository,
     SearchRunAlreadyActive,
     SearchRunLeaseLost,
+    minimized_search_result,
 )
 
 
@@ -308,6 +310,50 @@ class SQLiteSearchRunTests(unittest.TestCase):
         serialized = json.dumps(repository.status())
         self.assertIn("The job search could not be completed.", serialized)
         self.assertNotIn("private.test", serialized)
+
+    def test_match_provider_failure_keeps_only_safe_actionable_classification(self) -> None:
+        repository = self.repository(42)
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000042", "owner", ""
+        )
+        repository.publish_prepared(run_id, "owner", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000042"
+        )
+        provider_result = {
+            "success": False,
+            "error": "private provider response and credential",
+            "failure_code": "rate_limit",
+            "provider_alerts": [{"secret": "discard me"}],
+        }
+
+        with patch.object(
+            execution_module,
+            "run_job_search_and_matching",
+            return_value=provider_result,
+        ):
+            execution_module.execute_search_claim(claim, repository)
+
+        result = repository.status()["last_result"]
+        self.assertFalse(result["success"])
+        self.assertEqual("rate_limit", result["failure_code"])
+        self.assertIn("rate-limited", result["error"])
+        serialized = json.dumps(result)
+        self.assertNotIn("private provider", serialized)
+        self.assertNotIn("discard me", serialized)
+
+    def test_unrecognized_failure_classification_remains_generic(self) -> None:
+        minimized = minimized_search_result({
+            "success": False,
+            "error": "private provider response",
+            "failure_code": "private-upstream-detail",
+        })
+
+        self.assertEqual({
+            "success": False,
+            "error": SEARCH_FAILED_MESSAGE,
+            "provider_alerts": [],
+        }, minimized)
 
     def test_execution_checks_durable_cancel_before_provider_work(self) -> None:
         repository = self.repository()
