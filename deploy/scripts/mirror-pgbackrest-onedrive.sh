@@ -13,8 +13,22 @@ readonly rclone_binary=/usr/local/bin/rclone
 readonly lock_path=/run/lock/careertrellis-pgbackrest-repository.lock
 readonly core=/usr/local/libexec/careertrellis/backup_health.py
 readonly receipt_root=/var/backups/careertrellis/backup-health/operations
+readonly -a immutable_payload_filters=(
+    --exclude /archive/careertrellis/archive.info
+    --exclude /archive/careertrellis/archive.info.copy
+    --exclude /backup/careertrellis/backup.info
+    --exclude /backup/careertrellis/backup.info.copy
+    --exclude /backup/careertrellis/latest
+)
+readonly -a mutable_metadata_filters=(
+    --include /archive/careertrellis/archive.info
+    --include /archive/careertrellis/archive.info.copy
+    --include /backup/careertrellis/backup.info
+    --include /backup/careertrellis/backup.info.copy
+    --include /backup/careertrellis/latest
+)
 
-for command_path in /usr/bin/flock /usr/bin/jq /usr/bin/pgbackrest /usr/bin/setpriv /usr/bin/python3; do
+for command_path in /usr/bin/flock /usr/bin/grep /usr/bin/jq /usr/bin/pgbackrest /usr/bin/setpriv /usr/bin/python3; do
     if [[ ! -x ${command_path} ]]; then
         echo "A required mirror command is unavailable." >&2
         exit 1
@@ -94,12 +108,16 @@ if [[ ! ${backup_label} =~ ^[0-9]{8}-[0-9]{6}F(_[0-9]{8}-[0-9]{6}[DI])?$ ]]; the
     exit 1
 fi
 
-# --immutable makes the secondary repository append-only: new ciphertext may be
-# added, but an existing destination object is never replaced or deleted.
+# Backup sets, manifests, and WAL payloads are immutable. The two redundant
+# archive/backup info pairs and optional latest pointer are pgBackRest's only
+# reviewed mutable repository paths. Keep the payload append-only, then refresh
+# and download-check only that fixed metadata allowlist. A changed payload path
+# still fails closed instead of being propagated to the independent mirror.
 if ! ${rclone_binary} copy \
     "${source_path}" \
     "${destination_path}" \
     --config "${config}" \
+    "${immutable_payload_filters[@]}" \
     --immutable \
     --checkers 4 \
     --transfers 2 \
@@ -108,7 +126,40 @@ if ! ${rclone_binary} copy \
     --log-level INFO \
     --stats-one-line-date \
     --stats 5m; then
+    if /usr/bin/grep -Eqi 'immutable file modified|do not match.*immutable' "${private_log}"; then
+        echo "The independent mirror detected a changed repository payload; private output was discarded." >&2
+        exit 1
+    fi
     echo "The append-only repository mirror failed; private output was discarded." >&2
+    exit 1
+fi
+if ! ${rclone_binary} copy \
+    "${source_path}" \
+    "${destination_path}" \
+    --config "${config}" \
+    "${mutable_metadata_filters[@]}" \
+    --checkers 4 \
+    --transfers 2 \
+    --log-file "${private_log}" \
+    --log-level INFO \
+    --stats-one-line-date \
+    --stats 5m; then
+    echo "The reviewed repository metadata refresh failed; private output was discarded." >&2
+    exit 1
+fi
+if ! ${rclone_binary} check \
+    "${source_path}" \
+    "${destination_path}" \
+    --config "${config}" \
+    "${mutable_metadata_filters[@]}" \
+    --download \
+    --one-way \
+    --checkers 4 \
+    --log-file "${private_log}" \
+    --log-level INFO \
+    --stats-one-line-date \
+    --stats 5m; then
+    echo "The refreshed repository metadata did not pass downloaded verification; private output was discarded." >&2
     exit 1
 fi
 if ! ${rclone_binary} size \

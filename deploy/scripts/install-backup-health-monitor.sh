@@ -39,6 +39,7 @@ for command_path in \
     /usr/bin/findmnt \
     /usr/bin/flock \
     /usr/bin/find \
+    /usr/bin/grep \
     /usr/bin/jq \
     /usr/bin/pgbackrest \
     /usr/bin/psql \
