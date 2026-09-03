@@ -310,6 +310,31 @@ class AIProviderAbstractionTests(unittest.TestCase):
         settings = provider_call.call_args.args[0]
         self.assertEqual("openai", settings.provider)
         self.assertEqual("gpt-5-mini", settings.model)
+        self.assertEqual(
+            searcher_module.KEYWORD_PROVIDER_TIMEOUT_SECONDS,
+            provider_call.call_args.kwargs["timeout_seconds"],
+        )
+        self.assertTrue(provider_call.call_args.kwargs["disable_thinking"])
+
+    def test_gemini_structured_request_has_bounded_timeout_and_optional_thinking_disabled(self) -> None:
+        response = Mock(parsed=CapabilityResponse(ready=True))
+        client = Mock()
+        client.models.generate_content.return_value = response
+        settings = AIProviderSettings("gemini", "gemini-2.5-flash", "private-test-key")
+        with patch.object(ai_providers_module.genai, "Client", return_value=client) as client_factory:
+            result = generate_structured(
+                settings,
+                "Return ready.",
+                CapabilityResponse,
+                timeout_seconds=45,
+                disable_thinking=True,
+            )
+
+        self.assertEqual({"ready": True}, result)
+        options = client_factory.call_args.kwargs["http_options"]
+        self.assertEqual(45_000, options.timeout)
+        config = client.models.generate_content.call_args.kwargs["config"]
+        self.assertEqual(0, config.thinking_config.thinking_budget)
 
 
 class MapsProviderAbstractionTests(unittest.TestCase):
@@ -1458,8 +1483,8 @@ class FrontendStartupTests(unittest.TestCase):
                 self.assertIn(f'id="{element_id}"', html_source)
         self.assertIn("Checking AI Provider", html_source)
         self.assertIn("i18n.js?v=20260812-1", html_source)
-        self.assertIn("app.js?v=20260902-2", html_source)
-        self.assertIn("index.css?v=20260902-1", html_source)
+        self.assertIn("app.js?v=20260902-3", html_source)
+        self.assertIn("index.css?v=20260902-2", html_source)
 
     def test_profile_and_provider_secrets_use_separate_form_boundaries(self) -> None:
         parser = self._profile_form_parser()
@@ -5839,8 +5864,10 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("startSearchStatusPolling();", script_source)
-        self.assertIn("function searchProgressSubtitle(activeSearch)", script_source)
-        self.assertIn("Last activity ${formatSearchDuration", script_source)
+        self.assertIn("function renderSearchProgress(activeSearch)", script_source)
+        self.assertIn('addMetric("Last progress"', script_source)
+        self.assertIn('addMetric("Worker check-in"', script_source)
+        self.assertIn('classList.add("search-progress-status")', script_source)
         self.assertIn("/api/jobs/search/cancel", script_source)
         self.assertIn("status.active_search?.stop_requested", script_source)
         self.assertIn("searchStatusPollGeneration += 1", script_source)
@@ -9739,11 +9766,80 @@ class SearchQualityTests(unittest.TestCase):
             )
         self.assertEqual(0, result["jobs_added"])
         print_message.assert_any_call(
-            "A discovered job could not be saved; the search remains available."
+            json.dumps({"event": "search_job_save_failed"}), flush=True
         )
         log_text = " ".join(str(call) for call in print_message.call_args_list)
         self.assertNotIn(secret, log_text)
         self.assertNotIn(url, log_text)
+
+    def test_search_commits_completed_match_chunks_before_later_provider_failure(self) -> None:
+        urls = [f"https://jobs.lever.co/synthetic/chunk-{index}" for index in range(6)]
+        repository = Mock()
+        repository.search_catalog_context.return_value = {
+            "known_status_by_url": {},
+            "suppressed_fingerprints": set(),
+        }
+        repository.create_job_if_available.return_value = {
+            "outcome": "created",
+            "job": {"id": 1},
+        }
+        matcher = Mock(side_effect=[
+            {
+                "success": True,
+                "matches": [
+                    {"index": index, "match_score": 90, "match_analysis": "Match"}
+                    for index in range(searcher_module.MATCH_BATCH_SIZE)
+                ],
+            },
+            {"success": False, "error": "Provider unavailable."},
+        ])
+        progress = []
+        with (
+            patch.object(
+                searcher_module,
+                "settings_from_profile",
+                return_value=AIProviderSettings("gemini", "gemini-2.5-flash", "test-key"),
+            ),
+            patch.object(
+                searcher_module,
+                "search_yahoo_jobs",
+                return_value=[{"url": url} for url in urls],
+            ),
+            patch.object(
+                searcher_module,
+                "inspect_job_posting",
+                side_effect=[{
+                    "status": "ok",
+                    "details": {
+                        "url": url,
+                        "title": "Data Director",
+                        "company": "Synthetic Employer",
+                        "description": "Synthetic description",
+                        "source": "lever",
+                    },
+                } for url in urls],
+            ),
+            patch.object(searcher_module, "analyze_job_matches_batch", matcher),
+        ):
+            result = searcher_module.run_job_search_and_matching(
+                "data",
+                job_repository=repository,
+                profile_repository=Mock(
+                    get_profile=Mock(return_value=self.synthetic_search_profile())
+                ),
+                progress_update=lambda phase, completed, total: progress.append(
+                    (phase, completed, total)
+                ),
+            )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["partial"])
+        self.assertEqual(5, result["jobs_added"])
+        self.assertEqual(5, repository.create_job_if_available.call_count)
+        self.assertEqual(2, matcher.call_count)
+        self.assertIn(("searching_sources", 1, 1), progress)
+        self.assertIn(("inspecting_postings", 6, 6), progress)
+        self.assertIn(("saving_matches", 5, 6), progress)
 
     def test_generic_smartrecruiters_career_pages_are_not_job_postings(self) -> None:
         self.assertFalse(is_specific_job_url("https://careers.smartrecruiters.com/QADInc/corporate-careers"))

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from ai_providers import (
     AIProviderError,
     AIProviderSettings,
+    KEYWORD_PROVIDER_TIMEOUT_SECONDS,
     default_model,
     generate_structured,
     normalize_provider,
@@ -28,6 +29,7 @@ MAX_LEVER_API_BYTES = 2 * 1024 * 1024
 MAX_SEARCH_RESPONSE_BYTES = 1 * 1024 * 1024
 MAX_PROVIDER_CANDIDATES = 25
 SEARCH_HTTP_TIMEOUT_SECONDS = 12
+MATCH_BATCH_SIZE = 5
 TRACKING_QUERY_KEYS = {
     "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "referrer", "source",
 }
@@ -744,7 +746,13 @@ def extract_search_keywords_from_resume(
         
         Return the titles using the supplied response schema.
         """
-        titles = generate_structured(settings, prompt, SearchKeywordResponse).get("titles", [])
+        titles = generate_structured(
+            settings,
+            prompt,
+            SearchKeywordResponse,
+            timeout_seconds=KEYWORD_PROVIDER_TIMEOUT_SECONDS,
+            disable_thinking=True,
+        ).get("titles", [])
         if isinstance(titles, list) and len(titles) > 0:
             return [str(title).strip() for title in titles[:3] if str(title).strip()]
         return ["Software Engineer"]
@@ -1039,6 +1047,7 @@ def run_job_search_and_matching(
     cancel_check: Callable[[], None] | None = None,
     job_repository: Any | None = None,
     profile_repository: Any | None = None,
+    progress_update: Callable[[str, int, int | None], None] | None = None,
 ) -> dict:
     """
     Coordinates the entire job search pipeline: retrieves the resume,
@@ -1068,6 +1077,10 @@ def run_job_search_and_matching(
     def check_cancelled() -> None:
         _cancellation_checkpoint(cancel_check)
 
+    def report_progress(phase: str, completed: int = 0, total: int | None = None) -> None:
+        if progress_update:
+            progress_update(phase, completed, total)
+
     check_cancelled()
     profile = profile_repository.get_profile()
     if not profile or not profile["base_resume_text"]:
@@ -1078,6 +1091,7 @@ def run_job_search_and_matching(
     api_key = ai_settings.api_key
     
     # 2. Determine search terms
+    report_progress("preparing_keywords", 0, 1)
     search_keywords = []
     stripped_kw = keywords.strip() if keywords else ""
     if not stripped_kw or stripped_kw.lower() == "undefined":
@@ -1085,7 +1099,7 @@ def run_job_search_and_matching(
         cached_kw = profile["suggested_keywords"]
         if cached_kw:
             search_keywords = [k.strip() for k in cached_kw.split(",") if k.strip()]
-            print(f"Using cached suggested keywords from database: {search_keywords}")
+            print(json.dumps({"event": "search_keyword_cache_used"}), flush=True)
         else:
             check_cancelled()
             search_keywords = extract_search_keywords_from_resume(
@@ -1099,9 +1113,10 @@ def run_job_search_and_matching(
             profile_repository.cache_suggested_keywords_if_empty(
                 ",".join(search_keywords)
             )
-            print(f"No keywords entered. Extracted and cached keywords: {search_keywords}")
+            print(json.dumps({"event": "search_keywords_prepared"}), flush=True)
     else:
         search_keywords = [stripped_kw]
+    report_progress("preparing_keywords", 1, 1)
         
     # 3. Parse locations (supports multiple semicolon or comma separated locations)
     locs = []
@@ -1142,11 +1157,12 @@ def run_job_search_and_matching(
     results = []
     seen_urls = set()
     provider_candidate_counts = {provider: 0 for provider in PROVIDER_DOMAINS}
+    source_total = len(search_keywords) * len(locs)
+    source_completed = 0
+    report_progress("searching_sources", source_completed, source_total)
     for kw in search_keywords:
         for loc in locs:
             check_cancelled()
-            loc_str = f" in '{loc}'" if loc else ""
-            print(f"Crawling Yahoo jobs for keyword: '{kw}'{loc_str}...")
             kw_results = search_yahoo_jobs(kw, loc, provider_health)
             check_cancelled()
             for item in kw_results:
@@ -1154,138 +1170,143 @@ def run_job_search_and_matching(
                 _append_candidate_with_budget(
                     item, results, seen_urls, provider_candidate_counts, provider_health
                 )
+            source_completed += 1
+            report_progress("searching_sources", source_completed, source_total)
     
-    # 4. Scrape all job descriptions first
-    scraped_jobs = []
+    # 4. Inspect, analyze, and commit bounded chunks. Completed chunks remain
+    # useful if a later provider call fails or the user stops the search.
+    pending_jobs = []
     catalog_context = job_repository.search_catalog_context()
     known_urls = catalog_context["known_status_by_url"]
     suppressed_fingerprints = catalog_context["suppressed_fingerprints"]
     from job_suppressions import job_url_fingerprint
-    for item in results:
-        check_cancelled()
-        url = item["url"]
-        provider = provider_for_url(url)
-
-        if job_url_fingerprint(url) in suppressed_fingerprints:
-            if provider in provider_health:
-                provider_health[provider]["skipped_suppressed"] += 1
-            continue
-        
-        # Compare canonical forms so tracking parameters cannot create duplicates.
-        if url in known_urls:
-            key = "skipped_archived" if known_urls[url] == "archived" else "skipped_active"
-            if provider in provider_health:
-                provider_health[provider][key] += 1
-            continue
-
-        if provider in provider_health:
-            provider_health[provider]["new_candidates"] += 1
-            
-        outcome = inspect_job_posting(url, cancel_check=check_cancelled)
-        check_cancelled()
-        job_details = outcome["details"]
-        if provider in provider_health and outcome.get("used_browser_fallback"):
-            provider_health[provider]["api_fallbacks"] += 1
-        if not job_details or not job_details.get("title"):
-            if provider in provider_health:
-                provider_health[provider]["rejected"] += 1
-                reason = outcome.get("status", "provider_error")
-                reason = reason if reason in provider_health[provider]["rejection_reasons"] else "provider_error"
-                provider_health[provider]["rejection_reasons"][reason] += 1
-            continue
-
-        job_details = _bounded_job_details(job_details)
-            
-        scraped_jobs.append(job_details)
-        known_urls[url] = "matched"
-        if provider in provider_health:
-            provider_health[provider]["accepted"] += 1
-        
-    print(f"Scraped {len(scraped_jobs)} new specific jobs. Running batch AI matching...")
-    
-    # 5. Run AI matching in a single batch call to conserve API requests!
-    batch_results = {}
+    inspected_count = 0
+    analyzed_count = 0
+    saved_count = 0
+    matches_added = 0
     ai_error = None
-    if scraped_jobs:
+    report_progress("inspecting_postings", inspected_count, len(results))
+
+    def process_pending_jobs() -> bool:
+        nonlocal analyzed_count, saved_count, matches_added, ai_error
+        if not pending_jobs:
+            return True
+        batch = list(pending_jobs)
+        pending_jobs.clear()
+        report_progress("analyzing_matches", analyzed_count, len(results))
         try:
             check_cancelled()
             batch_res = analyze_job_matches_batch(
                 resume_text,
-                scraped_jobs,
+                batch,
                 api_key,
                 ai_provider=ai_settings.provider,
                 ai_model=ai_settings.model,
             )
             check_cancelled()
-            if batch_res.get("success"):
-                # Map index to match results
-                for match in batch_res.get("matches", []):
-                    idx = match.get("index")
-                    if idx is not None:
-                        batch_results[idx] = {
-                            "score": match.get("match_score", 50),
-                            "analysis": match.get("match_analysis", "Matched successfully.")
-                        }
-            else:
+            if not batch_res.get("success"):
                 ai_error = batch_res.get("error") or "The selected AI provider could not score the discovered jobs."
-                print(f"Batch matching API error: {ai_error}")
+                print(json.dumps({"event": "search_match_provider_failed"}), flush=True)
+                return False
         except OperationCancelled:
             raise
         except Exception:
             ai_error = "The selected AI provider could not score the discovered jobs."
-            print("Failed to run batch matching because the AI response was invalid.")
-            
-    # 6. Insert matches into DB
-    matches_added = 0
-    for idx, job in enumerate(scraped_jobs):
-        check_cancelled()
-        title = job["title"]
-        company = job["company"]
-        desc = job["description"]
-        url = job["url"]
-        
-        # Fail closed when the matcher omits a record; an invented fallback
-        # score would put an unanalyzed posting into the user's shortlist.
-        match_info = batch_results.get(idx)
-        if not match_info:
-            continue
-        try:
-            score = max(0, min(100, int(match_info["score"])))
-        except (KeyError, TypeError, ValueError):
-            continue
-        if score < MIN_MATCH_SCORE:
-            continue
-        analysis_text = match_info["analysis"]
-        
-        try:
-            created = job_repository.create_job_if_available(
-                title=title,
-                company=company,
-                description=desc,
-                url=url,
-                match_score=score,
-                match_analysis=analysis_text,
-                date_found=date.today(),
-                location=job.get("location", ""),
-                work_arrangement=job.get("work_arrangement", ""),
-                employment_type=job.get("employment_type", ""),
-                compensation=job.get("compensation", ""),
-                source=job.get("source", provider_for_url(url)),
-                last_checked_at=datetime.now(timezone.utc),
-            )
-            if created["outcome"] == "created":
-                matches_added += 1
+            print(json.dumps({"event": "search_match_response_invalid"}), flush=True)
+            return False
+
+        batch_results = {
+            match.get("index"): {
+                "score": match.get("match_score", 50),
+                "analysis": match.get("match_analysis", "Matched successfully."),
+            }
+            for match in batch_res.get("matches", [])
+            if match.get("index") is not None
+        }
+        analyzed_count += len(batch)
+        report_progress("analyzing_matches", analyzed_count, len(results))
+        report_progress("saving_matches", saved_count, len(results))
+        for index, job in enumerate(batch):
             check_cancelled()
-        except OperationCancelled:
-            raise
-        except Exception:
-            print("A discovered job could not be saved; the search remains available.")
+            match_info = batch_results.get(index)
+            if match_info:
+                try:
+                    score = max(0, min(100, int(match_info["score"])))
+                except (KeyError, TypeError, ValueError):
+                    score = -1
+                if score >= MIN_MATCH_SCORE:
+                    try:
+                        created = job_repository.create_job_if_available(
+                            title=job["title"],
+                            company=job["company"],
+                            description=job["description"],
+                            url=job["url"],
+                            match_score=score,
+                            match_analysis=match_info["analysis"],
+                            date_found=date.today(),
+                            location=job.get("location", ""),
+                            work_arrangement=job.get("work_arrangement", ""),
+                            employment_type=job.get("employment_type", ""),
+                            compensation=job.get("compensation", ""),
+                            source=job.get("source", provider_for_url(job["url"])),
+                            last_checked_at=datetime.now(timezone.utc),
+                        )
+                        if created["outcome"] == "created":
+                            matches_added += 1
+                    except OperationCancelled:
+                        raise
+                    except Exception:
+                        print(json.dumps({"event": "search_job_save_failed"}), flush=True)
+            saved_count += 1
+            report_progress("saving_matches", saved_count, len(results))
+        return True
+
+    for item in results:
+        check_cancelled()
+        url = item["url"]
+        provider = provider_for_url(url)
+        accepted = False
+        if job_url_fingerprint(url) in suppressed_fingerprints:
+            if provider in provider_health:
+                provider_health[provider]["skipped_suppressed"] += 1
+        elif url in known_urls:
+            key = "skipped_archived" if known_urls[url] == "archived" else "skipped_active"
+            if provider in provider_health:
+                provider_health[provider][key] += 1
+        else:
+            if provider in provider_health:
+                provider_health[provider]["new_candidates"] += 1
+            outcome = inspect_job_posting(url, cancel_check=check_cancelled)
+            check_cancelled()
+            job_details = outcome["details"]
+            if provider in provider_health and outcome.get("used_browser_fallback"):
+                provider_health[provider]["api_fallbacks"] += 1
+            if not job_details or not job_details.get("title"):
+                if provider in provider_health:
+                    provider_health[provider]["rejected"] += 1
+                    reason = outcome.get("status", "provider_error")
+                    reason = reason if reason in provider_health[provider]["rejection_reasons"] else "provider_error"
+                    provider_health[provider]["rejection_reasons"][reason] += 1
+            else:
+                pending_jobs.append(_bounded_job_details(job_details))
+                accepted = True
+                if provider in provider_health:
+                    provider_health[provider]["accepted"] += 1
+        inspected_count += 1
+        report_progress("inspecting_postings", inspected_count, len(results))
+        if accepted and len(pending_jobs) >= MATCH_BATCH_SIZE and not process_pending_jobs():
+            break
+
+    if ai_error is None:
+        process_pending_jobs()
             
     alerts = provider_alerts_from_health(provider_health)
 
     check_cancelled()
+    partial = ai_error is not None and matches_added > 0
     return {
-        "success": ai_error is None,
+        "success": ai_error is None or partial,
+        "partial": partial,
         "jobs_added": matches_added,
         "error": ai_error,
         "provider_health": provider_health,

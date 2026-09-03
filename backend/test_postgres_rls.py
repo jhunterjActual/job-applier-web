@@ -529,6 +529,10 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}"
             )
             connection.exec_driver_sql(
+                "REVOKE ALL ON FUNCTION careertrellis.initialize_search_run_progress() "
+                f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}"
+            )
+            connection.exec_driver_sql(
                 "REVOKE ALL ON FUNCTION careertrellis.claim_next_search_run(uuid, integer) "
                 f"FROM {RUNTIME_ROLE}"
             )
@@ -3373,6 +3377,14 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         self.assertEqual({self.user_one, self.user_two}, {item.owner_user_id for item in claims})
         for item in claims:
             repository = owner_one if item.owner_user_id == self.user_one else owner_two
+            repository.progress(item, "inspecting_postings", 2, 7)
+            progress = repository.status()["active_search"]
+            self.assertEqual("inspecting_postings", progress["phase"])
+            self.assertEqual(2, progress["completed"])
+            self.assertEqual(7, progress["total"])
+            self.assertEqual(item.attempt, progress["attempt"])
+            self.assertIsNotNone(progress["last_progress_at"])
+            self.assertIsNotNone(progress["last_heartbeat_at"])
             repository.succeed(item, {"success": True, "jobs_added": 1, "secret": "omitted"})
             self.assertEqual(1, repository.status()["last_result"]["jobs_added"])
             self.assertNotIn("secret", repository.status()["last_result"])

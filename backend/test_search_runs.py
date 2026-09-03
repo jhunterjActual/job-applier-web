@@ -128,7 +128,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
             run_id, "10000000-0000-4000-8000-000000000014"
         )
         running = repository.status()
-        self.assertEqual("running", running["active_search"]["phase"])
+        self.assertEqual("preparing_keywords", running["active_search"]["phase"])
         self.assertFalse(running["active_search"]["stop_requested"])
 
         self.assertTrue(repository.request_cancel_active())
@@ -245,6 +245,48 @@ class SQLiteSearchRunTests(unittest.TestCase):
         repository.succeed(second, {"success": True, "jobs_added": 2})
         self.assertEqual(2, repository.status()["last_result"]["jobs_added"])
 
+    def test_progress_is_distinct_from_lease_liveness_and_exposes_bounded_counts(self) -> None:
+        repository = self.repository()
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000033", "progress", ""
+        )
+        repository.publish_prepared(run_id, "progress", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000033"
+        )
+        repository.progress(claim, "inspecting_postings", 2, 7)
+        status = repository.status()["active_search"]
+
+        self.assertEqual("inspecting_postings", status["phase"])
+        self.assertEqual(2, status["completed"])
+        self.assertEqual(7, status["total"])
+        self.assertEqual(1, status["attempt"])
+        self.assertEqual(3, status["max_attempts"])
+        self.assertIsNotNone(status["last_progress_at"])
+        self.assertIsNotNone(status["last_heartbeat_at"])
+        with self.assertRaises(ValueError):
+            repository.progress(claim, "private-arbitrary-phase", 0, 1)
+
+    def test_progress_renews_atomically_and_preserves_cancel_classification(self) -> None:
+        repository = self.repository()
+        operation = "00000000-0000-4000-8000-000000000034"
+        run_id = repository.enqueue(operation, "atomic progress", "")
+        repository.publish_prepared(run_id, "atomic progress", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000034"
+        )
+
+        with patch.object(
+            repository,
+            "heartbeat",
+            side_effect=AssertionError("progress must not renew in a separate transaction"),
+        ):
+            repository.progress(claim, "searching_sources", 1, 2)
+
+        self.assertTrue(repository.request_cancel(operation))
+        with self.assertRaises(OperationCancelled):
+            repository.progress(claim, "searching_sources", 2, 2)
+
     def test_execution_binds_owner_and_persists_fixed_failure(self) -> None:
         repository = self.repository(42)
         run_id = repository.enqueue(
@@ -254,7 +296,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
         claim = repository.claim(run_id, "10000000-0000-4000-8000-000000000041")
         observed_owners = []
 
-        def fail(*_args):
+        def fail(*_args, **_kwargs):
             from provider_secrets import current_owner_user_id
 
             observed_owners.append(current_owner_user_id())
@@ -306,7 +348,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
         claim = repository.claim(run_id, "10000000-0000-4000-8000-000000000061")
         self.assertEqual([], open_connections)
 
-        def provider(_keywords, _location, checkpoint):
+        def provider(_keywords, _location, checkpoint, **_kwargs):
             self.assertEqual([], open_connections)
             checkpoint()
             self.assertEqual([], open_connections)
@@ -338,7 +380,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
                 if heartbeat_count >= 2:
                     background_heartbeat.set()
 
-        def provider(_keywords, _location, _checkpoint):
+        def provider(_keywords, _location, _checkpoint, **_kwargs):
             self.assertTrue(background_heartbeat.wait(1))
             return {"success": True, "jobs_added": 1, "provider_alerts": []}
 
@@ -370,7 +412,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
                 cancellation_observed.set()
                 raise
 
-        def provider(_keywords, _location, _checkpoint):
+        def provider(_keywords, _location, _checkpoint, **_kwargs):
             self.assertTrue(repository.request_cancel(operation))
             self.assertTrue(cancellation_observed.wait(1))
             raise RuntimeError("provider failed after cancellation")
@@ -404,7 +446,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
                 background_stop_observed.set()
             return requested
 
-        def provider(_keywords, _location, _checkpoint):
+        def provider(_keywords, _location, _checkpoint, **_kwargs):
             stop.set()
             self.assertTrue(background_stop_observed.wait(1))
             raise RuntimeError("provider failed during worker shutdown")
@@ -445,7 +487,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
                     raise SearchRunLeaseLost()
             original_heartbeat(target_claim, lease_seconds)
 
-        def provider(_keywords, _location, _checkpoint):
+        def provider(_keywords, _location, _checkpoint, **_kwargs):
             self.assertTrue(lease_loss_observed.wait(1))
             raise RuntimeError("provider failed after lease loss")
 

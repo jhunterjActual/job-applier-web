@@ -33,6 +33,7 @@ AI_PROVIDERS = {
 DEFAULT_AI_PROVIDER = "gemini"
 MAX_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024
 PROVIDER_TIMEOUT_SECONDS = 90
+KEYWORD_PROVIDER_TIMEOUT_SECONDS = 45
 
 
 @dataclass(frozen=True)
@@ -179,15 +180,30 @@ def _gemini_error(exc: Exception) -> AIProviderError:
     )
 
 
-def _generate_gemini(settings: AIProviderSettings, prompt: str, schema: type[BaseModel]) -> dict:
+def _generate_gemini(
+    settings: AIProviderSettings,
+    prompt: str,
+    schema: type[BaseModel],
+    *,
+    timeout_seconds: int,
+    disable_thinking: bool,
+) -> dict:
     try:
-        client = genai.Client(api_key=settings.api_key)
+        client = genai.Client(
+            api_key=settings.api_key,
+            http_options=types.HttpOptions(timeout=timeout_seconds * 1000),
+        )
         response = client.models.generate_content(
             model=settings.model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=schema,
+                thinking_config=(
+                    types.ThinkingConfig(thinking_budget=0)
+                    if disable_thinking
+                    else None
+                ),
             ),
         )
     except AIProviderError:
@@ -250,7 +266,13 @@ def _openai_output_text(document: dict) -> str:
     return ""
 
 
-def _generate_openai(settings: AIProviderSettings, prompt: str, schema: type[BaseModel]) -> dict:
+def _generate_openai(
+    settings: AIProviderSettings,
+    prompt: str,
+    schema: type[BaseModel],
+    *,
+    timeout_seconds: int,
+) -> dict:
     payload = {
         "model": settings.model,
         "input": prompt,
@@ -274,7 +296,7 @@ def _generate_openai(settings: AIProviderSettings, prompt: str, schema: type[Bas
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=PROVIDER_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
         raise _openai_http_error(exc) from exc
@@ -302,7 +324,10 @@ def _generate_openai(settings: AIProviderSettings, prompt: str, schema: type[Bas
 
 def _generate_gemini_image_text(settings: AIProviderSettings, prompt: str, image: bytes) -> str:
     try:
-        client = genai.Client(api_key=settings.api_key)
+        client = genai.Client(
+            api_key=settings.api_key,
+            http_options=types.HttpOptions(timeout=PROVIDER_TIMEOUT_SECONDS * 1000),
+        )
         response = client.models.generate_content(
             model=settings.model,
             contents=[prompt, types.Part.from_bytes(data=image, mime_type="image/png")],
@@ -373,7 +398,14 @@ def _generate_openai_image_text(settings: AIProviderSettings, prompt: str, image
     return text
 
 
-def generate_structured(settings: AIProviderSettings, prompt: str, schema: type[BaseModel]) -> dict:
+def generate_structured(
+    settings: AIProviderSettings,
+    prompt: str,
+    schema: type[BaseModel],
+    *,
+    timeout_seconds: int = PROVIDER_TIMEOUT_SECONDS,
+    disable_thinking: bool = False,
+) -> dict:
     """Generate and validate structured data through the selected provider."""
     provider = normalize_provider(settings.provider)
     normalized = AIProviderSettings(
@@ -388,8 +420,19 @@ def generate_structured(settings: AIProviderSettings, prompt: str, schema: type[
             f"{provider_label(provider)} API key is not configured. Save one in Profile & Resume.",
         )
     if provider == "openai":
-        return _generate_openai(normalized, prompt, schema)
-    return _generate_gemini(normalized, prompt, schema)
+        return _generate_openai(
+            normalized,
+            prompt,
+            schema,
+            timeout_seconds=timeout_seconds,
+        )
+    return _generate_gemini(
+        normalized,
+        prompt,
+        schema,
+        timeout_seconds=timeout_seconds,
+        disable_thinking=disable_thinking,
+    )
 
 
 def extract_text_from_images(

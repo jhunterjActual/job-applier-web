@@ -927,6 +927,7 @@ function setupModalTabs() {
 // Show/Hide Helpers
 function showLoading(title, subtitle = "Please wait while CareerTrellis prepares your request.", operation = null) {
     loadingTitle.innerText = title;
+    loadingSubtitle.classList.remove("search-progress-status");
     loadingSubtitle.innerText = subtitle;
     activeLoadingOperation = operation;
     loadingActions.hidden = !operation;
@@ -968,6 +969,7 @@ async function stopActiveLoadingOperation() {
         document.createTextNode(` ${t("common.stopping")}`)
     );
     loadingTitle.innerText = t("common.stopping");
+    loadingSubtitle.classList.remove("search-progress-status");
     loadingSubtitle.innerText = t("common.stopping.subtitle");
     try {
         const cancelUrl = operation.cancelUrl
@@ -976,6 +978,7 @@ async function stopActiveLoadingOperation() {
         const result = await response.json();
         if (!response.ok) throw new Error(result.detail || "The stop request could not be sent.");
         if (!result.active && activeLoadingOperation === operation) {
+            loadingSubtitle.classList.remove("search-progress-status");
             loadingSubtitle.innerText = "The operation has already finished. Finalizing the result...";
         }
     } catch (error) {
@@ -986,6 +989,7 @@ async function stopActiveLoadingOperation() {
             document.createTextNode(` ${t("common.stop")}`)
         );
         loadingTitle.innerText = t("common.working");
+        loadingSubtitle.classList.remove("search-progress-status");
         loadingSubtitle.innerText = error.message || "The stop request could not be sent.";
     }
 }
@@ -2658,34 +2662,61 @@ async function deleteJobRecord(jobId) {
     }
 }
 
-function formatSearchDuration(totalSeconds) {
+function formatSearchClock(totalSeconds) {
     const seconds = Math.max(0, Math.floor(totalSeconds));
-    if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
-    const hours = Math.floor(minutes / 60);
-    return `${hours}h ${minutes % 60}m`;
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainingSeconds = seconds % 60;
+    return hours > 0
+        ? `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`
+        : `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
 }
 
-function searchProgressSubtitle(activeSearch) {
+function renderSearchProgress(activeSearch) {
     const now = Date.now();
-    const parts = [activeSearch?.message || "Search work is in progress."];
+    const message = createElement(
+        "div",
+        "search-progress-message",
+        activeSearch?.message || "Search work is in progress."
+    );
+    const metrics = createElement("div", "search-progress-metrics");
+    const addMetric = (label, value) => {
+        metrics.append(
+            createElement("span", "search-progress-label", label),
+            createElement("span", "search-progress-value", value)
+        );
+    };
     const startedAt = Date.parse(activeSearch?.started_at || "");
-    if (Number.isFinite(startedAt)) {
-        parts.push(`Elapsed ${formatSearchDuration((now - startedAt) / 1000)}.`);
-    }
-    const lastActivityAt = Date.parse(activeSearch?.last_activity_at || "");
-    if (Number.isFinite(lastActivityAt)) {
-        parts.push(`Last activity ${formatSearchDuration((now - lastActivityAt) / 1000)} ago.`);
-    }
-    return parts.join(" ");
+    addMetric("Elapsed", Number.isFinite(startedAt)
+        ? formatSearchClock((now - startedAt) / 1000)
+        : "--:--");
+    const lastProgressAt = Date.parse(activeSearch?.last_progress_at || "");
+    addMetric("Last progress", Number.isFinite(lastProgressAt)
+        ? `${formatSearchClock((now - lastProgressAt) / 1000)} ago`
+        : "waiting");
+    const lastHeartbeatAt = Date.parse(activeSearch?.last_heartbeat_at || "");
+    addMetric("Worker check-in", Number.isFinite(lastHeartbeatAt)
+        ? `${formatSearchClock((now - lastHeartbeatAt) / 1000)} ago`
+        : "waiting");
+    const completed = Number(activeSearch?.completed);
+    const total = Number(activeSearch?.total);
+    addMetric("Step", Number.isFinite(total) && total > 0 && Number.isFinite(completed)
+        ? `${Math.max(0, completed)} / ${Math.max(0, total)}`
+        : "in progress");
+    const attempt = Number(activeSearch?.attempt);
+    const maxAttempts = Number(activeSearch?.max_attempts);
+    addMetric("Attempt", Number.isFinite(attempt) && Number.isFinite(maxAttempts) && attempt > 0
+        ? `${attempt} / ${maxAttempts}`
+        : "waiting");
+    loadingSubtitle.classList.add("search-progress-status");
+    loadingSubtitle.replaceChildren(message, metrics);
 }
 
 function showRecoveredSearch(status) {
     if (!activeLoadingOperation) {
         showLoading(
             t("search.loading.title"),
-            searchProgressSubtitle(status.active_search),
+            status.active_search?.message || "Search work is in progress.",
             {
                 id: null,
                 kind: "search",
@@ -2698,7 +2729,7 @@ function showRecoveredSearch(status) {
     loadingTitle.innerText = status.active_search?.stop_requested
         ? t("common.stopping")
         : t("search.loading.title");
-    loadingSubtitle.innerText = searchProgressSubtitle(status.active_search);
+    renderSearchProgress(status.active_search);
     const stopping = status.active_search?.stop_requested === true
         || activeLoadingOperation.stopRequested;
     const announcedPhase = stopping ? "stopping" : (status.active_search?.phase || "searching");
@@ -2733,7 +2764,11 @@ async function finishObservedSearch(status, generation) {
         logActivity("Search Failed", status.last_result.error || "Search did not complete.", "error");
         alert(status.last_result.error || t("search.failed"));
     } else {
-        logActivity("Job Search Complete", "Found and analyzed new job openings.", "success");
+        logActivity(
+            status.last_result?.partial ? "Job Search Partially Complete" : "Job Search Complete",
+            status.last_result?.message || "Found and analyzed new job openings.",
+            status.last_result?.partial ? "warning" : "success"
+        );
         renderProviderAlerts(status.last_result);
     }
     await refreshSourceDiagnosticCount();
@@ -2761,6 +2796,7 @@ async function pollSearchStatus(generation = searchStatusPollGeneration) {
     } catch (error) {
         if (generation !== searchStatusPollGeneration) return;
         if (activeLoadingOperation?.kind === "search") {
+            loadingSubtitle.classList.remove("search-progress-status");
             loadingSubtitle.innerText = error.message || "Search status is temporarily unavailable. Retrying...";
         }
         console.error("Error polling search status:", error);

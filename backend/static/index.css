@@ -2211,6 +2211,41 @@ body.modal-open {
     margin-top: 20px;
 }
 
+.search-progress-status {
+    display: grid;
+    gap: 12px;
+    margin-inline: auto;
+    max-width: 340px;
+    min-height: 116px;
+    width: 100%;
+}
+
+.search-progress-message {
+    min-height: 2.8em;
+}
+
+.search-progress-metrics {
+    display: grid;
+    gap: 5px 12px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin-inline: auto;
+    max-width: 280px;
+    text-align: left;
+    width: 100%;
+}
+
+.search-progress-label {
+    white-space: nowrap;
+}
+
+.search-progress-value {
+    display: inline-block;
+    font-variant-numeric: tabular-nums;
+    min-width: 10ch;
+    text-align: right;
+    white-space: nowrap;
+}
+
 .loading-actions[hidden] {
     display: none;
 }

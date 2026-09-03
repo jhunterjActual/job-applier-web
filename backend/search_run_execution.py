@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+import json
 from threading import Event, Lock, Thread
 
 from database import get_db_connection
@@ -49,9 +50,22 @@ class _LeaseHeartbeat:
         )
 
     def _record_failure(self, failure: BaseException) -> None:
+        recorded = False
         with self._state_lock:
             if self._failure is None:
                 self._failure = failure
+                recorded = True
+        if recorded and not isinstance(failure, (OperationCancelled, SearchWorkerStopping)):
+            print(
+                json.dumps(
+                    {
+                        "event": "search_lease_heartbeat_failed",
+                        "error": type(failure).__name__,
+                    },
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
 
     def _raise_recorded_failure(self) -> None:
         with self._state_lock:
@@ -68,6 +82,19 @@ class _LeaseHeartbeat:
         try:
             with self._repository_lock:
                 self._repository.heartbeat(self._claim)
+        except Exception as exc:
+            self._record_failure(exc)
+            raise
+
+    def progress(self, phase: str, completed: int = 0, total: int | None = None) -> None:
+        self._raise_recorded_failure()
+        if self._stop_requested is not None and self._stop_requested():
+            failure = SearchWorkerStopping()
+            self._record_failure(failure)
+            raise failure
+        try:
+            with self._repository_lock:
+                self._repository.progress(self._claim, phase, completed, total)
         except Exception as exc:
             self._record_failure(exc)
             raise
@@ -118,6 +145,7 @@ def execute_search_claim(
                     claim.keywords,
                     claim.location,
                     lease.checkpoint,
+                    progress_update=lease.progress,
                 )
                 lease.checkpoint()
                 _save_source_diagnostic_history(result)
