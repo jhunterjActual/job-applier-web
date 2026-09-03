@@ -91,7 +91,7 @@ sudo CAREERTRELLIS_SOURCE_DIR=/srv/careertrellis/job-applier-web \
   /usr/local/sbin/careertrellis-deploy 0123456789abcdef0123456789abcdef01234567
 ```
 
-The deployment creates an immutable release-specific virtual environment, installs the hash-locked dependencies and Chromium, runs every regression suite and syntax check, installs the durable hosted-authority guard, atomically changes the `current` symlink, and restarts the supervised web and worker services. Before data-authority cutover it rolls back the code symlink automatically if readiness fails. After PostgreSQL/R2 is marked authoritative it leaves the failed target as `current` and all application services stopped for a reviewed forward correction. It does not fetch an unreviewed branch or delete older releases.
+The deployment creates an immutable release-specific virtual environment, installs the hash-locked dependencies and Chromium, runs every regression suite and syntax check, installs the durable hosted-authority guard, atomically changes the `current` symlink, and restarts the supervised web and worker services. Before data-authority cutover it rolls back the code symlink automatically if readiness fails. After PostgreSQL/R2 is marked authoritative it leaves the failed target as `current`, stops all application services, and disables and stops Caddy for a reviewed forward correction. It does not fetch an unreviewed branch or delete older releases.
 
 For a hosted forward correction, prepare and review a new immutable release,
 then execute that exact release's `deploy-release.sh` once. The target helper
@@ -100,7 +100,7 @@ recovery evidence before the symlink can change. A configured consumer may be
 stopped after failure containment, but it must remain enabled; activation
 restarts and proves the search and account-erasure consumers active before it
 starts the web producer. Do not rerun the failed release, invoke rollback,
-manually start an application service, or rewrite `pending-cutover` or
+manually start Caddy or an application service, or rewrite `pending-cutover` or
 `post-import-recovery` evidence.
 
 The web and durable search worker use separate Unix accounts. The worker's

@@ -108,7 +108,7 @@ ensure_object_backup_health_roots() {
 
 ensure_caddy_access_log() {
     local log_directory=/var/log/caddy
-    local log_path=${log_directory}/careertrellis-staging-access-v3.log
+    local log_path=${log_directory}/careertrellis-staging-access-v6.log
     if [[ -e ${log_directory} || -L ${log_directory} ]]; then
         if [[ ! -d ${log_directory} || -L ${log_directory} || \
               $(realpath "${log_directory}") != "${log_directory}" || \
@@ -147,7 +147,11 @@ assert_caddy_runtime_privacy_ready() {
     "${target_release}/backend/venv/bin/python" -B \
         "${target_release}/backend/caddy_log_privacy.py" \
         --config "${target_release}/deploy/caddy/Caddyfile.staging" \
-        --validate-only >/dev/null
+        --validate-only >/dev/null || return 1
+    "${release_dir}/backend/venv/bin/python" -B \
+        "${release_dir}/backend/caddy_log_privacy.py" \
+        --config "${target_release}/deploy/caddy/Caddyfile.staging" \
+        --validate-privacy-floor-only >/dev/null
 }
 
 assert_no_active_pilot_acceptance() {
@@ -689,20 +693,51 @@ activate_release() {
     return 1
 }
 
+contain_failed_activation() {
+    local caddy_enabled_state containment_failed=false unit unit_active_state
+    # Stop the public edge first so a pre-reload failure cannot leave the
+    # previous Caddy process writing records below the current privacy floor.
+    # Disable it as well so a reboot cannot revive that configuration before a
+    # reviewed forward correction reaches the normal enable-and-start path.
+    systemctl disable --now caddy.service || containment_failed=true
+    systemctl stop \
+        careertrellis-erasure-worker.service \
+        careertrellis-worker.service \
+        careertrellis-web.service || containment_failed=true
+    for unit in \
+        caddy.service \
+        careertrellis-erasure-worker.service \
+        careertrellis-worker.service \
+        careertrellis-web.service; do
+        unit_active_state=$(systemctl show "${unit}" --property=ActiveState --value 2>/dev/null || true)
+        if [[ ${unit_active_state} != inactive && ${unit_active_state} != failed ]]; then
+            containment_failed=true
+        fi
+    done
+    caddy_enabled_state=$(systemctl is-enabled caddy.service 2>/dev/null || true)
+    if [[ ${caddy_enabled_state} != disabled ]]; then
+        containment_failed=true
+    fi
+    if [[ ${containment_failed} == true ]]; then
+        echo "Critical: failed release containment could not confirm every public/application service stopped." >&2
+        return 1
+    fi
+}
+
 if ! activate_release "${release_dir}"; then
     echo "New release did not become ready." >&2
     if [[ -n ${old_release} ]] && /usr/local/sbin/careertrellis-authority assert-code-rollback-allowed; then
         echo "Restoring the prior code release." >&2
         if ! activate_release "${old_release}"; then
             echo "Critical: the prior release also failed readiness after restoration." >&2
-            systemctl stop careertrellis-erasure-worker.service careertrellis-worker.service careertrellis-web.service
+            contain_failed_activation || true
         fi
     else
-        systemctl stop careertrellis-erasure-worker.service careertrellis-worker.service careertrellis-web.service
+        contain_failed_activation || true
         if [[ -z ${old_release} ]]; then
             rm -f -- "${current_link}"
         else
-            echo "Hosted authority requires a reviewed forward correction; services remain stopped." >&2
+            echo "Hosted authority requires a reviewed forward correction; Caddy and application services remain stopped." >&2
         fi
     fi
     exit 1

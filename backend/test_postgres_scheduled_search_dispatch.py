@@ -373,7 +373,7 @@ class PostgreSQLScheduledSearchDispatchTests(unittest.TestCase):
         self.assertEqual(first.run_id, second.run_id)
         self.assertEqual(2, second.attempt)
         repository = PostgreSQLSearchRunRepository(
-            self.user_one, engine=self.runtime_engine
+            self.user_one, engine=self.worker_engine
         )
         with self.assertRaises(SearchRunLeaseLost):
             repository.succeed(first, {"success": True, "jobs_added": 99})

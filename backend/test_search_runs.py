@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event, Lock, current_thread
 from unittest.mock import ANY, Mock, patch
 
 import database as database_module
@@ -17,6 +17,7 @@ import search_run_execution as execution_module
 import worker as worker_module
 from operations import OperationCancelled
 from search_run_repository import (
+    PostgreSQLSearchRunRepository,
     SQLiteSearchRunRepository,
     SearchRunAlreadyActive,
     SearchRunLeaseLost,
@@ -104,6 +105,101 @@ class SQLiteSearchRunTests(unittest.TestCase):
         repository.succeed(race_claim, {"success": True, "jobs_added": 10})
         self.assertTrue(repository.status()["last_result"]["cancelled"])
 
+    def test_active_search_can_be_recovered_and_cancelled_without_operation_id(self) -> None:
+        repository = self.repository()
+        other_owner = self.repository(2)
+        other_owner.enqueue(
+            "00000000-0000-4000-8000-000000000114", "other owner", ""
+        )
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000014", "private keywords", "Private place"
+        )
+        preparing = repository.status()
+        self.assertTrue(preparing["searching"])
+        self.assertEqual("preparing", preparing["active_search"]["phase"])
+        self.assertIsNotNone(preparing["active_search"]["started_at"])
+        self.assertIsNotNone(preparing["active_search"]["last_activity_at"])
+        self.assertNotIn("private keywords", json.dumps(preparing).lower())
+        self.assertNotIn("private place", json.dumps(preparing).lower())
+        self.assertNotIn("00000000-0000-4000-8000-000000000014", json.dumps(preparing))
+
+        repository.publish_prepared(run_id, "private keywords", "Private place")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000014"
+        )
+        running = repository.status()
+        self.assertEqual("preparing_keywords", running["active_search"]["phase"])
+        self.assertFalse(running["active_search"]["stop_requested"])
+
+        self.assertTrue(repository.request_cancel_active())
+        stopping = repository.status()
+        self.assertEqual("cancel_requested", stopping["active_search"]["phase"])
+        self.assertTrue(stopping["active_search"]["stop_requested"])
+        with self.assertRaises(OperationCancelled):
+            repository.heartbeat(claim)
+        repository.cancel(claim)
+        self.assertFalse(repository.status()["searching"])
+        self.assertTrue(repository.status()["last_result"]["cancelled"])
+        self.assertTrue(other_owner.status()["searching"])
+        self.assertFalse(repository.request_cancel_active())
+
+    def test_expired_orphaned_search_is_cancelled_immediately(self) -> None:
+        repository = self.repository()
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000015", "orphan", ""
+        )
+        repository.publish_prepared(run_id, "orphan", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000015"
+        )
+        connection = self.connection()
+        connection.execute(
+            "UPDATE search_runs SET lease_expires_at='2000-01-01T00:00:00+00:00' WHERE id=?",
+            (run_id,),
+        )
+        connection.commit()
+        connection.close()
+
+        self.assertTrue(repository.request_cancel_active())
+        self.assertFalse(repository.status()["searching"])
+        self.assertTrue(repository.status()["last_result"]["cancelled"])
+        with self.assertRaises(SearchRunLeaseLost):
+            repository.succeed(claim, {"success": True, "jobs_added": 99})
+
+    def test_postgres_active_cancel_is_owner_scoped_and_uses_database_lease_time(self) -> None:
+        for lease_expired, expected_status in (
+            (False, "cancel_requested"),
+            (True, "cancelled"),
+        ):
+            with self.subTest(lease_expired=lease_expired):
+                connection = Mock()
+                selected = Mock()
+                selected.mappings.return_value.first.return_value = {
+                    "id": "00000000-0000-4000-8000-000000000016",
+                    "status": "running",
+                    "lease_expires_at": object(),
+                    "lease_expired": lease_expired,
+                }
+                connection.execute.side_effect = [selected, Mock()]
+                transaction = Mock()
+                transaction.__enter__ = Mock(return_value=connection)
+                transaction.__exit__ = Mock(return_value=False)
+                with patch(
+                    "search_run_repository.tenant_transaction",
+                    return_value=transaction,
+                ):
+                    repository = PostgreSQLSearchRunRepository(42, engine=Mock())
+                    self.assertTrue(repository.request_cancel_active())
+
+                select_sql = str(connection.execute.call_args_list[0].args[0])
+                self.assertIn("owner_user_id=:owner", select_sql)
+                self.assertIn("lease_expires_at <= CURRENT_TIMESTAMP", select_sql)
+                self.assertIn("FOR UPDATE", select_sql)
+                update_parameters = connection.execute.call_args_list[1].args[1]
+                self.assertEqual(42, update_parameters["owner"])
+                self.assertEqual(expected_status, update_parameters["status"])
+                self.assertEqual(lease_expired, update_parameters["terminal"])
+
     def test_two_workers_cannot_claim_the_same_run(self) -> None:
         repository = self.repository()
         run_id = repository.enqueue(
@@ -149,6 +245,48 @@ class SQLiteSearchRunTests(unittest.TestCase):
         repository.succeed(second, {"success": True, "jobs_added": 2})
         self.assertEqual(2, repository.status()["last_result"]["jobs_added"])
 
+    def test_progress_is_distinct_from_lease_liveness_and_exposes_bounded_counts(self) -> None:
+        repository = self.repository()
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000033", "progress", ""
+        )
+        repository.publish_prepared(run_id, "progress", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000033"
+        )
+        repository.progress(claim, "inspecting_postings", 2, 7)
+        status = repository.status()["active_search"]
+
+        self.assertEqual("inspecting_postings", status["phase"])
+        self.assertEqual(2, status["completed"])
+        self.assertEqual(7, status["total"])
+        self.assertEqual(1, status["attempt"])
+        self.assertEqual(3, status["max_attempts"])
+        self.assertIsNotNone(status["last_progress_at"])
+        self.assertIsNotNone(status["last_heartbeat_at"])
+        with self.assertRaises(ValueError):
+            repository.progress(claim, "private-arbitrary-phase", 0, 1)
+
+    def test_progress_renews_atomically_and_preserves_cancel_classification(self) -> None:
+        repository = self.repository()
+        operation = "00000000-0000-4000-8000-000000000034"
+        run_id = repository.enqueue(operation, "atomic progress", "")
+        repository.publish_prepared(run_id, "atomic progress", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000034"
+        )
+
+        with patch.object(
+            repository,
+            "heartbeat",
+            side_effect=AssertionError("progress must not renew in a separate transaction"),
+        ):
+            repository.progress(claim, "searching_sources", 1, 2)
+
+        self.assertTrue(repository.request_cancel(operation))
+        with self.assertRaises(OperationCancelled):
+            repository.progress(claim, "searching_sources", 2, 2)
+
     def test_execution_binds_owner_and_persists_fixed_failure(self) -> None:
         repository = self.repository(42)
         run_id = repository.enqueue(
@@ -158,7 +296,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
         claim = repository.claim(run_id, "10000000-0000-4000-8000-000000000041")
         observed_owners = []
 
-        def fail(*_args):
+        def fail(*_args, **_kwargs):
             from provider_secrets import current_owner_user_id
 
             observed_owners.append(current_owner_user_id())
@@ -210,7 +348,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
         claim = repository.claim(run_id, "10000000-0000-4000-8000-000000000061")
         self.assertEqual([], open_connections)
 
-        def provider(_keywords, _location, checkpoint):
+        def provider(_keywords, _location, checkpoint, **_kwargs):
             self.assertEqual([], open_connections)
             checkpoint()
             self.assertEqual([], open_connections)
@@ -219,6 +357,149 @@ class SQLiteSearchRunTests(unittest.TestCase):
         with patch.object(execution_module, "run_job_search_and_matching", provider):
             execution_module.execute_search_claim(claim, repository)
         self.assertEqual([], open_connections)
+
+    def test_execution_renews_lease_during_a_blocked_provider_step(self) -> None:
+        repository = self.repository()
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000063", "long search", ""
+        )
+        repository.publish_prepared(run_id, "long search", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000063"
+        )
+        original_heartbeat = repository.heartbeat
+        heartbeat_lock = Lock()
+        heartbeat_count = 0
+        background_heartbeat = Event()
+
+        def heartbeat(target_claim, lease_seconds=300):
+            nonlocal heartbeat_count
+            original_heartbeat(target_claim, lease_seconds)
+            with heartbeat_lock:
+                heartbeat_count += 1
+                if heartbeat_count >= 2:
+                    background_heartbeat.set()
+
+        def provider(_keywords, _location, _checkpoint, **_kwargs):
+            self.assertTrue(background_heartbeat.wait(1))
+            return {"success": True, "jobs_added": 1, "provider_alerts": []}
+
+        repository.heartbeat = heartbeat
+        with (
+            patch.object(execution_module, "LEASE_HEARTBEAT_SECONDS", 0.01),
+            patch.object(execution_module, "run_job_search_and_matching", provider),
+        ):
+            execution_module.execute_search_claim(claim, repository)
+
+        self.assertGreaterEqual(heartbeat_count, 2)
+        self.assertEqual(1, repository.status()["last_result"]["jobs_added"])
+
+    def test_background_heartbeat_observes_cancel_during_provider_step(self) -> None:
+        repository = self.repository()
+        operation = "00000000-0000-4000-8000-000000000064"
+        run_id = repository.enqueue(operation, "long cancellation", "")
+        repository.publish_prepared(run_id, "long cancellation", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000064"
+        )
+        original_heartbeat = repository.heartbeat
+        cancellation_observed = Event()
+
+        def heartbeat(target_claim, lease_seconds=300):
+            try:
+                original_heartbeat(target_claim, lease_seconds)
+            except OperationCancelled:
+                cancellation_observed.set()
+                raise
+
+        def provider(_keywords, _location, _checkpoint, **_kwargs):
+            self.assertTrue(repository.request_cancel(operation))
+            self.assertTrue(cancellation_observed.wait(1))
+            raise RuntimeError("provider failed after cancellation")
+
+        repository.heartbeat = heartbeat
+        with (
+            patch.object(execution_module, "LEASE_HEARTBEAT_SECONDS", 0.01),
+            patch.object(execution_module, "run_job_search_and_matching", provider),
+        ):
+            execution_module.execute_search_claim(claim, repository)
+
+        result = repository.status()["last_result"]
+        self.assertTrue(result["cancelled"])
+        self.assertNotIn("jobs_added", result)
+
+    def test_background_worker_stop_wins_over_provider_failure(self) -> None:
+        repository = self.repository()
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000065", "stop race", ""
+        )
+        repository.publish_prepared(run_id, "stop race", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000065"
+        )
+        stop = Event()
+        background_stop_observed = Event()
+
+        def stop_requested():
+            requested = stop.is_set()
+            if requested and current_thread().name == "search-run-lease-heartbeat":
+                background_stop_observed.set()
+            return requested
+
+        def provider(_keywords, _location, _checkpoint, **_kwargs):
+            stop.set()
+            self.assertTrue(background_stop_observed.wait(1))
+            raise RuntimeError("provider failed during worker shutdown")
+
+        with (
+            patch.object(execution_module, "LEASE_HEARTBEAT_SECONDS", 0.01),
+            patch.object(execution_module, "run_job_search_and_matching", provider),
+        ):
+            execution_module.execute_search_claim(
+                claim,
+                repository,
+                stop_requested=stop_requested,
+            )
+
+        self.assertTrue(repository.status()["searching"])
+        self.assertIsNone(repository.status()["last_result"])
+
+    def test_background_lease_loss_wins_over_provider_failure(self) -> None:
+        repository = self.repository()
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000066", "lease race", ""
+        )
+        repository.publish_prepared(run_id, "lease race", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000066"
+        )
+        original_heartbeat = repository.heartbeat
+        heartbeat_lock = Lock()
+        heartbeat_count = 0
+        lease_loss_observed = Event()
+
+        def heartbeat(target_claim, lease_seconds=300):
+            nonlocal heartbeat_count
+            with heartbeat_lock:
+                heartbeat_count += 1
+                if heartbeat_count > 1:
+                    lease_loss_observed.set()
+                    raise SearchRunLeaseLost()
+            original_heartbeat(target_claim, lease_seconds)
+
+        def provider(_keywords, _location, _checkpoint, **_kwargs):
+            self.assertTrue(lease_loss_observed.wait(1))
+            raise RuntimeError("provider failed after lease loss")
+
+        repository.heartbeat = heartbeat
+        with (
+            patch.object(execution_module, "LEASE_HEARTBEAT_SECONDS", 0.01),
+            patch.object(execution_module, "run_job_search_and_matching", provider),
+        ):
+            execution_module.execute_search_claim(claim, repository)
+
+        self.assertTrue(repository.status()["searching"])
+        self.assertIsNone(repository.status()["last_result"])
 
     def test_preparing_is_active_but_not_claimable_until_published(self) -> None:
         repository = self.repository()

@@ -22,6 +22,11 @@ let mapsProviderSettingsSaved = false;
 let loadedJobs = [];
 let jobImportCanonicalUrl = null;
 let activeLoadingOperation = null;
+let searchStatusPollTimer = null;
+let searchStatusPollInFlightGeneration = null;
+let searchStatusPollGeneration = 0;
+let searchWasObservedActive = false;
+let lastAnnouncedSearchPhase = null;
 let baseResumes = [];
 let currentBaseResumeId = null;
 let baseResumeSnapshot = null;
@@ -453,6 +458,7 @@ document.addEventListener("DOMContentLoaded", () => {
     loadLogs();
     loadApplicationInsights();
     refreshSourceDiagnosticCount();
+    startSearchStatusPolling();
 });
 
 async function configureSessionControls() {
@@ -921,6 +927,7 @@ function setupModalTabs() {
 // Show/Hide Helpers
 function showLoading(title, subtitle = "Please wait while CareerTrellis prepares your request.", operation = null) {
     loadingTitle.innerText = title;
+    loadingSubtitle.classList.remove("search-progress-status");
     loadingSubtitle.innerText = subtitle;
     activeLoadingOperation = operation;
     loadingActions.hidden = !operation;
@@ -938,10 +945,11 @@ function hideLoading() {
     activeLoadingOperation = null;
 }
 
-function showCancellableLoading(title, subtitle) {
+function showCancellableLoading(title, subtitle, options = {}) {
     const operation = {
         id: crypto.randomUUID(),
-        stopRequested: false
+        stopRequested: false,
+        ...options
     };
     showLoading(title, subtitle, operation);
     return operation;
@@ -961,12 +969,16 @@ async function stopActiveLoadingOperation() {
         document.createTextNode(` ${t("common.stopping")}`)
     );
     loadingTitle.innerText = t("common.stopping");
+    loadingSubtitle.classList.remove("search-progress-status");
     loadingSubtitle.innerText = t("common.stopping.subtitle");
     try {
-        const response = await fetch(`${API_URL}/api/operations/${operation.id}/cancel`, { method: "POST" });
+        const cancelUrl = operation.cancelUrl
+            || `${API_URL}/api/operations/${operation.id}/cancel`;
+        const response = await fetch(cancelUrl, { method: "POST" });
         const result = await response.json();
         if (!response.ok) throw new Error(result.detail || "The stop request could not be sent.");
         if (!result.active && activeLoadingOperation === operation) {
+            loadingSubtitle.classList.remove("search-progress-status");
             loadingSubtitle.innerText = "The operation has already finished. Finalizing the result...";
         }
     } catch (error) {
@@ -977,6 +989,7 @@ async function stopActiveLoadingOperation() {
             document.createTextNode(` ${t("common.stop")}`)
         );
         loadingTitle.innerText = t("common.working");
+        loadingSubtitle.classList.remove("search-progress-status");
         loadingSubtitle.innerText = error.message || "The stop request could not be sent.";
     }
 }
@@ -2649,6 +2662,162 @@ async function deleteJobRecord(jobId) {
     }
 }
 
+function formatSearchClock(totalSeconds) {
+    const seconds = Math.max(0, Math.floor(totalSeconds));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainingSeconds = seconds % 60;
+    return hours > 0
+        ? `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`
+        : `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
+}
+
+function renderSearchProgress(activeSearch) {
+    const now = Date.now();
+    const message = createElement(
+        "div",
+        "search-progress-message",
+        activeSearch?.message || "Search work is in progress."
+    );
+    const metrics = createElement("div", "search-progress-metrics");
+    const addMetric = (label, value) => {
+        metrics.append(
+            createElement("span", "search-progress-label", label),
+            createElement("span", "search-progress-value", value)
+        );
+    };
+    const startedAt = Date.parse(activeSearch?.started_at || "");
+    addMetric("Elapsed", Number.isFinite(startedAt)
+        ? formatSearchClock((now - startedAt) / 1000)
+        : "--:--");
+    const lastProgressAt = Date.parse(activeSearch?.last_progress_at || "");
+    addMetric("Last progress", Number.isFinite(lastProgressAt)
+        ? `${formatSearchClock((now - lastProgressAt) / 1000)} ago`
+        : "waiting");
+    const lastHeartbeatAt = Date.parse(activeSearch?.last_heartbeat_at || "");
+    addMetric("Worker check-in", Number.isFinite(lastHeartbeatAt)
+        ? `${formatSearchClock((now - lastHeartbeatAt) / 1000)} ago`
+        : "waiting");
+    const completed = Number(activeSearch?.completed);
+    const total = Number(activeSearch?.total);
+    addMetric("Step", Number.isFinite(total) && total > 0 && Number.isFinite(completed)
+        ? `${Math.max(0, completed)} / ${Math.max(0, total)}`
+        : "in progress");
+    const attempt = Number(activeSearch?.attempt);
+    const maxAttempts = Number(activeSearch?.max_attempts);
+    addMetric("Attempt", Number.isFinite(attempt) && Number.isFinite(maxAttempts) && attempt > 0
+        ? `${attempt} / ${maxAttempts}`
+        : "waiting");
+    loadingSubtitle.classList.add("search-progress-status");
+    loadingSubtitle.replaceChildren(message, metrics);
+}
+
+function showRecoveredSearch(status) {
+    if (!activeLoadingOperation) {
+        showLoading(
+            t("search.loading.title"),
+            status.active_search?.message || "Search work is in progress.",
+            {
+                id: null,
+                kind: "search",
+                stopRequested: status.active_search?.stop_requested === true,
+                cancelUrl: `${API_URL}/api/jobs/search/cancel`
+            }
+        );
+    }
+    if (activeLoadingOperation?.kind !== "search") return;
+    loadingTitle.innerText = status.active_search?.stop_requested
+        ? t("common.stopping")
+        : t("search.loading.title");
+    renderSearchProgress(status.active_search);
+    const stopping = status.active_search?.stop_requested === true
+        || activeLoadingOperation.stopRequested;
+    const announcedPhase = stopping ? "stopping" : (status.active_search?.phase || "searching");
+    if (announcedPhase !== lastAnnouncedSearchPhase) {
+        lastAnnouncedSearchPhase = announcedPhase;
+        announce(`${loadingTitle.innerText} ${status.active_search?.message || "Search work is in progress."}`);
+    }
+    stopLoadingBtn.disabled = stopping;
+    if (stopping) {
+        stopLoadingBtn.replaceChildren(
+            createElement("i", "fa-solid fa-spinner fa-spin"),
+            document.createTextNode(` ${t("common.stopping")}`)
+        );
+    }
+}
+
+async function finishObservedSearch(status, generation) {
+    if (generation !== searchStatusPollGeneration) return;
+    searchStatusPollGeneration += 1;
+    searchWasObservedActive = false;
+    lastAnnouncedSearchPhase = null;
+    if (searchStatusPollTimer !== null) {
+        clearInterval(searchStatusPollTimer);
+        searchStatusPollTimer = null;
+    }
+    if (activeLoadingOperation?.kind === "search") hideLoading();
+    await loadJobs();
+    await updateDashboardStats();
+    if (status.last_result?.cancelled) {
+        logActivity("Job Search Stopped", status.last_result.message, "warning");
+    } else if (status.last_result?.success === false) {
+        logActivity("Search Failed", status.last_result.error || "Search did not complete.", "error");
+        alert(status.last_result.error || t("search.failed"));
+    } else {
+        logActivity(
+            status.last_result?.partial ? "Job Search Partially Complete" : "Job Search Complete",
+            status.last_result?.message || "Found and analyzed new job openings.",
+            status.last_result?.partial ? "warning" : "success"
+        );
+        renderProviderAlerts(status.last_result);
+    }
+    await refreshSourceDiagnosticCount();
+}
+
+async function pollSearchStatus(generation = searchStatusPollGeneration) {
+    if (searchStatusPollInFlightGeneration === generation) return;
+    searchStatusPollInFlightGeneration = generation;
+    try {
+        const response = await fetch(`${API_URL}/api/jobs/status`, { cache: "no-store" });
+        const status = await response.json();
+        if (generation !== searchStatusPollGeneration) return;
+        if (!response.ok) throw new Error(status.detail || "Search status is temporarily unavailable.");
+        if (status.searching) {
+            searchWasObservedActive = true;
+            showRecoveredSearch(status);
+            return;
+        }
+        if (searchWasObservedActive) {
+            await finishObservedSearch(status, generation);
+        } else if (searchStatusPollTimer !== null) {
+            clearInterval(searchStatusPollTimer);
+            searchStatusPollTimer = null;
+        }
+    } catch (error) {
+        if (generation !== searchStatusPollGeneration) return;
+        if (activeLoadingOperation?.kind === "search") {
+            loadingSubtitle.classList.remove("search-progress-status");
+            loadingSubtitle.innerText = error.message || "Search status is temporarily unavailable. Retrying...";
+        }
+        console.error("Error polling search status:", error);
+    } finally {
+        if (searchStatusPollInFlightGeneration === generation) {
+            searchStatusPollInFlightGeneration = null;
+        }
+    }
+}
+
+function startSearchStatusPolling(observedActive = false) {
+    searchStatusPollGeneration += 1;
+    const generation = searchStatusPollGeneration;
+    searchWasObservedActive = searchWasObservedActive || observedActive;
+    if (searchStatusPollTimer !== null) {
+        clearInterval(searchStatusPollTimer);
+    }
+    searchStatusPollTimer = setInterval(() => void pollSearchStatus(generation), 3000);
+    void pollSearchStatus(generation);
+}
+
 // Search for jobs
 async function searchJobs(e) {
     e.preventDefault();
@@ -2660,7 +2829,11 @@ async function searchJobs(e) {
         ? `Searching for '${keywords}' ${location ? 'in ' + location : ''}...`
         : `Analyzing resume to suggest keywords and searching jobs...`;
     
-    const operation = showCancellableLoading(t("search.loading.title"), t("search.loading.subtitle"));
+    const operation = showCancellableLoading(
+        t("search.loading.title"),
+        t("search.loading.subtitle"),
+        { kind: "search" }
+    );
     logActivity("Job Search Started", logMsg, "info");
     
     try {
@@ -2684,31 +2857,10 @@ async function searchJobs(e) {
         } else if (result.success) {
             if (saveSearchCheckbox?.checked) await loadSavedSearches();
             await checkDueSavedSearches();
-            // Poll for background task status
-            const pollInterval = setInterval(async () => {
-                try {
-                    const statusRes = await fetch(`${API_URL}/api/jobs/status`);
-                    const status = await statusRes.json();
-                    if (!status.searching) {
-                        clearInterval(pollInterval);
-                        await loadJobs();
-                        await updateDashboardStats();
-                        hideLoading();
-                        if (status.last_result?.cancelled) {
-                            logActivity("Job Search Stopped", status.last_result.message, "warning");
-                        } else if (status.last_result?.success === false) {
-                            logActivity("Search Failed", status.last_result.error || "Search did not complete.", "error");
-                            alert(status.last_result.error || t("search.failed"));
-                        } else {
-                            logActivity("Job Search Complete", "Found and analyzed new job openings.", "success");
-                            renderProviderAlerts(status.last_result);
-                        }
-                        await refreshSourceDiagnosticCount();
-                    }
-                } catch (err) {
-                    console.error("Error polling search status:", err);
-                }
-            }, 3000);
+            startSearchStatusPolling(true);
+        } else if (result.active) {
+            operation.cancelUrl = `${API_URL}/api/jobs/search/cancel`;
+            startSearchStatusPolling(true);
         } else {
             hideLoading();
             alert(result.message || result.error || t("search.failed"));

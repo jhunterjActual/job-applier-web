@@ -303,6 +303,57 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                     {"role": WORKER_ROLE},
                 )
             )
+            self.assertFalse(
+                connection.scalar(
+                    text(
+                        "SELECT has_table_privilege("
+                        ":role, 'careertrellis.app_users', 'SELECT')"
+                    ),
+                    {"role": WORKER_ROLE},
+                )
+            )
+            for column in (
+                "id",
+                "workos_user_id",
+                "role",
+                "created_at",
+                "last_seen_at",
+                "disabled_at",
+            ):
+                with self.subTest(worker_app_user_column=column):
+                    self.assertFalse(
+                        connection.scalar(
+                            text(
+                                "SELECT has_column_privilege("
+                                ":role, 'careertrellis.app_users', :column, 'SELECT')"
+                            ),
+                            {"role": WORKER_ROLE, "column": column},
+                        )
+                    )
+            self.assertTrue(
+                connection.scalar(
+                    text(
+                        "SELECT has_function_privilege("
+                        ":role, "
+                        "'careertrellis.lock_search_run_claim(uuid, bigint, uuid)', "
+                        "'EXECUTE')"
+                    ),
+                    {"role": WORKER_ROLE},
+                )
+            )
+            for role in (RUNTIME_ROLE, ERASURE_WORKER_ROLE):
+                with self.subTest(search_claim_lock_role=role):
+                    self.assertFalse(
+                        connection.scalar(
+                            text(
+                                "SELECT has_function_privilege("
+                                ":role, "
+                                "'careertrellis.lock_search_run_claim(uuid, bigint, uuid)', "
+                                "'EXECUTE')"
+                            ),
+                            {"role": role},
+                        )
+                    )
             self.assertTrue(
                 connection.scalar(
                     text(
@@ -529,6 +580,10 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}"
             )
             connection.exec_driver_sql(
+                "REVOKE ALL ON FUNCTION careertrellis.initialize_search_run_progress() "
+                f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}"
+            )
+            connection.exec_driver_sql(
                 "REVOKE ALL ON FUNCTION careertrellis.claim_next_search_run(uuid, integer) "
                 f"FROM {RUNTIME_ROLE}"
             )
@@ -549,8 +604,22 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}"
             )
             connection.exec_driver_sql(
+                "REVOKE SELECT ON careertrellis.app_users "
+                f"FROM {WORKER_ROLE}"
+            )
+            connection.exec_driver_sql(
                 "GRANT UPDATE (last_seen_at) ON careertrellis.app_users "
                 f"TO {RUNTIME_ROLE}"
+            )
+            connection.exec_driver_sql(
+                "REVOKE ALL ON FUNCTION "
+                "careertrellis.lock_search_run_claim(uuid, bigint, uuid) "
+                f"FROM {RUNTIME_ROLE}, {WORKER_ROLE}, {ERASURE_WORKER_ROLE}"
+            )
+            connection.exec_driver_sql(
+                "GRANT EXECUTE ON FUNCTION "
+                "careertrellis.lock_search_run_claim(uuid, bigint, uuid) "
+                f"TO {WORKER_ROLE}"
             )
             connection.exec_driver_sql("RESET ROLE")
 
@@ -1170,6 +1239,49 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 text("SELECT workos_user_id FROM careertrellis.app_users")
             ).scalars().all()
         self.assertEqual(["user_tenant_one"], rows)
+
+    def test_search_worker_cannot_read_authentication_rows_directly(self) -> None:
+        for column in ("id", "disabled_at", "workos_user_id"):
+            with self.subTest(column=column), self.assertRaises(DBAPIError):
+                with tenant_transaction(
+                    self.worker_engine, self.user_one
+                ) as connection:
+                    connection.execute(
+                        text(f"SELECT {column} FROM careertrellis.app_users")
+                    ).all()
+
+        for engine in (self.runtime_engine, self.erasure_worker_engine):
+            with self.subTest(role=str(engine.url.username)), self.assertRaises(
+                DBAPIError
+            ):
+                with tenant_transaction(engine, self.user_one) as connection:
+                    connection.execute(
+                        text(
+                            "SELECT * FROM careertrellis.lock_search_run_claim("
+                            "CAST(:run AS uuid), :owner, CAST(:lease AS uuid))"
+                        ),
+                        {
+                            "run": "00000000-0000-4000-8000-000000000001",
+                            "owner": self.user_one,
+                            "lease": "10000000-0000-4000-8000-000000000001",
+                        },
+                    ).all()
+
+        with self.assertRaises(DBAPIError):
+            with tenant_transaction(
+                self.worker_engine, self.user_one
+            ) as connection:
+                connection.execute(
+                    text(
+                        "SELECT * FROM careertrellis.lock_search_run_claim("
+                        "CAST(:run AS uuid), :owner, CAST(:lease AS uuid))"
+                    ),
+                    {
+                        "run": "00000000-0000-4000-8000-000000000001",
+                        "owner": self.user_two,
+                        "lease": "10000000-0000-4000-8000-000000000001",
+                    },
+                ).all()
 
     def test_runtime_cannot_choose_or_change_authorization_fields(self) -> None:
         with self.assertRaises(DBAPIError):
@@ -3372,10 +3484,27 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         self.assertEqual({run_one, run_two}, {item.run_id for item in claims})
         self.assertEqual({self.user_one, self.user_two}, {item.owner_user_id for item in claims})
         for item in claims:
-            repository = owner_one if item.owner_user_id == self.user_one else owner_two
-            repository.succeed(item, {"success": True, "jobs_added": 1, "secret": "omitted"})
-            self.assertEqual(1, repository.status()["last_result"]["jobs_added"])
-            self.assertNotIn("secret", repository.status()["last_result"])
+            runtime_repository = (
+                owner_one if item.owner_user_id == self.user_one else owner_two
+            )
+            worker_repository = PostgreSQLSearchRunRepository(
+                item.owner_user_id, engine=self.worker_engine
+            )
+            worker_repository.progress(item, "inspecting_postings", 2, 7)
+            progress = runtime_repository.status()["active_search"]
+            self.assertEqual("inspecting_postings", progress["phase"])
+            self.assertEqual(2, progress["completed"])
+            self.assertEqual(7, progress["total"])
+            self.assertEqual(item.attempt, progress["attempt"])
+            self.assertIsNotNone(progress["last_progress_at"])
+            self.assertIsNotNone(progress["last_heartbeat_at"])
+            worker_repository.succeed(
+                item, {"success": True, "jobs_added": 1, "secret": "omitted"}
+            )
+            self.assertEqual(
+                1, runtime_repository.status()["last_result"]["jobs_added"]
+            )
+            self.assertNotIn("secret", runtime_repository.status()["last_result"])
 
     def test_disabled_owner_search_is_cancelled_before_worker_claim(self) -> None:
         owner_one = PostgreSQLSearchRunRepository(
@@ -3447,6 +3576,9 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             "10000000-0000-4000-8000-000000000093", engine=self.worker_engine
         )
         self.assertIsNotNone(claim)
+        worker_repository = PostgreSQLSearchRunRepository(
+            self.user_two, engine=self.worker_engine
+        )
 
         with self.admin_engine.connect() as connection:
             original_expiry = connection.scalar(
@@ -3466,7 +3598,7 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             )
 
         with self.assertRaises(SearchRunLeaseLost):
-            repository.heartbeat(claim, lease_seconds=900)
+            worker_repository.heartbeat(claim, lease_seconds=900)
 
         with self.admin_engine.connect() as connection:
             state = connection.execute(
@@ -3493,7 +3625,10 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             "10000000-0000-4000-8000-000000000094", engine=self.worker_engine
         )
         self.assertIsNotNone(claim)
-        repository.heartbeat(claim)
+        worker_repository = PostgreSQLSearchRunRepository(
+            self.user_two, engine=self.worker_engine
+        )
+        worker_repository.heartbeat(claim)
 
         with self.admin_engine.begin() as connection:
             connection.execute(
@@ -3504,7 +3639,7 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 {"owner": self.user_two},
             )
 
-        repository.succeed(
+        worker_repository.succeed(
             claim, {"success": True, "jobs_added": 17, "secret": "discard me"}
         )
 
@@ -3546,9 +3681,12 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         )
         self.assertEqual(run_id, second.run_id)
         self.assertEqual(2, second.attempt)
+        worker_repository = PostgreSQLSearchRunRepository(
+            self.user_one, engine=self.worker_engine
+        )
         with self.assertRaises(SearchRunLeaseLost):
-            repository.succeed(first, {"success": True, "jobs_added": 99})
-        repository.succeed(second, {"success": True, "jobs_added": 2})
+            worker_repository.succeed(first, {"success": True, "jobs_added": 99})
+        worker_repository.succeed(second, {"success": True, "jobs_added": 2})
         self.assertEqual(2, repository.status()["last_result"]["jobs_added"])
 
     def test_search_run_cancel_and_attempt_exhaustion_are_terminal(self) -> None:

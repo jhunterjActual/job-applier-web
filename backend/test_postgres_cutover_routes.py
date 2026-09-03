@@ -63,6 +63,7 @@ SHARED_ROUTE_POLICIES: dict[str, set[tuple[str, str]]] = {
         ("POST", "/api/operations/{operation_id}/cancel"),
         ("GET", "/api/jobs/status"),
         ("POST", "/api/jobs/search"),
+        ("POST", "/api/jobs/search/cancel"),
     },
     "discovery": {
         ("GET", "/api/jobs"),

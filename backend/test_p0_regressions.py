@@ -310,6 +310,31 @@ class AIProviderAbstractionTests(unittest.TestCase):
         settings = provider_call.call_args.args[0]
         self.assertEqual("openai", settings.provider)
         self.assertEqual("gpt-5-mini", settings.model)
+        self.assertEqual(
+            searcher_module.KEYWORD_PROVIDER_TIMEOUT_SECONDS,
+            provider_call.call_args.kwargs["timeout_seconds"],
+        )
+        self.assertTrue(provider_call.call_args.kwargs["disable_thinking"])
+
+    def test_gemini_structured_request_has_bounded_timeout_and_optional_thinking_disabled(self) -> None:
+        response = Mock(parsed=CapabilityResponse(ready=True))
+        client = Mock()
+        client.models.generate_content.return_value = response
+        settings = AIProviderSettings("gemini", "gemini-2.5-flash", "private-test-key")
+        with patch.object(ai_providers_module.genai, "Client", return_value=client) as client_factory:
+            result = generate_structured(
+                settings,
+                "Return ready.",
+                CapabilityResponse,
+                timeout_seconds=45,
+                disable_thinking=True,
+            )
+
+        self.assertEqual({"ready": True}, result)
+        options = client_factory.call_args.kwargs["http_options"]
+        self.assertEqual(45_000, options.timeout)
+        config = client.models.generate_content.call_args.kwargs["config"]
+        self.assertEqual(0, config.thinking_config.thinking_budget)
 
 
 class MapsProviderAbstractionTests(unittest.TestCase):
@@ -1458,8 +1483,8 @@ class FrontendStartupTests(unittest.TestCase):
                 self.assertIn(f'id="{element_id}"', html_source)
         self.assertIn("Checking AI Provider", html_source)
         self.assertIn("i18n.js?v=20260812-1", html_source)
-        self.assertIn("app.js?v=20260902-1", html_source)
-        self.assertIn("index.css?v=20260902-1", html_source)
+        self.assertIn("app.js?v=20260902-3", html_source)
+        self.assertIn("index.css?v=20260902-2", html_source)
 
     def test_profile_and_provider_secrets_use_separate_form_boundaries(self) -> None:
         parser = self._profile_form_parser()
@@ -3017,8 +3042,8 @@ class DependencyLockTests(unittest.TestCase):
 
     def test_provisioning_keeps_the_caddy_access_log_service_writable(self) -> None:
         script = (self.project_dir() / "deploy" / "scripts" / "provision-staging-host.sh").read_text(encoding="utf-8")
-        self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access-v3.log", script)
-        self.assertNotIn("careertrellis-staging-access-v2", script)
+        self.assertIn("caddy_access_log=/var/log/caddy/careertrellis-staging-access-v6.log", script)
+        self.assertNotIn("careertrellis-staging-access-v5", script)
         self.assertIn("-L ${caddy_access_log}", script)
         self.assertIn("caddy:caddy 600", script)
         self.assertIn("root:root 600 0", script)
@@ -3039,8 +3064,8 @@ class DependencyLockTests(unittest.TestCase):
             with self.subTest(name=name):
                 source = (scripts / name).read_text(encoding="utf-8")
                 self.assertIn("ensure_caddy_access_log()", source)
-                self.assertIn("careertrellis-staging-access-v3.log", source)
-                self.assertNotIn("careertrellis-staging-access-v2", source)
+                self.assertIn("careertrellis-staging-access-v6.log", source)
+                self.assertNotIn("careertrellis-staging-access-v5", source)
                 self.assertIn("root:root 600 0", source)
                 self.assertIn(
                     'chown --no-dereference --from=root:root caddy:caddy "${log_path}"',
@@ -3049,8 +3074,15 @@ class DependencyLockTests(unittest.TestCase):
                 self.assertNotIn('chmod 0600 "${log_path}"', source)
                 self.assertIn("assert_caddy_runtime_privacy_ready()", source)
                 self.assertIn("--validate-only", source)
+                self.assertIn("--validate-privacy-floor-only", source)
                 self.assertIn('"${target_release}/backend/venv/bin/python"', source)
                 self.assertIn('"${target_release}/backend/caddy_log_privacy.py"', source)
+                privacy_floor_runtime = (
+                    '"${release_dir}/backend/venv/bin/python"'
+                    if name == "deploy-release.sh"
+                    else '"${current_release}/backend/venv/bin/python"'
+                )
+                self.assertIn(privacy_floor_runtime, source)
                 self.assertLess(source.index("ensure_caddy_access_log || return 1"), source.index(marker))
 
     def test_pilot_caddy_gate_is_fixed_root_only_and_fail_closed(self) -> None:
@@ -3330,10 +3362,7 @@ class DependencyLockTests(unittest.TestCase):
         self.assertLess(erasure_active, web_restart)
 
         failure = deploy[deploy.index('if ! activate_release "${release_dir}"') :]
-        self.assertIn(
-            "systemctl stop careertrellis-erasure-worker.service careertrellis-worker.service careertrellis-web.service",
-            failure,
-        )
+        self.assertEqual(2, failure.count("contain_failed_activation || true"))
         self.assertIn("requires a reviewed forward correction", failure)
         self.assertNotIn("pending-cutover", failure)
         self.assertNotIn("post-import-recovery", failure)
@@ -3343,6 +3372,44 @@ class DependencyLockTests(unittest.TestCase):
         self.assertNotIn("systemctl ", prepare_prefix)
         self.assertNotIn("caddy validate", prepare_prefix)
         self.assertNotIn("ln -s", prepare_prefix)
+
+    def test_failed_forward_activation_contains_caddy_and_application_services(self) -> None:
+        deploy = (
+            self.project_dir() / "deploy" / "scripts" / "deploy-release.sh"
+        ).read_text(encoding="utf-8")
+        containment = deploy[
+            deploy.index("contain_failed_activation() {") : deploy.index(
+                'if ! activate_release "${release_dir}"'
+            )
+        ]
+        self.assertIn("systemctl disable --now caddy.service", containment)
+        self.assertLess(
+            containment.index("systemctl disable --now caddy.service"),
+            containment.index("careertrellis-web.service"),
+        )
+        for unit in (
+            "caddy.service",
+            "careertrellis-erasure-worker.service",
+            "careertrellis-worker.service",
+            "careertrellis-web.service",
+        ):
+            self.assertIn(unit, containment)
+        self.assertIn(
+            'systemctl show "${unit}" --property=ActiveState --value',
+            containment,
+        )
+        self.assertIn("unit_active_state} != inactive", containment)
+        self.assertIn("systemctl is-enabled caddy.service", containment)
+        self.assertIn("caddy_enabled_state} != disabled", containment)
+        self.assertIn("containment could not confirm", containment)
+
+        failure = deploy[deploy.index('if ! activate_release "${release_dir}"') :]
+        self.assertEqual(2, failure.count("contain_failed_activation || true"))
+        self.assertNotIn(
+            "systemctl stop careertrellis-erasure-worker.service "
+            "careertrellis-worker.service careertrellis-web.service",
+            failure,
+        )
 
     def test_generated_object_recovery_is_manual_append_only_and_identity_bounded(self) -> None:
         project_dir = self.project_dir()
@@ -4321,6 +4388,10 @@ class DependencyLockTests(unittest.TestCase):
             "request>client_ip hash",
             "request>headers>User-Agent hash",
             "request>headers>Referer delete",
+            "request>headers>From delete",
+            "request>headers>Range delete",
+            "request>headers>Sec-Purpose delete",
+            "request>headers>X-Openai-Host-Hash delete",
             "request>headers>Cf-Connecting-Ip delete",
             "request>headers>Cf-Connecting-Ipv6 delete",
             "request>headers>True-Client-Ip delete",
@@ -4392,10 +4463,27 @@ class DependencyLockTests(unittest.TestCase):
         self.assertTrue(
             {
                 "next-action",
+                "pragma",
+                "from",
+                "range",
                 "sec-ch-ua",
                 "sec-ch-ua-mobile",
                 "sec-ch-ua-platform",
+                "sec-purpose",
+                "traceparent",
+                "tracestate",
+                "x-careertrellis-operation",
+                "x-datadog-parent-id",
+                "x-datadog-sampling-priority",
+                "x-datadog-tags",
+                "x-datadog-trace-id",
+                "x-openai-host-hash",
             }.issubset(caddy_log_privacy_module.FORBIDDEN_REQUEST_HEADERS)
+        )
+        self.assertTrue(
+            caddy_log_privacy_module.FORBIDDEN_REQUEST_HEADERS.isdisjoint(
+                caddy_log_privacy_module.ALLOWED_REQUEST_HEADERS
+            )
         )
         private_sentinel = "private-sentinel@example.invalid"
         mutations = {
@@ -4588,13 +4676,68 @@ class DependencyLockTests(unittest.TestCase):
         ) + "\nrequest>uri delete\n"
         with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
             caddy_log_privacy_module.validate_caddy_config(misplaced_runtime_filter)
-        wrong_log_path = caddy_source.replace(
-            "careertrellis-staging-access-v3.log",
+        for wrong_name in (
+            "careertrellis-staging-access-v5.log",
+            "careertrellis-staging-access-v4.log",
             "careertrellis-staging-access.log",
+        ):
+            with self.subTest(wrong_name=wrong_name):
+                wrong_log_path = caddy_source.replace(
+                    "careertrellis-staging-access-v6.log",
+                    wrong_name,
+                    1,
+                )
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.validate_caddy_config(wrong_log_path)
+
+    def test_caddy_privacy_floor_blocks_pre_correction_release_contracts(self) -> None:
+        caddy_source = (
+            self.project_dir() / "deploy" / "caddy" / "Caddyfile.staging"
+        ).read_text(encoding="utf-8")
+        caddy_log_privacy_module.validate_caddy_privacy_floor(caddy_source)
+        legacy_sink = caddy_source.replace(
+            "careertrellis-staging-access-v6.log",
+            "careertrellis-staging-access-v5.log",
             1,
         )
-        with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
-            caddy_log_privacy_module.validate_caddy_config(wrong_log_path)
+        caddy_log_privacy_module.validate_caddy_privacy_floor(legacy_sink)
+        for directive in caddy_log_privacy_module.MINIMUM_SITE_PRIVACY_DIRECTIVES:
+            with self.subTest(directive=directive):
+                missing = caddy_source.replace(directive, "", 1)
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.validate_caddy_privacy_floor(missing)
+                duplicated = caddy_source.replace(
+                    directive,
+                    f"{directive}\n\t\t\t{directive}",
+                    1,
+                )
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.validate_caddy_privacy_floor(duplicated)
+                commented = caddy_source.replace(directive, f"# {directive}", 1)
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.validate_caddy_privacy_floor(commented)
+                misplaced = caddy_source.replace(
+                    f"\t\t\t{directive}\n",
+                    "",
+                    1,
+                ) + f"\n{directive}\n"
+                with self.assertRaises(caddy_log_privacy_module.CaddyPrivacyError):
+                    caddy_log_privacy_module.validate_caddy_privacy_floor(misplaced)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "Caddyfile"
+            config_path.write_text(caddy_source, encoding="utf-8")
+            with patch("sys.stdout", io.StringIO()):
+                self.assertEqual(
+                    0,
+                    caddy_log_privacy_module.main(
+                        [
+                            "--config",
+                            str(config_path),
+                            "--validate-privacy-floor-only",
+                        ]
+                    ),
+                )
 
     def test_operator_diagnostics_are_release_bound_read_only_and_privacy_safe(self) -> None:
         scripts = self.project_dir() / "deploy" / "scripts"
@@ -4621,8 +4764,8 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("careertrellis-erasure-worker", erasure_helper)
         self.assertNotIn("CAREERTRELLIS_DATABASE_URL", erasure_helper)
         self.assertNotIn("CAREERTRELLIS_OBJECT_KEYRING", erasure_helper)
-        self.assertIn("careertrellis-staging-access-v3", caddy_helper)
-        self.assertNotIn("careertrellis-staging-access-v2", caddy_helper)
+        self.assertIn("careertrellis-staging-access-v6", caddy_helper)
+        self.assertNotIn("careertrellis-staging-access-v5", caddy_helper)
         self.assertIn("*.log.gz", caddy_helper)
         self.assertIn('/usr/bin/cmp -s "${config_path}" "${release_config}"', caddy_helper)
         self.assertIn('"${arguments[@]}"', caddy_helper)
@@ -5637,6 +5780,7 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
             )
 
         self.assertFalse(raced["success"])
+        self.assertTrue(raced["active"])
         repository.upsert_saved_search.assert_not_called()
         search_runs.enqueue.assert_called_once_with(None, "submitted", "")
         search_runs.publish_prepared.assert_not_called()
@@ -5689,8 +5833,19 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
 
     def test_search_status_and_cancel_dispatch_to_durable_repository(self) -> None:
         repository = Mock()
-        repository.status.return_value = {"searching": True, "last_result": None}
+        repository.status.return_value = {
+            "searching": True,
+            "active_search": {
+                "phase": "running",
+                "message": "Searching job sources and analyzing matches.",
+                "started_at": "2026-09-02T20:00:00Z",
+                "last_activity_at": "2026-09-02T20:01:00Z",
+                "stop_requested": False,
+            },
+            "last_result": None,
+        }
         repository.request_cancel.return_value = True
+        repository.request_cancel_active.return_value = True
         operation_id = "00000000-0000-4000-8000-000000000103"
         with (
             patch.object(app_module, "runtime_search_run_repository", return_value=repository),
@@ -5698,8 +5853,31 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
         ):
             self.assertEqual(repository.status.return_value, app_module.get_search_status())
             cancelled = app_module.cancel_operation(operation_id)
+            recovered_cancel = app_module.cancel_active_search()
         self.assertTrue(cancelled["active"])
+        self.assertTrue(recovered_cancel["active"])
         repository.request_cancel.assert_called_once_with(operation_id)
+        repository.request_cancel_active.assert_called_once_with()
+
+    def test_search_frontend_recovers_status_and_owner_scoped_stop_after_reload(self) -> None:
+        script_source = (Path(__file__).parent / "static" / "app.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("startSearchStatusPolling();", script_source)
+        self.assertIn("function renderSearchProgress(activeSearch)", script_source)
+        self.assertIn('addMetric("Last progress"', script_source)
+        self.assertIn('addMetric("Worker check-in"', script_source)
+        self.assertIn('classList.add("search-progress-status")', script_source)
+        self.assertIn("/api/jobs/search/cancel", script_source)
+        self.assertIn("status.active_search?.stop_requested", script_source)
+        self.assertIn("searchStatusPollGeneration += 1", script_source)
+        self.assertIn(
+            "if (generation !== searchStatusPollGeneration) return;", script_source
+        )
+        self.assertIn(
+            "setInterval(() => void pollSearchStatus(generation), 3000)", script_source
+        )
+        self.assertIn("announcedPhase !== lastAnnouncedSearchPhase", script_source)
 
 
 class WebAuthenticationTests(unittest.TestCase):
@@ -9588,11 +9766,80 @@ class SearchQualityTests(unittest.TestCase):
             )
         self.assertEqual(0, result["jobs_added"])
         print_message.assert_any_call(
-            "A discovered job could not be saved; the search remains available."
+            json.dumps({"event": "search_job_save_failed"}), flush=True
         )
         log_text = " ".join(str(call) for call in print_message.call_args_list)
         self.assertNotIn(secret, log_text)
         self.assertNotIn(url, log_text)
+
+    def test_search_commits_completed_match_chunks_before_later_provider_failure(self) -> None:
+        urls = [f"https://jobs.lever.co/synthetic/chunk-{index}" for index in range(6)]
+        repository = Mock()
+        repository.search_catalog_context.return_value = {
+            "known_status_by_url": {},
+            "suppressed_fingerprints": set(),
+        }
+        repository.create_job_if_available.return_value = {
+            "outcome": "created",
+            "job": {"id": 1},
+        }
+        matcher = Mock(side_effect=[
+            {
+                "success": True,
+                "matches": [
+                    {"index": index, "match_score": 90, "match_analysis": "Match"}
+                    for index in range(searcher_module.MATCH_BATCH_SIZE)
+                ],
+            },
+            {"success": False, "error": "Provider unavailable."},
+        ])
+        progress = []
+        with (
+            patch.object(
+                searcher_module,
+                "settings_from_profile",
+                return_value=AIProviderSettings("gemini", "gemini-2.5-flash", "test-key"),
+            ),
+            patch.object(
+                searcher_module,
+                "search_yahoo_jobs",
+                return_value=[{"url": url} for url in urls],
+            ),
+            patch.object(
+                searcher_module,
+                "inspect_job_posting",
+                side_effect=[{
+                    "status": "ok",
+                    "details": {
+                        "url": url,
+                        "title": "Data Director",
+                        "company": "Synthetic Employer",
+                        "description": "Synthetic description",
+                        "source": "lever",
+                    },
+                } for url in urls],
+            ),
+            patch.object(searcher_module, "analyze_job_matches_batch", matcher),
+        ):
+            result = searcher_module.run_job_search_and_matching(
+                "data",
+                job_repository=repository,
+                profile_repository=Mock(
+                    get_profile=Mock(return_value=self.synthetic_search_profile())
+                ),
+                progress_update=lambda phase, completed, total: progress.append(
+                    (phase, completed, total)
+                ),
+            )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["partial"])
+        self.assertEqual(5, result["jobs_added"])
+        self.assertEqual(5, repository.create_job_if_available.call_count)
+        self.assertEqual(2, matcher.call_count)
+        self.assertIn(("searching_sources", 1, 1), progress)
+        self.assertIn(("inspecting_postings", 6, 6), progress)
+        self.assertIn(("saving_matches", 5, 6), progress)
 
     def test_generic_smartrecruiters_career_pages_are_not_job_postings(self) -> None:
         self.assertFalse(is_specific_job_url("https://careers.smartrecruiters.com/QADInc/corporate-careers"))

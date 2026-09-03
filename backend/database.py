@@ -256,6 +256,12 @@ def init_db() -> None:
         lease_expires_at TEXT,
         lease_token TEXT,
         worker_id TEXT,
+        progress_phase TEXT NOT NULL DEFAULT 'preparing',
+        progress_completed INTEGER NOT NULL DEFAULT 0 CHECK (progress_completed >= 0),
+        progress_total INTEGER CHECK (progress_total IS NULL OR progress_total >= 0),
+        progress_at TEXT,
+        lease_heartbeat_at TEXT,
+        last_attempt_error_code TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         completed_at TEXT,
@@ -295,6 +301,12 @@ def init_db() -> None:
     _add_column_if_missing(cursor, "profile", "prefer_us_headquarters", "INTEGER NOT NULL DEFAULT 1")
     _add_column_if_missing(cursor, "profile", "interface_language", "TEXT NOT NULL DEFAULT 'en'")
     _add_column_if_missing(cursor, "profile", "active_base_resume_id", "INTEGER")
+    _add_column_if_missing(cursor, "search_runs", "progress_phase", "TEXT NOT NULL DEFAULT 'preparing'")
+    _add_column_if_missing(cursor, "search_runs", "progress_completed", "INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing(cursor, "search_runs", "progress_total", "INTEGER")
+    _add_column_if_missing(cursor, "search_runs", "progress_at", "TEXT")
+    _add_column_if_missing(cursor, "search_runs", "lease_heartbeat_at", "TEXT")
+    _add_column_if_missing(cursor, "search_runs", "last_attempt_error_code", "TEXT")
     _add_column_if_missing(cursor, "base_resumes", "evidence_json", "TEXT NOT NULL DEFAULT '{}'")
     _add_column_if_missing(cursor, "base_resume_versions", "evidence_json", "TEXT NOT NULL DEFAULT '{}'")
     _add_column_if_missing(cursor, "jobs", "archived_at", "TEXT")

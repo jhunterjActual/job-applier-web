@@ -4,17 +4,18 @@ This bounded slice replaces the web process's `IS_SEARCHING` and
 `LAST_SEARCH_RESULT` memory with durable, owner-scoped search-run state. It
 adds cooperative cancellation, bounded retry leases, crash recovery, and a
 worker-only cross-owner claim broker. Local mode keeps the same background
-search experience through SQLite. This remains repository infrastructure, not
-a hosted activation.
+search experience through SQLite. This document began as pre-cutover
+infrastructure; staging now runs on the authoritative hosted repositories.
 
-## Hard no-activation boundary
+## Current hosted-authority boundary
 
-`HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains false and
-`CAREERTRELLIS_SEARCH_WORKER_ENABLED` defaults to false. Shared-host startup
-continues to fail closed before final repository cutover, even if the worker
-switch is accidentally enabled. Do not set either activation control, import
-the permanent SQLite source, change data authority, restart staging for this
-slice, or enable public access.
+`HOSTED_REPOSITORY_CUTOVER_COMPLETE` is true and staging uses PostgreSQL plus
+private object storage as its authoritative data plane. The search worker still
+requires its explicit protected-environment enablement and shared-host startup
+continues to fail closed on inconsistent authority configuration. A search
+progress release must not repeat the permanent SQLite import, alter authority
+records, broaden public access, or run backup/restore work as deployment
+cleanup.
 
 The worker unit loads a dedicated non-web runtime environment, its dedicated
 `careertrellis_worker` PostgreSQL credential, and the existing encrypted
@@ -72,6 +73,14 @@ The web runtime cannot execute the claim function. The worker cannot inspect
 the broker directly. Two workers can claim different runs concurrently, while
 the row lock and status update prevent duplicate claims of one run.
 
+The worker also has no direct `app_users` privilege. The token-gated
+`lock_search_run_claim(uuid, bigint, uuid)` definer is the only path used by
+heartbeat, progress, and completion to lock the matching live claim and learn
+whether its owner has been disabled. It requires the worker login, an exact
+transaction-local owner context, and a matching unexpired lease token, and it
+returns only the run status plus a disabled-owner boolean. Runtime and erasure
+roles cannot execute it.
+
 ## Bounded state, cancellation, and recovery
 
 Requests retain at most 500 keyword characters and 240 location characters.
@@ -88,12 +97,42 @@ Statuses are `preparing`, `queued`, `running`, `cancel_requested`, `succeeded`,
 cancellation becomes durable and is observed at the next existing safe search
 checkpoint. Jobs committed before that checkpoint remain committed.
 
+`GET /api/jobs/status` exposes only the active phase, bounded completed/total
+counters, attempt count, UTC start time, latest productive-progress time, and
+latest lease-heartbeat time; it never returns the operation ID, request terms,
+location, owner, worker, or lease. Productive progress is deliberately distinct
+from worker liveness, so a fresh check-in no longer makes stalled provider work
+look productive. The browser recreates its progress modal and poller from that
+owner-scoped status after a reload, shows elapsed time and the ages of both
+signals in fixed rows with tabular timers, and keeps Stop available. The normal
+operation-ID cancellation route remains available to the tab that submitted
+the run. `POST /api/jobs/search/cancel` addresses only the authenticated
+owner's current active run, so a restarted browser can stop work without the
+lost tab-local operation ID. It immediately closes preparing, queued, and
+expired-lease work; a live running lease becomes `cancel_requested` until the
+worker reaches its next safe checkpoint.
+
 A claim receives a random lease token, bounded expiry, and incremented attempt.
-Heartbeats renew only the matching owner/run/token. After a crash, the broker
-makes the expired row eligible; a new worker atomically replaces the lease.
-The stale worker can no longer complete it. At three attempts the broker moves
-the run to fixed-error `failed` instead of retrying forever. Cancellation on an
-expired worker becomes `cancelled`, not a fresh provider attempt.
+Heartbeats renew only the matching owner/run/token. A dedicated lease heartbeat
+runs while bounded provider calls are in progress, so a multi-step search does
+not lose its lease merely because one browser or AI step spans the normal
+checkpoint interval. It holds no connection between pulses and propagates
+durable cancellation, lease loss, or worker stop state to the main execution
+path. After a crash, the broker makes the expired row eligible; a new worker
+atomically replaces the lease. The stale worker can no longer complete it. At
+three attempts the broker moves the run to fixed-error `failed` instead of
+retrying forever. Cancellation on an expired worker becomes `cancelled`, not a
+fresh provider attempt.
+
+Keyword generation has its own 45-second provider timeout and disables Gemini
+thinking for that small extraction task. Other structured AI calls remain
+bounded at 90 seconds. Discovered postings are inspected, scored, and saved in
+chunks of five instead of retaining the entire search in memory until one final
+AI response. Successfully committed chunks therefore remain useful if a later
+provider call fails; the terminal result reports a privacy-safe partial success
+instead of discarding the work. Worker logs contain fixed event names and
+exception classes, never search terms, locations, posting URLs, resumes, or
+provider payloads.
 
 Worker SIGTERM and deploy shutdown are infrastructure events, not user
 cancellation. At the next safe checkpoint the worker exits claim execution
@@ -107,23 +146,33 @@ search state cannot be checked.
 
 ## Migration and rollback
 
-Migration `20260813_0007` advances the single Alembic head from
-`20260813_0006`. It creates `search_runs`, forced RLS and owner policies, the
+Migration `20260813_0007` created `search_runs`, forced RLS and owner policies, the
 private claim broker, synchronization trigger, locked-path definer functions,
-and explicit grants/revokes. It changes no existing authoritative rows and
-does not migrate process memory, because memory has no durable recovery value.
+and explicit grants/revokes. Migration `20260902_0011` adds the privacy-safe
+progress, heartbeat, and last-attempt fields plus bounded database constraints;
+its claim trigger initializes each retry without widening runtime or worker
+privileges. Migration `20260903_0012` adds the worker-only claim-lock broker and
+explicitly removes direct worker access to authentication rows. These changes
+do not modify existing authoritative business rows or migrate process memory,
+because memory has no durable recovery value.
 
 Disposable PostgreSQL verification must prove repeated upgrade reaches one
 head, runtime cannot call the broker, worker cannot read the broker table,
 cross-owner status is denied, concurrent workers do not duplicate a claim,
 and expiry/cancellation/attempt exhaustion converge to safe terminal states.
-No migration was run against a live or unapproved target by this change.
+For a hosted release, prepare the exact immutable commit first, run that
+release's `migrate-postgres.sh` against the approved migration environment,
+confirm the database is at the single head, and only then activate that exact
+release.
 
-The downgrade drops the claim function first, then its trigger/function,
-broker table, indexes, and `search_runs`. It is destructive to queued/history
-state and is for disposable rehearsal only. Once PostgreSQL accepts an
-authoritative hosted write, never downgrade or resume writable SQLite; keep
-PostgreSQL authoritative and use a reviewed forward correction.
+The legacy `20260813_0007` downgrade drops the claim function, broker trigger
+and function, broker table, indexes, and `search_runs`. The additive
+`20260902_0011` downgrade drops only its progress trigger/function,
+constraints, and six progress-related columns. The `20260903_0012` downgrade
+drops only its claim-lock function and does not broaden worker privileges.
+All downgrade paths are for disposable rehearsal only. Because PostgreSQL is
+authoritative, staging must never downgrade or resume writable SQLite; use a
+reviewed forward correction.
 
 ## Explicit exclusions
 
@@ -156,8 +205,8 @@ or additional users.
       web runtime, migration, object-storage, or R2 credential is added.
 - [ ] P0, focused search-run, syntax, dependency-lock, migration, launcher,
       protected-file, and exact-diff security checks pass.
-- [ ] Build strings agree at `20260813.15`, Alembic has one head at
-      `20260813_0008`, and `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains false.
+- [ ] Build strings agree at the candidate build, Alembic has one head at
+      `20260903_0012`, and `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains true.
 
 Final authority transition and remaining repository gates stay in
 `STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md`.
