@@ -100,13 +100,13 @@ authorization boundary remain mandatory.
    and every retained versioned rotation contain no
    `/auth` entries; no raw connection, forwarded-IP, or User-Agent values; and
    no Authorization, Proxy-Authorization, `X-CareerTrellis-Proxy-Token`,
-   Cookie, Set-Cookie, Referer, From, Range, Sec-Purpose,
+   Cookie, Set-Cookie, Referer, From, Pragma, Range, Sec-Purpose,
    `X-Openai-Host-Hash`, or Location fields. A representative non-auth record
    must retain only hashed connection-IP and User-Agent fingerprints.
 
-The `.57` forward correction starts a new `v5` access-log generation, removes
-observed browser and tracing request fields (including W3C trace context,
-CareerTrellis operation IDs, and Datadog trace metadata), and
+The `.58` forward correction starts a new `v6` access-log generation, removes
+the observed `Pragma` request field in addition to the browser and tracing
+fields removed by `.57`, and
 includes a root-only, read-only check for item
 5. It accepts no arguments, requires the durable Caddy configuration to match
 the current immutable release, reads the privacy-filtered active log plus its
@@ -124,14 +124,13 @@ It never prints a record, path, query, header, matched value, or source
 location, and never rewrites a log. It requires representative non-auth
 evidence across the aggregate; an empty set is not acceptance evidence.
 
-The superseded `v4` and earlier logs and rotations remain restricted evidence
-and are not renamed, truncated, or deleted by this release. After `.57`
-activation, verify with count-only metadata that `v5` grows and `v4` does not.
+The superseded `v5` and earlier logs and rotations remain restricted evidence
+and are not renamed, truncated, or deleted by this release. After `.58`
+activation, verify with count-only metadata that `v6` grows and `v5` does not.
 Retire an older generation only through a separately authorized, exact-target
-retention procedure. Because `.56` lacks the seven tracing and operation-field
-deletions, the `.57` deploy and rollback helpers reject it at the forward-only
-privacy floor. Use a reviewed forward correction rather than attempting to
-reactivate it.
+retention procedure. Because `.57` lacks the `Pragma` deletion, the `.58`
+deploy and rollback helpers reject it at the forward-only privacy floor. Use a
+reviewed forward correction rather than attempting to reactivate it.
 
 To rotate the pilot password, create and store a new distinct password and run:
 

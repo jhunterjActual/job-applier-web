@@ -61,6 +61,7 @@ FORBIDDEN_REQUEST_HEADERS = frozenset(
         "forwarded",
         "from",
         "next-action",
+        "pragma",
         "proxy-authorization",
         "range",
         "referer",
@@ -113,6 +114,7 @@ REQUIRED_SITE_CONFIG_DIRECTIVES = (
     "request>headers>Sec-Ch-Ua-Mobile delete",
     "request>headers>Sec-Ch-Ua-Platform delete",
     "request>headers>Next-Action delete",
+    "request>headers>Pragma delete",
     "request>headers>Referer delete",
     "request>headers>From delete",
     "request>headers>Range delete",
@@ -150,6 +152,7 @@ REQUIRED_RUNTIME_CONFIG_DIRECTIVES = (
     "wrap json",
 )
 MINIMUM_SITE_PRIVACY_DIRECTIVES = (
+    "request>headers>Pragma delete",
     "request>headers>From delete",
     "request>headers>Range delete",
     "request>headers>Sec-Purpose delete",
@@ -168,7 +171,7 @@ REQUIRED_CONFIG_DIRECTIVES = (
 )
 SITE_BLOCK_OPENER = "staging-app.jhunterj.com {"
 SITE_LOG_OUTPUT_OPENER = (
-    "output file /var/log/caddy/careertrellis-staging-access-v5.log {"
+    "output file /var/log/caddy/careertrellis-staging-access-v6.log {"
 )
 
 

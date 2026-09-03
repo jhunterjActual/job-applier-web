@@ -49,7 +49,7 @@ staging-app.jhunterj.com {
 	}
 
 	log {
-		output file /var/log/caddy/careertrellis-staging-access-v5.log {
+		output file /var/log/caddy/careertrellis-staging-access-v6.log {
 			roll_size 10MiB
 			roll_keep 5
 			roll_keep_for 168h
@@ -63,6 +63,7 @@ staging-app.jhunterj.com {
 			request>headers>Sec-Ch-Ua-Mobile delete
 			request>headers>Sec-Ch-Ua-Platform delete
 			request>headers>Next-Action delete
+			request>headers>Pragma delete
 			request>headers>Referer delete
 			request>headers>From delete
 			request>headers>Range delete
