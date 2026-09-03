@@ -3750,8 +3750,29 @@ class DependencyLockTests(unittest.TestCase):
             self.assertIn(" publish --receipt-root ", source)
 
         mirror = wrappers["mirror-pgbackrest-onedrive.sh"]
-        self.assertIn("${rclone_binary} copy", mirror)
-        self.assertIn("--immutable", mirror)
+        self.assertEqual(2, mirror.count("${rclone_binary} copy"))
+        self.assertEqual(1, mirror.count("--immutable"))
+        self.assertIn('"${immutable_payload_filters[@]}"', mirror)
+        self.assertEqual(2, mirror.count('"${mutable_metadata_filters[@]}"'))
+        for mutable_path in (
+            "/archive/careertrellis/archive.info",
+            "/archive/careertrellis/archive.info.copy",
+            "/backup/careertrellis/backup.info",
+            "/backup/careertrellis/backup.info.copy",
+            "/backup/careertrellis/latest",
+        ):
+            self.assertEqual(1, mirror.count(f"--exclude {mutable_path}\n"))
+            self.assertEqual(1, mirror.count(f"--include {mutable_path}\n"))
+        payload_copy = mirror.index('"${immutable_payload_filters[@]}"')
+        metadata_copy = mirror.index('"${mutable_metadata_filters[@]}"')
+        metadata_check = mirror.index("${rclone_binary} check", metadata_copy)
+        receipt = mirror.index(" publish --receipt-root ", metadata_check)
+        self.assertLess(payload_copy, metadata_copy)
+        self.assertLess(metadata_copy, metadata_check)
+        self.assertLess(metadata_check, receipt)
+        self.assertIn("--download", mirror[metadata_check:receipt])
+        self.assertIn("--one-way", mirror[metadata_check:receipt])
+        self.assertNotIn("--ignore-existing", mirror)
         self.assertNotIn("${rclone_binary} sync", mirror)
         self.assertNotIn("${rclone_binary} move", mirror)
         self.assertNotIn("${rclone_binary} delete", mirror)
@@ -3956,6 +3977,7 @@ class DependencyLockTests(unittest.TestCase):
         installer = (scripts / "install-backup-health-monitor.sh").read_text(
             encoding="utf-8"
         )
+        self.assertIn("/usr/bin/grep", installer)
         self.assertIn("/usr/bin/setpriv", installer)
         self.assertNotIn("/usr/sbin/runuser", installer)
         self.assertIn("restore_root_needs_migration=true", installer)
@@ -4153,6 +4175,36 @@ class DependencyLockTests(unittest.TestCase):
         project_dir = self.project_dir()
         scripts = project_dir / "deploy" / "scripts"
         systemd = project_dir / "deploy" / "systemd"
+        lifecycle_scripts = {
+            name: (scripts / name).read_text(encoding="utf-8")
+            for name in (
+                "deploy-release.sh",
+                "provision-staging-host.sh",
+                "rollback-release.sh",
+            )
+        }
+        for name, source in lifecycle_scripts.items():
+            with self.subTest(lifecycle_script=name):
+                for required_path in (
+                    "/usr/bin/cat",
+                    "/usr/bin/chmod",
+                    "/usr/bin/date",
+                    "/usr/bin/find",
+                    "/usr/bin/flock",
+                    "/usr/bin/jq",
+                    "/usr/bin/mktemp",
+                    "/usr/bin/mv",
+                    "/usr/bin/python3",
+                    "/usr/bin/realpath",
+                    "/usr/bin/rm",
+                    "/usr/bin/stat",
+                    "/usr/bin/systemctl",
+                ):
+                    self.assertIn(required_path, source)
+                self.assertIn(
+                    "A required generated-object backup-health command is unavailable.",
+                    source,
+                )
         manager = (
             scripts / "manage-generated-object-backup-health.sh"
         ).read_text(encoding="utf-8")

@@ -41,6 +41,25 @@ for command in age caddy curl flock getent git python3 realpath stat sync system
         exit 1
     fi
 done
+for object_health_command in \
+    /usr/bin/cat \
+    /usr/bin/chmod \
+    /usr/bin/date \
+    /usr/bin/find \
+    /usr/bin/flock \
+    /usr/bin/jq \
+    /usr/bin/mktemp \
+    /usr/bin/mv \
+    /usr/bin/python3 \
+    /usr/bin/realpath \
+    /usr/bin/rm \
+    /usr/bin/stat \
+    /usr/bin/systemctl; do
+    if [[ ! -x ${object_health_command} ]]; then
+        echo "A required generated-object backup-health command is unavailable." >&2
+        exit 1
+    fi
+done
 bash -n \
     "${repository_root}/deploy/scripts/manage-generated-object-backup-health.sh" \
     "${repository_root}/deploy/scripts/mirror-generated-objects-onedrive.sh" \

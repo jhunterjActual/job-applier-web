@@ -80,6 +80,16 @@ evidence and fails closed.
 | Generated-object mirror | Latest successful immutable generated-object mirror age is no more than 8 days. |
 | Generated-object recovery | Within 35 days, an immutable generation was restored to the reviewed disposable target, its manifest and ciphertext checks passed, and the target was deliberately retained for separate exact-target review. This receipt does not claim database reconciliation, decryption, or target cleanup. |
 
+The independent PostgreSQL mirror treats backup sets, backup manifests, and WAL
+payloads as immutable. pgBackRest necessarily refreshes its redundant
+`archive.info`, `archive.info.copy`, `backup.info`, and `backup.info.copy` files
+as repository state advances, and may refresh its `latest` pointer when the
+backend supports one. The mirror therefore excludes exactly those five paths
+from its immutable payload pass, refreshes only that allowlist in a separate
+pass, and download-checks the refreshed metadata before publishing success. A
+change anywhere else remains a hard immutable-payload failure. Neither pass
+deletes destination history.
+
 The accepted `pgbackrest_restore` operation receipt includes bounded,
 non-negative `rpo_seconds`, `rto_seconds`, and `elapsed_seconds` fields. Their
 measurement boundaries are:

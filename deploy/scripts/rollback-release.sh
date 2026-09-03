@@ -199,7 +199,7 @@ assert_erasure_worker_activation_ready() {
 
 activate_release() {
     local release=$1
-    local revision activation_link environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds erasure_worker_active=false object_backup_health_available=false object_health_active_state object_health_file object_health_target pilot_acceptance_helper_available=false pilot_user_helper_available=false recovery_helper recovery_helpers_available=false
+    local revision activation_link environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds erasure_worker_active=false object_backup_health_available=false object_health_active_state object_health_command object_health_file object_health_target pilot_acceptance_helper_available=false pilot_user_helper_available=false recovery_helper recovery_helpers_available=false
     local erasure_worker_enabled search_worker_enabled web_erasure_worker_enabled web_search_worker_enabled
     revision=$(basename "${release}")
 
@@ -288,6 +288,25 @@ activate_release() {
             "${release}/deploy/systemd/careertrellis-generated-object-backup-health-alert@.service"; do
             if [[ ! -f ${object_health_file} || -L ${object_health_file} ]]; then
                 echo "Generated-object backup health must be a complete reviewed bundle." >&2
+                return 1
+            fi
+        done
+        for object_health_command in \
+            /usr/bin/cat \
+            /usr/bin/chmod \
+            /usr/bin/date \
+            /usr/bin/find \
+            /usr/bin/flock \
+            /usr/bin/jq \
+            /usr/bin/mktemp \
+            /usr/bin/mv \
+            /usr/bin/python3 \
+            /usr/bin/realpath \
+            /usr/bin/rm \
+            /usr/bin/stat \
+            /usr/bin/systemctl; do
+            if [[ ! -x ${object_health_command} ]]; then
+                echo "A required generated-object backup-health command is unavailable." >&2
                 return 1
             fi
         done

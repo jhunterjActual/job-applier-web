@@ -323,7 +323,7 @@ assert_consumer_activation_ready() {
 
 validate_release() {
     local target_release=$1
-    local environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds object_health_file recovery_helper target_authority_helper
+    local environment_file erasure_batch_size erasure_data_store_count erasure_poll_seconds object_health_command object_health_file recovery_helper target_authority_helper
     local erasure_worker_enabled search_worker_enabled web_erasure_worker_enabled web_search_worker_enabled
 
     /usr/local/sbin/careertrellis-authority assert-release-startable "${target_release}" || return 1
@@ -386,6 +386,25 @@ validate_release() {
             "${target_release}/deploy/systemd/careertrellis-generated-object-backup-health-alert@.service"; do
             if [[ ! -f ${object_health_file} || -L ${object_health_file} ]]; then
                 echo "Generated-object backup health must be a complete reviewed bundle." >&2
+                return 1
+            fi
+        done
+        for object_health_command in \
+            /usr/bin/cat \
+            /usr/bin/chmod \
+            /usr/bin/date \
+            /usr/bin/find \
+            /usr/bin/flock \
+            /usr/bin/jq \
+            /usr/bin/mktemp \
+            /usr/bin/mv \
+            /usr/bin/python3 \
+            /usr/bin/realpath \
+            /usr/bin/rm \
+            /usr/bin/stat \
+            /usr/bin/systemctl; do
+            if [[ ! -x ${object_health_command} ]]; then
+                echo "A required generated-object backup-health command is unavailable." >&2
                 return 1
             fi
         done
