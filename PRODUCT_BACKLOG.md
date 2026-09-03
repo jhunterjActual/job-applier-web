@@ -19,6 +19,8 @@ This backlog consolidates the code-review, job-seeker persona, product-owner, mo
 ## P1 - Core workflow and security
 
 - [x] Mark a job as manually applied from either matched or tailored state, with an editable application date and method.
+- [ ] Add **Mark as applied** to the **Review Materials** modal, using the existing editable application date and method workflow. After the status change succeeds, close the modal and refresh the affected job row; if it fails, keep the modal open and show an accessible error without implying that the application was recorded.
+- [ ] Make the entire application mobile-device friendly. Ensure every page, table, form, navigation surface, modal, progress display, document-review workflow, and primary action works without horizontal page scrolling or clipped controls at common phone and tablet widths; provide touch-sized targets, mobile-appropriate table/card transformations, usable virtual-keyboard behavior, stable modal scrolling, safe-area support, and responsive typography while preserving keyboard and screen-reader accessibility. Verify complete search, tailoring, materials review, application tracking, profile, cleanup, diagnostics, export, and account workflows on representative iOS Safari and Android Chrome viewports and devices.
 - [x] Fix lifecycle date-field accessibility and usability: keep all date segments legible while one segment is selected, preserve visible focus/selection contrast in the dark theme, and provide a date control supporting both calendar selection and validated direct text entry.
 - [x] Preview and bulk archive or delete untouched jobs while preserving generated materials and application history.
 - [x] Add reversible archive/restore recovery for bulk cleanup.
