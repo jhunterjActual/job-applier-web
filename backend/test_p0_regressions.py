@@ -5867,6 +5867,7 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
         self.assertIn("function renderSearchProgress(activeSearch)", script_source)
         self.assertIn('addMetric("Last progress"', script_source)
         self.assertIn('addMetric("Worker check-in"', script_source)
+        self.assertIn('addMetric("Worker claim"', script_source)
         self.assertIn('classList.add("search-progress-status")', script_source)
         self.assertIn("/api/jobs/search/cancel", script_source)
         self.assertIn("status.active_search?.stop_requested", script_source)
@@ -9451,7 +9452,7 @@ class SearchQualityTests(unittest.TestCase):
                     events.append("discovery_factory")
                     return discovery_repository
 
-                def yahoo(keyword, location, provider_health):
+                def yahoo(keyword, location, provider_health, source_state=None):
                     events.append(f"yahoo:{keyword}")
                     return []
 
@@ -9791,7 +9792,21 @@ class SearchQualityTests(unittest.TestCase):
                     for index in range(searcher_module.MATCH_BATCH_SIZE)
                 ],
             },
-            {"success": False, "error": "Provider unavailable."},
+            {
+                "success": False,
+                "error": "Provider unavailable.",
+                "error_code": "invalid_response",
+            },
+            {
+                "success": False,
+                "error": "Provider unavailable.",
+                "error_code": "invalid_response",
+            },
+            {
+                "success": False,
+                "error": "Provider unavailable.",
+                "error_code": "invalid_response",
+            },
         ])
         progress = []
         with (
@@ -9820,6 +9835,7 @@ class SearchQualityTests(unittest.TestCase):
                 } for url in urls],
             ),
             patch.object(searcher_module, "analyze_job_matches_batch", matcher),
+            patch.object(searcher_module, "_wait_for_match_retry"),
         ):
             result = searcher_module.run_job_search_and_matching(
                 "data",
@@ -9836,14 +9852,121 @@ class SearchQualityTests(unittest.TestCase):
         self.assertTrue(result["partial"])
         self.assertEqual(5, result["jobs_added"])
         self.assertEqual(5, repository.create_job_if_available.call_count)
-        self.assertEqual(2, matcher.call_count)
+        self.assertEqual(4, matcher.call_count)
         self.assertIn(("searching_sources", 1, 1), progress)
         self.assertIn(("inspecting_postings", 6, 6), progress)
         self.assertIn(("saving_matches", 5, 6), progress)
+        self.assertIn(("retrying_match_analysis", 1, 3), progress)
+        self.assertIn(("retrying_match_analysis", 2, 3), progress)
+
+    def test_match_provider_retries_the_same_inspected_batch_before_saving(self) -> None:
+        posting_urls = [
+            f"https://jobs.lever.co/synthetic/retry-match-{index}"
+            for index in range(searcher_module.MATCH_BATCH_SIZE + 1)
+        ]
+        repository = Mock()
+        repository.search_catalog_context.return_value = {
+            "known_status_by_url": {},
+            "suppressed_fingerprints": set(),
+        }
+        repository.create_job_if_available.return_value = {
+            "outcome": "created",
+            "job": {"id": 1},
+        }
+        matcher = Mock(side_effect=[
+            {"success": False, "error": "temporary", "error_code": "rate_limit"},
+            {"success": False, "error": "temporary", "error_code": "network"},
+            {
+                "success": True,
+                "matches": [
+                    {
+                        "index": index,
+                        "match_score": 90,
+                        "match_analysis": "Synthetic match",
+                    }
+                    for index in range(searcher_module.MATCH_BATCH_SIZE)
+                ],
+            },
+            {
+                "success": True,
+                "matches": [{
+                    "index": 0,
+                    "match_score": 90,
+                    "match_analysis": "Synthetic trailing match",
+                }],
+            },
+        ])
+        progress = []
+        with (
+            patch.object(
+                searcher_module,
+                "settings_from_profile",
+                return_value=AIProviderSettings(
+                    "gemini", "gemini-2.5-flash", "test-key"
+                ),
+            ),
+            patch.object(
+                searcher_module,
+                "search_yahoo_jobs",
+                return_value=[{"url": url} for url in posting_urls],
+            ) as source_search,
+            patch.object(
+                searcher_module,
+                "inspect_job_posting",
+                side_effect=lambda url, **_kwargs: {
+                    "status": "ok",
+                    "details": {
+                        "url": url,
+                        "title": "Data Director",
+                        "company": "Synthetic Employer",
+                        "description": "Synthetic description",
+                        "source": "lever",
+                    },
+                },
+            ),
+            patch.object(searcher_module, "analyze_job_matches_batch", matcher),
+            patch.object(searcher_module, "_wait_for_match_retry") as retry_wait,
+        ):
+            result = searcher_module.run_job_search_and_matching(
+                "data",
+                job_repository=repository,
+                profile_repository=Mock(
+                    get_profile=Mock(return_value=self.synthetic_search_profile())
+                ),
+                progress_update=lambda phase, completed, total: progress.append(
+                    (phase, completed, total)
+                ),
+            )
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["partial"])
+        self.assertIsNone(result["error"])
+        self.assertIsNone(result["failure_code"])
+        self.assertEqual(6, result["jobs_added"])
+        self.assertEqual(4, matcher.call_count)
+        self.assertEqual(1, source_search.call_count)
+        self.assertEqual(2, retry_wait.call_count)
+        self.assertIn(("retrying_match_analysis", 1, 3), progress)
+        self.assertIn(("retrying_match_analysis", 2, 3), progress)
 
     def test_generic_smartrecruiters_career_pages_are_not_job_postings(self) -> None:
         self.assertFalse(is_specific_job_url("https://careers.smartrecruiters.com/QADInc/corporate-careers"))
         self.assertTrue(is_specific_job_url("https://jobs.smartrecruiters.com/Example/12345-data-analyst"))
+
+    def test_greenhouse_posting_redirect_to_company_board_is_rejected(self) -> None:
+        requested = "https://job-boards.greenhouse.io/synthetic/jobs/123456"
+        company_board = "https://job-boards.greenhouse.io/synthetic"
+
+        self.assertTrue(is_specific_job_url(requested))
+        self.assertFalse(is_specific_job_url(company_board))
+        self.assertEqual(
+            "",
+            searcher_module._canonical_redirected_job_url(requested, company_board),
+        )
+        self.assertEqual(
+            requested,
+            searcher_module._canonical_redirected_job_url(requested, requested),
+        )
 
     def test_tracking_variants_share_one_canonical_url(self) -> None:
         base = "https://jobs.lever.co/example/abc-123"
@@ -10326,6 +10449,49 @@ class SearchQualityTests(unittest.TestCase):
 
         self.assertEqual([], results)
         self.assertEqual(1, diagnostics["lever"]["partial_results"]["timeouts"])
+        self.assertEqual([], diagnostics["lever"]["errors"])
+
+    def test_yahoo_server_error_activates_run_scoped_bing_fallback(self) -> None:
+        posting_url = "https://jobs.lever.co/acme/posting-123"
+        encoded = base64.urlsafe_b64encode(posting_url.encode("utf-8")).decode("ascii").rstrip("=")
+        bing_link = f"https://www.bing.com/ck/a?u=a1{encoded}"
+        diagnostics = self.provider_diagnostics()
+        state = {"yahoo_available": True}
+        yahoo_error = searcher_module.urllib.error.HTTPError(
+            "https://search.yahoo.com/search", 500, "INKApi Error", None, None
+        )
+        with (
+            patch.object(searcher_module, "PROVIDER_DOMAINS", {"lever": "lever.co"}),
+            patch.object(
+                searcher_module.urllib.request,
+                "urlopen",
+                side_effect=[
+                    yahoo_error,
+                    self.FakeHttpResponse(
+                        f'<a href="{bing_link}">Role</a>'.encode("utf-8")
+                    ),
+                    self.FakeHttpResponse(
+                        f'<a href="{bing_link}">Role</a>'.encode("utf-8")
+                    ),
+                ],
+            ) as urlopen,
+        ):
+            first = searcher_module.search_yahoo_jobs(
+                "data leader", diagnostics=diagnostics, source_state=state
+            )
+            second = searcher_module.search_yahoo_jobs(
+                "data leader", diagnostics=diagnostics, source_state=state
+            )
+
+        self.assertEqual([posting_url], [result["url"] for result in first])
+        self.assertEqual([posting_url], [result["url"] for result in second])
+        self.assertFalse(state["yahoo_available"])
+        self.assertEqual(3, urlopen.call_count)
+        self.assertIn("search.yahoo.com", urlopen.call_args_list[0].args[0].full_url)
+        self.assertTrue(all(
+            "bing.com" in call.args[0].full_url
+            for call in urlopen.call_args_list[1:]
+        ))
         self.assertEqual([], diagnostics["lever"]["errors"])
 
     def test_provider_budget_alert_explains_partial_results(self) -> None:

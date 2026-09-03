@@ -33,6 +33,21 @@ SEARCH_FAILED_MESSAGE = "The job search could not be completed."
 SEARCH_CANCELLED_MESSAGE = (
     "Search stopped. Any jobs committed before the stop request were kept."
 )
+MATCH_PROVIDER_FAILURE_MESSAGES = {
+    "authentication": "The saved AI provider credential could not be used to score the discovered postings. Check it in Profile & Resume, then try again.",
+    "missing_key": "An AI provider key is required to score discovered postings. Save one in Profile & Resume, then try again.",
+    "model_unavailable": "The selected AI model could not score the discovered postings. Choose an available model, then try again.",
+    "permission": "The selected AI provider denied access while scoring discovered postings. Check the key and model, then try again.",
+    "rate_limit": "The AI match provider remained rate-limited after bounded retries. Source diagnostics and any earlier saved match batches were kept; try again later.",
+    "invalid_response": "The AI match provider repeatedly returned output that could not be validated. Source diagnostics and any earlier saved match batches were kept.",
+    "empty_response": "The AI match provider repeatedly returned no usable scoring result. Source diagnostics and any earlier saved match batches were kept.",
+    "network": "The AI match provider could not be reached after bounded retries. Source diagnostics and any earlier saved match batches were kept.",
+    "oversized_response": "The AI match provider repeatedly returned an oversized scoring result. Source diagnostics and any earlier saved match batches were kept.",
+    "provider_error": "The AI match provider could not score the discovered postings after bounded retries. Source diagnostics and any earlier saved match batches were kept.",
+    "timeout": "The AI match provider timed out after bounded retries. Source diagnostics and any earlier saved match batches were kept.",
+    "unsupported_request": "The AI match provider rejected the scoring request. Check the selected provider and model, then try again.",
+}
+MATCH_PROVIDER_FAILURE_CODES = frozenset(MATCH_PROVIDER_FAILURE_MESSAGES)
 ERROR_CODES = frozenset({"search_failed", "provider_search_failed", "attempts_exhausted"})
 SEARCH_PHASE_MESSAGES = {
     "preparing": "Preparing the search request.",
@@ -41,6 +56,7 @@ SEARCH_PHASE_MESSAGES = {
     "searching_sources": "Searching job sources.",
     "inspecting_postings": "Inspecting discovered postings.",
     "analyzing_matches": "Analyzing resume matches.",
+    "retrying_match_analysis": "The AI match provider was interrupted. Retrying this match batch.",
     "saving_matches": "Saving matched postings.",
     "cancel_requested": "Stopping safely after the current search step.",
 }
@@ -103,7 +119,12 @@ class SearchRunRepository(Protocol):
 
     def succeed(self, claim: SearchRunClaim, result: Mapping[str, object]) -> None: ...
 
-    def fail(self, claim: SearchRunClaim, error_code: str = "search_failed") -> None: ...
+    def fail(
+        self,
+        claim: SearchRunClaim,
+        error_code: str = "search_failed",
+        result: Mapping[str, object] | None = None,
+    ) -> None: ...
 
     def cancel(self, claim: SearchRunClaim) -> None: ...
 
@@ -151,7 +172,19 @@ def _lease_seconds(value: object) -> int:
 def minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
     """Keep only bounded UI state; provider responses and credentials stay out."""
     if not bool(result.get("success")):
-        return {"success": False, "error": SEARCH_FAILED_MESSAGE, "provider_alerts": []}
+        failure_code = str(result.get("failure_code") or "").strip().lower()
+        if failure_code not in MATCH_PROVIDER_FAILURE_CODES:
+            return {
+                "success": False,
+                "error": SEARCH_FAILED_MESSAGE,
+                "provider_alerts": [],
+            }
+        return {
+            "success": False,
+            "error": MATCH_PROVIDER_FAILURE_MESSAGES[failure_code],
+            "failure_code": failure_code,
+            "provider_alerts": [],
+        }
     jobs_added = result.get("jobs_added", 0)
     if isinstance(jobs_added, bool) or not isinstance(jobs_added, int):
         jobs_added = 0
@@ -206,7 +239,7 @@ def _public_result(status: str, result_json: object) -> dict[str, object] | None
             "message": SEARCH_CANCELLED_MESSAGE,
             "provider_alerts": [],
         }
-    if status == "failed":
+    if status == "failed" and result_json is None:
         return {"success": False, "error": SEARCH_FAILED_MESSAGE, "provider_alerts": []}
     if isinstance(result_json, Mapping):
         parsed = dict(result_json)
@@ -645,8 +678,18 @@ class SQLiteSearchRunRepository:
     def succeed(self, claim: SearchRunClaim, result: Mapping[str, object]) -> None:
         self._finish(claim, "succeeded", _result_json(result))
 
-    def fail(self, claim: SearchRunClaim, error_code: str = "search_failed") -> None:
-        self._finish(claim, "failed", error_code=_error_code(error_code))
+    def fail(
+        self,
+        claim: SearchRunClaim,
+        error_code: str = "search_failed",
+        result: Mapping[str, object] | None = None,
+    ) -> None:
+        self._finish(
+            claim,
+            "failed",
+            _result_json(result) if result is not None else None,
+            _error_code(error_code),
+        )
 
     def cancel(self, claim: SearchRunClaim) -> None:
         self._finish(claim, "cancelled")
@@ -926,8 +969,18 @@ class PostgreSQLSearchRunRepository:
     def succeed(self, claim: SearchRunClaim, result: Mapping[str, object]) -> None:
         self._finish(claim, "succeeded", result=result)
 
-    def fail(self, claim: SearchRunClaim, error_code: str = "search_failed") -> None:
-        self._finish(claim, "failed", error_code=_error_code(error_code))
+    def fail(
+        self,
+        claim: SearchRunClaim,
+        error_code: str = "search_failed",
+        result: Mapping[str, object] | None = None,
+    ) -> None:
+        self._finish(
+            claim,
+            "failed",
+            result=result,
+            error_code=_error_code(error_code),
+        )
 
     def cancel(self, claim: SearchRunClaim) -> None:
         self._finish(claim, "cancelled")

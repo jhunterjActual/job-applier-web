@@ -3506,6 +3506,42 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             )
             self.assertNotIn("secret", runtime_repository.status()["last_result"])
 
+    def test_search_match_retry_progress_and_failure_are_privacy_safe(self) -> None:
+        runtime_repository = PostgreSQLSearchRunRepository(
+            self.user_one, engine=self.runtime_engine
+        )
+        run_id = runtime_repository.enqueue(
+            "00000000-0000-4000-8000-000000000081", "retry match", "Remote"
+        )
+        runtime_repository.publish_prepared(run_id, "retry match", "Remote")
+        claim = claim_next_postgres_search_run(
+            "10000000-0000-4000-8000-000000000081",
+            engine=self.worker_engine,
+        )
+        worker_repository = PostgreSQLSearchRunRepository(
+            self.user_one, engine=self.worker_engine
+        )
+
+        worker_repository.progress(claim, "retrying_match_analysis", 1, 3)
+        active = runtime_repository.status()["active_search"]
+        self.assertEqual("retrying_match_analysis", active["phase"])
+        self.assertEqual(1, active["completed"])
+        self.assertEqual(3, active["total"])
+
+        worker_repository.fail(claim, "provider_search_failed", {
+            "success": False,
+            "error": "private upstream response",
+            "failure_code": "invalid_response",
+            "provider_alerts": [{"secret": "discard me"}],
+        })
+        result = runtime_repository.status()["last_result"]
+        self.assertFalse(result["success"])
+        self.assertEqual("invalid_response", result["failure_code"])
+        self.assertIn("could not be validated", result["error"])
+        serialized = json.dumps(result)
+        self.assertNotIn("private upstream", serialized)
+        self.assertNotIn("discard me", serialized)
+
     def test_disabled_owner_search_is_cancelled_before_worker_claim(self) -> None:
         owner_one = PostgreSQLSearchRunRepository(
             self.user_one, engine=self.runtime_engine

@@ -376,9 +376,10 @@ def analyze_job_matches_batch(
             "matches": data.get("matches", [])
         }
     except AIProviderError as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": str(e), "error_code": e.code}
     except Exception as e:
         return {
             "success": False,
-            "error": f"Failed to analyze matches with {provider_label(settings.provider)}: {str(e)}"
+            "error": f"Failed to analyze matches with {provider_label(settings.provider)}: {str(e)}",
+            "error_code": "provider_error",
         }

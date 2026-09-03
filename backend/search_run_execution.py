@@ -153,7 +153,7 @@ def execute_search_claim(
         if result.get("success"):
             repository.succeed(claim, result)
         else:
-            repository.fail(claim, "provider_search_failed")
+            repository.fail(claim, "provider_search_failed", result)
     except SearchWorkerStopping:
         # SIGTERM/deploy shutdown is not user intent. Do not complete, fail, or
         # cancel the run; the opaque lease expires and a worker can reclaim it.
