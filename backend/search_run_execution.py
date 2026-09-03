@@ -88,6 +88,7 @@ class _LeaseHeartbeat:
         self._stop.set()
         if self._thread.is_alive():
             self._thread.join()
+        self._raise_recorded_failure()
 
 
 def _save_source_diagnostic_history(search_result: dict) -> None:

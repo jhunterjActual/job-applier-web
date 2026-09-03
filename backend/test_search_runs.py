@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier, Event, Lock
+from threading import Barrier, Event, Lock, current_thread
 from unittest.mock import ANY, Mock, patch
 
 import database as database_module
@@ -373,7 +373,7 @@ class SQLiteSearchRunTests(unittest.TestCase):
         def provider(_keywords, _location, _checkpoint):
             self.assertTrue(repository.request_cancel(operation))
             self.assertTrue(cancellation_observed.wait(1))
-            return {"success": True, "jobs_added": 99, "provider_alerts": []}
+            raise RuntimeError("provider failed after cancellation")
 
         repository.heartbeat = heartbeat
         with (
@@ -385,6 +385,79 @@ class SQLiteSearchRunTests(unittest.TestCase):
         result = repository.status()["last_result"]
         self.assertTrue(result["cancelled"])
         self.assertNotIn("jobs_added", result)
+
+    def test_background_worker_stop_wins_over_provider_failure(self) -> None:
+        repository = self.repository()
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000065", "stop race", ""
+        )
+        repository.publish_prepared(run_id, "stop race", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000065"
+        )
+        stop = Event()
+        background_stop_observed = Event()
+
+        def stop_requested():
+            requested = stop.is_set()
+            if requested and current_thread().name == "search-run-lease-heartbeat":
+                background_stop_observed.set()
+            return requested
+
+        def provider(_keywords, _location, _checkpoint):
+            stop.set()
+            self.assertTrue(background_stop_observed.wait(1))
+            raise RuntimeError("provider failed during worker shutdown")
+
+        with (
+            patch.object(execution_module, "LEASE_HEARTBEAT_SECONDS", 0.01),
+            patch.object(execution_module, "run_job_search_and_matching", provider),
+        ):
+            execution_module.execute_search_claim(
+                claim,
+                repository,
+                stop_requested=stop_requested,
+            )
+
+        self.assertTrue(repository.status()["searching"])
+        self.assertIsNone(repository.status()["last_result"])
+
+    def test_background_lease_loss_wins_over_provider_failure(self) -> None:
+        repository = self.repository()
+        run_id = repository.enqueue(
+            "00000000-0000-4000-8000-000000000066", "lease race", ""
+        )
+        repository.publish_prepared(run_id, "lease race", "")
+        claim = repository.claim(
+            run_id, "10000000-0000-4000-8000-000000000066"
+        )
+        original_heartbeat = repository.heartbeat
+        heartbeat_lock = Lock()
+        heartbeat_count = 0
+        lease_loss_observed = Event()
+
+        def heartbeat(target_claim, lease_seconds=300):
+            nonlocal heartbeat_count
+            with heartbeat_lock:
+                heartbeat_count += 1
+                if heartbeat_count > 1:
+                    lease_loss_observed.set()
+                    raise SearchRunLeaseLost()
+            original_heartbeat(target_claim, lease_seconds)
+
+        def provider(_keywords, _location, _checkpoint):
+            self.assertTrue(lease_loss_observed.wait(1))
+            raise RuntimeError("provider failed after lease loss")
+
+        repository.heartbeat = heartbeat
+        with (
+            patch.object(execution_module, "LEASE_HEARTBEAT_SECONDS", 0.01),
+            patch.object(execution_module, "run_job_search_and_matching", provider),
+        ):
+            execution_module.execute_search_claim(claim, repository)
+
+        self.assertTrue(repository.status()["searching"])
+        self.assertIsNone(repository.status()["last_result"])
 
     def test_preparing_is_active_but_not_claimable_until_published(self) -> None:
         repository = self.repository()
