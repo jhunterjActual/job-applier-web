@@ -73,6 +73,14 @@ The web runtime cannot execute the claim function. The worker cannot inspect
 the broker directly. Two workers can claim different runs concurrently, while
 the row lock and status update prevent duplicate claims of one run.
 
+The worker also has no direct `app_users` privilege. The token-gated
+`lock_search_run_claim(uuid, bigint, uuid)` definer is the only path used by
+heartbeat, progress, and completion to lock the matching live claim and learn
+whether its owner has been disabled. It requires the worker login, an exact
+transaction-local owner context, and a matching unexpired lease token, and it
+returns only the run status plus a disabled-owner boolean. Runtime and erasure
+roles cannot execute it.
+
 ## Bounded state, cancellation, and recovery
 
 Requests retain at most 500 keyword characters and 240 location characters.
@@ -143,8 +151,10 @@ private claim broker, synchronization trigger, locked-path definer functions,
 and explicit grants/revokes. Migration `20260902_0011` adds the privacy-safe
 progress, heartbeat, and last-attempt fields plus bounded database constraints;
 its claim trigger initializes each retry without widening runtime or worker
-privileges. These changes do not modify existing authoritative business rows or
-migrate process memory, because memory has no durable recovery value.
+privileges. Migration `20260903_0012` adds the worker-only claim-lock broker and
+explicitly removes direct worker access to authentication rows. These changes
+do not modify existing authoritative business rows or migrate process memory,
+because memory has no durable recovery value.
 
 Disposable PostgreSQL verification must prove repeated upgrade reaches one
 head, runtime cannot call the broker, worker cannot read the broker table,
@@ -158,9 +168,11 @@ release.
 The legacy `20260813_0007` downgrade drops the claim function, broker trigger
 and function, broker table, indexes, and `search_runs`. The additive
 `20260902_0011` downgrade drops only its progress trigger/function,
-constraints, and six progress-related columns. Both downgrade paths are for
-disposable rehearsal only. Because PostgreSQL is authoritative, staging must
-never downgrade or resume writable SQLite; use a reviewed forward correction.
+constraints, and six progress-related columns. The `20260903_0012` downgrade
+drops only its claim-lock function and does not broaden worker privileges.
+All downgrade paths are for disposable rehearsal only. Because PostgreSQL is
+authoritative, staging must never downgrade or resume writable SQLite; use a
+reviewed forward correction.
 
 ## Explicit exclusions
 
@@ -194,7 +206,7 @@ or additional users.
 - [ ] P0, focused search-run, syntax, dependency-lock, migration, launcher,
       protected-file, and exact-diff security checks pass.
 - [ ] Build strings agree at the candidate build, Alembic has one head at
-      `20260902_0011`, and `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains true.
+      `20260903_0012`, and `HOSTED_REPOSITORY_CUTOVER_COMPLETE` remains true.
 
 Final authority transition and remaining repository gates stay in
 `STAGE_3_POSTGRES_REPOSITORY_FOUNDATION.md`.

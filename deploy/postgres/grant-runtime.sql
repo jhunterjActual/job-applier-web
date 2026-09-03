@@ -58,8 +58,18 @@ REVOKE INSERT (workos_user_id, last_seen_at), UPDATE (last_seen_at)
     FROM careertrellis_runtime, careertrellis_worker;
 REVOKE INSERT, UPDATE, DELETE ON careertrellis.app_users
     FROM careertrellis_runtime, careertrellis_worker;
+REVOKE SELECT ON careertrellis.app_users
+    FROM careertrellis_worker;
 GRANT UPDATE (last_seen_at) ON careertrellis.app_users
     TO careertrellis_runtime;
+
+-- Search lifecycle operations need an atomic disabled-owner check without
+-- exposing authentication rows or columns to the worker login.
+REVOKE ALL ON FUNCTION careertrellis.lock_search_run_claim(uuid, bigint, uuid)
+    FROM PUBLIC, careertrellis_runtime, careertrellis_worker,
+    careertrellis_erasure_worker;
+GRANT EXECUTE ON FUNCTION careertrellis.lock_search_run_claim(uuid, bigint, uuid)
+    TO careertrellis_worker;
 
 -- Account erasure is accepted only through the authenticated web function.
 -- Cross-owner claim, object acknowledgement, finalization, retry, and receipt

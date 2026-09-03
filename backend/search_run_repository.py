@@ -806,24 +806,34 @@ class PostgreSQLSearchRunRepository:
         except SQLAlchemyError as exc:
             raise SearchRunUnavailable() from exc
 
+    def _locked_claim_state(
+        self, connection: Any, claim: SearchRunClaim
+    ) -> Mapping[str, Any]:
+        row = connection.execute(
+            text(
+                """SELECT run_status, owner_disabled
+                FROM careertrellis.lock_search_run_claim(
+                    CAST(:run AS uuid), :owner, CAST(:lease AS uuid)
+                )"""
+            ),
+            {
+                "run": claim.run_id,
+                "owner": self._owner_user_id,
+                "lease": claim.lease_token,
+            },
+        ).mappings().first()
+        if row is None:
+            raise SearchRunLeaseLost()
+        return row
+
     def heartbeat(self, claim: SearchRunClaim, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> None:
         seconds = _lease_seconds(lease_seconds)
         try:
             with tenant_transaction(self._engine, self._owner_user_id) as connection:
-                row = connection.execute(text("""SELECT run.status, app_user.disabled_at
-                    FROM careertrellis.search_runs AS run
-                    JOIN careertrellis.app_users AS app_user
-                      ON app_user.id=run.owner_user_id
-                    WHERE run.id=CAST(:run AS uuid) AND run.owner_user_id=:owner
-                        AND run.lease_token=CAST(:lease AS uuid)
-                        AND run.lease_expires_at > CURRENT_TIMESTAMP
-                    FOR UPDATE OF run FOR SHARE OF app_user"""),
-                    {"run": claim.run_id, "owner": self._owner_user_id, "lease": claim.lease_token}).mappings().first()
-                if row is None:
-                    raise SearchRunLeaseLost()
-                if row["status"] == "cancel_requested":
+                row = self._locked_claim_state(connection, claim)
+                if row["run_status"] == "cancel_requested":
                     raise OperationCancelled("The search was stopped by the user.")
-                if row["status"] != "running" or row["disabled_at"] is not None:
+                if row["run_status"] != "running" or row["owner_disabled"] is True:
                     raise SearchRunLeaseLost()
                 connection.execute(text("""UPDATE careertrellis.search_runs
                     SET lease_expires_at=CURRENT_TIMESTAMP + make_interval(secs => :seconds),
@@ -849,20 +859,10 @@ class PostgreSQLSearchRunRepository:
         seconds = _lease_seconds(lease_seconds)
         try:
             with tenant_transaction(self._engine, self._owner_user_id) as connection:
-                row = connection.execute(text("""SELECT run.status, app_user.disabled_at
-                    FROM careertrellis.search_runs AS run
-                    JOIN careertrellis.app_users AS app_user ON app_user.id=run.owner_user_id
-                    WHERE run.id=CAST(:run AS uuid) AND run.owner_user_id=:owner
-                      AND run.lease_token=CAST(:lease AS uuid)
-                      AND run.lease_expires_at > CURRENT_TIMESTAMP
-                    FOR UPDATE OF run FOR SHARE OF app_user"""),
-                    {"run": claim.run_id, "owner": self._owner_user_id,
-                     "lease": claim.lease_token}).mappings().first()
-                if row is None:
-                    raise SearchRunLeaseLost()
-                if row["status"] == "cancel_requested":
+                row = self._locked_claim_state(connection, claim)
+                if row["run_status"] == "cancel_requested":
                     raise OperationCancelled("The search was stopped by the user.")
-                if row["status"] != "running" or row["disabled_at"] is not None:
+                if row["run_status"] != "running" or row["owner_disabled"] is True:
                     raise SearchRunLeaseLost()
                 connection.execute(text("""UPDATE careertrellis.search_runs SET
                     progress_phase=:phase, progress_completed=:completed,
@@ -886,32 +886,26 @@ class PostgreSQLSearchRunRepository:
             raise ValueError("Search result summary is too large.")
         try:
             with tenant_transaction(self._engine, self._owner_user_id) as connection:
-                changed = connection.execute(text("""WITH owner_state AS MATERIALIZED (
-                    SELECT app_user.disabled_at
-                    FROM careertrellis.app_users AS app_user
-                    WHERE app_user.id=:owner
-                    FOR SHARE
-                )
-                UPDATE careertrellis.search_runs AS run SET
+                locked = self._locked_claim_state(connection, claim)
+                changed = connection.execute(text("""UPDATE careertrellis.search_runs AS run SET
                     status=CASE
-                        WHEN run.status='cancel_requested' THEN 'cancelled'
-                        WHEN owner_state.disabled_at IS NOT NULL THEN 'cancelled'
+                        WHEN :current_status='cancel_requested' THEN 'cancelled'
+                        WHEN :owner_disabled THEN 'cancelled'
                         ELSE :status
                     END,
                     result_json=CASE
-                        WHEN run.status='cancel_requested'
-                          OR owner_state.disabled_at IS NOT NULL THEN NULL
+                        WHEN :current_status='cancel_requested'
+                          OR :owner_disabled THEN NULL
                         ELSE CAST(:result AS jsonb)
                     END,
                     error_code=CASE
-                        WHEN run.status='cancel_requested' THEN NULL
-                        WHEN owner_state.disabled_at IS NOT NULL THEN 'owner_disabled'
+                        WHEN :current_status='cancel_requested' THEN NULL
+                        WHEN :owner_disabled THEN 'owner_disabled'
                         ELSE :error_code
                     END,
                     completed_at=CURRENT_TIMESTAMP, lease_expires_at=NULL, lease_token=NULL,
                     worker_id=NULL, updated_at=CURRENT_TIMESTAMP,
                     last_attempt_error_code=:attempt_error
-                    FROM owner_state
                     WHERE run.id=CAST(:run AS uuid) AND run.owner_user_id=:owner
                         AND run.lease_token=CAST(:lease AS uuid)
                         AND run.lease_expires_at > CURRENT_TIMESTAMP
@@ -919,6 +913,8 @@ class PostgreSQLSearchRunRepository:
                     {"status": status, "result": json.dumps(payload) if payload is not None else None,
                      "error_code": str(error_code)[:64] if error_code else None,
                      "attempt_error": str(error_code)[:64] if error_code else None,
+                     "current_status": locked["run_status"],
+                     "owner_disabled": locked["owner_disabled"] is True,
                      "run": claim.run_id, "owner": self._owner_user_id, "lease": claim.lease_token}).rowcount
                 if changed != 1:
                     raise SearchRunLeaseLost()
