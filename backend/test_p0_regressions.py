@@ -1537,6 +1537,7 @@ class FrontendStartupTests(unittest.TestCase):
             "cleanup-jobs-btn", "refresh-logs-btn", "open-manual-application-btn",
             "archive-untouched-btn", "delete-untouched-btn", "restore-archived-btn",
             "lifecycle-form", "undo-lifecycle-btn", "save-materials-btn",
+            "mark-applied-from-materials-btn", "materials-action-status", "lifecycle-error",
             "download-resume-btn", "download-resume-docx-btn", "download-cover-letter-btn",
             "saved-search-select", "p-resume-mode",
             "p-ai-provider", "p-ai-model", "p-openai-apikey",
@@ -1601,8 +1602,8 @@ class FrontendStartupTests(unittest.TestCase):
                 self.assertIn(f'id="{element_id}"', html_source)
         self.assertIn("Checking AI Provider", html_source)
         self.assertIn("i18n.js?v=20260812-1", html_source)
-        self.assertIn("app.js?v=20260903-1", html_source)
-        self.assertIn("index.css?v=20260903-1", html_source)
+        self.assertIn("app.js?v=20260904-3", html_source)
+        self.assertIn("index.css?v=20260904-3", html_source)
 
     def test_profile_and_provider_secrets_use_separate_form_boundaries(self) -> None:
         parser = self._profile_form_parser()
@@ -1799,6 +1800,47 @@ class FrontendStartupTests(unittest.TestCase):
         self.assertIn('t("job.action.apply")', script_source)
         self.assertIn('"job.action.apply": "Apply Manually"', i18n_source)
 
+    def test_review_materials_mark_applied_uses_confirmed_lifecycle_workflow(self) -> None:
+        static_dir = Path(__file__).parent / "static"
+        html_source = (static_dir / "index.html").read_text(encoding="utf-8")
+        script_source = (static_dir / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="mark-applied-from-materials-btn"', html_source)
+        self.assertIn('data-i18n="job.action.mark_applied"', html_source)
+        self.assertIn('id="materials-action-status" role="alert" aria-live="assertive"', html_source)
+        self.assertIn('id="lifecycle-error" role="alert" aria-live="assertive"', html_source)
+        self.assertIn(
+            'bindEvent(markAppliedFromMaterialsBtn, "click", openLifecycleEditorFromMaterials)',
+            script_source,
+        )
+        self.assertIn(
+            'openLifecycleEditor(selectedMaterialsJobId, { fromMaterials: true })',
+            script_source,
+        )
+        self.assertIn("if (hasUnsavedMaterialEdits())", script_source)
+        self.assertIn(
+            'showMaterialsActionStatus("Save your resume and cover-letter edits before marking this job applied.")',
+            script_source,
+        )
+        self.assertIn("tailoredResumeSnapshot = tailoredResumeDisplay.value;", script_source)
+        self.assertIn("coverLetterSnapshot = coverLetterDisplay.value;", script_source)
+        self.assertIn("closeLifecycleAfterSuccessfulSave();", script_source)
+        self.assertIn("if (closeMaterials) closeAccessibleModal(tailorModal);", script_source)
+        self.assertIn("loadJobs({ revealJobId: updatedJobId })", script_source)
+        self.assertIn("showLifecycleError(error.message);", script_source)
+        self.assertNotIn('body: JSON.stringify({ status: "applied"', script_source)
+        save_block = script_source[
+            script_source.index("async function saveLifecycleChange"):
+            script_source.index("async function undoLifecycleChange")
+        ]
+        self.assertLess(
+            save_block.index('if (!response.ok) throw new Error'),
+            save_block.index("closeLifecycleAfterSuccessfulSave();"),
+        )
+        failure_block = save_block[save_block.index("} catch (error) {"):save_block.index("    hideLoading();\n    closeLifecycleAfterSuccessfulSave();")]
+        self.assertIn("showLifecycleError(error.message);", failure_block)
+        self.assertNotIn("closeLifecycleAfterSuccessfulSave();", failure_block)
+
     def test_base_resume_controls_are_bound_to_versioned_workflows(self) -> None:
         app_source = (Path(__file__).parent / "app.py").read_text(encoding="utf-8")
         script_source = (Path(__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
@@ -1970,6 +2012,13 @@ class FrontendStartupTests(unittest.TestCase):
         self.assertIn("showCancellableLoading", script_source)
         self.assertIn("revealJobId", script_source)
         self.assertIn("job-row-revealed", script_source)
+        self.assertIn("function jobImportErrorMessage(detail, fallback)", script_source)
+        self.assertIn("JOB_IMPORT_FIELD_LABELS[field]", script_source)
+        self.assertIn(
+            'jobImportErrorMessage(result.detail, "Could not save this posting.")',
+            script_source,
+        )
+        self.assertNotIn('throw new Error(result.detail || "Could not save this posting.")', script_source)
 
     def test_expected_search_limits_render_as_informational_notes(self) -> None:
         script_source = (Path(__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
@@ -10408,6 +10457,50 @@ class SearchQualityTests(unittest.TestCase):
         self.assertEqual("remote", metadata["work_arrangement"])
         self.assertEqual("full_time", metadata["employment_type"])
         self.assertIn("$120,000", metadata["compensation"])
+
+    def test_adp_job_view_extracts_visible_posting_fields(self) -> None:
+        class Element:
+            def __init__(self, text):
+                self.text = text
+
+            def inner_text(self):
+                return self.text
+
+        class Page:
+            values = {
+                "h2.job-description-title": "Data Architect - Team Lead",
+                ".job-description-data-item strong, .job-description-data strong": "Example Technology, LLC",
+                ".job-description-location-item, .job-description-location": "Beavercreek, OH, US",
+                ".job-description-worker-catergory": "Full-Time",
+                ".job-description-salary": "$135,000 To $165,000 Annually",
+            }
+
+            def __init__(self):
+                self.waits = []
+
+            def wait_for_selector(self, selector, timeout):
+                self.waits.append((selector, timeout))
+
+            def query_selector(self, selector):
+                value = self.values.get(selector)
+                return Element(value) if value else None
+
+            def query_selector_all(self, selector):
+                if selector == ".job-description-data-item, .job-description-data":
+                    return [Element("Example Technology, LLC\nHybrid role leading data architecture. " * 3)]
+                return []
+
+        page = Page()
+        details = searcher_module._adp_job_details(page)
+
+        self.assertEqual([(".job-description-data-item", 6000)], page.waits)
+        self.assertEqual("Data Architect - Team Lead", details["title"])
+        self.assertEqual("Example Technology, LLC", details["company"])
+        self.assertEqual("Beavercreek, OH, US", details["location"])
+        self.assertEqual("full_time", details["employment_type"])
+        self.assertEqual("hybrid", details["work_arrangement"])
+        self.assertEqual("$135,000 To $165,000 Annually", details["compensation"])
+        self.assertIn("leading data architecture", details["description"])
 
     def test_json_ld_location_normalizes_structured_country_values(self) -> None:
         posting = {

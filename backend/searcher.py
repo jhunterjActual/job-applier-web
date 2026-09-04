@@ -457,6 +457,53 @@ def _largest_text(page, selectors: str) -> str:
     return max(texts, key=len, default="")
 
 
+def _selector_text(page, selector: str) -> str:
+    """Return trimmed text from the first matching element."""
+    try:
+        element = page.query_selector(selector)
+        return element.inner_text().strip() if element else ""
+    except Exception:
+        return ""
+
+
+def _adp_job_details(page) -> dict:
+    """Extract the visible posting fields from ADP Workforce Now's job view."""
+    try:
+        page.wait_for_selector(
+            ".job-description-data-item",
+            timeout=6000,
+        )
+    except Exception:
+        pass
+    description = _largest_text(
+        page,
+        ".job-description-data-item, .job-description-data",
+    )
+    location = _selector_text(
+        page,
+        ".job-description-location-item, .job-description-location",
+    )
+    employment_label = _selector_text(page, ".job-description-worker-catergory")
+    metadata = _metadata_from_text(
+        f"{employment_label}\n{location}\n{description[:2500]}"
+    )
+    return {
+        "title": _selector_text(page, "h2.job-description-title"),
+        "company": _selector_text(
+            page,
+            ".job-description-data-item strong, .job-description-data strong",
+        ),
+        "description": description,
+        "location": location,
+        "work_arrangement": metadata["work_arrangement"],
+        "employment_type": metadata["employment_type"],
+        "compensation": (
+            _selector_text(page, ".job-description-salary")
+            or _selector_text(page, ".job-description-salary-details")
+        ),
+    }
+
+
 def _select_job_content_scope(page) -> tuple[object, dict, bool]:
     """Prefer readable job data in a child frame while retaining the main page fallback."""
     scope = page
@@ -1062,6 +1109,9 @@ def _scrape_job_details_browser(url: str, allow_partial: bool = False, diagnosti
                 details["description"] = desc_text
                 location_match = re.search(r"(?im)^Location\s*\n+([^\n]+)", body_text)
                 details["location"] = location_match.group(1).strip() if location_match else ""
+
+            elif hostname == "workforcenow.adp.com":
+                details.update(_adp_job_details(page))
 
             else:
                 scope, posting, has_embedded_frames = _select_job_content_scope(page)

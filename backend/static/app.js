@@ -9,11 +9,15 @@ function t(key, replacements = {}) {
 // State variables
 let currentTab = "dashboard";
 let selectedMaterialsJobId = null;
+let tailoredResumeSnapshot = "";
+let coverLetterSnapshot = "";
 let cleanupPreview = null;
 let cleanupActionsReady = false;
 let cleanupActionEnableTimer = null;
 let currentJobs = new Map();
 let lifecycleJobId = null;
+let lifecycleOpenedFromMaterials = false;
+let lifecycleSaveInFlight = false;
 let geminiKeyConfigured = false;
 let openAIKeyConfigured = false;
 let googleMapsKeyConfigured = false;
@@ -236,6 +240,8 @@ const downloadResumeBtn = document.getElementById("download-resume-btn");
 const downloadResumeDocxBtn = document.getElementById("download-resume-docx-btn");
 const downloadCoverLetterBtn = document.getElementById("download-cover-letter-btn");
 const openManualApplicationBtn = document.getElementById("open-manual-application-btn");
+const markAppliedFromMaterialsBtn = document.getElementById("mark-applied-from-materials-btn");
+const materialsActionStatus = document.getElementById("materials-action-status");
 
 const loadingModal = document.getElementById("loading-modal");
 const loadingTitle = document.getElementById("loading-title");
@@ -285,7 +291,9 @@ const lifecycleFollowUp = document.getElementById("lifecycle-follow-up");
 const lifecycleAppliedCalendar = document.getElementById("lifecycle-applied-calendar");
 const lifecycleFollowUpCalendar = document.getElementById("lifecycle-follow-up-calendar");
 const lifecycleNotes = document.getElementById("lifecycle-notes");
+const lifecycleError = document.getElementById("lifecycle-error");
 const undoLifecycleBtn = document.getElementById("undo-lifecycle-btn");
+const saveLifecycleBtn = document.getElementById("save-lifecycle-btn");
 const baseResumeHistoryModal = document.getElementById("base-resume-history-modal");
 const baseResumeHistorySubtitle = document.getElementById("base-resume-history-subtitle");
 const baseResumeVersionList = document.getElementById("base-resume-version-list");
@@ -422,6 +430,9 @@ document.addEventListener("DOMContentLoaded", () => {
     closeTailorModalBtns.forEach(btn => btn.addEventListener("click", hideTailorModal));
     setupModalTabs();
     bindEvent(saveMaterialsBtn, "click", saveTailoredMaterials);
+    bindEvent(markAppliedFromMaterialsBtn, "click", openLifecycleEditorFromMaterials);
+    bindEvent(tailoredResumeDisplay, "input", clearMaterialsActionStatus);
+    bindEvent(coverLetterDisplay, "input", clearMaterialsActionStatus);
     closeCleanupModalBtns.forEach(btn => btn.addEventListener("click", hideCleanupModal));
     bindEvent(archiveUntouchedBtn, "click", () => runCleanupAction("archive"));
     bindEvent(deleteUntouchedBtn, "click", () => runCleanupAction("delete"));
@@ -699,10 +710,23 @@ function openDatePicker(input) {
     else input.click();
 }
 
-function openLifecycleEditor(jobId) {
+function clearLifecycleError() {
+    lifecycleError.textContent = "";
+    lifecycleError.hidden = true;
+}
+
+function showLifecycleError(message) {
+    lifecycleError.textContent = String(message || "Could not update application status.");
+    lifecycleError.hidden = false;
+    window.setTimeout(() => lifecycleError.focus({ preventScroll: true }), 0);
+}
+
+function openLifecycleEditor(jobId, { fromMaterials = false } = {}) {
     const job = currentJobs.get(Number(jobId));
     if (!job) return;
     lifecycleJobId = Number(jobId);
+    lifecycleOpenedFromMaterials = fromMaterials;
+    clearLifecycleError();
     const isPreApplication = ["matched", "tailored", "form_filled", "submitted"].includes(job.status);
     document.getElementById("lifecycle-modal-title").innerText = isPreApplication ? "Mark Job as Applied" : "Update Application Status";
     document.getElementById("lifecycle-job-label").innerText = `${job.company} — ${job.title}`;
@@ -718,16 +742,38 @@ function openLifecycleEditor(jobId) {
     openAccessibleModal(lifecycleModal, lifecycleStatus);
 }
 
+function openLifecycleEditorFromMaterials() {
+    if (!selectedMaterialsJobId) return;
+    if (hasUnsavedMaterialEdits()) {
+        showMaterialsActionStatus("Save your resume and cover-letter edits before marking this job applied.");
+        return;
+    }
+    openLifecycleEditor(selectedMaterialsJobId, { fromMaterials: true });
+}
+
 function hideLifecycleModal() {
     closeAccessibleModal(lifecycleModal);
     lifecycleJobId = null;
+    lifecycleOpenedFromMaterials = false;
+    clearLifecycleError();
+}
+
+function closeLifecycleAfterSuccessfulSave() {
+    const closeMaterials = lifecycleOpenedFromMaterials;
+    closeAccessibleModal(lifecycleModal, !closeMaterials);
+    if (closeMaterials) closeAccessibleModal(tailorModal);
+    lifecycleJobId = null;
+    lifecycleOpenedFromMaterials = false;
+    clearLifecycleError();
 }
 
 async function saveLifecycleChange(event) {
     event.preventDefault();
-    if (!lifecycleJobId) return;
+    if (!lifecycleJobId || lifecycleSaveInFlight) return;
+    const updatedJobId = lifecycleJobId;
     const appliedStatuses = ["applied", "interview", "offer", "rejected", "withdrawn", "closed"];
     let payload;
+    clearLifecycleError();
     try {
         payload = {
             status: lifecycleStatus.value,
@@ -737,26 +783,39 @@ async function saveLifecycleChange(event) {
             follow_up_on: parseDateEntry(lifecycleFollowUp.value, "Follow-up date")
         };
     } catch (error) {
-        alert(error.message);
+        showLifecycleError(error.message);
         return;
     }
+    lifecycleSaveInFlight = true;
+    saveLifecycleBtn.disabled = true;
     showLoading("Saving Application Status...", "Recording the lifecycle change and audit history.");
+    let result;
     try {
         const response = await fetch(`${API_URL}/api/jobs/${lifecycleJobId}/lifecycle`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         });
-        const result = await response.json();
+        try {
+            result = await response.json();
+        } catch {
+            throw new Error("Could not update application status.");
+        }
         if (!response.ok) throw new Error(result.detail || "Could not update application status.");
-        hideLoading();
-        hideLifecycleModal();
-        await Promise.all([loadJobs(), loadLogs(), updateDashboardStats()]);
-        logActivity("Application Status Updated", `Status changed to ${result.status.replaceAll("_", " ")}.`, "success");
     } catch (error) {
         hideLoading();
-        alert(error.message);
+        showLifecycleError(error.message);
+        lifecycleSaveInFlight = false;
+        saveLifecycleBtn.disabled = false;
+        return;
     }
+    hideLoading();
+    closeLifecycleAfterSuccessfulSave();
+    lifecycleSaveInFlight = false;
+    saveLifecycleBtn.disabled = false;
+    await Promise.all([loadJobs({ revealJobId: updatedJobId }), loadLogs(), updateDashboardStats()]);
+    const savedStatus = String(result.status || payload.status).replaceAll("_", " ");
+    logActivity("Application Status Updated", `Status changed to ${savedStatus}.`, "success");
 }
 
 async function undoLifecycleChange() {
@@ -1196,15 +1255,38 @@ async function restoreFullBackup(event) {
 function showTailorModal(resumeMarkdown, coverLetterText, jobId) {
     tailoredResumeDisplay.value = resumeMarkdown;
     coverLetterDisplay.value = coverLetterText;
+    tailoredResumeSnapshot = tailoredResumeDisplay.value;
+    coverLetterSnapshot = coverLetterDisplay.value;
+    clearMaterialsActionStatus();
     downloadResumeBtn.href = `${API_URL}/api/jobs/${jobId}/materials/resume`;
     downloadResumeDocxBtn.href = `${API_URL}/api/jobs/${jobId}/materials/resume.docx`;
     downloadCoverLetterBtn.href = `${API_URL}/api/jobs/${jobId}/materials/cover-letter`;
     openManualApplicationBtn.href = `${API_URL}/api/jobs/${jobId}/apply-manually`;
+    const job = currentJobs.get(Number(jobId));
+    markAppliedFromMaterialsBtn.hidden = !job
+        || !["matched", "tailored", "form_filled", "submitted"].includes(job.status);
     openAccessibleModal(tailorModal, tailoredResumeDisplay);
 }
 
 function hideTailorModal() {
     closeAccessibleModal(tailorModal);
+    clearMaterialsActionStatus();
+}
+
+function hasUnsavedMaterialEdits() {
+    return tailoredResumeDisplay.value !== tailoredResumeSnapshot
+        || coverLetterDisplay.value !== coverLetterSnapshot;
+}
+
+function clearMaterialsActionStatus() {
+    materialsActionStatus.textContent = "";
+    materialsActionStatus.hidden = true;
+}
+
+function showMaterialsActionStatus(message) {
+    materialsActionStatus.textContent = String(message);
+    materialsActionStatus.hidden = false;
+    window.setTimeout(() => materialsActionStatus.focus({ preventScroll: true }), 0);
 }
 
 function hideCleanupModal() {
@@ -1217,6 +1299,38 @@ function showJobImportMessage(message, isWarning = false) {
     jobImportMessage.replaceChildren(createElement("strong", "", isWarning ? "Review needed" : "Preview ready"));
     jobImportMessage.appendChild(createElement("p", "margin-top-sm", message));
     jobImportMessage.hidden = false;
+}
+
+const JOB_IMPORT_FIELD_LABELS = Object.freeze({
+    url: "Job posting URL",
+    company: "Company",
+    title: "Position",
+    location: "Location",
+    compensation: "Compensation",
+    work_arrangement: "Work arrangement",
+    employment_type: "Employment type",
+    description: "Job description"
+});
+
+function jobImportErrorMessage(detail, fallback) {
+    if (typeof detail === "string" && detail.trim()) return detail.trim();
+    const entries = Array.isArray(detail) ? detail : [detail];
+    const messages = entries.map(entry => {
+        if (typeof entry === "string") return entry.trim();
+        if (!entry || typeof entry !== "object") return "";
+        if (typeof entry.message === "string" && entry.message.trim()) return entry.message.trim();
+        if (typeof entry.msg !== "string" || !entry.msg.trim()) return "";
+        const location = Array.isArray(entry.loc) ? entry.loc : [];
+        const field = [...location].reverse().find(part => (
+            typeof part === "string" && part !== "body"
+        ));
+        const label = JOB_IMPORT_FIELD_LABELS[field] || "Posting details";
+        const message = entry.msg.trim().replace(/^Value error,\s*/i, "").replace(/[.]+$/, "");
+        return `${label}: ${message}.`;
+    }).filter(Boolean);
+    return messages.length
+        ? `Please correct the following before saving: ${messages.join(" ")}`
+        : fallback;
 }
 
 function showJobImportModal() {
@@ -1254,9 +1368,16 @@ async function previewJobImport() {
             headers: operationHeaders(operation, { "Content-Type": "application/json" }),
             body: JSON.stringify({ url })
         });
-        const result = await response.json();
+        let result;
+        try {
+            result = await response.json();
+        } catch {
+            throw new Error("Could not preview this posting.");
+        }
         hideLoading();
-        if (!response.ok) throw new Error(result.detail || "Could not preview this posting.");
+        if (!response.ok) {
+            throw new Error(jobImportErrorMessage(result.detail, "Could not preview this posting."));
+        }
         if (result.cancelled) {
             showJobImportMessage(result.message || "Preview stopped.", true);
             return;
@@ -1320,8 +1441,15 @@ async function saveJobImport(event) {
                 employment_type: jobImportEmploymentType.value
             })
         });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.detail || "Could not save this posting.");
+        let result;
+        try {
+            result = await response.json();
+        } catch {
+            throw new Error("Could not save this posting.");
+        }
+        if (!response.ok) {
+            throw new Error(jobImportErrorMessage(result.detail, "Could not save this posting."));
+        }
         hideLoading();
         if (result.cancelled && !result.saved) {
             showJobImportMessage(result.message || "Job import stopped.", true);
@@ -3316,6 +3444,7 @@ async function saveTailoredMaterials() {
         alert(t("materials.required"));
         return;
     }
+    clearMaterialsActionStatus();
     const operation = showCancellableLoading(t("materials.saving.title"), t("materials.saving.subtitle"));
     try {
         const response = await fetch(`${API_URL}/api/jobs/${selectedMaterialsJobId}/tailored`, {
@@ -3331,6 +3460,8 @@ async function saveTailoredMaterials() {
             alert(result.message);
             return;
         }
+        tailoredResumeSnapshot = tailoredResumeDisplay.value;
+        coverLetterSnapshot = coverLetterDisplay.value;
         logActivity("Materials Saved", `Resume PDF regenerated at ${result.pdf_page_count} page(s).`, "success");
         alert(t("materials.save.success"));
     } catch (error) {
