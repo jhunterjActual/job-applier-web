@@ -1602,8 +1602,8 @@ class FrontendStartupTests(unittest.TestCase):
                 self.assertIn(f'id="{element_id}"', html_source)
         self.assertIn("Checking AI Provider", html_source)
         self.assertIn("i18n.js?v=20260812-1", html_source)
-        self.assertIn("app.js?v=20260904-1", html_source)
-        self.assertIn("index.css?v=20260904-1", html_source)
+        self.assertIn("app.js?v=20260904-2", html_source)
+        self.assertIn("index.css?v=20260904-2", html_source)
 
     def test_profile_and_provider_secrets_use_separate_form_boundaries(self) -> None:
         parser = self._profile_form_parser()
@@ -2012,6 +2012,13 @@ class FrontendStartupTests(unittest.TestCase):
         self.assertIn("showCancellableLoading", script_source)
         self.assertIn("revealJobId", script_source)
         self.assertIn("job-row-revealed", script_source)
+        self.assertIn("function jobImportErrorMessage(detail, fallback)", script_source)
+        self.assertIn("JOB_IMPORT_FIELD_LABELS[field]", script_source)
+        self.assertIn(
+            'jobImportErrorMessage(result.detail, "Could not save this posting.")',
+            script_source,
+        )
+        self.assertNotIn('throw new Error(result.detail || "Could not save this posting.")', script_source)
 
     def test_expected_search_limits_render_as_informational_notes(self) -> None:
         script_source = (Path(__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
@@ -10450,6 +10457,42 @@ class SearchQualityTests(unittest.TestCase):
         self.assertEqual("remote", metadata["work_arrangement"])
         self.assertEqual("full_time", metadata["employment_type"])
         self.assertIn("$120,000", metadata["compensation"])
+
+    def test_adp_job_view_extracts_visible_posting_fields(self) -> None:
+        class Element:
+            def __init__(self, text):
+                self.text = text
+
+            def inner_text(self):
+                return self.text
+
+        class Page:
+            values = {
+                "h2.job-description-title": "Data Architect - Team Lead",
+                ".job-description-data-item strong, .job-description-data strong": "Example Technology, LLC",
+                ".job-description-location-item, .job-description-location": "Beavercreek, OH, US",
+                ".job-description-worker-catergory": "Full-Time",
+                ".job-description-salary": "$135,000 To $165,000 Annually",
+            }
+
+            def query_selector(self, selector):
+                value = self.values.get(selector)
+                return Element(value) if value else None
+
+            def query_selector_all(self, selector):
+                if selector == ".job-description-data-item, .job-description-data":
+                    return [Element("Example Technology, LLC\nHybrid role leading data architecture. " * 3)]
+                return []
+
+        details = searcher_module._adp_job_details(Page())
+
+        self.assertEqual("Data Architect - Team Lead", details["title"])
+        self.assertEqual("Example Technology, LLC", details["company"])
+        self.assertEqual("Beavercreek, OH, US", details["location"])
+        self.assertEqual("full_time", details["employment_type"])
+        self.assertEqual("hybrid", details["work_arrangement"])
+        self.assertEqual("$135,000 To $165,000 Annually", details["compensation"])
+        self.assertIn("leading data architecture", details["description"])
 
     def test_json_ld_location_normalizes_structured_country_values(self) -> None:
         posting = {

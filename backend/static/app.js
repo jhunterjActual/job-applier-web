@@ -1301,6 +1301,38 @@ function showJobImportMessage(message, isWarning = false) {
     jobImportMessage.hidden = false;
 }
 
+const JOB_IMPORT_FIELD_LABELS = Object.freeze({
+    url: "Job posting URL",
+    company: "Company",
+    title: "Position",
+    location: "Location",
+    compensation: "Compensation",
+    work_arrangement: "Work arrangement",
+    employment_type: "Employment type",
+    description: "Job description"
+});
+
+function jobImportErrorMessage(detail, fallback) {
+    if (typeof detail === "string" && detail.trim()) return detail.trim();
+    const entries = Array.isArray(detail) ? detail : [detail];
+    const messages = entries.map(entry => {
+        if (typeof entry === "string") return entry.trim();
+        if (!entry || typeof entry !== "object") return "";
+        if (typeof entry.message === "string" && entry.message.trim()) return entry.message.trim();
+        if (typeof entry.msg !== "string" || !entry.msg.trim()) return "";
+        const location = Array.isArray(entry.loc) ? entry.loc : [];
+        const field = [...location].reverse().find(part => (
+            typeof part === "string" && part !== "body"
+        ));
+        const label = JOB_IMPORT_FIELD_LABELS[field] || "Posting details";
+        const message = entry.msg.trim().replace(/^Value error,\s*/i, "").replace(/[.]+$/, "");
+        return `${label}: ${message}.`;
+    }).filter(Boolean);
+    return messages.length
+        ? `Please correct the following before saving: ${messages.join(" ")}`
+        : fallback;
+}
+
 function showJobImportModal() {
     jobImportForm.reset();
     jobImportCanonicalUrl = null;
@@ -1336,9 +1368,16 @@ async function previewJobImport() {
             headers: operationHeaders(operation, { "Content-Type": "application/json" }),
             body: JSON.stringify({ url })
         });
-        const result = await response.json();
+        let result;
+        try {
+            result = await response.json();
+        } catch {
+            throw new Error("Could not preview this posting.");
+        }
         hideLoading();
-        if (!response.ok) throw new Error(result.detail || "Could not preview this posting.");
+        if (!response.ok) {
+            throw new Error(jobImportErrorMessage(result.detail, "Could not preview this posting."));
+        }
         if (result.cancelled) {
             showJobImportMessage(result.message || "Preview stopped.", true);
             return;
@@ -1402,8 +1441,15 @@ async function saveJobImport(event) {
                 employment_type: jobImportEmploymentType.value
             })
         });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.detail || "Could not save this posting.");
+        let result;
+        try {
+            result = await response.json();
+        } catch {
+            throw new Error("Could not save this posting.");
+        }
+        if (!response.ok) {
+            throw new Error(jobImportErrorMessage(result.detail, "Could not save this posting."));
+        }
         hideLoading();
         if (result.cancelled && !result.saved) {
             showJobImportMessage(result.message || "Job import stopped.", true);
