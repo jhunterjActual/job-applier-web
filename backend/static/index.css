@@ -829,6 +829,25 @@ select:focus {
     color: var(--text-muted);
 }
 
+.lifecycle-form-error {
+    margin: 0 0 16px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--color-red) 55%, transparent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--color-red) 10%, transparent);
+    color: var(--color-red);
+}
+
+.lifecycle-form-error:focus-visible {
+    outline: 2px solid var(--color-red);
+    outline-offset: 2px;
+}
+
+.lifecycle-form-error[hidden],
+#mark-applied-from-materials-btn[hidden] {
+    display: none;
+}
+
 .language-content-boundary {
     align-items: flex-start;
     background: rgba(var(--color-primary-rgb), 0.08);
@@ -1743,6 +1762,23 @@ body.modal-open {
     justify-content: flex-end;
 }
 
+.modal-action-status {
+    flex: 1 1 260px;
+    margin: 0 16px 0 0;
+    color: var(--color-yellow);
+    font-size: 12.5px;
+    font-weight: 600;
+}
+
+.modal-action-status:focus-visible {
+    outline: 2px solid var(--color-yellow);
+    outline-offset: 2px;
+}
+
+.modal-action-status[hidden] {
+    display: none;
+}
+
 @media (max-width: 720px) {
     .resume-history-layout {
         grid-template-columns: 1fr;
@@ -2460,6 +2496,11 @@ body.modal-open {
 
     .modal-actions {
         margin-left: 0;
+    }
+
+    .modal-action-status {
+        width: 100%;
+        margin: 0 0 12px;
     }
 
     .modal-actions .btn {
