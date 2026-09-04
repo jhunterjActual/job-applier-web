@@ -468,6 +468,13 @@ def _selector_text(page, selector: str) -> str:
 
 def _adp_job_details(page) -> dict:
     """Extract the visible posting fields from ADP Workforce Now's job view."""
+    try:
+        page.wait_for_selector(
+            ".job-description-data-item",
+            timeout=6000,
+        )
+    except Exception:
+        pass
     description = _largest_text(
         page,
         ".job-description-data-item, .job-description-data",

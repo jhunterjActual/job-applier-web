@@ -1602,8 +1602,8 @@ class FrontendStartupTests(unittest.TestCase):
                 self.assertIn(f'id="{element_id}"', html_source)
         self.assertIn("Checking AI Provider", html_source)
         self.assertIn("i18n.js?v=20260812-1", html_source)
-        self.assertIn("app.js?v=20260904-2", html_source)
-        self.assertIn("index.css?v=20260904-2", html_source)
+        self.assertIn("app.js?v=20260904-3", html_source)
+        self.assertIn("index.css?v=20260904-3", html_source)
 
     def test_profile_and_provider_secrets_use_separate_form_boundaries(self) -> None:
         parser = self._profile_form_parser()
@@ -10475,6 +10475,12 @@ class SearchQualityTests(unittest.TestCase):
                 ".job-description-salary": "$135,000 To $165,000 Annually",
             }
 
+            def __init__(self):
+                self.waits = []
+
+            def wait_for_selector(self, selector, timeout):
+                self.waits.append((selector, timeout))
+
             def query_selector(self, selector):
                 value = self.values.get(selector)
                 return Element(value) if value else None
@@ -10484,8 +10490,10 @@ class SearchQualityTests(unittest.TestCase):
                     return [Element("Example Technology, LLC\nHybrid role leading data architecture. " * 3)]
                 return []
 
-        details = searcher_module._adp_job_details(Page())
+        page = Page()
+        details = searcher_module._adp_job_details(page)
 
+        self.assertEqual([(".job-description-data-item", 6000)], page.waits)
         self.assertEqual("Data Architect - Team Lead", details["title"])
         self.assertEqual("Example Technology, LLC", details["company"])
         self.assertEqual("Beavercreek, OH, US", details["location"])
