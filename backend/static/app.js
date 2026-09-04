@@ -27,6 +27,10 @@ let searchStatusPollInFlightGeneration = null;
 let searchStatusPollGeneration = 0;
 let searchWasObservedActive = false;
 let lastAnnouncedSearchPhase = null;
+let tailorStatusPollTimer = null;
+let tailorStatusPollInFlightGeneration = null;
+let tailorStatusPollGeneration = 0;
+let lastAnnouncedTailorPhase = null;
 let baseResumes = [];
 let currentBaseResumeId = null;
 let baseResumeSnapshot = null;
@@ -927,7 +931,7 @@ function setupModalTabs() {
 // Show/Hide Helpers
 function showLoading(title, subtitle = "Please wait while CareerTrellis prepares your request.", operation = null) {
     loadingTitle.innerText = title;
-    loadingSubtitle.classList.remove("search-progress-status");
+    loadingSubtitle.classList.remove("search-progress-status", "tailor-progress-status");
     loadingSubtitle.innerText = subtitle;
     activeLoadingOperation = operation;
     loadingActions.hidden = !operation;
@@ -940,6 +944,9 @@ function showLoading(title, subtitle = "Please wait while CareerTrellis prepares
 }
 
 function hideLoading() {
+    if (activeLoadingOperation?.kind === "tailor") {
+        stopTailorStatusPolling(activeLoadingOperation);
+    }
     closeAccessibleModal(loadingModal);
     loadingActions.hidden = true;
     activeLoadingOperation = null;
@@ -969,7 +976,7 @@ async function stopActiveLoadingOperation() {
         document.createTextNode(` ${t("common.stopping")}`)
     );
     loadingTitle.innerText = t("common.stopping");
-    loadingSubtitle.classList.remove("search-progress-status");
+    loadingSubtitle.classList.remove("search-progress-status", "tailor-progress-status");
     loadingSubtitle.innerText = t("common.stopping.subtitle");
     try {
         const cancelUrl = operation.cancelUrl
@@ -978,8 +985,14 @@ async function stopActiveLoadingOperation() {
         const result = await response.json();
         if (!response.ok) throw new Error(result.detail || "The stop request could not be sent.");
         if (!result.active && activeLoadingOperation === operation) {
-            loadingSubtitle.classList.remove("search-progress-status");
-            loadingSubtitle.innerText = "The operation has already finished. Finalizing the result...";
+            loadingSubtitle.classList.remove("search-progress-status", "tailor-progress-status");
+            if (operation.kind === "tailor") {
+                operation.stopRequested = false;
+                operation.stopWhenActive = true;
+                loadingSubtitle.innerText = "Waiting for tailoring to become active so it can be stopped safely...";
+            } else {
+                loadingSubtitle.innerText = "The operation has already finished. Finalizing the result...";
+            }
         }
     } catch (error) {
         operation.stopRequested = false;
@@ -989,7 +1002,7 @@ async function stopActiveLoadingOperation() {
             document.createTextNode(` ${t("common.stop")}`)
         );
         loadingTitle.innerText = t("common.working");
-        loadingSubtitle.classList.remove("search-progress-status");
+        loadingSubtitle.classList.remove("search-progress-status", "tailor-progress-status");
         loadingSubtitle.innerText = error.message || "The stop request could not be sent.";
     }
 }
@@ -2672,6 +2685,136 @@ function formatSearchClock(totalSeconds) {
         : `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
 }
 
+function renderTailorProgress(status) {
+    const now = Date.now();
+    const message = createElement(
+        "div",
+        "tailor-progress-message",
+        status?.message || "Tailoring work is in progress."
+    );
+    const metrics = createElement("div", "tailor-progress-metrics");
+    const addMetric = (label, value) => {
+        metrics.append(
+            createElement("span", "tailor-progress-label", label),
+            createElement("span", "tailor-progress-value", value)
+        );
+    };
+    const startedAt = Date.parse(status?.started_at || "");
+    addMetric("Elapsed", Number.isFinite(startedAt)
+        ? formatSearchClock((now - startedAt) / 1000)
+        : "--:--");
+    const lastProgressAt = Date.parse(status?.last_progress_at || "");
+    addMetric("Last progress", Number.isFinite(lastProgressAt)
+        ? `${formatSearchClock((now - lastProgressAt) / 1000)} ago`
+        : "waiting");
+    const completed = Number(status?.completed);
+    const total = Number(status?.total);
+    let stepValue = "in progress";
+    if (status?.phase === "cancelled") stepValue = "stopped";
+    if (status?.phase === "failed") stepValue = "not completed";
+    if (status?.completed !== null && status?.total !== null
+        && Number.isFinite(completed) && Number.isFinite(total) && total > 0) {
+        stepValue = `${Math.max(0, completed)} / ${Math.max(0, total)}`;
+    }
+    addMetric("Step", stepValue);
+    loadingSubtitle.classList.remove("search-progress-status");
+    loadingSubtitle.classList.add("tailor-progress-status");
+    loadingSubtitle.replaceChildren(message, metrics);
+}
+
+function showTailorProgress(status, operation) {
+    if (activeLoadingOperation !== operation || status?.kind !== "tailor") return;
+    operation.lastStatus = status;
+    if (operation.stopWhenActive && status.stop_requested !== true
+        && status.phase !== "saving_materials") {
+        operation.stopWhenActive = false;
+        void stopActiveLoadingOperation();
+        return;
+    }
+    if (status.stop_requested === true) operation.stopWhenActive = false;
+    const stopping = status.stop_requested === true || operation.stopRequested;
+    const saving = status.phase === "saving_materials";
+    if (saving) operation.stopWhenActive = false;
+    loadingTitle.innerText = stopping ? t("common.stopping") : t("materials.tailoring.title");
+    renderTailorProgress(status);
+    loadingActions.hidden = saving;
+    stopLoadingBtn.disabled = stopping || saving;
+    const announcedPhase = stopping ? "stopping" : status.phase;
+    if (announcedPhase !== lastAnnouncedTailorPhase) {
+        lastAnnouncedTailorPhase = announcedPhase;
+        announce(`${loadingTitle.innerText} ${status.message}`);
+    }
+}
+
+function stopTailorStatusPolling(operation = null) {
+    if (operation && activeLoadingOperation && activeLoadingOperation !== operation) return;
+    tailorStatusPollGeneration += 1;
+    tailorStatusPollInFlightGeneration = null;
+    lastAnnouncedTailorPhase = null;
+    if (tailorStatusPollTimer !== null) {
+        clearInterval(tailorStatusPollTimer);
+        tailorStatusPollTimer = null;
+    }
+}
+
+async function pollTailorStatus(operation, generation) {
+    if (activeLoadingOperation !== operation || generation !== tailorStatusPollGeneration) return;
+    if (tailorStatusPollInFlightGeneration === generation) return;
+    tailorStatusPollInFlightGeneration = generation;
+    try {
+        const response = await fetch(
+            `${API_URL}/api/operations/${operation.id}/status`,
+            { cache: "no-store" }
+        );
+        if (activeLoadingOperation !== operation || generation !== tailorStatusPollGeneration) return;
+        if (response.status === 404) return;
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.detail || "Tailoring status is temporarily unavailable.");
+        showTailorProgress(status, operation);
+    } catch (error) {
+        if (activeLoadingOperation === operation && generation === tailorStatusPollGeneration) {
+            console.error("Error polling tailoring status:", error);
+        }
+    } finally {
+        if (tailorStatusPollInFlightGeneration === generation) {
+            tailorStatusPollInFlightGeneration = null;
+        }
+    }
+}
+
+function startTailorStatusPolling(operation) {
+    stopTailorStatusPolling();
+    const generation = tailorStatusPollGeneration;
+    tailorStatusPollTimer = setInterval(
+        () => void pollTailorStatus(operation, generation),
+        1000
+    );
+    void pollTailorStatus(operation, generation);
+}
+
+function finishTailorProgress(operation, outcome, message) {
+    stopTailorStatusPolling(operation);
+    if (activeLoadingOperation !== operation) return;
+    const completed = outcome === "completed" || outcome === "completed_with_review";
+    const prior = operation.lastStatus || {};
+    const status = {
+        kind: "tailor",
+        phase: outcome,
+        message,
+        started_at: prior.started_at || new Date().toISOString(),
+        last_progress_at: new Date().toISOString(),
+        completed: completed ? 5 : null,
+        total: completed ? 5 : null,
+        stop_requested: outcome === "cancelled"
+    };
+    loadingTitle.innerText = completed
+        ? (outcome === "completed_with_review" ? "Tailoring Complete — Review Needed" : "Tailoring Complete")
+        : (outcome === "cancelled" ? "Tailoring Stopped" : "Tailoring Failed");
+    loadingActions.hidden = true;
+    renderTailorProgress(status);
+    announce(`${loadingTitle.innerText} ${message}`);
+}
+
 function renderSearchProgress(activeSearch) {
     const now = Date.now();
     const message = createElement(
@@ -3069,7 +3212,12 @@ async function clearSourceDiagnostics() {
 
 // Trigger AI Resume Tailoring
 async function tailorResumeForJob(jobId) {
-    const operation = showCancellableLoading(t("materials.tailoring.title"), t("materials.tailoring.subtitle"));
+    const operation = showCancellableLoading(
+        t("materials.tailoring.title"),
+        t("materials.tailoring.subtitle"),
+        { kind: "tailor" }
+    );
+    startTailorStatusPolling(operation);
     logActivity("Tailoring Started", `Generating custom resume for Job ID #${jobId}...`, "magic");
     
     try {
@@ -3080,10 +3228,25 @@ async function tailorResumeForJob(jobId) {
         const result = await res.json();
         
         if (result.cancelled) {
+            finishTailorProgress(
+                operation,
+                "cancelled",
+                result.message || "Tailoring stopped before previously saved materials changed."
+            );
             hideLoading();
             logActivity("Tailoring Stopped", result.message, "warning");
             alert(result.message);
         } else if (result.success) {
+            const outcome = result.outcome === "completed_with_review"
+                ? "completed_with_review"
+                : "completed";
+            finishTailorProgress(
+                operation,
+                outcome,
+                outcome === "completed_with_review"
+                    ? "Tailored materials are ready with a headquarters item to review."
+                    : "Tailored materials are ready."
+            );
             hideLoading();
             logActivity("Tailoring Complete", `Resume and Cover Letter customized.`, "success");
             if (result.headquarters_warning) {
@@ -3097,14 +3260,27 @@ async function tailorResumeForJob(jobId) {
             // Show review materials
             viewTailoredMaterials(jobId);
         } else {
+            finishTailorProgress(
+                operation,
+                "failed",
+                "Tailoring could not be completed."
+            );
             hideLoading();
             const errorMsg = result.detail || result.error || "Unknown error";
             alert("Tailoring failed: " + errorMsg);
         }
     } catch (e) {
+        finishTailorProgress(
+            operation,
+            "failed",
+            "Tailoring could not be completed."
+        );
         hideLoading();
         console.error(e);
         logActivity("Tailoring Failed", "Could not call API to tailor resume details.", "error");
+        alert(e.message || "Tailoring could not be completed.");
+    } finally {
+        stopTailorStatusPolling(operation);
     }
 }
 

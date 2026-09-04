@@ -187,6 +187,7 @@ from operations import (
     OperationCancelled,
     OperationToken,
     finish_operation,
+    operation_progress,
     operation_scope,
     request_cancellation,
     start_operation,
@@ -391,6 +392,13 @@ def _require_local_backup_restore() -> None:
     """Keep SQLite workspace archives out of PostgreSQL-authoritative runtimes."""
     if data_store_kind() == SHARED_DATA_STORE:
         raise HTTPException(status_code=409, detail=SHARED_BACKUP_RESTORE_DETAIL)
+
+
+def _operation_owner_id() -> int:
+    """Bind in-memory work to the authenticated owner in shared runtimes."""
+    if data_store_kind() == SHARED_DATA_STORE:
+        return current_owner_user_id()
+    return 0
 
 
 @app.middleware("http")
@@ -968,7 +976,7 @@ def validate_ai_provider(
     operation_id: Optional[str] = Header(default=None, alias="X-CareerTrellis-Operation"),
 ) -> dict:
     """Validate the selected provider's stored key, model, and structured output."""
-    with operation_scope(operation_id) as operation:
+    with operation_scope(operation_id, owner_id=_operation_owner_id()) as operation:
         try:
             operation.checkpoint()
             profile = runtime_profile_repository(
@@ -989,7 +997,7 @@ def validate_selected_maps_provider(
     operation_id: Optional[str] = Header(default=None, alias="X-CareerTrellis-Operation"),
 ) -> dict:
     """Validate the selected maps provider without exposing its credential."""
-    with operation_scope(operation_id) as operation:
+    with operation_scope(operation_id, owner_id=_operation_owner_id()) as operation:
         try:
             operation.checkpoint()
             profile = runtime_profile_repository(
@@ -1027,7 +1035,7 @@ async def upload_resume(
     maximum_bytes = MAX_RESUME_UPLOAD_BYTES if suffix in {".txt", ".md"} else MAX_RESUME_DOCUMENT_UPLOAD_BYTES
     maximum_label = "2 MB" if maximum_bytes == MAX_RESUME_UPLOAD_BYTES else "10 MB"
 
-    operation = start_operation(operation_id)
+    operation = start_operation(operation_id, owner_id=_operation_owner_id())
     try:
         content = bytearray()
         while chunk := await file.read(64 * 1024):
@@ -1085,10 +1093,28 @@ def run_local_search_run(run_id: str) -> None:
         execute_search_claim(claim, repository)
 
 
+@app.get("/api/operations/{operation_id}/status")
+def get_operation_status(operation_id: str, response: Response) -> dict:
+    """Return one owner-bound, privacy-safe active tailoring status."""
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    status = operation_progress(
+        operation_id,
+        owner_id=_operation_owner_id(),
+        kind="tailor",
+    )
+    if status is None:
+        raise HTTPException(
+            status_code=404,
+            detail="The operation is not active.",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+    return status
+
+
 @app.post("/api/operations/{operation_id}/cancel")
 def cancel_operation(operation_id: str) -> dict:
     """Request cooperative cancellation at the operation's next safe checkpoint."""
-    active = request_cancellation(operation_id)
+    active = request_cancellation(operation_id, owner_id=_operation_owner_id())
     try:
         active = runtime_search_run_repository(
             sqlite_connection_factory=get_db_connection
@@ -1132,7 +1158,7 @@ def preview_manual_job(
     operation_id: Optional[str] = Header(default=None, alias="X-CareerTrellis-Operation"),
 ) -> dict:
     """Validate a public posting URL and extract editable details without saving it."""
-    with operation_scope(operation_id) as operation:
+    with operation_scope(operation_id, owner_id=_operation_owner_id()) as operation:
         try:
             return _preview_manual_job(req, operation)
         except OperationCancelled:
@@ -1237,7 +1263,7 @@ def save_manual_job(
     operation_id: Optional[str] = Header(default=None, alias="X-CareerTrellis-Operation"),
 ) -> dict:
     """Save one reviewed posting and score it when the configured AI is available."""
-    with operation_scope(operation_id) as operation:
+    with operation_scope(operation_id, owner_id=_operation_owner_id()) as operation:
         try:
             return _save_manual_job(req, operation)
         except OperationCancelled:
@@ -1701,7 +1727,7 @@ def download_full_backup(
     _require_local_backup_restore()
     if not BACKUP_RESTORE_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Another backup or restore is already in progress.")
-    operation = start_operation(operation_id)
+    operation = start_operation(operation_id, owner_id=_operation_owner_id())
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -1779,7 +1805,7 @@ async def restore_full_backup(
         await file.close()
         raise HTTPException(status_code=409, detail="Another backup or restore is already in progress.")
 
-    operation = start_operation(operation_id)
+    operation = start_operation(operation_id, owner_id=_operation_owner_id())
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -1934,7 +1960,7 @@ def verify_job_posting(
     operation_id: Optional[str] = Header(default=None, alias="X-CareerTrellis-Operation"),
 ) -> dict:
     """Re-scrape one listing and mark it expired without deleting history."""
-    with operation_scope(operation_id) as operation:
+    with operation_scope(operation_id, owner_id=_operation_owner_id()) as operation:
         try:
             return _verify_job_posting(job_id, operation)
         except OperationCancelled:
@@ -2086,15 +2112,25 @@ def tailor_resume_endpoint(
     Returns:
         dict: Containing the tailored resume, cover letter, and U.S. HQ location.
     """
-    with operation_scope(operation_id) as operation:
+    with operation_scope(
+        operation_id,
+        owner_id=_operation_owner_id(),
+        kind="tailor",
+    ) as operation:
+        operation.update_progress("loading_inputs", completed=0, total=5)
         try:
             return _tailor_resume_endpoint(job_id, operation)
         except OperationCancelled:
+            operation.update_progress("cancelled")
             return {
                 "success": False,
                 "cancelled": True,
+                "outcome": "cancelled",
                 "message": "Tailoring stopped. Previously saved materials and job status were preserved.",
             }
+        except Exception:
+            operation.update_progress("failed")
+            raise
 
 
 def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
@@ -2161,6 +2197,7 @@ def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
 
         conn.close()
     
+    operation.update_progress("generating_materials", completed=1, total=5)
     ai_settings = settings_from_profile(profile)
     maps_settings = maps_settings_from_profile(profile)
     res = tailor_resume_and_cover_letter(
@@ -2178,7 +2215,8 @@ def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
     operation.checkpoint()
     if not res.get("success"):
         raise HTTPException(status_code=500, detail=res.get("error", "Tailoring failed."))
-        
+
+    operation.update_progress("rendering_resume", completed=2, total=5)
     # Generate HTML/PDF file paths
     output_root = Path(config.OUTPUT_DIR)
     if not shared_materials:
@@ -2230,6 +2268,7 @@ def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
         existing = conn.execute("SELECT id FROM applications WHERE job_id = ?", (job_id,)).fetchone()
         conn.close()
 
+    operation.update_progress("resolving_headquarters", completed=3, total=5)
     # Headquarters lookups are cached by provider and bounded identity context.
     prefer_us_headquarters = bool(profile["prefer_us_headquarters"])
     headquarters_cache_key = _headquarters_cache_key(
@@ -2253,6 +2292,7 @@ def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
         _cache_headquarters(headquarters_cache_key, headquarters, maps_settings.provider)
     operation.checkpoint()
 
+    operation.update_progress("saving_materials", completed=4, total=5)
     # Object upload and the following short metadata/reference transaction are
     # separated from all provider/PDF work. No old object is deleted first.
     if shared_materials:
@@ -2346,9 +2386,12 @@ def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
             "duration_bucket": duration_bucket(time.monotonic() - started_at),
         },
     )
-    
+    outcome = "completed_with_review" if headquarters.warning else "completed"
+    operation.update_progress(outcome, completed=5, total=5)
+
     return {
         "success": True,
+        "outcome": outcome,
         "tailored_resume": res["tailored_resume"],
         "cover_letter": cover_letter_text,
         "us_hq": headquarters.address,
@@ -2452,7 +2495,7 @@ def update_tailored_details(
     operation_id: Optional[str] = Header(default=None, alias="X-CareerTrellis-Operation"),
 ) -> dict:
     """Save reviewed material edits and regenerate the attached resume PDF."""
-    with operation_scope(operation_id) as operation:
+    with operation_scope(operation_id, owner_id=_operation_owner_id()) as operation:
         try:
             return _update_tailored_details(job_id, req, operation)
         except OperationCancelled:
@@ -2905,7 +2948,7 @@ def generate_job_interview_prep(
     operation_id: Optional[str] = Header(default=None, alias="X-CareerTrellis-Operation"),
 ) -> dict:
     """Generate and safely persist an AI-assisted interview plan on explicit request."""
-    with operation_scope(operation_id) as operation:
+    with operation_scope(operation_id, owner_id=_operation_owner_id()) as operation:
         try:
             operation.checkpoint()
             repository = runtime_application_workspace_repository(
