@@ -199,6 +199,123 @@ class OperationCancellationTests(unittest.TestCase):
             self.assertFalse(temporary_file.exists())
             self.assertFalse(operations_module.request_cancellation(operation_id))
 
+    def test_progress_is_owner_bound_fixed_and_privacy_safe(self) -> None:
+        operation_id = str(uuid4())
+        token = operations_module.start_operation(
+            operation_id,
+            owner_id=17,
+            kind="tailor",
+        )
+        try:
+            with patch.object(operations_module.time, "time", side_effect=[100.5, 99.0]):
+                token.update_progress("loading_inputs", completed=0, total=5)
+                first = operations_module.operation_progress(
+                    operation_id,
+                    owner_id=17,
+                    kind="tailor",
+                )
+                token.update_progress("generating_materials", completed=1, total=5)
+                second = operations_module.operation_progress(
+                    operation_id,
+                    owner_id=17,
+                    kind="tailor",
+                )
+
+            self.assertEqual(
+                {
+                    "kind",
+                    "phase",
+                    "message",
+                    "started_at",
+                    "last_progress_at",
+                    "completed",
+                    "total",
+                    "stop_requested",
+                },
+                set(second),
+            )
+            self.assertEqual("tailor", second["kind"])
+            self.assertEqual("generating_materials", second["phase"])
+            self.assertEqual(1, second["completed"])
+            self.assertEqual(5, second["total"])
+            self.assertGreaterEqual(second["last_progress_at"], first["last_progress_at"])
+            self.assertIsNone(
+                operations_module.operation_progress(operation_id, owner_id=18)
+            )
+            self.assertFalse(
+                operations_module.request_cancellation(operation_id, owner_id=18)
+            )
+            self.assertTrue(
+                operations_module.request_cancellation(operation_id, owner_id=17)
+            )
+            self.assertTrue(
+                operations_module.operation_progress(
+                    operation_id,
+                    owner_id=17,
+                    kind="tailor",
+                )["stop_requested"]
+            )
+            serialized = json.dumps(second)
+            for forbidden in (
+                "private resume",
+                "job_title",
+                "company",
+                "prompt",
+                "provider_response",
+                "url",
+                "owner_id",
+            ):
+                self.assertNotIn(forbidden, serialized)
+        finally:
+            operations_module.finish_operation(token)
+
+    def test_progress_rejects_unknown_phases_and_invalid_counts(self) -> None:
+        token = operations_module.OperationToken(kind="tailor")
+        with self.assertRaisesRegex(ValueError, "not allowlisted"):
+            token.update_progress("private free-form phase")
+        with self.assertRaisesRegex(ValueError, "must either both"):
+            token.update_progress("loading_inputs", completed=0)
+        with self.assertRaisesRegex(ValueError, "counts are invalid"):
+            token.update_progress("loading_inputs", completed=6, total=5)
+
+    def test_tailor_commit_boundary_and_cancellation_are_atomic(self) -> None:
+        before_commit = operations_module.OperationToken(kind="tailor")
+        before_commit.update_progress("resolving_headquarters", completed=3, total=5)
+        self.assertTrue(before_commit.cancel())
+        with self.assertRaises(operations_module.OperationCancelled):
+            before_commit.update_progress("saving_materials", completed=4, total=5)
+
+        in_commit = operations_module.OperationToken(kind="tailor")
+        in_commit.update_progress("saving_materials", completed=4, total=5)
+        self.assertFalse(in_commit.cancel())
+        self.assertFalse(in_commit.cancellation_requested)
+        self.assertEqual("saving_materials", in_commit.progress_status()["phase"])
+
+    def test_tailor_status_endpoint_does_not_reveal_another_owner(self) -> None:
+        operation_id = str(uuid4())
+        token = operations_module.start_operation(
+            operation_id,
+            owner_id=41,
+            kind="tailor",
+        )
+        token.update_progress("loading_inputs", completed=0, total=5)
+        try:
+            response = app_module.Response()
+            with patch.object(app_module, "_operation_owner_id", return_value=41):
+                status = app_module.get_operation_status(operation_id, response)
+            self.assertEqual("loading_inputs", status["phase"])
+            self.assertEqual("no-store, max-age=0", response.headers["Cache-Control"])
+
+            with (
+                patch.object(app_module, "_operation_owner_id", return_value=42),
+                self.assertRaises(app_module.HTTPException) as raised,
+            ):
+                app_module.get_operation_status(operation_id, app_module.Response())
+            self.assertEqual(404, raised.exception.status_code)
+            self.assertEqual("The operation is not active.", raised.exception.detail)
+        finally:
+            operations_module.finish_operation(token)
+
 
 class AIProviderAbstractionTests(unittest.TestCase):
     def test_openai_responses_request_uses_strict_schema_and_keeps_key_out_of_body(self) -> None:
@@ -849,10 +966,11 @@ class MapsProviderAbstractionTests(unittest.TestCase):
                     patch.object(app_module, "resolve_headquarters", side_effect=resolve),
                     patch.object(app_module, "capture_event"),
                 ):
-                    result = app_module._tailor_resume_endpoint(
-                        7, operations_module.OperationToken()
-                    )
+                    operation = operations_module.OperationToken(kind="tailor")
+                    result = app_module._tailor_resume_endpoint(7, operation)
                 self.assertTrue(result["success"])
+                self.assertEqual("completed", result["outcome"])
+                self.assertEqual("completed", operation.progress_status()["phase"])
                 self.assertTrue(all(item.closed for item in opened_connections))
                 return events, repository, resolved
 
@@ -1483,8 +1601,8 @@ class FrontendStartupTests(unittest.TestCase):
                 self.assertIn(f'id="{element_id}"', html_source)
         self.assertIn("Checking AI Provider", html_source)
         self.assertIn("i18n.js?v=20260812-1", html_source)
-        self.assertIn("app.js?v=20260902-3", html_source)
-        self.assertIn("index.css?v=20260902-2", html_source)
+        self.assertIn("app.js?v=20260903-1", html_source)
+        self.assertIn("index.css?v=20260903-1", html_source)
 
     def test_profile_and_provider_secrets_use_separate_form_boundaries(self) -> None:
         parser = self._profile_form_parser()
@@ -5901,7 +6019,9 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
         operation_id = "00000000-0000-4000-8000-000000000103"
         with (
             patch.object(app_module, "runtime_search_run_repository", return_value=repository),
-            patch.object(app_module, "request_cancellation", return_value=False),
+            patch.object(
+                app_module, "request_cancellation", return_value=False
+            ) as cancellation,
         ):
             self.assertEqual(repository.status.return_value, app_module.get_search_status())
             cancelled = app_module.cancel_operation(operation_id)
@@ -5909,6 +6029,7 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
         self.assertTrue(cancelled["active"])
         self.assertTrue(recovered_cancel["active"])
         repository.request_cancel.assert_called_once_with(operation_id)
+        cancellation.assert_called_once_with(operation_id, owner_id=0)
         repository.request_cancel_active.assert_called_once_with()
 
     def test_search_frontend_recovers_status_and_owner_scoped_stop_after_reload(self) -> None:
@@ -5931,6 +6052,40 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
             "setInterval(() => void pollSearchStatus(generation), 3000)", script_source
         )
         self.assertIn("announcedPhase !== lastAnnouncedSearchPhase", script_source)
+
+    def test_tailoring_frontend_uses_fixed_progress_rows_and_nonoverlapping_polling(self) -> None:
+        script_source = (Path(__file__).parent / "static" / "app.js").read_text(
+            encoding="utf-8"
+        )
+        css_source = (Path(__file__).parent / "static" / "index.css").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('function renderTailorProgress(status)', script_source)
+        self.assertIn('addMetric("Elapsed"', script_source)
+        self.assertIn('addMetric("Last progress"', script_source)
+        self.assertIn('addMetric("Step"', script_source)
+        self.assertIn('classList.add("tailor-progress-status")', script_source)
+        self.assertIn('/api/operations/${operation.id}/status', script_source)
+        self.assertIn(
+            "if (tailorStatusPollInFlightGeneration === generation) return;",
+            script_source,
+        )
+        self.assertIn(
+            "activeLoadingOperation !== operation || generation !== tailorStatusPollGeneration",
+            script_source,
+        )
+        self.assertIn('status.phase === "saving_materials"', script_source)
+        self.assertIn("operation.stopRequested = false;", script_source)
+        self.assertIn("operation.stopWhenActive = true;", script_source)
+        self.assertIn(
+            "operation.stopWhenActive && status.stop_requested !== true",
+            script_source,
+        )
+        self.assertIn("void stopActiveLoadingOperation();", script_source)
+        self.assertIn("announcedPhase !== lastAnnouncedTailorPhase", script_source)
+        self.assertIn("stopTailorStatusPolling(operation);", script_source)
+        self.assertIn(".tailor-progress-status", css_source)
+        self.assertIn("font-variant-numeric: tabular-nums", css_source)
 
 
 class WebAuthenticationTests(unittest.TestCase):
