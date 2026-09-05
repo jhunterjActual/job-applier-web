@@ -27,6 +27,7 @@ from typing import Iterable
 
 
 RECEIPT_SCHEMA = "careertrellis.backup-health-operation/v1"
+GENERATION_RECEIPT_SCHEMA = "careertrellis.backup-health-operation/v2"
 SNAPSHOT_SCHEMA = "careertrellis.backup-health-snapshot/v1"
 STATUS_SCHEMA = "careertrellis.backup-health-status/v1"
 ALERT_SCHEMA = "careertrellis.backup-health-alert/v1"
@@ -379,11 +380,19 @@ def validate_operation_receipt(document: object) -> dict[str, object]:
     if not isinstance(operation, str) or operation not in OPERATION_SET:
         raise _invalid()
     expected = _COMMON_RECEIPT_FIELDS | _RECEIPT_FIELDS[operation]
+    # Preserve strict v1 receipts; only v2 database mirror/inventory evidence
+    # binds a private generation inventory without exposing its object keys.
+    generation_bound = document.get("schema") == GENERATION_RECEIPT_SCHEMA
+    if generation_bound and operation in {"pgbackrest_mirror", "pgbackrest_inventory"}:
+        expected |= {"generation_sha256"}
+    elif generation_bound:
+        raise _invalid()
     if set(document) != expected:
         raise _invalid()
     result = document.get("result")
     if (
-        document.get("schema") != RECEIPT_SCHEMA
+        not isinstance(document.get("schema"), str)
+        or document.get("schema") not in {RECEIPT_SCHEMA, GENERATION_RECEIPT_SCHEMA}
         or not isinstance(result, str)
         or result not in RESULTS
     ):
@@ -395,12 +404,17 @@ def validate_operation_receipt(document: object) -> dict[str, object]:
         raise _invalid()
 
     normalized: dict[str, object] = {
-        "schema": RECEIPT_SCHEMA,
+        "schema": document["schema"],
         "operation": operation,
         "result": document["result"],
         "started_at": document["started_at"],
         "completed_at": document["completed_at"],
     }
+    if "generation_sha256" in expected:
+        digest = document["generation_sha256"]
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise _invalid()
+        normalized["generation_sha256"] = digest
     for field in sorted(_RECEIPT_FIELDS[operation]):
         value = document[field]
         if field in _LABEL_RECEIPT_FIELDS:
@@ -742,7 +756,17 @@ def read_receipt(
     receipt_name = f"{manifest_name[:-7]}.json"
     manifest = _read_protected(selected / manifest_name, owner, MAX_MANIFEST_BYTES)
     receipt = _read_protected(selected / receipt_name, owner, MAX_RECEIPT_BYTES)
-    return verify_receipt(receipt_name, receipt, manifest)
+    document = verify_receipt(receipt_name, receipt, manifest)
+    if document["schema"] == GENERATION_RECEIPT_SCHEMA:
+        digest = str(document["generation_sha256"])
+        # Only inspect opaque private bytes here; paths remain the companion's
+        # responsibility. Losing/tampering with this evidence fails the ledger.
+        generation = _read_protected(
+            selected / f"pgbackrest-generation-{digest}.json", owner, 32 * 1024 * 1024
+        )
+        if hashlib.sha256(generation).hexdigest() != digest:
+            raise _unverified()
+    return document
 
 
 def _operation_from_manifest(name: str) -> str | None:
@@ -814,6 +838,7 @@ def latest_verified_receipt(
 
 
 def _prune_receipts(root: Path) -> None:
+    retired_generations: set[str] = set()
     for operation in OPERATIONS:
         valid_names: list[tuple[str, str]] = []
         for item in sorted(root.iterdir(), key=lambda value: value.name):
@@ -829,6 +854,9 @@ def _prune_receipts(root: Path) -> None:
         excess = len(valid_names) - MAX_RECEIPTS_PER_OPERATION
         for _completed, manifest_name in valid_names[: max(0, excess)]:
             receipt_name = f"{manifest_name[:-7]}.json"
+            retired = read_receipt(manifest_name, root=root)
+            if "generation_sha256" in retired:
+                retired_generations.add(str(retired["generation_sha256"]))
             # Removing the commit marker first makes an interrupted prune fail
             # closed.  Invalid or unpaired files are never selected above.
             try:
@@ -838,6 +866,29 @@ def _prune_receipts(root: Path) -> None:
                 _fsync_directory(root)
             except OSError:
                 raise _persistence() from None
+    if retired_generations:
+        retained = scan_receipts(root=root)
+        # Invalid evidence is preserved for investigation, never curated away.
+        if retained.invalid_operations:
+            return
+        referenced = {
+            str(receipt["generation_sha256"])
+            for receipts in retained.receipts.values() for receipt in receipts
+            if "generation_sha256" in receipt
+        }
+        owner = _verify_root(root, create=False)
+        for digest in retired_generations - referenced:
+            path = root / f"pgbackrest-generation-{digest}.json"
+            try:
+                payload = _read_protected(path, owner, 32 * 1024 * 1024)
+            except BackupHealthVerificationError:
+                continue
+            if hashlib.sha256(payload).hexdigest() == digest:
+                try:
+                    os.unlink(path)
+                    _fsync_directory(root)
+                except OSError:
+                    raise _persistence() from None
 
 
 def publish_receipt(
@@ -1038,10 +1089,12 @@ def evaluate_backup_health(
             tuple(item for item in (full, differential) if item is not None)
         )
         mirror = _latest(
-            inventory.receipts["pgbackrest_mirror"], successful=True
+            tuple(item for item in inventory.receipts["pgbackrest_mirror"]
+                  if item["schema"] == GENERATION_RECEIPT_SCHEMA), successful=True
         )
         pg_inventory = _latest(
-            inventory.receipts["pgbackrest_inventory"], successful=True
+            tuple(item for item in inventory.receipts["pgbackrest_inventory"]
+                  if item["schema"] == GENERATION_RECEIPT_SCHEMA), successful=True
         )
         pg_restore = _latest(
             inventory.receipts["pgbackrest_restore"], successful=True

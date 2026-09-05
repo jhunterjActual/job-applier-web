@@ -3899,24 +3899,30 @@ class DependencyLockTests(unittest.TestCase):
             name: (scripts / name).read_text(encoding="utf-8")
             for name in wrapper_names
         }
-        for source in wrappers.values():
+        for name, source in wrappers.items():
             self.assertIn(repository_lock, source)
             self.assertIn('exec 9<>"${lock_path}"', source)
             self.assertIn("flock --nonblock 9", source)
-            self.assertIn(
-                "/usr/bin/setpriv --reuid=postgres --regid=postgres "
-                "--init-groups",
-                source,
-            )
-            self.assertIn('--reset-env -- "$@"', source)
+            if name != "check-pgbackrest-mirror.sh":
+                self.assertIn(
+                    "/usr/bin/setpriv --reuid=postgres --regid=postgres "
+                    "--init-groups", source,
+                )
+                self.assertIn('--reset-env -- "$@"', source)
+                self.assertIn("as_postgres /usr/bin/pgbackrest", source)
             self.assertNotIn("runuser", source)
-            self.assertIn("as_postgres /usr/bin/pgbackrest", source)
             self.assertIn(
                 "/usr/local/libexec/careertrellis/backup_health.py", source
             )
-            self.assertIn(" publish --receipt-root ", source)
+            if name not in {"mirror-pgbackrest-onedrive.sh", "check-pgbackrest-mirror.sh"}:
+                self.assertIn(" publish --receipt-root ", source)
+            else:
+                self.assertIn("/usr/local/libexec/careertrellis/pgbackrest_inventory.py", source)
 
         mirror = wrappers["mirror-pgbackrest-onedrive.sh"]
+        self.assertIn('stat -c \'%a:%U:%G\' "${core}"', mirror)
+        self.assertIn('stat -c \'%a:%U:%G\' "${generation_core}"', mirror)
+        self.assertIn("644:root:root", mirror)
         self.assertEqual(2, mirror.count("${rclone_binary} copy"))
         self.assertEqual(1, mirror.count("--immutable"))
         self.assertIn('"${immutable_payload_filters[@]}"', mirror)
@@ -3933,7 +3939,8 @@ class DependencyLockTests(unittest.TestCase):
         payload_copy = mirror.index('"${immutable_payload_filters[@]}"')
         metadata_copy = mirror.index('"${mutable_metadata_filters[@]}"')
         metadata_check = mirror.index("${rclone_binary} check", metadata_copy)
-        receipt = mirror.index(" publish --receipt-root ", metadata_check)
+        receipt = mirror.index('"${generation_core}" seal', metadata_check)
+        self.assertLess(mirror.index('"${generation_core}" prepare'), payload_copy)
         self.assertLess(payload_copy, metadata_copy)
         self.assertLess(metadata_copy, metadata_check)
         self.assertLess(metadata_check, receipt)
@@ -3946,13 +3953,12 @@ class DependencyLockTests(unittest.TestCase):
         self.assertNotIn("${rclone_binary} purge", mirror)
 
         inventory = wrappers["check-pgbackrest-mirror.sh"]
-        inventory_check = inventory[
-            inventory.index("${rclone_binary} check") : inventory.index(
-                "${rclone_binary} size"
-            )
-        ]
-        self.assertIn("--download", inventory_check)
-        self.assertIn("--one-way", inventory_check)
+        self.assertIn('"${generation_core}" inventory', inventory)
+        generation = (project_dir / "backend" / "pgbackrest_inventory.py").read_text(encoding="utf-8")
+        self.assertIn('"--download", "--one-way"', generation)
+        self.assertIn('"--files-from-raw"', generation)
+        self.assertIn('"--match"', generation)
+        self.assertNotIn('"--size-only"', generation)
         self.assertNotIn("--size-only", inventory)
 
         service_expectations = {
