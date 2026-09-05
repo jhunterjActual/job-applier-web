@@ -19,11 +19,16 @@ Provisioning installs these manual helpers:
 - `/usr/local/sbin/careertrellis-test-generated-object-restore`
 
 Both run as root, acquire the shared maintenance lock and a dedicated recovery
-lock, require the web, search-worker, and erasure-worker services to be
-inactive, and fail if `/usr/local/sbin/careertrellis-authority status` changes
+lock, and fail if `/usr/local/sbin/careertrellis-authority status` changes
 during the operation. Transfer and manifest work runs as the non-login
 `careertrellis-object-recovery` account. Its state and work directories are
 mode `0700` under `/var/lib/careertrellis/generated-object-recovery`.
+Only source capture requires all three application services strictly inactive.
+Publication from a sealed local capture and isolated disposable restore may run
+while staging is online. Neither helper starts or stops application services.
+The stdlib manifest/capture helper is installed separately as root:root `0644`
+at `/usr/local/libexec/careertrellis/generated_object_recovery.py`; an ops-only
+update does not require rewriting the immutable application release.
 
 Configure exactly one private `type=onedrive` remote in
 `/var/lib/careertrellis/generated-object-recovery/rclone.conf`. The file must
@@ -65,8 +70,27 @@ is missing.
 
 ## Create one quiescent immutable generation
 
-Keep the maintenance boundary and all three services stopped while taking and
-verifying the paired full pgBackRest backup and while running this mirror. Use
+Prefer the split sequence to minimize downtime:
+
+1. Hold the maintenance boundary and stop web, search, and erasure writers.
+   Take and verify the full PostgreSQL backup during that uninterrupted window.
+2. Invoke the command below with `capture` immediately before the release path.
+   It downloads and byte-checks live ciphertext, creates its canonical manifest,
+   and seals a durable root-owned local copy. It does not contact OneDrive or
+   publish a successful mirror-health receipt.
+3. Retain the capture receipt and paired database receipt. Resume the same
+   application release and authority, verify its services/heartbeats/readiness,
+   and release the outer maintenance lock.
+4. Invoke with `publish-captured` and the same arguments while staging is online.
+   It verifies the protected capture and transfers only those captured bytes.
+5. Run the disposable restore slice online using the resulting trusted digest.
+
+The caller/coordinator must prove the full database backup and capture share
+the same uninterrupted stopped-writer window. A backup from an earlier window
+cannot be paired with a later capture after staging has resumed.
+
+Without an explicit mode, the command retains combined offline behavior.
+Keep all three services stopped throughout that combined invocation. Use
 the exact 40-character deployed release revision and exact full-backup label
 (`YYYYMMDD-HHMMSSF`):
 
@@ -80,7 +104,10 @@ sudo /usr/local/sbin/careertrellis-mirror-generated-objects \
 
 The helper derives `snapshot_id` as `<release>-<backup-label>` and the
 destination as `<reviewed-remote>:<reviewed-root>/<backup-label>`. The
-destination must be empty. It downloads the source ciphertext with immutable
+destination must be empty. A successful `mkdir` of that exact directory followed
+by a successful zero-object/zero-byte inventory handles a missing OneDrive
+folder; permission, authentication, and provider errors still fail closed.
+It downloads the source ciphertext with immutable
 copy semantics and rejects any key other than `v1/<32 lowercase hexadecimal
 characters>`, symlink/non-regular entry, file larger than `10 MiB + 64 bytes`,
 inventory over 100,000 objects, or total/manifest bound violation.
@@ -93,6 +120,24 @@ the destination objects, then copies the manifest last. The manifest
 is therefore the completion marker; an interrupted generation without it is
 not eligible for restore or retention decisions. Nothing is written to the
 live R2 bucket.
+
+Captures live under `/var/lib/careertrellis/generated-object-captures`, outside
+the recovery-account-writable work directory. The root and capture directories
+are root:careertrellis-object-recovery `0750`; ciphertext/manifest files are
+`0640` with new root-owned inodes, and the seal is root:root `0600`. Files and
+directories are fsynced before the seal is accepted. Symlinks, hardlinks,
+unexpected entries, modified bytes, unsafe ownership/modes, mismatched identity
+or authority, future timestamps, and captures over two hours old fail closed.
+The seal binds the exact manifest digest, release, full label, and capture time.
+Publication checks the completion marker by downloading it too.
+
+Successful mirror-health `started_at` describes capture start; `completed_at`
+records actual publication completion so retries supersede older failures.
+The evaluator conservatively ages object mirrors from `started_at`, so replaying
+old bytes cannot falsely refresh backup age. Captures (including
+incomplete ones) survive failure and success; no automatic local/provider purge
+is performed. A nonempty failed provider generation still requires a separately
+reviewed exact-target disposition before reuse; never delete it merely to retry.
 
 The final stdout receipt is one sanitized JSON line with `authority`,
 `backup_label`, `manifest_sha256`, `release`, `snapshot_id`, and
@@ -126,7 +171,8 @@ sudo /usr/local/sbin/careertrellis-test-generated-object-restore \
   I_UNDERSTAND_THE_DISPOSABLE_R2_TARGET_WILL_BE_LEFT_INTACT
 ```
 
-The helper requires an empty target, downloads the exact OneDrive generation,
+The application may remain online: the helper never touches live R2 or the
+database. It requires an empty target, downloads the exact OneDrive generation,
 checks all downloaded bytes, verifies the canonical inventory and supplied
 digest, and requires the embedded release, backup label, and snapshot ID to
 match the requested identities. It then copies and download-checks only the

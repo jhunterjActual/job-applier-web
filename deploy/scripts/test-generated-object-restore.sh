@@ -45,10 +45,12 @@ if [[ $(dirname "${release_dir}") != "${release_root}/releases" || ! ${release_r
     echo "The restore-test release must be an exact immutable 40-character release." >&2
     exit 1
 fi
-python_command=${release_dir}/backend/venv/bin/python
-recovery_cli=${release_dir}/backend/generated_object_recovery.py
-if [[ ! -x ${python_command} || ! -f ${recovery_cli} || -L ${recovery_cli} ]]; then
-    echo "The restore-test release is incomplete." >&2
+python_command=/usr/bin/python3
+recovery_cli=/usr/local/libexec/careertrellis/generated_object_recovery.py
+if [[ ! -x ${python_command} || ! -f ${recovery_cli} || -L ${recovery_cli} || \
+      $(realpath "${recovery_cli}") != "${recovery_cli}" || \
+      $(stat -c '%U:%G %a' "${recovery_cli}") != 'root:root 644' ]]; then
+    echo "The reviewed generated-object recovery helper is unavailable." >&2
     exit 1
 fi
 
@@ -223,12 +225,9 @@ if [[ ! -x ${authority_helper} || -L ${authority_helper} ]]; then
     exit 1
 fi
 authority_before=$("${authority_helper}" status)
-for service in careertrellis-web.service careertrellis-worker.service careertrellis-erasure-worker.service; do
-    if systemctl is-active --quiet "${service}"; then
-        echo "Stop the web, search-worker, and erasure-worker services before a generated-object restore test." >&2
-        exit 1
-    fi
-done
+# Online-safe: this command reads an immutable OneDrive generation and writes
+# only to the distinct, explicitly approved empty disposable bucket. Both
+# maintenance locks and the final unchanged-authority check remain mandatory.
 
 operation_started_epoch=$(/usr/bin/date -u +%s)
 operation_started_at=$(/usr/bin/date -u +'%Y-%m-%dT%H:%M:%SZ')

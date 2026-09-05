@@ -1050,6 +1050,11 @@ def _age(
     if difference < -MAX_FUTURE_SKEW_SECONDS:
         codes.add(f"{operation}_receipt_future")
         return None
+    if operation == 'generated_object_mirror':
+        # Split publication may finish after writers resume. Age the immutable
+        # source conservatively from capture start, but retain actual terminal
+        # completion ordering so a successful retry supersedes a prior failure.
+        difference = int((observed - _parse_timestamp(document['started_at'])).total_seconds())
     return max(0, difference)
 
 

@@ -3690,9 +3690,7 @@ class DependencyLockTests(unittest.TestCase):
             self.assertIn("flock -n 9", source)
             self.assertIn('! ${release_revision} =~ ^[0-9a-f]{40}$', source)
             self.assertIn('^[0-9]{8}-[0-9]{6}F$', source)
-            self.assertIn("careertrellis-web.service", source)
-            self.assertIn("careertrellis-worker.service", source)
-            self.assertIn("careertrellis-erasure-worker.service", source)
+            self.assertIn('/usr/local/libexec/careertrellis/generated_object_recovery.py', source)
             self.assertIn('authority_before=$("${authority_helper}" status)', source)
             self.assertIn('authority_after=$("${authority_helper}" status', source)
             self.assertIn("runuser --preserve-environment", source)
@@ -3729,7 +3727,24 @@ class DependencyLockTests(unittest.TestCase):
             'rclone_fixed copy "${marker_root}" "${destination}"'
         )
         self.assertLess(object_check, marker_copy)
-        self.assertEqual(marker_copy, mirror.rindex("rclone_fixed"))
+        marker_check = mirror.index('rclone_fixed check "${marker_root}" "${destination}"')
+        self.assertLess(marker_copy, marker_check)
+        self.assertEqual(marker_check, mirror.rindex("rclone_fixed"))
+        self.assertIn('if [[ ${mode} != publish-captured ]]; then', mirror)
+        self.assertIn('require_stopped_writers', mirror)
+        for service in ('careertrellis-web.service', 'careertrellis-worker.service',
+                        'careertrellis-erasure-worker.service'):
+            self.assertIn(service, mirror)
+        self.assertIn('[[ ${state} != inactive ]]', mirror)
+        self.assertNotIn('systemctl is-active', restore)
+        self.assertIn('seal-capture', mirror)
+        self.assertIn('verify-capture', mirror)
+        self.assertIn('operation_started_epoch capture_completed_epoch', mirror)
+        self.assertLess(mirror.index('rclone_fixed mkdir "${destination}"'),
+                        mirror.index('destination_size=$(run_rclone size'))
+        for installer in (provision, deploy, rollback):
+            self.assertIn('/usr/local/libexec/careertrellis/generated_object_recovery.py', installer)
+            self.assertIn('/var/lib/careertrellis/generated-object-captures', installer)
 
         self.assertIn(
             "I_HAVE_VERIFIED_THE_R2_TARGET_IS_DISPOSABLE_AND_EMPTY", restore

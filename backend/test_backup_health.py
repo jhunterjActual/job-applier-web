@@ -649,6 +649,37 @@ class EvaluationTests(TemporaryRoots):
             "generated_object_mirror_divergence", status["failure_codes"]
         )
 
+    def test_object_publish_retry_supersedes_failure_without_refreshing_capture_age(self) -> None:
+        self.publish_healthy_objects()
+        started = OBSERVED - timedelta(hours=1)
+        failed = operation_receipt('generated_object_mirror',
+                                   completed=OBSERVED - timedelta(minutes=30), result='failed')
+        failed['divergence_count'] = 1
+        backup_health.publish_receipt(failed, root=self.receipts, now=OBSERVED)
+        success = operation_receipt('generated_object_mirror', completed=OBSERVED)
+        success['started_at'] = timestamp(started)
+        success['elapsed_seconds'] = 3600
+        backup_health.publish_receipt(success, root=self.receipts, now=OBSERVED)
+        status = backup_health.evaluate_backup_health(snapshot('objects'), receipt_root=self.receipts)
+        self.assertNotIn('generated_object_mirror_failed', status['failure_codes'])
+        self.assertNotIn('generated_object_mirror_divergence', status['failure_codes'])
+        self.assertEqual(3600, status['ages_seconds']['generated_object_mirror'])
+
+    def test_recent_publication_cannot_freshen_stale_object_capture(self) -> None:
+        self.publish_healthy_objects()
+        # A fresh publication (<8 days) of an older capture, within the schema's
+        # seven-day maximum operation span. No legacy success may mask its age.
+        for path in self.receipts.glob('*generated_object_mirror*'):
+            path.unlink()
+        completed = OBSERVED - timedelta(days=2)
+        success = operation_receipt('generated_object_mirror', completed=completed)
+        age = backup_health.GENERATED_MIRROR_MAX_AGE_SECONDS + 1
+        success['started_at'] = timestamp(OBSERVED - timedelta(seconds=age))
+        success['elapsed_seconds'] = age - 2 * 24 * 60 * 60
+        backup_health.publish_receipt(success, root=self.receipts, now=OBSERVED)
+        status = backup_health.evaluate_backup_health(snapshot('objects'), receipt_root=self.receipts)
+        self.assertIn('generated_object_mirror_stale', status['failure_codes'])
+
     def test_future_receipt_beyond_clock_skew_alerts(self) -> None:
         self.publish_healthy_objects()
         future = OBSERVED + timedelta(seconds=backup_health.MAX_FUTURE_SKEW_SECONDS + 1)

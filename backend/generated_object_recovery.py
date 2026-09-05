@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import time
 from typing import Any, Sequence
 
 
@@ -34,6 +35,8 @@ RELEASE_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 BACKUP_LABEL_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}F$")
 SNAPSHOT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
 DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+CAPTURE_ROOT = Path('/var/lib/careertrellis/generated-object-captures')
+MAXIMUM_CAPTURE_AGE_SECONDS = 2 * 60 * 60
 
 
 class GeneratedObjectRecoveryError(RuntimeError):
@@ -489,6 +492,158 @@ def verify_manifest(
         raise _failure() from exc
 
 
+def _protected_directory(path: Path, group: int, mode: int = 0o750) -> None:
+    metadata = path.lstat()
+    if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0
+            or metadata.st_gid != group or stat.S_IMODE(metadata.st_mode) != mode):
+        raise _failure()
+
+
+def _capture_parent(group: int) -> None:
+    # Every ancestor is root controlled, including the parent outside recovery work.
+    for parent in reversed(CAPTURE_ROOT.parents):
+        metadata = parent.lstat()
+        if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0
+                or metadata.st_mode & 0o022):
+            raise _failure()
+    _protected_directory(CAPTURE_ROOT, group)
+
+
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _exclusive_durable_file(path: Path, payload: bytes, group: int, mode: int) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    with os.fdopen(descriptor, 'wb') as output:
+        os.fchown(output.fileno(), 0, group)
+        os.fchmod(output.fileno(), mode)
+        output.write(payload)
+        output.flush()
+        os.fsync(output.fileno())
+
+
+def _anchored_read(root: Path, parts: tuple[str, ...], maximum: int) -> bytes:
+    # Pin each directory with O_NOFOLLOW, including all mutable work ancestors.
+    descriptor = os.open(root.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in (*root.parts[1:], *parts[:-1]):
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        leaf = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
+        with os.fdopen(leaf, 'rb') as source:
+            before = os.fstat(source.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or not 1 <= before.st_size <= maximum):
+                raise _failure()
+            payload = source.read(maximum + 1)
+            after = os.fstat(source.fileno())
+            if (len(payload) != before.st_size or before.st_size != after.st_size
+                    or before.st_mtime_ns != after.st_mtime_ns):
+                raise _failure()
+            return payload
+    finally:
+        os.close(descriptor)
+
+
+def seal_capture(work: Path, release: str, backup_label: str, digest: str,
+                 authority: str, group: int, started_epoch: int) -> dict[str, Any]:
+    """Root-copy a verified work tree, then publish its durable private seal last.
+
+    Failed/incomplete captures are intentionally retained and cannot be reused.
+    Root copies new inodes: recovery-user open descriptors cannot mutate them.
+    """
+    if os.geteuid() != 0 or not work.is_absolute():
+        raise _failure()
+    snapshot_id = f'{release}-{backup_label}'
+    _validate_identity(release, backup_label, snapshot_id)
+    if authority not in ('postgres-r2-authoritative', 'sqlite-authoritative'):
+        raise _failure()
+    now = int(time.time())
+    if not 0 <= now - started_epoch <= MAXIMUM_CAPTURE_AGE_SECONDS:
+        raise _failure()
+    _capture_parent(group)
+    raw = _anchored_read(work, ('marker', 'snapshot-manifest.json'), MAXIMUM_MANIFEST_BYTES)
+    manifest = _manifest_from_document(json.loads(raw))
+    if (raw != manifest.serialized() or manifest.digest() != digest
+            or manifest.release != release or manifest.backup_label != backup_label
+            or manifest.snapshot_id != snapshot_id):
+        raise _failure()
+    target = CAPTURE_ROOT / snapshot_id
+    target.mkdir(mode=0o750)
+    os.chown(target, 0, group)
+    os.chmod(target, 0o750)
+    for directory in (target / 'objects', target / 'marker', target / 'objects' / 'v1'):
+        directory.mkdir(mode=0o750)
+        os.chown(directory, 0, group)
+        os.chmod(directory, 0o750)
+    for entry in manifest.objects:
+        payload = _anchored_read(work, ('objects', *entry.object_key.split('/')), entry.size_bytes)
+        if len(payload) != entry.size_bytes or hashlib.sha256(payload).hexdigest() != entry.sha256:
+            raise _failure()
+        _exclusive_durable_file(target / 'objects' / entry.object_key, payload, group, 0o640)
+    _exclusive_durable_file(target / 'marker' / 'snapshot-manifest.json', raw, group, 0o640)
+    verify_manifest(target / 'objects', target / 'marker' / 'snapshot-manifest.json', digest)
+    completed = int(time.time())
+    seal = dict(manifest.sanitized_summary(), authority=authority,
+                capture_started_epoch=started_epoch, captured_epoch=completed)
+    for directory in (target / 'objects' / 'v1', target / 'objects', target / 'marker'):
+        _sync_directory(directory)
+    _exclusive_durable_file(target / 'seal.json', json.dumps(seal, sort_keys=True).encode('ascii'), 0, 0o600)
+    _sync_directory(target)
+    _sync_directory(CAPTURE_ROOT)
+    return verify_capture(release, backup_label, authority, group)
+
+
+def verify_capture(release: str, backup_label: str, authority: str, group: int) -> dict[str, Any]:
+    """Authenticate the root-owned seal and every byte before online publication."""
+    if os.geteuid() != 0:
+        raise _failure()
+    snapshot_id = f'{release}-{backup_label}'
+    _validate_identity(release, backup_label, snapshot_id)
+    _capture_parent(group)
+    target = CAPTURE_ROOT / snapshot_id
+    _protected_directory(target, group)
+    if {p.name for p in target.iterdir()} != {'objects', 'marker', 'seal.json'}:
+        raise _failure()
+    for parent, directories, files in os.walk(target, followlinks=False):
+        for name in directories:
+            _protected_directory(Path(parent) / name, group)
+        for name in files:
+            path = Path(parent) / name
+            metadata = path.lstat()
+            private = path == target / 'seal.json'
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0
+                    or metadata.st_nlink != 1 or metadata.st_gid != (0 if private else group)
+                    or stat.S_IMODE(metadata.st_mode) != (0o600 if private else 0o640)):
+                raise _failure()
+    if {p.name for p in (target / 'marker').iterdir()} != {'snapshot-manifest.json'}:
+        raise _failure()
+    seal = json.loads(_read_bounded_regular_file(target / 'seal.json', 4096))
+    expected_fields = {'backup_label', 'ciphertext_bytes', 'manifest_sha256', 'manifest_verified',
+                       'object_count', 'release', 'result', 'snapshot_id', 'authority',
+                       'capture_started_epoch', 'captured_epoch'}
+    if not isinstance(seal, dict) or set(seal) != expected_fields:
+        raise _failure()
+    started = _bounded_integer(seal['capture_started_epoch'], 1, int(time.time()))
+    completed = _bounded_integer(seal['captured_epoch'], started, int(time.time()))
+    if int(time.time()) - started > MAXIMUM_CAPTURE_AGE_SECONDS or seal['authority'] != authority:
+        raise _failure()
+    manifest = verify_manifest(target / 'objects', target / 'marker' / 'snapshot-manifest.json',
+                               seal['manifest_sha256'])
+    expected = dict(manifest.sanitized_summary(), authority=authority,
+                    capture_started_epoch=started, captured_epoch=completed)
+    if (seal != expected or manifest.release != release or manifest.backup_label != backup_label
+            or manifest.snapshot_id != snapshot_id):
+        raise _failure()
+    return seal
+
+
 class _ArgumentParser(argparse.ArgumentParser):
     def error(self, _message: str) -> None:
         raise _failure()
@@ -511,12 +666,35 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("source_root", type=Path)
     verify.add_argument("manifest_path", type=Path)
     verify.add_argument("expected_sha256")
+    seal = commands.add_parser('seal-capture')
+    seal.add_argument('work', type=Path)
+    seal.add_argument('release')
+    seal.add_argument('backup_label')
+    seal.add_argument('digest')
+    seal.add_argument('authority')
+    seal.add_argument('group', type=int)
+    seal.add_argument('started_epoch', type=int)
+    captured = commands.add_parser('verify-capture')
+    captured.add_argument('release')
+    captured.add_argument('backup_label')
+    captured.add_argument('authority')
+    captured.add_argument('group', type=int)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         arguments = _parser().parse_args(argv)
+        if arguments.command in ('seal-capture', 'verify-capture'):
+            if arguments.command == 'seal-capture':
+                receipt = seal_capture(arguments.work, arguments.release, arguments.backup_label,
+                                       arguments.digest, arguments.authority, arguments.group,
+                                       arguments.started_epoch)
+            else:
+                receipt = verify_capture(arguments.release, arguments.backup_label,
+                                         arguments.authority, arguments.group)
+            print(json.dumps(receipt, sort_keys=True, separators=(',', ':')))
+            return 0
         if arguments.command == "create-manifest":
             manifest = create_manifest(
                 arguments.source_root,

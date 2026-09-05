@@ -494,6 +494,16 @@ evidence or launching recovery work.
 
 ## Invitation decision
 
+Generated-object split capture/publication preserves real terminal timestamps
+for retry ordering. Object-mirror freshness is conservatively measured from
+the receipt's `started_at` (capture start), not publication completion. The
+root-sealed capture and wrapper reject publication after two hours; capture
+alone never supplies a successful mirror receipt. Install the manifest helper,
+mirror/restore wrappers, and this evaluator together for an ops-only update.
+The live application can stay online for publication and disposable restore;
+only the paired database/object capture requires stopped writers. See the
+generated-object recovery runbook for the exact consistency boundary.
+
 Before each additional friend is preseeded, the operator runs the daily status
 command and retains its sanitized terminal receipt. An invitation is permitted
 only when the command exits zero with `result=ok`, the state was evaluated that
