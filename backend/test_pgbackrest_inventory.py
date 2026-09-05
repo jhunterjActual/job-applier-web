@@ -198,6 +198,27 @@ class GenerationTests(unittest.TestCase):
         self.assertIn("--match", args)
         self.assertNotIn("--size-only", args)
 
+    def test_listing_skips_unused_metadata_for_full_and_filtered_sets(self):
+        payload = json.dumps([{"Path": WAL, "Size": 3, "IsDir": False}]).encode()
+        for files in (None, self.scratch / "files"):
+            with mock.patch.object(inventory.Remote, "run", return_value=payload) as run:
+                result = inventory.Remote().list(inventory.SOURCE, files)
+            self.assertEqual({WAL: 3}, result)
+            args = run.call_args.args
+            self.assertIn("--no-modtime", args)
+            self.assertIn("--no-mimetype", args)
+            if files is not None:
+                self.assertIn("--files-from-raw", args)
+            self.assertNotIn("--size-only", args)
+
+    def test_listing_flags_do_not_weaken_metadata_download(self):
+        with mock.patch.object(inventory.Remote, "run", return_value=b"metadata") as run:
+            digest = inventory.Remote().digest(inventory.DESTINATION, next(iter(inventory.REQUIRED_METADATA)), 8)
+        self.assertEqual(hashlib.sha256(b"metadata").hexdigest(), digest)
+        self.assertEqual("cat", run.call_args.args[0])
+        self.assertNotIn("--no-modtime", run.call_args.args)
+        self.assertNotIn("--no-mimetype", run.call_args.args)
+
     def test_provider_failure_is_sanitized(self):
         process = mock.MagicMock()
         process.__enter__.return_value = process

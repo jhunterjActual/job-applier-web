@@ -91,7 +91,10 @@ class Remote:
                     process.wait()
 
     def list(self, remote: str, files: Path | None = None) -> dict[str, int]:
-        args = ["lsjson", remote, "--recursive", "--files-only"]
+        # This boundary consumes only Path, Size and IsDir. S3 modification
+        # times and MIME types require unnecessary per-object HEAD requests.
+        # Limit these flags to listing; payload/metadata downloads stay intact.
+        args = ["lsjson", remote, "--recursive", "--files-only", "--no-modtime", "--no-mimetype"]
         if files is not None:
             args += ["--files-from-raw", str(files)]
         return listing(self.run(*args))
