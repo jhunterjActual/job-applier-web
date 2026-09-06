@@ -2,7 +2,7 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from cryptography.fernet import Fernet, InvalidToken
 from jwt.exceptions import PyJWKClientError
@@ -154,6 +154,7 @@ def _client(settings: WorkOSAuthConfiguration) -> WorkOSClient:
 def begin_login(
     settings: WorkOSAuthConfiguration,
     *,
+    different_account: bool = False,
     client: WorkOSClient | None = None,
 ) -> PendingLogin:
     """Start an AuthKit authorization-code flow with SDK-generated PKCE values."""
@@ -162,12 +163,23 @@ def begin_login(
         redirect_uri=settings.redirect_uri,
         provider="authkit",
         prompt="login",
+        screen_hint="sign-in",
     )
+    authorization_url = authorization["url"]
+    if different_account:
+        # WorkOS Python 10.1.1 stringifies nested dicts. Match WorkOS Node's
+        # bracket encoding for this single fixed upstream option, leaving SDK
+        # PKCE/state and the AuthKit login prompt untouched.
+        parsed = urlsplit(authorization_url)
+        query = urlencode({"provider_query_params[prompt]": "select_account"})
+        authorization_url = parsed._replace(
+            query=parsed.query + ("&" if parsed.query else "") + query,
+        ).geturl()
     flow_data = (
         f"{authorization['state']}\n{authorization['code_verifier']}".encode("utf-8")
     )
     sealed_flow = Fernet(settings.cookie_password.encode("ascii")).encrypt(flow_data).decode("ascii")
-    return PendingLogin(authorization_url=authorization["url"], sealed_flow=sealed_flow)
+    return PendingLogin(authorization_url=authorization_url, sealed_flow=sealed_flow)
 
 
 def _open_login_flow(settings: WorkOSAuthConfiguration, sealed_flow: str) -> tuple[str, str]:

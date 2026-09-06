@@ -111,6 +111,36 @@ class MaintenanceNoticeBrowserTests(unittest.TestCase):
         self.refresh()
         self.assertEqual(0, self.page.evaluate("window.mutations"))
 
+    def test_account_choice_actions_reflow_and_remain_keyboard_accessible(self):
+        alternate = self.page.get_by_role("link", name="Use a different account")
+        self.assertEqual("/auth/login?account=different", alternate.get_attribute("href"))
+        self.assertEqual("account-choice-help", alternate.get_attribute("aria-describedby"))
+        for width in (320, 390, 768, 1280):
+            self.page.set_viewport_size({"width": width, "height": 844})
+            self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+            for name in ("Continue to sign in", "Use a different account"):
+                bounds = self.page.get_by_role("link", name=name).bounding_box()
+                self.assertGreaterEqual(bounds["height"], 44)
+                self.assertGreaterEqual(bounds["x"], 0)
+                self.assertLessEqual(bounds["x"] + bounds["width"], width)
+        self.page.get_by_role("link", name="Continue to sign in").focus()
+        self.page.keyboard.press("Tab")
+        self.assertTrue(alternate.evaluate("element => element === document.activeElement"))
+        self.assertNotEqual("none", alternate.evaluate("element => getComputedStyle(element).outlineStyle"))
+
+    def test_account_choice_is_usable_without_javascript_or_automatic_navigation(self):
+        context = self.browser.new_context(java_script_enabled=False, viewport={"width": 320, "height": 640})
+        try:
+            page = context.new_page()
+            page.route("**/*", lambda route: route.abort())
+            page.set_content((STATIC / "sign-in.html").read_text())
+            self.assertTrue(page.get_by_role("link", name="Continue to sign in").is_visible())
+            self.assertTrue(page.get_by_role("link", name="Use a different account").is_visible())
+            self.assertEqual("about:blank", page.url)
+            self.assertEqual(0, page.locator('meta[http-equiv="refresh"]').count())
+        finally:
+            context.close()
+
     def test_known_notice_expires_even_when_refreshes_fail(self):
         self.payload["notice"]["expires_at"] = (self.now + timedelta(seconds=1)).isoformat()
         self.refresh()

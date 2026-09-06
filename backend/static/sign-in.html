@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Sign in | CareerTrellis</title>
-    <link rel="stylesheet" href="/static/maintenance-notice.css?v=1">
+    <link rel="stylesheet" href="/static/maintenance-notice.css?v=2">
     <script src="/static/maintenance-notice.js?v=1" defer></script>
 </head>
 <body class="sign-in-page">
@@ -14,7 +14,12 @@
         <p>Sign in to your job-search workspace.</p>
         <section class="maintenance-notice" id="maintenance-notice" aria-label="Maintenance announcement" hidden></section>
         <noscript><p>Enable JavaScript to see current maintenance announcements.</p></noscript>
-        <a class="sign-in-button" href="/auth/login">Continue to sign in</a>
+        <div class="sign-in-actions">
+            <a class="sign-in-button" href="/auth/login">Continue to sign in</a>
+            <a class="sign-in-button sign-in-secondary" href="/auth/login?account=different" aria-describedby="account-choice-help">Use a different account</a>
+        </div>
+        <p class="sign-in-note" id="account-choice-help">For a different account, enter its email on the sign-in page. If using Google, choose the intended account in its account picker. If your provider still selects the previous account, use a separate browser profile or private window.</p>
+        <p class="sign-in-note">Signing out of CareerTrellis does not sign you out of Google or other identity providers.</p>
         <p class="sign-in-note">Access is limited to invited users.</p>
     </main>
 </body>

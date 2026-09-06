@@ -27,11 +27,15 @@
 .sign-in-card > p { color: #cbd5e1; }
 .sign-in-button {
     display: inline-block; padding: 12px 20px; border-radius: 8px;
+    box-sizing: border-box; text-align: center; overflow-wrap: anywhere;
     background: #52a6ff; color: #071527; text-decoration: none; font-weight: 700;
 }
+.sign-in-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.sign-in-secondary { background: #25334b; color: #f8fafc; }
 .sign-in-button:focus-visible { outline: 3px solid #ffd16d; outline-offset: 4px; }
 .sign-in-note { font-size: .9rem; }
 @media (max-width: 480px) {
     .maintenance-notice { padding: 12px; }
     .sign-in-card { margin-top: 24px; }
+    .sign-in-actions { flex-direction: column; }
 }
