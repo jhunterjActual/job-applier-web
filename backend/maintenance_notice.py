@@ -206,6 +206,17 @@ def main(argv: list[str] | None = None) -> int:
         _safe_parent(NOTICE_ROOT.parent)
         if not NOTICE_ROOT.exists():
             NOTICE_ROOT.mkdir(mode=0o755)
+            # mkdir's mode is masked by the caller's umask. Establish public
+            # traversal only on the directory this invocation just created;
+            # never widen permissions on an existing path or any ancestor.
+            directory = os.open(NOTICE_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                metadata = os.fstat(directory)
+                require(stat.S_ISDIR(metadata.st_mode) and metadata.st_uid == 0
+                        and not metadata.st_mode & 0o022)
+                os.fchmod(directory, 0o755)
+            finally:
+                os.close(directory)
         _safe_parent(NOTICE_ROOT)
         lock = os.open(NOTICE_ROOT / ".operator.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         with os.fdopen(lock, "r+") as stream:

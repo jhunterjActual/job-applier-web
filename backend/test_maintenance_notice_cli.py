@@ -71,6 +71,85 @@ class RootNoticeCliTests(unittest.TestCase):
         self.assertEqual((1, "", notices.ERROR + "\n"), self.cli("set", b" " * 4097))
         self.assertEqual(before, self.path.read_bytes())
 
+    def test_restrictive_umask_still_allows_read_only_access_from_another_uid(self):
+        # The scaffold must be traversable by the reader; /root hides even a
+        # correctly published notice. Only this disposable root-owned tree is used.
+        with tempfile.TemporaryDirectory(prefix="notice-reader-test-", dir="/var/lib") as temporary:
+            scaffold = Path(temporary)
+            scaffold.chmod(0o755)
+            root = scaffold / "announcements"
+            path = root / "current.json"
+            previous_umask = os.umask(0o077)
+            try:
+                with patch.object(notices, "NOTICE_ROOT", root), patch.object(notices, "NOTICE_FILE", path):
+                    self.publish()
+                self.assertEqual(0o755, root.stat().st_mode & 0o777)
+                self.assertEqual(0o644, path.stat().st_mode & 0o777)
+                self.assertEqual(0o600, (root / ".operator.lock").stat().st_mode & 0o777)
+                self.assertEqual(0, root.stat().st_uid)
+                self.assertEqual(0, path.stat().st_uid)
+                self.assertEqual(0o077, os.umask(0o077), "CLI must not change the caller's umask")
+            finally:
+                os.umask(previous_umask)
+
+            # Inherit the already-imported module, then permanently drop every
+            # root group/UID before exercising its real public reader.
+            reader, writer = os.pipe()
+            pid = os.fork()
+            if pid == 0:
+                os.close(reader)
+                passed = False
+                try:
+                    os.setgroups([])
+                    os.setgid(65534)
+                    os.setuid(65534)
+                    assert notices.public_notice(path)["notice"] == self.notice
+                    for target, flags in (
+                        (path, os.O_WRONLY),
+                        (root / "unapproved-write", os.O_WRONLY | os.O_CREAT),
+                        (root / ".operator.lock", os.O_RDONLY),
+                    ):
+                        try:
+                            descriptor = os.open(target, flags, 0o600)
+                        except PermissionError:
+                            continue
+                        else:
+                            os.close(descriptor)
+                            raise AssertionError("Reader gained operator access")
+                    passed = True
+                except BaseException:
+                    pass
+                finally:
+                    os.write(writer, b"1" if passed else b"0")
+                    os.close(writer)
+                    os._exit(0 if passed else 1)
+            os.close(writer)
+            try:
+                with os.fdopen(reader, "rb") as stream:
+                    result = stream.read(1)
+            finally:
+                _, status = os.waitpid(pid, 0)
+            self.assertEqual(b"1", result, "Unprivileged reader must read only the public notice")
+            self.assertEqual(0, status)
+
+    def test_existing_directory_is_not_silently_repermissioned(self):
+        self.root.mkdir(mode=0o700)
+        self.publish()
+        self.assertEqual(0o700, self.root.stat().st_mode & 0o777)
+
+    def test_directory_symlink_or_wrong_owner_is_not_repaired(self):
+        actual = self.root.parent / "retained-directory"
+        actual.mkdir(mode=0o700)
+        self.root.symlink_to(actual, target_is_directory=True)
+        self.assertEqual((1, "", notices.ERROR + "\n"), self.cli("disable"))
+        self.assertEqual(0o700, actual.stat().st_mode & 0o777)
+        self.root.unlink()
+        self.root.mkdir(mode=0o755)
+        os.chown(self.root, 65534, 65534)
+        self.assertEqual((1, "", notices.ERROR + "\n"), self.cli("disable"))
+        self.assertEqual(65534, self.root.stat().st_uid)
+        self.assertEqual(0o755, self.root.stat().st_mode & 0o777)
+
     def test_symlink_fifo_and_writable_parent_fail_closed(self):
         self.publish()
         original = self.root / "retained.json"

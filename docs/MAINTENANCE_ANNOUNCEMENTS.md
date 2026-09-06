@@ -15,7 +15,12 @@ its trusted Python interpreter. Do not run root Python from a writable checkout,
 accept a caller-supplied destination, or modify environment/credential files.
 
 The fixed state is `/etc/careertrellis/announcements/current.json`, root-owned
-mode `0644` in a root-owned, non-writable-to-others directory. It contains only
+mode `0644` in a root-owned, non-writable-to-others directory. A newly created
+announcement directory is explicitly set to `0755`, independent of the
+operator's umask, so the application can traverse it. Existing directories and
+ancestors are never automatically repermissioned: an inaccessible existing
+directory requires a diagnosed, exact-target operator correction, not recursive
+permission changes. The notice contains only
 public notice text and privacy-safe audit metadata. No credentials, personal
 details, identities, internal URLs, resume text, or operational diagnostics
 belong in a notice. The web process can read this file but cannot change it.
