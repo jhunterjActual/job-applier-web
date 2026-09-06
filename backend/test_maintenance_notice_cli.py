@@ -145,6 +145,7 @@ class RootNoticeCliTests(unittest.TestCase):
         self.assertEqual(0o700, actual.stat().st_mode & 0o777)
         self.root.unlink()
         self.root.mkdir(mode=0o755)
+        self.root.chmod(0o755)  # isolate wrong ownership from the runner's umask
         os.chown(self.root, 65534, 65534)
         self.assertEqual((1, "", notices.ERROR + "\n"), self.cli("disable"))
         self.assertEqual(65534, self.root.stat().st_uid)
