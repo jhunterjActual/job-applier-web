@@ -64,10 +64,12 @@ DB_PATH = DATA_DIR / "jobapplier.db"
 ANALYTICS_INSTALLATION_ID_PATH = DATA_DIR / ".analytics-installation-id"
 DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com"
 
-# Ensure folders exist
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+# The offline operator probe needs configuration validators, not runtime storage.
+# Normal application/worker startup retains the existing directory preparation.
+if os.environ.get("CAREERTRELLIS_CONFIG_READ_ONLY") != "1":
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def get_runtime_environment() -> str:

@@ -35,6 +35,7 @@ from web_auth import SESSION_COOKIE_NAME, SessionAuthentication
 # whose stable public shape is empty in this fixture are dispatch/no-SQLite
 # smoke evidence; owner-distinct assertions below cover the private payloads.
 SHARED_ROUTE_POLICIES: dict[str, set[tuple[str, str]]] = {
+    "public-maintenance-notice": {("GET", "/api/maintenance-notice")},
     "session-and-build": {
         ("GET", "/api/session"),
         ("GET", "/api/version"),

@@ -1,0 +1,37 @@
+.maintenance-notice[hidden] { display: none; }
+.maintenance-notice {
+    box-sizing: border-box;
+    margin: 0 0 24px;
+    padding: 16px 20px;
+    border: 1px solid #b88722;
+    border-radius: 12px;
+    background: #292619;
+    color: #fff3d0;
+    overflow-wrap: anywhere;
+    text-align: left;
+    line-height: 1.5;
+}
+.maintenance-notice h2 { font-size: 1rem; margin: 0 0 8px; color: #ffd16d; }
+.maintenance-notice p { margin: 6px 0 0; }
+.maintenance-notice .notice-window { font-variant-numeric: tabular-nums; }
+.notice-announcer {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.sign-in-page {
+    margin: 0; padding: 32px 16px; background: #0f172a; color: #f8fafc;
+    font: 1rem/1.6 system-ui, sans-serif;
+}
+.sign-in-card { max-width: 620px; margin: 8vh auto 0; }
+.sign-in-card h1 { margin-bottom: 8px; }
+.sign-in-card > p { color: #cbd5e1; }
+.sign-in-button {
+    display: inline-block; padding: 12px 20px; border-radius: 8px;
+    background: #52a6ff; color: #071527; text-decoration: none; font-weight: 700;
+}
+.sign-in-button:focus-visible { outline: 3px solid #ffd16d; outline-offset: 4px; }
+.sign-in-note { font-size: .9rem; }
+@media (max-width: 480px) {
+    .maintenance-notice { padding: 12px; }
+    .sign-in-card { margin-top: 24px; }
+}

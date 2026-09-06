@@ -109,36 +109,8 @@ REQUIRED_SITE_CONFIG_DIRECTIVES = (
     "user_id delete",
     "request>remote_ip hash",
     "request>client_ip hash",
-    "request>headers>User-Agent hash",
-    "request>headers>Sec-Ch-Ua delete",
-    "request>headers>Sec-Ch-Ua-Mobile delete",
-    "request>headers>Sec-Ch-Ua-Platform delete",
-    "request>headers>Next-Action delete",
-    "request>headers>Pragma delete",
-    "request>headers>Referer delete",
-    "request>headers>From delete",
-    "request>headers>Range delete",
-    "request>headers>Sec-Purpose delete",
-    "request>headers>X-Openai-Host-Hash delete",
-    "request>headers>Traceparent delete",
-    "request>headers>Tracestate delete",
-    "request>headers>X-Careertrellis-Operation delete",
-    "request>headers>X-Datadog-Parent-Id delete",
-    "request>headers>X-Datadog-Sampling-Priority delete",
-    "request>headers>X-Datadog-Tags delete",
-    "request>headers>X-Datadog-Trace-Id delete",
-    "request>headers>Cf-Connecting-Ip delete",
-    "request>headers>Cf-Connecting-Ipv6 delete",
-    "request>headers>True-Client-Ip delete",
-    "request>headers>X-Forwarded-For delete",
-    "request>headers>X-Real-Ip delete",
-    "request>headers>Forwarded delete",
-    "request>headers>Authorization delete",
-    "request>headers>Proxy-Authorization delete",
-    "request>headers>X-Careertrellis-Proxy-Token delete",
-    "request>headers>Cookie delete",
-    "resp_headers>Set-Cookie delete",
-    "resp_headers>Location delete",
+    "request>headers delete",
+    "resp_headers delete",
     "wrap json",
     "log_skip /auth*",
 )
@@ -152,18 +124,8 @@ REQUIRED_RUNTIME_CONFIG_DIRECTIVES = (
     "wrap json",
 )
 MINIMUM_SITE_PRIVACY_DIRECTIVES = (
-    "request>headers>Pragma delete",
-    "request>headers>From delete",
-    "request>headers>Range delete",
-    "request>headers>Sec-Purpose delete",
-    "request>headers>Traceparent delete",
-    "request>headers>Tracestate delete",
-    "request>headers>X-Careertrellis-Operation delete",
-    "request>headers>X-Datadog-Parent-Id delete",
-    "request>headers>X-Datadog-Sampling-Priority delete",
-    "request>headers>X-Datadog-Tags delete",
-    "request>headers>X-Datadog-Trace-Id delete",
-    "request>headers>X-Openai-Host-Hash delete",
+    "request>headers delete",
+    "resp_headers delete",
 )
 REQUIRED_CONFIG_DIRECTIVES = (
     *REQUIRED_SITE_CONFIG_DIRECTIVES,
@@ -171,7 +133,7 @@ REQUIRED_CONFIG_DIRECTIVES = (
 )
 SITE_BLOCK_OPENER = "staging-app.jhunterj.com {"
 SITE_LOG_OUTPUT_OPENER = (
-    "output file /var/log/caddy/careertrellis-staging-access-v6.log {"
+    "output file /var/log/caddy/careertrellis-staging-access-v7.log {"
 )
 
 
@@ -222,6 +184,15 @@ def _block_end(lines: tuple[str, ...], start: int) -> int:
 def validate_caddy_config(source: str) -> None:
     """Require both reviewed log filters in their exact active blocks."""
     lines = _active_config_lines(source)
+    # A header copied by log_append, routed to another logger, or introduced
+    # through an imported fragment would escape the reviewed filter boundary.
+    allowed_log_lines = {"log default {", "log {", "log_skip /auth*"}
+    for line in lines:
+        if (
+            re.match(r"^(?:import|log(?:_[A-Za-z0-9]+)?)(?:\s|$)", line)
+            and line not in allowed_log_lines
+        ):
+            raise CaddyPrivacyError("config_contract_invalid")
     global_start, global_end = _block_bounds(lines, "{")
     runtime_log_start, runtime_log_end = _block_bounds(lines, "log default {")
     site_start, site_end = _block_bounds(lines, SITE_BLOCK_OPENER)
@@ -269,6 +240,12 @@ def validate_caddy_config(source: str) -> None:
     for directive in REQUIRED_SITE_CONFIG_DIRECTIVES[:-1]:
         if site_filter_lines.count(directive) != 1:
             raise CaddyPrivacyError("config_contract_invalid")
+    # No additional filters may rename/copy a value before its deletion.
+    if (
+        Counter(runtime_filter_lines) != Counter(REQUIRED_RUNTIME_CONFIG_DIRECTIVES)
+        or Counter(site_filter_lines) != Counter(REQUIRED_SITE_CONFIG_DIRECTIVES[:-1])
+    ):
+        raise CaddyPrivacyError("config_contract_invalid")
     expected_counts = Counter(REQUIRED_CONFIG_DIRECTIVES)
     if any(lines.count(directive) != count for directive, count in expected_counts.items()):
         raise CaddyPrivacyError("config_contract_invalid")
@@ -292,32 +269,8 @@ def validate_caddy_config(source: str) -> None:
 
 
 def validate_caddy_privacy_floor(source: str) -> None:
-    """Require the forward-only header-removal floor in the site log filter."""
-    lines = _active_config_lines(source)
-    site_start, site_end = _block_bounds(lines, SITE_BLOCK_OPENER)
-    log_start, log_end = _block_bounds(lines, "log {")
-    filter_starts = tuple(
-        index
-        for index, line in enumerate(lines)
-        if line == "format filter {" and log_start < index < log_end
-    )
-    if len(filter_starts) != 1:
-        raise CaddyPrivacyError("config_contract_invalid")
-    filter_start = filter_starts[0]
-    filter_end = _block_end(lines, filter_start)
-    if not (
-        site_start
-        < log_start
-        < filter_start
-        < filter_end
-        < log_end
-        < site_end
-    ):
-        raise CaddyPrivacyError("config_contract_invalid")
-    filter_lines = lines[filter_start + 1 : filter_end]
-    for directive in MINIMUM_SITE_PRIVACY_DIRECTIVES:
-        if filter_lines.count(directive) != 1 or lines.count(directive) != 1:
-            raise CaddyPrivacyError("config_contract_invalid")
+    """Reject transitions below the header-free v7 contract, including its sink."""
+    validate_caddy_config(source)
 
 
 def _object(value: object, code: str) -> dict[str, object]:
@@ -447,6 +400,28 @@ def _reject_sensitive_record(
 def scan_json_lines(
     lines: Iterable[str], *, require_representative: bool = True
 ) -> CaddyPrivacySummary:
+    """Validate v7 records: no header maps, including empty or null maps."""
+    return _scan_json_lines(
+        lines, require_representative=require_representative, header_free=True
+    )
+
+
+def scan_legacy_v6_json_lines(
+    lines: Iterable[str], *, require_representative: bool = True
+) -> CaddyPrivacySummary:
+    """Retained evidence only; preserve v6 rejection and representative semantics.
+
+    The active CLI never selects this contract or infers it from record content.
+    Historical v6 files and failed receipts must not be reclassified as v7.
+    """
+    return _scan_json_lines(
+        lines, require_representative=require_representative, header_free=False
+    )
+
+
+def _scan_json_lines(
+    lines: Iterable[str], *, require_representative: bool, header_free: bool
+) -> CaddyPrivacySummary:
     """Validate access-log records without returning any source value."""
     records = 0
     query_records = 0
@@ -475,6 +450,8 @@ def scan_json_lines(
             query_records += 1
         if "user_id" in record:
             raise CaddyPrivacyError("forbidden_field_present")
+        if header_free and ("headers" in request or "resp_headers" in record):
+            raise CaddyPrivacyError("forbidden_field_present")
         request_headers = _header_map(
             request.get("headers", {}), "request_headers_invalid"
         )
@@ -496,7 +473,18 @@ def scan_json_lines(
             user_agent_count = _hashed_values(
                 request_headers["user-agent"], "user_agent_hash_invalid"
             )
-        if remote_count and user_agent_count:
+        if header_free:
+            # A real non-auth request/response with both pseudonymized addresses
+            # replaces the v6 IP + User-Agent criterion, without a bypass flag.
+            if (
+                all(isinstance(request.get(field), str) for field in ("remote_ip", "client_ip"))
+                and isinstance(request.get("method"), str)
+                and request["method"]
+                and type(record.get("status")) is int
+                and 100 <= record["status"] <= 599
+            ):
+                representative_records += 1
+        elif remote_count and user_agent_count:
             representative_records += 1
         _reject_sensitive_record(record, response_headers)
         records += 1

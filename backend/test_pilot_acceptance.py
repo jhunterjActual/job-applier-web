@@ -126,7 +126,7 @@ class ProtectedEnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "protected.env"
             path.write_text(
-                "# comment\nREQUIRED=literal-$-value\nIGNORED=safe\n",
+                "# comment\nREQUIRED=literal-$-value\nIGNORED=safe\nSENTRY_DSN=\n",
                 encoding="utf-8",
             )
             self.assertEqual(
@@ -139,8 +139,15 @@ class ProtectedEnvironmentTests(unittest.TestCase):
     def test_parser_rejects_duplicates_whitespace_missing_and_symlinks(self) -> None:
         samples = (
             "REQUIRED=one\nREQUIRED=two\n",
+            "REQUIRED=\n",
+            "REQUIRED=\nREQUIRED=two\n",
+            "REQUIRED=one\nREQUIRED=\n",
             "REQUIRED=has space\n",
             "OTHER=value\n",
+            "REQUIRED=value\nOPTIONAL= \n",
+            "REQUIRED=value\nOPTIONAL=has\tspace\n",
+            "REQUIRED=value\nOPTIONAL\n",
+            "REQUIRED=value\ninvalid-key=\n",
         )
         for sample in samples:
             with self.subTest(sample=sample), tempfile.TemporaryDirectory() as directory:

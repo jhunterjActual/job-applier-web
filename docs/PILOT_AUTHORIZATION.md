@@ -164,6 +164,62 @@ containment.
 
 ## Root-only live acceptance contract
 
+### Offline protected-configuration compatibility
+
+The acceptance reader allows literal empty assignments for unrelated optional
+settings, such as `SENTRY_DSN=`. It still rejects malformed assignment names,
+whitespace in values, missing/duplicate/empty requested keys, unsafe file
+metadata, and symlinks. It does not evaluate shell syntax or return optional
+settings to its caller. Dedicated generated-object recovery allowlists are
+unchanged; this is not permission to add optional settings to those files.
+
+`backend/protected_environment_probe.py` is a separate, root-only, no-argument
+probe for the five fixed acceptance configuration files. It checks the owner
+identity and staging mode, migration/runtime PostgreSQL role and database URL
+shapes (including host and password presence), provider store/keyring, and R2
+store/endpoint/bucket/credential/keyring shapes. It uses the same protected
+reader and existing offline configuration validators. It does not prompt for an
+identity, create a database engine or provider client, acquire operation locks,
+write acceptance state, change configuration, or perform backup/recovery work.
+Before importing application validators it temporarily enables
+`CAREERTRELLIS_CONFIG_READ_ONLY=1` and disables Python bytecode writes, preventing
+normal import-time data-directory creation. Both process settings are restored
+on success or failure; ordinary application startup is unchanged. The fresh-
+process regression forbids filesystem mutations and outbound network activity;
+it permits only urllib3's import-time IPv6 loopback bind capability check.
+Its only success output is:
+
+```text
+operation=protected_environment_compatibility
+result=ok
+values_disclosed=no
+```
+
+Failure returns exit status 1 with a fixed error, without raw exceptions or
+configuration values. A successful probe proves parsing/shape compatibility,
+not provider access, database connectivity, current application health, or a
+successful acceptance run. Protected configuration can change after the probe;
+the acceptance operation must still perform all of its normal checks.
+
+Before a target-host probe, verify the host and exact reviewed candidate bytes,
+root ownership and non-writability of its source/dependency paths, and the
+trusted release interpreter. Invoke that candidate's probe with the trusted
+interpreter under `sudo -n env -i`, with `PYTHONDONTWRITEBYTECODE=1` and no
+inherited application settings. Do not pass a configuration path or secret.
+Retain only its exit status/fixed output alongside the candidate revision and
+verification timestamp. Do not run candidate Python from a user-writable tree
+as root. No host probe has been accepted merely by adding this documentation.
+
+The installed acceptance helper is still byte-bound to the active immutable
+application release. Do **not** overwrite its runner as a standalone ops
+update, edit an immutable release, or relax the hash comparison to activate
+this correction. Carry the reader and probe with the next legitimate
+functional application release, then repeat the offline probe against that
+exact deployed candidate before marking the backlog item complete. No
+application-only-for-cleanup release or new acceptance/restore cycle is needed.
+
+### Live operations
+
 The reviewed `/usr/local/sbin/careertrellis-pilot-acceptance` helper has exactly
 `prepare`, `verify-active`, `verify-disabled`, `verify-recovered`, `inspect`,
 `record-browser`, and `cleanup` operations. Every operation requires root and an
