@@ -6,8 +6,8 @@ additional principal is the opaque, fixed username `pilot-01`; it is not a
 WorkOS identity, CareerTrellis account, tenant, or role and cannot provision
 one.
 
-The versioned access log skips every `/auth` route, hashes connection-IP and
-User-Agent fields, and removes request Referer and response Location. The
+The versioned access log skips every `/auth` route, hashes connection-IP fields,
+and deletes whole request and response header maps, including User-Agent. The
 default Caddy runtime logger separately removes complete request URI/header and
 response-header maps and hashes client addresses before systemd records it.
 This keeps both sinks useful without retaining identity-provider paths or raw
@@ -96,41 +96,50 @@ authorization boundary remain mandatory.
 4. Before any CareerTrellis mapping exists, the pilot's verified WorkOS
    identity still receives the fixed application `403` and no application
    session or local user row.
-5. Using only boolean field-presence results, confirm the versioned access log
-   and every retained versioned rotation contain no
-   `/auth` entries; no raw connection, forwarded-IP, or User-Agent values; and
-   no Authorization, Proxy-Authorization, `X-CareerTrellis-Proxy-Token`,
-   Cookie, Set-Cookie, Referer, From, Pragma, Range, Sec-Purpose,
-   `X-Openai-Host-Hash`, or Location fields. A representative non-auth record
-   must retain only hashed connection-IP and User-Agent fingerprints.
+5. Using only boolean field-presence results, confirm the v7 access log and
+   every retained v7 rotation contain no `/auth` entries, raw client addresses,
+   `user_id`, request `headers`, or `resp_headers` fields. Even empty/null
+   header maps fail. A representative non-auth record has both hashed
+   `remote_ip` and `client_ip`, a method, and an integer HTTP status.
 
-The `.58` forward correction starts a new `v6` access-log generation, removes
-the observed `Pragma` request field in addition to the browser and tracing
-fields removed by `.57`, and
-includes a root-only, read-only check for item
-5. It accepts no arguments, requires the durable Caddy configuration to match
-the current immutable release, reads the privacy-filtered active log plus its
-plain or gzip rotations, and emits bounded counts and fixed result codes:
+The v7 forward correction deletes complete request and response header maps.
+Unknown names, alternate casing, and sensitive values in otherwise ordinary
+headers therefore cannot survive the encoder. This deliberately drops
+User-Agent fingerprints and header diagnostics; request method, status,
+duration, size, and hashed connection addresses remain available.
+Authentication, response headers sent to clients, and upstream forwarding
+are unchanged. The default runtime logger remains independently filtered.
+
+The root-only, read-only check accepts no arguments, requires the durable
+configuration to match the current immutable release, reads the active v7 log
+plus every plain/gzip v7 rotation, validates ownership/modes, and refuses an
+inventory that changes during the scan:
 
 ```bash
 sudo /opt/careertrellis/staging/current/deploy/scripts/check-caddy-access-log-privacy.sh
 ```
 
-The check fails closed on malformed records, unsafe file metadata, any `/auth`
-record, a raw client fingerprint, a forbidden request or response field, or a
-sensitive query/value shape at any bounded percent-decoding layer. The exact
-fixed Basic Auth challenge is permitted only in its response-header context.
-It never prints a record, path, query, header, matched value, or source
-location, and never rewrites a log. It requires representative non-auth
-evidence across the aggregate; an empty set is not acceptance evidence.
+It emits only bounded counts and fixed result codes, never source records,
+values, or locations. Missing representative evidence is a failure; do not use
+`--allow-no-representative` for acceptance. Existing URI, encoded sensitive-value,
+malformed-record, and raw-client-address rejection remains in force.
 
-The superseded `v5` and earlier logs and rotations remain restricted evidence
-and are not renamed, truncated, or deleted by this release. After `.58`
-activation, verify with count-only metadata that `v6` grows and `v5` does not.
-Retire an older generation only through a separately authorized, exact-target
-retention procedure. Because `.57` lacks the `Pragma` deletion, the `.58`
-deploy and rollback helpers reject it at the forward-only privacy floor. Use a
-reviewed forward correction rather than attempting to reactivate it.
+Preserve all v6 and earlier files, rotations, and failed receipts unchanged.
+The v6 audit recorded 168 historical `unexpected_request_header` failures;
+a passing v7 audit does not make those records compliant. The explicit
+`scan_legacy_v6_json_lines` API retains the v6 allowlist and IP-plus-User-Agent
+representative semantics for historical analysis; the active CLI never uses it.
+After activation, verify v7 grows and the entire v6 inventory is unchanged.
+Retirement of historical evidence needs separately authorized exact-target
+retention work. Deploy and rollback gates reject the finite-list contract
+through the new forward-only floor; use a reviewed forward correction.
+
+Before release, run the synthetic native suite with `CADDY_TEST_BINARY` pointing
+to Caddy 2.11.4: `python3 -m unittest test_caddy_native.py` from `backend`.
+It exercises both outer-gate principals, incorrect/missing authentication,
+proxy-token overwrite, Origin preservation, auth-route exclusion, arbitrary
+and formerly allowed header names, runtime error logging, and native rotation.
+No staging credentials, user data, provider calls, or real jobs are used.
 
 To rotate the pilot password, create and store a new distinct password and run:
 

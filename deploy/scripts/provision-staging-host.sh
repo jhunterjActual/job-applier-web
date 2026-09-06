@@ -201,7 +201,7 @@ else
 fi
 install -d -o root -g root -m 0755 /etc/careertrellis
 install -d -o caddy -g caddy -m 0750 /var/log/caddy
-caddy_access_log=/var/log/caddy/careertrellis-staging-access-v6.log
+caddy_access_log=/var/log/caddy/careertrellis-staging-access-v7.log
 if [[ -e ${caddy_access_log} || -L ${caddy_access_log} ]]; then
     if [[ -f ${caddy_access_log} && ! -L ${caddy_access_log} && \
           $(stat -c '%U:%G %a %s' "${caddy_access_log}") == "root:root 600 0" ]]; then
