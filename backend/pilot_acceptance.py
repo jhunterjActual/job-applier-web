@@ -584,11 +584,15 @@ def read_protected_environment(
         if "=" not in line:
             raise PilotAcceptanceError(FIXED_ERROR)
         key, value = line.split("=", 1)
-        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) or not value or value != value.strip():
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) or value != value.strip():
             raise PilotAcceptanceError(FIXED_ERROR)
         if any(character.isspace() for character in value) or key in values:
             raise PilotAcceptanceError(FIXED_ERROR)
         if key in required:
+            # Unrelated optional settings (for example SENTRY_DSN=) may be
+            # empty; a requested operational boundary must never be empty.
+            if not value:
+                raise PilotAcceptanceError(FIXED_ERROR)
             values[key] = value
     if set(values) != required:
         raise PilotAcceptanceError(FIXED_ERROR)

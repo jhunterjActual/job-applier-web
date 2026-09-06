@@ -6444,7 +6444,7 @@ class WebAuthenticationTests(unittest.TestCase):
                 client.close()
 
         self.assertEqual(303, response.status_code)
-        self.assertEqual("/auth/login", response.headers["location"])
+        self.assertEqual("/auth/sign-in", response.headers["location"])
         session_cookies = [
             value
             for value in response.headers.get_list("set-cookie")
@@ -6702,7 +6702,7 @@ class WebAuthenticationTests(unittest.TestCase):
 
         self.assertEqual(401, api_response.status_code)
         self.assertEqual(303, browser_response.status_code)
-        self.assertEqual("/auth/login", browser_response.headers["location"])
+        self.assertEqual("/auth/sign-in", browser_response.headers["location"])
         self.assertEqual(
             {
                 "authentication": "workos",

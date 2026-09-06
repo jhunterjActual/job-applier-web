@@ -200,6 +200,7 @@ from analytics import (
     source_category,
 )
 from observability import initialize_sentry, sentry_debug_enabled
+import maintenance_notice
 
 MAX_RESUME_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_RESUME_DOCUMENT_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -207,7 +208,9 @@ SAFE_HTTP_METHODS = {"GET", "HEAD", "OPTIONS"}
 BACKUP_RESTORE_LOCK = Lock()
 TRUSTED_PROXY_TOKEN_HEADER = "x-careertrellis-proxy-token"
 PUBLIC_SHARED_HOST_PATHS = frozenset(
-    {"/health/live", "/health/ready", "/auth/login", "/auth/callback"}
+    {"/health/live", "/health/ready", "/auth/login", "/auth/callback",
+     "/auth/sign-in", "/api/maintenance-notice",
+     "/static/maintenance-notice.js", "/static/maintenance-notice.css"}
 )
 FULL_BACKUP_PATHS = frozenset({"/api/full-backup", "/api/full-backup/restore"})
 SHARED_BACKUP_RESTORE_DETAIL = (
@@ -324,6 +327,7 @@ def _secured_response(request: Request, response: Response) -> Response:
         or request.url.path.startswith("/static/")
         or request.url.path.startswith("/auth/")
         or request.url.path == "/api/session"
+        or request.url.path == "/api/maintenance-notice"
         or request.url.path == "/api/account/erasure"
     ):
         response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -351,7 +355,7 @@ def _delete_auth_cookie(response: Response, cookie_name: str) -> None:
 def _unauthenticated_response(request: Request, clear_cookie: bool = False) -> Response:
     accepts_html = "text/html" in request.headers.get("accept", "").lower()
     if request.method.upper() == "GET" and (request.url.path == "/" or accepts_html):
-        response: Response = RedirectResponse("/auth/login", status_code=303)
+        response: Response = RedirectResponse("/auth/sign-in", status_code=303)
     else:
         response = JSONResponse({"detail": "Authentication required."}, status_code=401)
     if clear_cookie:
@@ -597,6 +601,23 @@ class FullBackupRequest(BaseModel):
 class AccountErasureRequest(BaseModel):
     confirmation: Literal["DELETE MY CAREERTRELLIS DATA"]
     acknowledge_irreversible: Literal[True]
+
+
+@app.get("/auth/sign-in", include_in_schema=False)
+def sign_in_landing() -> Response:
+    """App-owned public notice surface; authentication still starts at /auth/login."""
+    return FileResponse(config.BASE_DIR / "static" / "sign-in.html")
+
+
+@app.get("/api/maintenance-notice")
+def get_maintenance_notice() -> Response:
+    """Read only the explicitly public notice, never operator audit/configuration."""
+    local = config.get_runtime_environment() == "local"
+    path = config.DATA_DIR / "maintenance-notice.json" if local else maintenance_notice.NOTICE_FILE
+    try:
+        return JSONResponse(maintenance_notice.public_notice(path, strict=not local))
+    except Exception:
+        return JSONResponse({"detail": "Maintenance notice updates are temporarily unavailable."}, status_code=503)
 
 
 @app.get("/auth/login", include_in_schema=False)
