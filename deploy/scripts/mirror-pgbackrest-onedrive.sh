@@ -12,7 +12,7 @@ readonly destination_path=onedrive:job-applier-staging/postgresql
 readonly rclone_binary=/usr/local/bin/rclone
 readonly lock_path=/run/lock/careertrellis-pgbackrest-repository.lock
 readonly core=/usr/local/libexec/careertrellis/backup_health.py
-readonly receipt_root=/var/backups/careertrellis/backup-health/operations
+readonly generation_core=/usr/local/libexec/careertrellis/pgbackrest_inventory.py
 readonly -a immutable_payload_filters=(
     --exclude /archive/careertrellis/archive.info
     --exclude /archive/careertrellis/archive.info.copy
@@ -47,8 +47,12 @@ if [[ -L ${config} || $(stat -c '%a:%U:%G' "${config}" 2>/dev/null || true) != 6
     echo "The rclone configuration must be a root-owned, non-symlink 0600 file." >&2
     exit 1
 fi
-if [[ -L ${core} || ! -f ${core} || ! -r ${core} ]]; then
+if [[ -L ${core} || ! -f ${core} || $(stat -c '%a:%U:%G' "${core}" 2>/dev/null || true) != 644:root:root ]]; then
     echo "The reviewed backup-health core is unavailable." >&2
+    exit 1
+fi
+if [[ -L ${generation_core} || ! -f ${generation_core} || $(stat -c '%a:%U:%G' "${generation_core}" 2>/dev/null || true) != 644:root:root ]]; then
+    echo "The reviewed mirror generation helper is unavailable." >&2
     exit 1
 fi
 if [[ -L ${lock_path} || ! -f ${lock_path} || \
@@ -80,9 +84,10 @@ readonly started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 readonly started_epoch=$(date -u +%s)
 private_log=$(mktemp /run/careertrellis-pgbackrest-mirror.XXXXXX)
 info_json=$(mktemp /run/careertrellis-pgbackrest-info.XXXXXX)
-size_json=$(mktemp /run/careertrellis-pgbackrest-size.XXXXXX)
+generation_scratch=$(mktemp -d /run/careertrellis-pgbackrest-generation.XXXXXX)
 cleanup() {
-    rm -f -- "${private_log:-}" "${info_json:-}" "${size_json:-}"
+    rm -f -- "${private_log:-}" "${info_json:-}" "${generation_scratch}/snapshot.json"
+    rmdir -- "${generation_scratch}"
 }
 trap cleanup EXIT
 
@@ -113,6 +118,11 @@ fi
 # reviewed mutable repository paths. Keep the payload append-only, then refresh
 # and download-check only that fixed metadata allowlist. A changed payload path
 # still fails closed instead of being propagated to the independent mirror.
+# Capture the source set BEFORE copying, never reconstruct it from a later
+# source listing or from the destination (which could already be incomplete).
+/usr/bin/python3 -B "${generation_core}" prepare \
+    --snapshot "${generation_scratch}/snapshot.json" \
+    --backup-label "${backup_label}" --started-at "${started_at}"
 if ! ${rclone_binary} copy \
     "${source_path}" \
     "${destination_path}" \
@@ -162,26 +172,6 @@ if ! ${rclone_binary} check \
     echo "The refreshed repository metadata did not pass downloaded verification; private output was discarded." >&2
     exit 1
 fi
-if ! ${rclone_binary} size \
-    "${source_path}" \
-    --config "${config}" \
-    --json >"${size_json}" 2>>"${private_log}"; then
-    echo "The completed mirror could not be summarized safely." >&2
-    exit 1
-fi
-read -r object_count byte_count < <(/usr/bin/jq -er '
-    select((.count | type) == "number" and (.bytes | type) == "number")
-    | [.count, .bytes]
-    | @tsv
-' "${size_json}") || {
-    echo "The mirror aggregate was invalid." >&2
-    exit 1
-}
-if [[ ! ${object_count} =~ ^[0-9]+$ || ! ${byte_count} =~ ^[0-9]+$ ]]; then
-    echo "The mirror aggregate was outside its accepted range." >&2
-    exit 1
-fi
-
 readonly completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 readonly elapsed_seconds=$(( $(date -u +%s) - started_epoch ))
 printf '{"schema":"careertrellis.backup-health-operation/v1","operation":"pgbackrest_mirror","result":"ok","started_at":"%s","completed_at":"%s","backup_label":"%s","mirrored_backup_label":"%s","object_count":%s,"byte_count":%s,"elapsed_seconds":%d}\n' \
@@ -189,7 +179,7 @@ printf '{"schema":"careertrellis.backup-health-operation/v1","operation":"pgback
     "${completed_at}" \
     "${backup_label}" \
     "${backup_label}" \
-    "${object_count}" \
-    "${byte_count}" \
+    0 \
+    0 \
     "${elapsed_seconds}" \
-    | /usr/bin/python3 -B "${core}" publish --receipt-root "${receipt_root}"
+    | /usr/bin/python3 -B "${generation_core}" seal --snapshot "${generation_scratch}/snapshot.json"

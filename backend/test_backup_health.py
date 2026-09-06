@@ -136,6 +136,19 @@ class TemporaryRoots(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def publish_database_receipt(self, operation, at):
+        document = operation_receipt(operation, completed=at)
+        if operation in {"pgbackrest_mirror", "pgbackrest_inventory"}:
+            # The evaluator verifies opaque bytes, not private provider paths.
+            payload = json.dumps({"synthetic": operation, "at": timestamp(at)}).encode("ascii")
+            digest = hashlib.sha256(payload).hexdigest()
+            owner = backup_health._verify_root(self.receipts, create=True)
+            backup_health._exclusive_file(
+                self.receipts / f"pgbackrest-generation-{digest}.json", payload, owner
+            )
+            document.update(schema=backup_health.GENERATION_RECEIPT_SCHEMA, generation_sha256=digest)
+        backup_health.publish_receipt(document, root=self.receipts, now=at)
+
     def publish_healthy_database(self) -> None:
         completed = {
             "full_backup": OBSERVED - timedelta(days=1),
@@ -145,11 +158,7 @@ class TemporaryRoots(unittest.TestCase):
             "pgbackrest_restore": OBSERVED - timedelta(days=10),
         }
         for operation, at in completed.items():
-            backup_health.publish_receipt(
-                operation_receipt(operation, completed=at),
-                root=self.receipts,
-                now=at,
-            )
+            self.publish_database_receipt(operation, at)
 
     def publish_healthy_objects(self) -> None:
         for operation, at in {
@@ -469,6 +478,32 @@ class ReceiptPersistenceTests(TemporaryRoots):
 
 
 class EvaluationTests(TemporaryRoots):
+    def test_legacy_database_receipts_are_readable_but_not_generation_health(self):
+        for operation in backup_health.SURFACE_OPERATIONS["database"]:
+            backup_health.publish_receipt(operation_receipt(operation), root=self.receipts)
+        status = backup_health.evaluate_backup_health(snapshot("database"), receipt_root=self.receipts)
+        self.assertIn("pgbackrest_mirror_receipt_missing", status["failure_codes"])
+        self.assertIn("pgbackrest_inventory_receipt_missing", status["failure_codes"])
+        self.assertFalse(backup_health.scan_receipts(root=self.receipts).invalid_operations)
+
+    def test_missing_or_tampered_mirror_and_weekly_manifests_fail_health(self):
+        self.publish_healthy_database()
+        for operation in ("pgbackrest_mirror", "pgbackrest_inventory"):
+            receipt = backup_health.latest_verified_receipt(operation, root=self.receipts)
+            path = self.receipts / f"pgbackrest-generation-{receipt['generation_sha256']}.json"
+            original = path.read_bytes()
+            for missing in (False, True):
+                with self.subTest(operation=operation, missing=missing):
+                    if missing:
+                        path.unlink()
+                    else:
+                        path.write_bytes(b"tampered private manifest")
+                    status = backup_health.evaluate_backup_health(snapshot("database"), receipt_root=self.receipts)
+                    self.assertIn(f"{operation}_receipt_invalid", status["failure_codes"])
+                    self.assertEqual("alert", status["result"])
+                    path.write_bytes(original)
+                    chmod_file(path)
+
     def test_healthy_database_and_objects_surfaces_pass_independently(self) -> None:
         self.publish_healthy_database()
         database = backup_health.evaluate_backup_health(
@@ -502,11 +537,7 @@ class EvaluationTests(TemporaryRoots):
             "pgbackrest_restore": OBSERVED - timedelta(days=35),
         }
         for operation, at in completed.items():
-            backup_health.publish_receipt(
-                operation_receipt(operation, completed=at),
-                root=self.receipts,
-                now=at,
-            )
+            self.publish_database_receipt(operation, at)
         status = backup_health.evaluate_backup_health(
             snapshot("database"), receipt_root=self.receipts
         )
@@ -617,6 +648,37 @@ class EvaluationTests(TemporaryRoots):
         self.assertIn(
             "generated_object_mirror_divergence", status["failure_codes"]
         )
+
+    def test_object_publish_retry_supersedes_failure_without_refreshing_capture_age(self) -> None:
+        self.publish_healthy_objects()
+        started = OBSERVED - timedelta(hours=1)
+        failed = operation_receipt('generated_object_mirror',
+                                   completed=OBSERVED - timedelta(minutes=30), result='failed')
+        failed['divergence_count'] = 1
+        backup_health.publish_receipt(failed, root=self.receipts, now=OBSERVED)
+        success = operation_receipt('generated_object_mirror', completed=OBSERVED)
+        success['started_at'] = timestamp(started)
+        success['elapsed_seconds'] = 3600
+        backup_health.publish_receipt(success, root=self.receipts, now=OBSERVED)
+        status = backup_health.evaluate_backup_health(snapshot('objects'), receipt_root=self.receipts)
+        self.assertNotIn('generated_object_mirror_failed', status['failure_codes'])
+        self.assertNotIn('generated_object_mirror_divergence', status['failure_codes'])
+        self.assertEqual(3600, status['ages_seconds']['generated_object_mirror'])
+
+    def test_recent_publication_cannot_freshen_stale_object_capture(self) -> None:
+        self.publish_healthy_objects()
+        # A fresh publication (<8 days) of an older capture, within the schema's
+        # seven-day maximum operation span. No legacy success may mask its age.
+        for path in self.receipts.glob('*generated_object_mirror*'):
+            path.unlink()
+        completed = OBSERVED - timedelta(days=2)
+        success = operation_receipt('generated_object_mirror', completed=completed)
+        age = backup_health.GENERATED_MIRROR_MAX_AGE_SECONDS + 1
+        success['started_at'] = timestamp(OBSERVED - timedelta(seconds=age))
+        success['elapsed_seconds'] = age - 2 * 24 * 60 * 60
+        backup_health.publish_receipt(success, root=self.receipts, now=OBSERVED)
+        status = backup_health.evaluate_backup_health(snapshot('objects'), receipt_root=self.receipts)
+        self.assertIn('generated_object_mirror_stale', status['failure_codes'])
 
     def test_future_receipt_beyond_clock_skew_alerts(self) -> None:
         self.publish_healthy_objects()

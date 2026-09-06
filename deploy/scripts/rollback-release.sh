@@ -453,6 +453,14 @@ activate_release() {
         rm -f -- /usr/local/sbin/careertrellis-pilot-acceptance /usr/local/libexec/careertrellis/pilot_acceptance.py /usr/local/libexec/careertrellis/pilot_acceptance_receipts.py || return 1
     fi
     if [[ ${recovery_helpers_available} == true ]]; then
+        [[ -f ${release}/backend/generated_object_recovery.py && ! -L ${release}/backend/generated_object_recovery.py && ! -L /usr/local/libexec/careertrellis/generated_object_recovery.py ]] || return 1
+        install -o root -g root -m 0644 "${release}/backend/generated_object_recovery.py" /usr/local/libexec/careertrellis/generated_object_recovery.py || return 1
+        local capture_root=/var/lib/careertrellis/generated-object-captures
+        if [[ -e ${capture_root} || -L ${capture_root} ]]; then
+            [[ -d ${capture_root} && ! -L ${capture_root} && $(stat -c '%U:%G %a' "${capture_root}") == 'root:careertrellis-object-recovery 750' ]] || return 1
+        else
+            install -d -o root -g careertrellis-object-recovery -m 0750 "${capture_root}" || return 1
+        fi
         install -o root -g root -m 0755 "${release}/deploy/scripts/mirror-generated-objects-onedrive.sh" /usr/local/sbin/careertrellis-mirror-generated-objects || return 1
         install -o root -g root -m 0755 "${release}/deploy/scripts/test-generated-object-restore.sh" /usr/local/sbin/careertrellis-test-generated-object-restore || return 1
     fi

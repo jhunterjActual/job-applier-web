@@ -203,7 +203,7 @@ if [[ ! -d ${release_dir} ]]; then
         CAREERTRELLIS_TRUSTED_PROXY_TOKEN= \
         CAREERTRELLIS_DATA_DIR="${test_data}" \
         PYTHONDONTWRITEBYTECODE=1 \
-        ./venv/bin/python -m unittest test_p0_regressions.py test_backup_health.py test_pilot_acceptance.py test_pilot_acceptance_receipts.py test_search_runs.py test_scheduled_search_dispatch.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_cutover_rehearsal.py test_final_cutover_coordinator.py test_generated_object_recovery.py test_analytics.py test_observability.py
+        ./venv/bin/python -m unittest test_p0_regressions.py test_backup_health.py test_pilot_acceptance.py test_pilot_acceptance_receipts.py test_search_runs.py test_scheduled_search_dispatch.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_cutover_rehearsal.py test_final_cutover_coordinator.py test_generated_object_recovery.py test_generated_object_capture.py test_generated_object_phases.py test_analytics.py test_observability.py
         CAREERTRELLIS_ENVIRONMENT=staging \
         CAREERTRELLIS_DATA_DIR="${test_data}/account-erasure" \
         CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=false \
@@ -640,6 +640,14 @@ activate_release() {
     fi
     install -o root -g root -m 0755 "${target_release}/deploy/scripts/finalize-postgres-r2-cutover.sh" /usr/local/sbin/careertrellis-finalize-cutover || return 1
     if [[ ${recovery_helpers_available} == true ]]; then
+        [[ -f ${target_release}/backend/generated_object_recovery.py && ! -L ${target_release}/backend/generated_object_recovery.py && ! -L /usr/local/libexec/careertrellis/generated_object_recovery.py ]] || return 1
+        install -o root -g root -m 0644 "${target_release}/backend/generated_object_recovery.py" /usr/local/libexec/careertrellis/generated_object_recovery.py || return 1
+        local capture_root=/var/lib/careertrellis/generated-object-captures
+        if [[ -e ${capture_root} || -L ${capture_root} ]]; then
+            [[ -d ${capture_root} && ! -L ${capture_root} && $(stat -c '%U:%G %a' "${capture_root}") == 'root:careertrellis-object-recovery 750' ]] || return 1
+        else
+            install -d -o root -g careertrellis-object-recovery -m 0750 "${capture_root}" || return 1
+        fi
         install -o root -g root -m 0755 "${target_release}/deploy/scripts/mirror-generated-objects-onedrive.sh" /usr/local/sbin/careertrellis-mirror-generated-objects || return 1
         install -o root -g root -m 0755 "${target_release}/deploy/scripts/test-generated-object-restore.sh" /usr/local/sbin/careertrellis-test-generated-object-restore || return 1
     fi

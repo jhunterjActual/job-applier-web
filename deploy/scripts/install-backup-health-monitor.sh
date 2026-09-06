@@ -80,6 +80,7 @@ readonly -a source_units=(
     deploy/systemd/careertrellis-backup-health-alert@.service
 )
 readonly source_core=backend/backup_health.py
+readonly source_generation_core=backend/pgbackrest_inventory.py
 readonly -a helper_target_paths=(
     /usr/local/libexec/careertrellis/backup_health.py
     /usr/local/sbin/careertrellis-run-pgbackrest-backup
@@ -87,6 +88,7 @@ readonly -a helper_target_paths=(
     /usr/local/sbin/careertrellis-check-pgbackrest-mirror
     /usr/local/sbin/careertrellis-test-pgbackrest-restore
     /usr/local/sbin/careertrellis-backup-health
+    /usr/local/libexec/careertrellis/pgbackrest_inventory.py
 )
 readonly -a unit_target_paths=(
     /etc/systemd/system/careertrellis-pgbackrest-full.service
@@ -227,12 +229,15 @@ validate_source() {
     fi
 }
 
-for relative_path in "${source_scripts[@]}" "${source_units[@]}" "${source_core}"; do
+for relative_path in "${source_scripts[@]}" "${source_units[@]}" "${source_core}" "${source_generation_core}"; do
     validate_source "${relative_path}"
 done
 install -o root -g root -m 0644 \
     "${repository_source}/${source_core}" \
     "${verification_root}${helper_target_paths[0]}"
+install -o root -g root -m 0644 \
+    "${repository_source}/${source_generation_core}" \
+    "${verification_root}${helper_target_paths[-1]}"
 for source_index in "${!source_scripts[@]}"; do
     install -o root -g root -m 0755 \
         "${repository_source}/${source_scripts[${source_index}]}" \
@@ -246,11 +251,13 @@ done
 exec {repository_fd}<&-
 # Reviewed source ingestion is complete. Every later check and installation
 # consumes only these root-owned staged bytes.
-for target_path in "${helper_target_paths[@]:1}"; do
+for target_path in "${helper_target_paths[@]:1:${#source_scripts[@]}}"; do
     /usr/bin/bash -n "${verification_root}${target_path}"
 done
 /usr/bin/python3 -c 'import pathlib, sys; compile(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), sys.argv[1], "exec")' \
     "${verification_root}${helper_target_paths[0]}"
+/usr/bin/python3 -c 'import pathlib, sys; compile(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), sys.argv[1], "exec")' \
+    "${verification_root}${helper_target_paths[-1]}"
 
 # Verify the exact staged units before any installed helper or unit target is
 # changed. The alternate root supplies their fixed absolute helper paths.
@@ -554,7 +561,10 @@ fi
 install -o root -g root -m 0644 \
     "${verification_root}${helper_target_paths[0]}" \
     "${helper_target_paths[0]}"
-for target_path in "${helper_target_paths[@]:1}"; do
+install -o root -g root -m 0644 \
+    "${verification_root}${helper_target_paths[-1]}" \
+    "${helper_target_paths[-1]}"
+for target_path in "${helper_target_paths[@]:1:${#source_scripts[@]}}"; do
     install -o root -g root -m 0755 \
         "${verification_root}${target_path}" \
         "${target_path}"

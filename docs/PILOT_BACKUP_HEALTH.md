@@ -17,6 +17,11 @@ non-passing status blocks the invitation.
 
 ## Authoritative interface and storage
 
+Operator exception: the previously accepted generated-object backup-health
+alert remains maintenance before broader beta and does not block the bounded
+pilot. The default invitation checks below do not revoke that exception or
+claim that the outstanding broader-beta recovery gates have passed.
+
 The operator runs the same host-bound interface on both authoritative hosts:
 
 ```text
@@ -184,6 +189,8 @@ Status, receipts, and this evaluator's journal records use closed schemas:
 - `careertrellis.backup-health-operation/v1` receipts have only `schema`,
   `operation`, `result`, `started_at`, `completed_at`, and the operation's
   reviewed fields listed below;
+- `careertrellis.backup-health-operation/v2` is restricted to database mirror
+  and inventory receipts and adds the required `generation_sha256` field;
 - `careertrellis.backup-health-snapshot/v1` evaluator input has only `schema`,
   `surface`, `observed_at`, `units`, and the reviewed database-only backup/WAL
   comparison values; the objects surface accepts no database fields;
@@ -221,6 +228,74 @@ The operation-specific receipt fields are fixed as follows:
 | `pgbackrest_restore` | `backup_label`, `elapsed_seconds`, `rpo_seconds`, `rto_seconds`, `promotion_verified`, `checksum_verified`, `cleanup_verified` |
 | `generated_object_mirror` | `object_count`, `byte_count`, `divergence_count`, `elapsed_seconds` |
 | `generated_object_restore` | `object_count`, `byte_count`, `elapsed_seconds`, `manifest_verified`, `ciphertext_verified`, `target_left_intact` |
+
+### Generation-bound PostgreSQL inventory
+
+The daily mirror now captures the source file set **before** copying. Its private
+manifest includes every listed repository file and size, the selected backup
+label and full ancestor's manifests, and SHA-256 hashes of the four required
+`archive.info`/`backup.info` files (including both `.copy` files), plus `latest`
+when present. The existing append-only payload copy can include additional WAL;
+those later arrivals are not silently added to the captured set. Before the
+mirror receipt commits, every captured file must exist with the recorded size
+on both sides, and downloaded metadata on both sides must match the pre-copy
+hashes. Metadata changing during that operation fails closed.
+
+The companion `backend/pgbackrest_inventory.py` is installed at
+`/usr/local/libexec/careertrellis/pgbackrest_inventory.py` as root:root `0644`.
+Both wrappers hold the existing repository lock throughout. No service identity,
+systemd sandbox, timer schedule, application build, or provider target changes.
+
+The canonical private file-set manifest is stored as
+`pgbackrest-generation-<SHA256>.json` under the existing root-only operations
+directory, with mode `0600`. It contains repository paths and must **never** be
+copied into journals, public artifacts, chat, or aggregate status. The separate
+v2 receipt contains only the digest and normal aggregate fields. The manifest
+is fsynced first; the receipt and its adjacent SHA-256 commit marker are published
+last. A partial attempt cannot become accepted evidence. Counts describe the
+captured generation, not the current source or all retained OneDrive history.
+
+Weekly inventory requires the latest mirror attempt to have a successful,
+non-stale v2 receipt and a digest-valid matching private manifest. It checks
+recorded immutable source paths/sizes, then performs the full-download
+source/destination comparison for those exact paths, requiring the successful
+match report to cover every expected file exactly once. Missing source files
+(including expired ones), missing destination files, changed bytes, incomplete
+match reports and provider errors all fail. It downloads destination metadata
+and compares it with the sealed hashes rather than with later source metadata.
+New source WAL and unrelated retained destination history are outside this
+comparison. These are documented rclone semantics, not a size-only shortcut:
+[download verification](https://rclone.org/commands/rclone_check/) and
+[literal file lists](https://rclone.org/filtering/).
+
+A successful inventory receipt carries the same generation digest. A newer
+daily mirror does not invalidate the preceding weekly receipt; the normal
+weekly freshness requirement still applies. The evaluator also checks each v2
+receipt's private manifest owner, mode and digest; missing or tampered generation
+evidence is an invalid receipt, not a healthy comparison. Legacy v1 receipts
+remain readable and are not rewritten, but do not qualify the new mirror or
+inventory health gates and cannot seed this new inventory helper. After bundle
+installation, wait for the next **ordinary scheduled mirror** to create the
+first generation. Do not fabricate a manifest from the current destination or
+start a duplicate mirror for migration. Live acceptance still needs an actual
+generation-bound full-download inventory; installation and synthetic tests do
+not clear the existing alert. Preserve the failed attempt and let the successful
+unit's existing receipt-aware completion path clear its alert.
+
+Private manifests are retained while referenced by any retained mirror **or**
+inventory receipt (32 pairs per operation). Receipt pruning can remove only a
+digest-valid private manifest whose final retained reference was just retired.
+Unknown, tampered or crash-orphaned files are preserved for explicit review.
+This curates local verification metadata only; no OneDrive or R2 object is
+deleted. This bounded fix is not a self-contained recovery-generation format,
+an immutable ciphertext hash ledger, or an exact WAL-closure/retention design.
+Those broader-beta backlog items and the restore gate remain open.
+
+Deployment is an ops-bundle update, not an application deployment. Verify the
+reviewed installed bytes for the companion, health core and two wrappers, and
+retain the previous bundle for rollback without deleting new evidence. An old
+v1-only health core cannot read new v2 receipts: a rollback must keep the
+v2-capable core (or report unavailable), never hide or remove those receipts.
 
 Backup labels in these protected database-operation receipts are required only
 for exact-label recovery and mirror binding. They remain root-only and are never
@@ -418,6 +493,16 @@ object generations, and authority files. It never compensates by deleting
 evidence or launching recovery work.
 
 ## Invitation decision
+
+Generated-object split capture/publication preserves real terminal timestamps
+for retry ordering. Object-mirror freshness is conservatively measured from
+the receipt's `started_at` (capture start), not publication completion. The
+root-sealed capture and wrapper reject publication after two hours; capture
+alone never supplies a successful mirror receipt. Install the manifest helper,
+mirror/restore wrappers, and this evaluator together for an ops-only update.
+The live application can stay online for publication and disposable restore;
+only the paired database/object capture requires stopped writers. See the
+generated-object recovery runbook for the exact consistency boundary.
 
 Before each additional friend is preseeded, the operator runs the daily status
 command and retains its sanitized terminal receipt. An invitation is permitted

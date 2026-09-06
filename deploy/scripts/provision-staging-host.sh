@@ -184,6 +184,12 @@ for generated_object_recovery_directory in "${generated_object_recovery_state}" 
 done
 install -d -o careertrellis-object-recovery -g careertrellis-object-recovery -m 0700 "${generated_object_recovery_state}"
 install -d -o careertrellis-object-recovery -g careertrellis-object-recovery -m 0700 "${generated_object_recovery_work}"
+capture_root=/var/lib/careertrellis/generated-object-captures
+if [[ -e ${capture_root} || -L ${capture_root} ]]; then
+    [[ -d ${capture_root} && ! -L ${capture_root} && $(stat -c '%U:%G %a' "${capture_root}") == 'root:careertrellis-object-recovery 750' ]] || exit 1
+else
+    install -d -o root -g careertrellis-object-recovery -m 0750 "${capture_root}"
+fi
 generated_object_rclone_config=/var/lib/careertrellis/generated-object-recovery/rclone.conf
 if [[ -e ${generated_object_rclone_config} || -L ${generated_object_rclone_config} ]]; then
     if [[ ! -f ${generated_object_rclone_config} || -L ${generated_object_rclone_config} || $(stat -c '%U:%G %a' "${generated_object_rclone_config}") != "careertrellis-object-recovery:careertrellis-object-recovery 600" ]]; then
@@ -235,6 +241,8 @@ install -o root -g root -m 0755 "${repository_root}/deploy/scripts/hosted-author
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/install-erasure-worker-credential.sh" /usr/local/sbin/careertrellis-install-erasure-worker-credential
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/finalize-postgres-r2-cutover.sh" /usr/local/sbin/careertrellis-finalize-cutover
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/mirror-generated-objects-onedrive.sh" /usr/local/sbin/careertrellis-mirror-generated-objects
+[[ -f ${repository_root}/backend/generated_object_recovery.py && ! -L ${repository_root}/backend/generated_object_recovery.py && ! -L /usr/local/libexec/careertrellis/generated_object_recovery.py ]]
+install -o root -g root -m 0644 "${repository_root}/backend/generated_object_recovery.py" /usr/local/libexec/careertrellis/generated_object_recovery.py
 install -o root -g root -m 0755 "${repository_root}/deploy/scripts/test-generated-object-restore.sh" /usr/local/sbin/careertrellis-test-generated-object-restore
 for object_health_target in \
     /usr/local/libexec/careertrellis/backup_health.py \

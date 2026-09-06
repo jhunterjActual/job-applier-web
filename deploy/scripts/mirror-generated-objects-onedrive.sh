@@ -15,18 +15,24 @@ readonly authority_helper=/usr/local/sbin/careertrellis-authority
 readonly maintenance_lock_helper=/usr/local/libexec/careertrellis/maintenance-lock.sh
 readonly backup_health_core=/usr/local/libexec/careertrellis/backup_health.py
 readonly backup_health_receipt_root=/var/backups/careertrellis/backup-health/operations
+readonly capture_root=/var/lib/careertrellis/generated-object-captures
 
 if [[ ${EUID} -ne 0 ]]; then
     echo "Run the generated-object snapshot as root." >&2
     exit 1
 fi
 
+mode=combined
+if [[ ${1:-} == capture || ${1:-} == publish-captured ]]; then
+    mode=$1
+    shift
+fi
 release_dir=${1:-}
 backup_label=${2:-}
 source_acknowledgement=${3:-}
 append_acknowledgement=${4:-}
 if [[ $# -ne 4 || ${source_acknowledgement} != "${source_confirmation}" || ${append_acknowledgement} != "${append_confirmation}" ]]; then
-    echo "Usage: $0 /opt/careertrellis/staging/releases/EXACT_COMMIT YYYYMMDD-HHMMSSF ${source_confirmation} ${append_confirmation}" >&2
+    echo "Usage: $0 [capture|publish-captured] /opt/careertrellis/staging/releases/EXACT_COMMIT YYYYMMDD-HHMMSSF ${source_confirmation} ${append_confirmation}" >&2
     exit 1
 fi
 if [[ ! ${backup_label} =~ ^[0-9]{8}-[0-9]{6}F$ ]]; then
@@ -43,10 +49,12 @@ if [[ $(dirname "${release_dir}") != "${release_root}/releases" || ! ${release_r
     echo "The snapshot release must be an exact immutable 40-character release." >&2
     exit 1
 fi
-python_command=${release_dir}/backend/venv/bin/python
-recovery_cli=${release_dir}/backend/generated_object_recovery.py
-if [[ ! -x ${python_command} || ! -f ${recovery_cli} || -L ${recovery_cli} ]]; then
-    echo "The snapshot release is incomplete." >&2
+python_command=/usr/bin/python3
+recovery_cli=/usr/local/libexec/careertrellis/generated_object_recovery.py
+if [[ ! -x ${python_command} || ! -f ${recovery_cli} || -L ${recovery_cli} || \
+      $(realpath "${recovery_cli}") != "${recovery_cli}" || \
+      $(stat -c '%U:%G %a' "${recovery_cli}") != 'root:root 644' ]]; then
+    echo "The reviewed generated-object recovery helper is unavailable." >&2
     exit 1
 fi
 
@@ -170,12 +178,19 @@ if [[ ! -x ${authority_helper} || -L ${authority_helper} ]]; then
     exit 1
 fi
 authority_before=$("${authority_helper}" status)
-for service in careertrellis-web.service careertrellis-worker.service careertrellis-erasure-worker.service; do
-    if systemctl is-active --quiet "${service}"; then
-        echo "Stop the web, search-worker, and erasure-worker services before a generated-object snapshot." >&2
-        exit 1
-    fi
-done
+require_stopped_writers() {
+    local service state
+    for service in careertrellis-web.service careertrellis-worker.service careertrellis-erasure-worker.service; do
+        state=$(systemctl show "${service}" --property=ActiveState --value)
+        if [[ ${state} != inactive ]]; then
+            echo "Stop the web, search-worker, and erasure-worker services before a generated-object capture." >&2
+            return 1
+        fi
+    done
+}
+if [[ ${mode} != publish-captured ]]; then
+    require_stopped_writers
+fi
 
 operation_started_epoch=$(/usr/bin/date -u +%s)
 operation_started_at=$(/usr/bin/date -u +'%Y-%m-%dT%H:%M:%SZ')
@@ -227,6 +242,8 @@ publish_health_receipt() {
     local object_count=$1
     local byte_count=$2
     local completed_epoch completed_at elapsed_seconds
+    # Actual terminal ordering; the evaluator ages mirror evidence from the
+    # retained capture start so an upload/replay cannot refresh source age.
     completed_epoch=$(/usr/bin/date -u +%s)
     completed_at=$(/usr/bin/date -u +'%Y-%m-%dT%H:%M:%SZ')
     if [[ ! ${completed_epoch} =~ ^[0-9]+$ || ${completed_epoch} -lt ${operation_started_epoch} ]]; then
@@ -316,14 +333,11 @@ rclone_fixed() {
     fi
 }
 
-destination=${onedrive_remote}:${onedrive_root}/${backup_label}
-if ! destination_size=$(run_rclone size "${destination}" --json 2> "${rclone_error_log}") || \
-   ! printf '%s' "${destination_size}" | "${python_command}" -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("count") == 0 else 1)' 2>/dev/null; then
-    echo "The OneDrive snapshot destination must be empty." >&2
-    exit 1
-fi
-
+if [[ ${mode} != publish-captured ]]; then
+# This phase does not contact OneDrive. The caller must retain the paired full
+# database receipt from this same uninterrupted stopped-writer interval.
 rclone_fixed copy "generatedobjectsource:${source_bucket}" "${source_root}" --immutable --stats 0 --log-level ERROR
+rclone_fixed check "generatedobjectsource:${source_bucket}" "${source_root}" --download --stats 0 --log-level ERROR
 manifest_receipt=$(run_recovery_cli create-manifest \
     "${source_root}" "${release_revision}" "${backup_label}" "${snapshot_id}" "${manifest_path}")
 if ! manifest_values=$(
@@ -372,6 +386,42 @@ if [[ ! ${manifest_sha256} =~ ^[0-9a-f]{64}$ || ! ${health_object_count} =~ ^[0-
     echo "Generated-object recovery manifest failed." >&2
     exit 1
 fi
+require_stopped_writers
+if [[ $("${authority_helper}" status) != "${authority_before}" ]]; then
+    echo "Hosted authority changed during generated-object capture." >&2
+    exit 1
+fi
+capture_receipt=$(/usr/bin/env -i PATH=/usr/bin:/bin "${python_command}" -B "${recovery_cli}" seal-capture \
+    "${work_dir}" "${release_revision}" "${backup_label}" "${manifest_sha256}" \
+    "${authority_before}" "$(id -g "${recovery_user}")" "${operation_started_epoch}")
+require_stopped_writers
+if [[ ${mode} == capture ]]; then
+    finish_local_cleanup_and_authority
+    trap - EXIT
+    printf '%s\n' "${capture_receipt}"
+    exit 0
+fi
+fi
+
+# The online phase reads only a durable, root-sealed local snapshot. No live R2
+# requests occur here; failed uploads retain that capture for an explicit retry.
+capture_receipt=$(/usr/bin/env -i PATH=/usr/bin:/bin "${python_command}" -B "${recovery_cli}" verify-capture \
+    "${release_revision}" "${backup_label}" "${authority_before}" "$(id -g "${recovery_user}")")
+capture_values=$(printf '%s' "${capture_receipt}" | "${python_command}" -c 'import json,sys; s=json.load(sys.stdin); print(s["manifest_sha256"],s["object_count"],s["ciphertext_bytes"],s["capture_started_epoch"],s["captured_epoch"],sep="\t")')
+IFS=$'\t' read -r manifest_sha256 health_object_count health_byte_count operation_started_epoch capture_completed_epoch <<<"${capture_values}"
+operation_started_at=$(/usr/bin/date -u -d "@${operation_started_epoch}" +'%Y-%m-%dT%H:%M:%SZ')
+source_root=${capture_root}/${snapshot_id}/objects
+marker_root=${capture_root}/${snapshot_id}/marker
+destination=${onedrive_remote}:${onedrive_root}/${backup_label}
+
+# A successful mkdir followed by a successful empty inventory supports a fresh
+# OneDrive folder. Provider/auth failures are never interpreted as emptiness.
+rclone_fixed mkdir "${destination}" --stats 0 --log-level ERROR
+if ! destination_size=$(run_rclone size "${destination}" --json 2> "${rclone_error_log}") || \
+   ! printf '%s' "${destination_size}" | "${python_command}" -c 'import json,sys; s=json.load(sys.stdin); raise SystemExit(0 if type(s.get("count")) is int and s["count"] == 0 and type(s.get("bytes")) is int and s["bytes"] == 0 else 1)' 2>/dev/null; then
+    echo "The OneDrive snapshot destination must be empty." >&2
+    exit 1
+fi
 
 rclone_fixed copy "${source_root}" "${destination}/objects" --immutable --stats 0 --log-level ERROR
 rclone_fixed check "${source_root}" "${destination}/objects" --download --stats 0 --log-level ERROR
@@ -379,6 +429,11 @@ rclone_fixed check "${source_root}" "${destination}/objects" --download --stats 
 # The manifest is the completion marker. It is copied only after every
 # ciphertext object has passed a downloaded byte comparison.
 rclone_fixed copy "${marker_root}" "${destination}" --immutable --stats 0 --log-level ERROR
+rclone_fixed check "${marker_root}" "${destination}" --one-way --download --stats 0 --log-level ERROR
+
+# Recheck seal age, identity and bytes before any successful health publication.
+/usr/bin/env -i PATH=/usr/bin:/bin "${python_command}" -B "${recovery_cli}" verify-capture \
+    "${release_revision}" "${backup_label}" "${authority_before}" "$(id -g "${recovery_user}")" >/dev/null
 
 if ! finish_local_cleanup_and_authority; then
     echo "Generated-object recovery cleanup or authority verification failed." >&2
