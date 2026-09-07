@@ -38,23 +38,51 @@ to a direct GoogleOAuth flow or bypass AuthKit factor requirements.
 
 The [WorkOS authorization API](https://workos.com/docs/reference/authkit/authentication/get-authorization-url)
 exposes provider query parameters. The pinned Python SDK stringifies nested
-dictionary values incorrectly, so this candidate appends this one fixed option
+dictionary values incorrectly, so this implementation appends this one fixed option
 to its otherwise unchanged PKCE URL using the bracket encoding in the
 [official WorkOS Node query serializer](https://github.com/workos/workos-node/blob/main/src/common/utils/query-string.ts).
 No dependency upgrade or custom PKCE generation is introduced.
 Local tests prove the emitted request, **not** that
 the hosted AuthKit UI forwards it or that Google presents an account picker.
-That behavior requires live acceptance. If the picker is absent, keep this item
-open and investigate the supported provider configuration; do not invent a new
+That behavior requires live acceptance. If a future run lacks the picker, reopen
+the item and investigate the supported provider configuration; do not invent a new
 prompt parameter or bypass AuthKit. The page supplies a separate browser
 profile/private-window fallback and makes clear that CareerTrellis logout does
 not sign out Google or other upstream providers.
 
-## Deployment and live acceptance still required
+## Accepted deployment
 
-Keep the backlog item open until the exact candidate is deployed and the
-operator completes this matrix with synthetic staging identities in one normal
-browser profile. Retain only build/commit, UTC time, fixed flow name and verdict;
+Build `20260906.70`, commit `ebf372f7988a9b36e90969710ee60a0914d1272b`,
+completed activation on 2026-09-06 at 23:23:34 UTC. Post-deployment verification
+at 23:23:54 UTC passed exact tracked bytes, application/worker readiness and
+matching heartbeats, no-store landing, fixed PKCE account-choice requests,
+two-cookie cleanup on the cookieless warning path, and cross-site rejection.
+Caddy v7 passed 38 retained records, including nine query-bearing records;
+both backup-health surfaces were green. The disabled announcement and all five
+audit events were unchanged.
+
+The operator subsequently replied **Verified** to the requested live check:
+sign out, remain on the sign-in choices page, and use a different account,
+including Google's account picker where applicable. This is operator-reported
+acceptance of that bounded workflow, not an independently captured provider
+session audit or proof that every possible provider/device combination passed.
+No identities, session material, or provider responses were retained.
+
+Native preparation passed 647 tests (one platform skip) and a separate 25-test
+account-choice/runtime/browser/native-permission suite with no skips. The
+failure, disabled/unlisted authorization, tenant-context, keyboard, reflow and
+no-JavaScript cases have synthetic coverage; no live provider outage or
+credential change was induced. MFA/passkey enrollment and broader-beta recovery
+acceptance remain separate unfinished gates.
+
+The operator explicitly approved publishing this documentation-only acceptance
+closeout without another deployment. Application/runtime code is unchanged.
+
+## Repeatable acceptance matrix
+
+For future changes, repeat the applicable matrix with synthetic staging
+identities in one normal browser profile. Retain only build/commit, UTC time,
+fixed flow name and verdict;
 never retain identities, email, authorization URLs, codes, cookies or tokens.
 
 1. Sign in as synthetic user A, then sign out. Verify WorkOS termination, a
@@ -72,5 +100,7 @@ never retain identities, email, authorization URLs, codes, cookies or tokens.
    display, no automatic navigation, and the no-JavaScript sign-in actions.
 
 No database migration, provider-setting edit, or logout-return allowlist change
-is required. A rollback uses the normal reviewed release process; it does not
-restore previously deleted browser cookies or alter WorkOS users/factors.
+is required. The post-cutover `postgres-r2-authoritative` boundary disallows
+ordinary code rollback, including a manual switch back to `.69`. Failed
+activation invokes containment and requires a reviewed forward correction.
+Recovery must not restore deleted browser cookies or alter WorkOS users/factors.
