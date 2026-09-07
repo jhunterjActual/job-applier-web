@@ -352,6 +352,17 @@ def _delete_auth_cookie(response: Response, cookie_name: str) -> None:
     )
 
 
+def _logout_incomplete_response(request: Request) -> Response:
+    """End local browser state without claiming the provider session was revoked."""
+    request.state.suppress_refreshed_session = True
+    response = FileResponse(
+        config.BASE_DIR / "static" / "sign-out-incomplete.html", status_code=503,
+    )
+    _delete_auth_cookie(response, SESSION_COOKIE_NAME)
+    _delete_auth_cookie(response, LOGIN_FLOW_COOKIE_NAME)
+    return _secured_response(request, response)
+
+
 def _unauthenticated_response(request: Request, clear_cookie: bool = False) -> Response:
     accepts_html = "text/html" in request.headers.get("accept", "").lower()
     if request.method.upper() == "GET" and (request.url.path == "/" or accepts_html):
@@ -442,20 +453,38 @@ async def protect_local_browser_boundary(request: Request, call_next):
         try:
             auth_settings = get_auth_configuration()
         except AuthenticationConfigurationError:
+            if request.method == "POST" and request.url.path == "/auth/logout":
+                return _logout_incomplete_response(request)
             return _secured_response(
                 request,
                 JSONResponse({"detail": "Authentication is not configured."}, status_code=503),
             )
     owner_context_token = None
     if auth_settings is not None and request.url.path not in PUBLIC_SHARED_HOST_PATHS:
+        logout_requested = request.method == "POST" and request.url.path == "/auth/logout"
         sealed_session = request.cookies.get(SESSION_COOKIE_NAME, "")
         if len(sealed_session) > 8192:
+            if logout_requested:
+                return _logout_incomplete_response(request)
             return _unauthenticated_response(request, clear_cookie=True)
-        authentication = await run_in_threadpool(
-            authenticate_session,
-            auth_settings,
-            sealed_session,
-        )
+        try:
+            authentication = await run_in_threadpool(
+                authenticate_session,
+                auth_settings,
+                sealed_session,
+            )
+        except Exception:
+            if logout_requested:
+                return _logout_incomplete_response(request)
+            raise
+        if logout_requested:
+            # Terminating this verified browser session requires no data-owner
+            # access; disabled users must still be able to sign out. Return
+            # before middleware can reissue a refreshed cookie.
+            if authentication.status != "authenticated" or not authentication.session_id:
+                return _logout_incomplete_response(request)
+            request.state.workos_session_id = authentication.session_id
+            return _secured_response(request, await run_in_threadpool(auth_logout, request))
         if authentication.status == "unavailable":
             return _authentication_unavailable_response(request)
         if authentication.status != "authenticated" or not authentication.workos_user_id:
@@ -621,16 +650,27 @@ def get_maintenance_notice() -> Response:
 
 
 @app.get("/auth/login", include_in_schema=False)
-async def auth_login() -> Response:
+async def auth_login(request: Request) -> Response:
     """Redirect a shared-host browser to the hosted WorkOS AuthKit UI."""
     settings = get_auth_configuration()
     if settings is None:
         raise HTTPException(status_code=404, detail="Not found")
+    account_choices = request.query_params.getlist("account")
+    if account_choices not in ([], ["different"]):
+        raise HTTPException(status_code=400, detail="Invalid sign-in choice.")
     try:
-        pending_login = await run_in_threadpool(begin_login, settings)
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="Authentication is temporarily unavailable.") from exc
+        pending_login = await run_in_threadpool(
+            begin_login, settings, different_account=account_choices == ["different"],
+        )
+    except Exception:
+        response = JSONResponse(
+            {"detail": "Authentication is temporarily unavailable."}, status_code=503,
+        )
+        _delete_auth_cookie(response, SESSION_COOKIE_NAME)
+        _delete_auth_cookie(response, LOGIN_FLOW_COOKIE_NAME)
+        return response
     response = RedirectResponse(pending_login.authorization_url, status_code=303)
+    _delete_auth_cookie(response, SESSION_COOKIE_NAME)
     response.set_cookie(
         LOGIN_FLOW_COOKIE_NAME,
         pending_login.sealed_flow,
@@ -713,14 +753,16 @@ def auth_logout(request: Request) -> Response:
     if settings is None:
         raise HTTPException(status_code=404, detail="Not found")
     session_id = getattr(request.state, "workos_session_id", None)
-    destination = settings.logout_return_to
-    if session_id:
-        try:
-            destination = logout_url(settings, session_id)
-        except Exception:
-            destination = settings.logout_return_to
+    request.state.suppress_refreshed_session = True
+    if not session_id:
+        return _logout_incomplete_response(request)
+    try:
+        destination = logout_url(settings, session_id)
+    except Exception:
+        return _logout_incomplete_response(request)
     response = RedirectResponse(destination, status_code=303)
     _delete_auth_cookie(response, SESSION_COOKIE_NAME)
+    _delete_auth_cookie(response, LOGIN_FLOW_COOKIE_NAME)
     return response
 
 
