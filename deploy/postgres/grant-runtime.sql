@@ -117,6 +117,24 @@ GRANT EXECUTE ON FUNCTION careertrellis.claim_next_account_erasure(uuid, integer
     careertrellis.purge_expired_account_erasures(integer)
     TO careertrellis_erasure_worker;
 
+-- Migration 0014 keeps uncoordinated implementations outside every broad grant.
+-- The predecessor-schema fixture intentionally has neither new namespace.
+DO $$ BEGIN
+    IF to_regnamespace('careertrellis_lifecycle') IS NOT NULL THEN
+        REVOKE ALL ON SCHEMA careertrellis_lifecycle FROM PUBLIC,
+            careertrellis_runtime, careertrellis_worker, careertrellis_erasure_worker;
+        REVOKE ALL ON ALL FUNCTIONS IN SCHEMA careertrellis_lifecycle FROM PUBLIC,
+            careertrellis_runtime, careertrellis_worker, careertrellis_erasure_worker;
+        GRANT EXECUTE ON FUNCTION careertrellis.admission_lifecycle_ready()
+            TO careertrellis_erasure_worker;
+        REVOKE ALL ON FUNCTION careertrellis.admission_session_context()
+            FROM PUBLIC, careertrellis_worker, careertrellis_erasure_worker,
+                 careertrellis_admission_broker;
+        GRANT EXECUTE ON FUNCTION careertrellis.admission_session_context()
+            TO careertrellis_runtime;
+    END IF;
+END $$;
+
 ALTER DEFAULT PRIVILEGES FOR ROLE careertrellis_schema_owner IN SCHEMA careertrellis
     REVOKE ALL ON TABLES FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE careertrellis_schema_owner IN SCHEMA careertrellis

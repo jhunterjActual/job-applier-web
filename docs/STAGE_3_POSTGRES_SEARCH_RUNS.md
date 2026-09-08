@@ -1,5 +1,9 @@
 # Stage 3: Durable PostgreSQL Search Runs
 
+Historical migration instructions below do not apply to admission/0014 candidates.
+Use the protected coordinator in `BETA_ADMISSION_OPERATIONS.md`, not the retired
+standalone migration/grant wrappers or credential-exporting commands.
+
 This bounded slice replaces the web process's `IS_SEARCHING` and
 `LAST_SEARCH_RESULT` memory with durable, owner-scoped search-run state. It
 adds cooperative cancellation, bounded retry leases, crash recovery, and a

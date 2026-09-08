@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import sqlite3
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from object_store import (
     FilesystemObjectBackend,
@@ -342,9 +342,9 @@ class GeneratedObjectImportTests(unittest.TestCase):
         object_backend.delete.assert_not_called()
         object_backend.list_object_keys.assert_not_called()
 
-    def test_nonempty_object_inventory_fails_before_target_connection_or_upload(self) -> None:
+    def test_nonempty_object_inventory_fails_after_maintenance_check_before_upload(self) -> None:
         source = Mock()
-        target_engine = Mock()
+        target_engine = MagicMock()
         backend = InMemoryObjectBackend()
         backend.objects["v1/00000000000000000000000000000001"] = b"synthetic"
         manifest = importer.ImportManifest(
@@ -368,13 +368,14 @@ class GeneratedObjectImportTests(unittest.TestCase):
                 object_backend=backend,
             )
 
-        target_engine.connect.assert_not_called()
+        target_engine.connect.assert_called_once_with()
+        target_engine.connect.return_value.__enter__.return_value.execute.assert_not_called()
         backend_put.assert_not_called()
         backend_delete.assert_not_called()
 
     def test_nonempty_bucket_fails_even_when_source_has_no_generated_files(self) -> None:
         source = Mock()
-        target_engine = Mock()
+        target_engine = MagicMock()
         backend = InMemoryObjectBackend()
         backend.objects["v1/00000000000000000000000000000001"] = b"synthetic"
         manifest = importer.ImportManifest(
@@ -398,7 +399,8 @@ class GeneratedObjectImportTests(unittest.TestCase):
             )
 
         self.assertEqual(before, backend.objects)
-        target_engine.connect.assert_not_called()
+        target_engine.connect.assert_called_once_with()
+        target_engine.connect.return_value.__enter__.return_value.execute.assert_not_called()
 
     def test_advisory_lock_precedes_authoritative_bucket_recheck(self) -> None:
         events: list[str] = []
@@ -496,6 +498,7 @@ class GeneratedObjectImportTests(unittest.TestCase):
             )
 
         self.assertEqual(2, sum(event.startswith("bucket_check_") for event in events))
+        self.assertLess(events.index("SELECT careertrellis_admission.assert_import_maintenance()"),events.index("bucket_check_1"))
         self.assertLess(events.index("bucket_check_1"), events.index("advisory_lock"))
         self.assertLess(events.index("advisory_lock"), events.index("bucket_check_2"))
         self.assertIn("rollback", events)
@@ -511,7 +514,7 @@ class GeneratedObjectImportTests(unittest.TestCase):
         for unexpected_key in ("unexpected-object", "legacy/nested-object"):
             with self.subTest(key_shape=unexpected_key.split("/", 1)[0]):
                 source = Mock()
-                target_engine = Mock()
+                target_engine = MagicMock()
                 backend = InMemoryObjectBackend()
                 backend.objects[unexpected_key] = b"synthetic"
                 manifest = importer.ImportManifest(
@@ -534,7 +537,8 @@ class GeneratedObjectImportTests(unittest.TestCase):
                         object_backend=backend,
                     )
                 self.assertEqual(before, backend.objects)
-                target_engine.connect.assert_not_called()
+                target_engine.connect.assert_called_once_with()
+                target_engine.connect.return_value.__enter__.return_value.execute.assert_not_called()
 
     def test_target_search_run_is_part_of_the_empty_owner_precondition(self) -> None:
         connection = Mock()
@@ -726,7 +730,7 @@ class GeneratedObjectImportTests(unittest.TestCase):
         class Target:
             def begin(self): return Transaction()
             def exec_driver_sql(self, statement):
-                if statement == "SET ROLE careertrellis_schema_owner":
+                if statement in ("SET ROLE careertrellis_schema_owner", "SELECT careertrellis_admission.assert_import_maintenance()"):
                     return None
                 raise AssertionError("An indeterminate rollback connection must not be reused.")
             def execute(self, *_args, **_kwargs): return None

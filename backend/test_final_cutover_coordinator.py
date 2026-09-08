@@ -83,7 +83,6 @@ class FinalCutoverStaticContractTests(unittest.TestCase):
         fixed_wrappers = (
             "deploy-release.sh",
             "rollback-release.sh",
-            "migrate-postgres.sh",
             "import-sqlite-postgres.sh",
             "reconcile-sqlite-postgres-import.sh",
             "hosted-authority.sh",
@@ -95,10 +94,13 @@ class FinalCutoverStaticContractTests(unittest.TestCase):
                 self.assertIn(helper_path.name, source)
                 self.assertIn(function_name, source)
 
-        grant_path = SCRIPT_DIRECTORY / GRANT_WRAPPER_NAME
-        grant_source = grant_path.read_text(encoding="utf-8")
-        self.assertIn(helper_path.name, grant_source)
-        self.assertIn(function_name, grant_source)
+        # These historical entry points are now refusal-only, not mutators.
+        for name in ('migrate-postgres.sh', GRANT_WRAPPER_NAME):
+            source = (SCRIPT_DIRECTORY / name).read_text(encoding='utf-8')
+            self.assertIn('Use the reviewed admission coordinator.', source)
+            self.assertNotIn('source "', source)
+            self.assertNotIn('set -a', source)
+            self.assertIn('exit 1', source)
 
     def test_coordinator_is_exact_release_root_env_and_no_omission_only(self) -> None:
         _path, source = _coordinator()

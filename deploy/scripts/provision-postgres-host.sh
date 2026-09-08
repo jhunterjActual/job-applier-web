@@ -143,3 +143,5 @@ printf 'Listeners:\n'
 printf '  %s\n' "${listeners[@]}"
 echo "Before migration 0009, run bootstrap-erasure-worker-role.sh from the exact reviewed release."
 echo "This provisioner did not create or rotate the additive account-erasure worker role."
+echo "Before migration 0014, separately approve bootstrap-admission-roles.sh and quiesce all lifecycle callers."
+echo "Admission bootstrap creates no login credential and does not enable public signup."

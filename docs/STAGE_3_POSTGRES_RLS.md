@@ -1,5 +1,9 @@
 # Stage 3: PostgreSQL Tenant and Migration Foundation
 
+Historical runbook: admission/0014 candidates retire the standalone migration and
+grant wrappers shown below. Use the protected initial or later-maintenance path
+in `BETA_ADMISSION_OPERATIONS.md`; do not export credentials to follow old commands.
+
 Stage 3 creates the PostgreSQL schema boundary required before application data can become multi-user. The database-host foundation is deployed to staging, but the schema and application cutover are intentionally not deployed yet: the running application still uses its single-owner SQLite workspace, and production remains blocked.
 
 ## Staging infrastructure status (2026-08-11)

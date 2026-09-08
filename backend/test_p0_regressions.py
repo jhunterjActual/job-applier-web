@@ -3193,11 +3193,9 @@ class DependencyLockTests(unittest.TestCase):
         for name in (
             "deploy-release.sh",
             "rollback-release.sh",
-            "migrate-postgres.sh",
             "import-sqlite-postgres.sh",
             "reconcile-sqlite-postgres-import.sh",
             "hosted-authority.sh",
-            "apply-postgres-runtime-grants.sh",
             "finalize-postgres-r2-cutover.sh",
             "provision-staging-host.sh",
             "manage-pilot-caddy-credential.sh",
@@ -3206,6 +3204,12 @@ class DependencyLockTests(unittest.TestCase):
             source = (scripts / name).read_text(encoding="utf-8")
             self.assertIn("maintenance-lock.sh", source)
             self.assertIn("acquire_careertrellis_maintenance_lock", source)
+        for name in ('migrate-postgres.sh', 'apply-postgres-runtime-grants.sh'):
+            source = (scripts / name).read_text(encoding='utf-8')
+            self.assertIn('Use the reviewed admission coordinator.', source)
+            self.assertNotIn('source "', source)
+            self.assertNotIn('set -a', source)
+            self.assertIn('exit 1', source)
 
     def test_provisioning_keeps_the_caddy_access_log_service_writable(self) -> None:
         script = (self.project_dir() / "deploy" / "scripts" / "provision-staging-host.sh").read_text(encoding="utf-8")
@@ -5471,7 +5475,7 @@ class DataStoreConfigurationTests(unittest.TestCase):
 
     def test_postgres_readiness_probe_is_ownerless_and_closes_connection(self) -> None:
         connection = Mock()
-        connection.scalar.return_value = 1
+        connection.scalar.side_effect = [1, True]
         scope_exited = []
 
         class ConnectionScope:
@@ -5491,8 +5495,9 @@ class DataStoreConfigurationTests(unittest.TestCase):
             postgres_database_module.check_postgres_ready(engine)
 
         engine.connect.assert_called_once_with()
-        connection.scalar.assert_called_once()
-        self.assertEqual("SELECT 1", str(connection.scalar.call_args.args[0]))
+        self.assertEqual(2, connection.scalar.call_count)
+        self.assertEqual("SELECT 1", str(connection.scalar.call_args_list[0].args[0]))
+        self.assertEqual("SELECT careertrellis.admission_lifecycle_ready()", str(connection.scalar.call_args_list[1].args[0]))
         self.assertEqual([True], scope_exited)
         tenant_context.assert_not_called()
         identity_context.assert_not_called()
@@ -6226,6 +6231,13 @@ class SavedSearchWriteRepositoryTests(unittest.TestCase):
 
 
 class WebAuthenticationTests(unittest.TestCase):
+    def setUp(self):
+        # Legacy HTTP fixtures do not connect to a database. The real persisted
+        # guard is exercised in the lifecycle and closed-default route suites.
+        guard = patch.object(app_module, 'check_postgres_ready')
+        guard.start()
+        self.addCleanup(guard.stop)
+
     ORIGIN_TOKEN = "staging-origin-token-with-at-least-32-characters"
     COOKIE_PASSWORD = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     OWNER_ID = "user_01STAGINGOWNER"
@@ -7062,8 +7074,10 @@ class PilotUserOperatorTests(unittest.TestCase):
     class FakeConnection:
         def __init__(self, rows):
             self.rows = rows
+            self.profiles = set()
             self.identity = None
             self.erasure_pending = False
+            self.admission_allowed = True
             self.driver_statements: list[str] = []
 
         def exec_driver_sql(self, statement):
@@ -7072,6 +7086,8 @@ class PilotUserOperatorTests(unittest.TestCase):
 
         def scalar(self, statement, _parameters=None):
             self.driver_statements.append(str(statement))
+            if "careertrellis_admission.operator_allowed" in str(statement):
+                return self.admission_allowed
             if "account_erasure_requests" in str(statement):
                 return self.erasure_pending
             return True
@@ -7079,6 +7095,13 @@ class PilotUserOperatorTests(unittest.TestCase):
         def execute(self, statement, parameters=None):
             sql = str(statement)
             values = parameters or {}
+            if sql.startswith("SELECT set_config('careertrellis.user_id'"):
+                return SimpleNamespace()
+            if sql.startswith("INSERT INTO careertrellis.profiles"):
+                uid = values["owner_user_id"]
+                created = uid not in self.profiles
+                self.profiles.add(uid)
+                return SimpleNamespace(rowcount=int(created))
             if sql.startswith("SELECT id, role, disabled_at"):
                 row = self.rows.get(self.identity)
                 return SimpleNamespace(
@@ -7140,6 +7163,14 @@ class PilotUserOperatorTests(unittest.TestCase):
                 self.OWNER_ID,
                 target,
             )
+
+    def test_operator_admission_denial_precedes_pilot_lock_and_account_insert(self) -> None:
+        engine, connection = self.engine()
+        connection.admission_allowed = False
+        with self.assertRaises(pilot_users_module.PilotUserOperationError):
+            self.operation(engine, 'seed', self.PILOT_ID)
+        self.assertNotIn(self.PILOT_ID, connection.rows)
+        self.assertFalse(any('pg_try_advisory_xact_lock' in sql for sql in connection.driver_statements))
 
     def test_operator_seed_inspect_disable_and_reinvite_are_idempotent(self) -> None:
         engine, connection = self.engine()
@@ -7529,6 +7560,9 @@ class PilotUserOperatorTests(unittest.TestCase):
 
 class LocalBrowserBoundaryTests(unittest.TestCase):
     def setUp(self) -> None:
+        guard = patch.object(app_module, 'check_postgres_ready')
+        guard.start()
+        self.addCleanup(guard.stop)
         self.client = TestClient(app_module.app, base_url="http://127.0.0.1:8001")
 
     def tearDown(self) -> None:
@@ -8581,6 +8615,7 @@ class EncryptedFullBackupTests(unittest.TestCase):
                     return_value="staging",
                 ),
                 patch.object(app_module, "get_auth_configuration", return_value=Mock()),
+                patch.object(app_module, 'check_postgres_ready'),
                 patch.object(
                     app_module,
                     "authenticate_session",
@@ -8669,6 +8704,7 @@ class EncryptedFullBackupTests(unittest.TestCase):
                     return_value="staging",
                 ),
                 patch.object(app_module, "get_auth_configuration", return_value=Mock()),
+                patch.object(app_module, 'check_postgres_ready'),
                 patch.object(
                     app_module,
                     "authenticate_session",

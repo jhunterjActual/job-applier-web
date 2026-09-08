@@ -11,8 +11,9 @@ from sqlalchemy.engine import make_url
 FIXED_ERROR = "The reviewed PostgreSQL runtime grants could not be applied."
 
 
-def apply_runtime_grants(sql_path: Path) -> None:
-    migration_url = os.environ.get("CAREERTRELLIS_MIGRATION_DATABASE_URL", "")
+def apply_runtime_grants(sql_path: Path, *, migration_url: str | None = None) -> None:
+    if migration_url is None:
+        migration_url = os.environ.get("CAREERTRELLIS_MIGRATION_DATABASE_URL", "")
     if not migration_url:
         raise RuntimeError(FIXED_ERROR)
 

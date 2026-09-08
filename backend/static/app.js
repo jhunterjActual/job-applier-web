@@ -482,6 +482,15 @@ async function configureSessionControls() {
         const response = await fetch(`${API_URL}/api/session`, { cache: "no-store" });
         if (!response.ok) return;
         const session = await response.json();
+        if (typeof session.logout_csrf === "string") {
+            let csrf = sessionSignout.querySelector('input[name="csrf"]');
+            if (!csrf) {
+                csrf = document.createElement("input");
+                csrf.type = "hidden"; csrf.name = "csrf";
+                sessionSignout.appendChild(csrf);
+            }
+            csrf.value = session.logout_csrf;
+        }
         sessionSignout.hidden = session.authentication !== "workos" || !session.authenticated;
         if (openAccountErasureBtn) {
             openAccountErasureBtn.hidden = session.authentication !== "workos"

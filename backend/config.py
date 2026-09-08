@@ -9,6 +9,17 @@ class RuntimeConfigurationError(RuntimeError):
 RUNTIME_ENVIRONMENTS = frozenset({"local", "staging", "production"})
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 MINIMUM_PROXY_TOKEN_CHARACTERS = 32
+
+
+def is_web_admission_setting(name: str) -> bool:
+    """Reserve the whole v2 namespace, including future/unknown settings."""
+    return name == "CAREERTRELLIS_ADMISSION_DATABASE_URL" or name.startswith("CAREERTRELLIS_AUTH_V2_")
+
+
+def _worker_has_web_admission_settings() -> bool:
+    # Presence is forbidden, even blank or ENABLED=0: a worker must never be
+    # configured as a web process. Keep the older guards' blank semantics.
+    return any(is_web_admission_setting(name) for name in os.environ)
 WORKER_FORBIDDEN_ENVIRONMENT_VARIABLES = frozenset({
     "CAREERTRELLIS_ALLOWED_HOSTS",
     "CAREERTRELLIS_TRUSTED_PROXY_TOKEN",
@@ -182,7 +193,7 @@ def get_account_erasure_batch_size() -> int:
 
 def validate_account_erasure_worker_configuration() -> dict[str, object]:
     """Validate only settings required by the delete-only erasure process."""
-    if any(
+    if _worker_has_web_admission_settings() or any(
         os.environ.get(name, "").strip()
         for name in ACCOUNT_ERASURE_WORKER_FORBIDDEN_ENVIRONMENT_VARIABLES
     ):
@@ -219,7 +230,7 @@ def validate_account_erasure_worker_configuration() -> dict[str, object]:
 
 def validate_worker_runtime_configuration() -> dict[str, object]:
     """Validate only worker-owned settings, never web host or auth secrets."""
-    if any(os.environ.get(name, "").strip() for name in WORKER_FORBIDDEN_ENVIRONMENT_VARIABLES):
+    if _worker_has_web_admission_settings() or any(os.environ.get(name, "").strip() for name in WORKER_FORBIDDEN_ENVIRONMENT_VARIABLES):
         raise RuntimeConfigurationError(
             "The search worker environment contains a credential or setting reserved for the web, migration, or object-storage runtime."
         )
