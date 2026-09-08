@@ -103,6 +103,7 @@ class NativeLockTests(unittest.TestCase):
                 elif kind == 'directory': self.lock.mkdir()
                 else:
                     self.lock.touch(mode=0o644 if kind == 'mode' else 0o600)
+                    self.lock.chmod(0o644 if kind == 'mode' else 0o600)
                     if kind == 'owner': os.chown(self.lock, 65534, 65534)
                 with self.assertRaises((OSError, ValueError)):
                     self.install()
