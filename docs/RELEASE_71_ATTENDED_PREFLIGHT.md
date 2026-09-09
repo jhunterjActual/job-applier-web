@@ -199,3 +199,86 @@ not claims made by mocked host facts. Synthetic Docker databases were labeled,
 loopback-only, tmpfs and auto-removed; final inventory found none remaining.
 Only disposable synthetic data was discarded. No staging state, application
 pointer, credential, backup, release build, GitHub branch or PR changed.
+
+## Attended execution — migration complete, broker installation blocked
+
+Verifier ops commit `e2e1b03a7888c843dfd7088912481e2f5059bedb` was committed locally
+and prepared separately on both hosts. Application target remains
+`e0cd2e31cd5ac101c6cecd9a87c5e5c3562ea7bc`; neither immutable directory was edited
+in place, and the ops-only directory was not activated. Source archive SHA-256:
+`357fd9cf24175eaa872bd221177da7919281bc9098da91434bb6a287c463aa85`.
+Both source-file manifests matched:
+`f1be56c5c0822d68b19e86f5fb5b7d17efc32a9723221566bc1324cd4d46532b`.
+All316 application and317 operations archive files matched their installed bytes.
+Web used a private copy of the prepared application venv;59 dependency metadata
+files matched and interpreter prefix/import checks passed. The initial metadata
+glob selected no files; the corrected nonempty manifest check is the accepted
+evidence. Host-native verifier/protected-file tests:20,0.514s,OK,one Docker-only
+skip; root-only test receipt SHA-256:
+`7a5e05dac69af1962f608c5dd0ff91cfb6275309d82d71f1d6de6cf7810ce461`.
+
+Fresh provider inventory/fingerprints, web egress, authority activated/recovery
+evidence with no lease, source manifests, queues, independent migration callers,
+RLS metadata, capacity, ports and locks were checked. Both backup-health results
+were green. Latest pgBackRest label was `20260906-031528F_20260908-161908D`, status0;
+no backup/restore lock was held and no archive failure was recorded. Next
+differential was03:22:50UTC. The two trusted hosts' WireGuard public identities
+matched each other's exact allowed peer addresses without displaying keys.
+The operator confirmed no search/tailoring/unsaved work and authenticated live
+API build `20260906.70`. The operator explicitly approved reusing previously
+accepted WorkOS/R2 provider-settings evidence for this bounded deployment,
+without changing those settings and with live checks required before reopening.
+
+Outage began **2026-09-09T02:43:51Z** (September8,10:43:51p.m.EDT). The existing
+notice helper published in-progress revision `6cf755a0232b4ef780366a84012332e9`,
+with an approximately one-hour estimate, not an automatic reopening deadline.
+Web stopped first, then idle search/erasure; all three reported inactive,PID0.
+Database lifecycle connections, active searches and unfinished erasures were0.
+
+Initial operation UUID: `7fb419fd-3a10-4ade-be8a-1856b8b0d39d`, bound to application
+commit e0cd2e3 above. `db-initial-begin`, protected receipt handoff,
+`web-initial-migrate`, reverse handoff and `db-initial-finish` all succeeded.
+DB-to-web receipt SHA-256:
+`611a807d69c78ed52cf1969aed6340c4eb59fa5ae7b213f3186f5704fce3de88`.
+Web-to-DB receipt SHA-256:
+`a0bd9c67b0034524e69a19c7bd39fbc78c5820b7291e5732fd3411bc167c2482`.
+Head is0014, default policy was verified unchanged, captured caller login flags
+restored, and initial phase is `released_services_still_stopped`. Broker remains
+passwordless NOLOGIN. No service was restarted.
+
+The first `db-install` invocation returned its fixed guarded failure. Inspection
+found no `install.json`, no ciphertext, no managed broker HBA rows and no HBA parse
+errors. All installer checks before its HBA read passed in a read-only diagnosis.
+Actual HBA is **root:postgres0640**, single-link, below postgres-owned0755 config
+directories. The installer expects a postgres-owned file; its protected read
+rejects that existing ownership. A diagnostic root-owner read also rejected the
+postgres-owned ancestors, confirming that simply substituting uid0 is not a fix.
+No HBA, credential, file-owner or permission change was made and no installer
+retry occurred. Fix and rehearse the explicit HBA file/ancestor ownership contract
+while preserving existing ownership, then establish a new ops binding before any
+retry. Retain the successful initial migration and all failed-attempt evidence.
+
+Application services remain stopped; current/previous still point to the prior
+releases. Do not rerun initial bootstrap/migration, restore a legacy schema/code,
+change HBA ownership to evade the guard, or restart under uncertain state. No
+application activation, push, PR, cleanup backup/restore or Actions run occurred.
+
+### Approved ownership correction
+
+The operator approved preserving existing HBA ownership, implementing/rehearsing
+the correction, and retrying only broker installation. Initial migration is not
+to be rerun. The HBA reader now supports root:postgres0640 under postgres-owned
+ancestors, with descriptor-bound content/metadata checks. Existing postgres-owned
+0600/0640 remains supported; foreign ownership/group, unsafe modes, links and
+writable ancestors fail closed. Generic protected-file defaults are unchanged.
+Replacement preserves UID/GID/mode, and subsequent transport verification binds
+to those recorded values. No ownership normalization or permission weakening is
+part of the correction.
+
+Native network-disabled Linux:16 tests,1.015s,all passed, including the complete
+installer path against synthetic root-owned HBA and no-clobber replay refusal.
+P0/object/admission plus explicitly enabled real PG18 transport rehearsal:
+396 tests,19.623s,OK,14 platform/fixture skips. Compileall and Git whitespace
+checks passed. Bounded independent review found no concrete blocker. A new exact
+ops binding and host-native checks are required before the single approved retry;
+these local results alone do not claim a successful live installation.

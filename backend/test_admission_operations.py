@@ -112,15 +112,61 @@ class ProtectedFileTests(unittest.TestCase):
     def test_initial_install_native_files_and_no_implicit_rotation(self):
         self._install_case(fail_validation=False)
 
+    def test_root_owned_hba_below_postgres_owned_ancestors_preserved(self):
+        self._install_case(fail_validation=False, root_owned_hba=True)
+
+    def test_hba_owner_group_links_and_ancestor_rejections(self):
+        parent = self.root / 'postgres'
+        parent.mkdir(mode=0o755)
+        os.chown(parent, 60000, 60000)
+        path = parent / 'pg_hba.conf'
+        path.write_bytes(b'local all all peer\n')
+        for uid, gid, mode, accepted in ((0,60000,0o640,True), (60000,60000,0o600,True),
+                (60000,60000,0o640,True), (60001,60000,0o640,False),
+                (0,60001,0o640,False), (0,60000,0o660,False), (0,60000,0o600,False)):
+            os.chown(path, uid, gid); path.chmod(mode)
+            if accepted:
+                _, metadata = ops.hba_snapshot(path, postgres_uid=60000, postgres_gid=60000)
+                self.assertEqual({'uid':uid,'gid':gid,'mode':mode}, metadata)
+            else:
+                with self.assertRaises(ops.OperationError):
+                    ops.hba_snapshot(path, postgres_uid=60000, postgres_gid=60000)
+        os.chown(path, 0, 60000); path.chmod(0o640)
+        with self.assertRaises(ops.OperationError):
+            ops.read_protected(path, uid=0, modes=(0o640,))
+        link = parent / 'link'
+        os.link(path, link)
+        with self.assertRaises(ops.OperationError):
+            ops.hba_snapshot(path, postgres_uid=60000, postgres_gid=60000)
+        link.unlink(); link.symlink_to(path)
+        with self.assertRaises(OSError):
+            ops.hba_snapshot(link, postgres_uid=60000, postgres_gid=60000)
+        link.unlink()
+        parent.chmod(0o775)
+        with self.assertRaises(ops.OperationError):
+            ops.hba_snapshot(path, postgres_uid=60000, postgres_gid=60000)
+        parent.chmod(0o755)
+        with self.assertRaises(ops.OperationError):
+            ops.write_protected(path,b'changed',previous=b'wrong',uid=0,gid=60000,mode=0o640,parent_uids=(0,60000))
+        self.assertEqual(b'local all all peer\n',path.read_bytes())
+
     def test_failed_hba_validation_retains_nologin_and_attempt_evidence(self):
         self._install_case(fail_validation=True)
 
-    def _install_case(self, fail_validation):
+    def _install_case(self, fail_validation, root_owned_hba=False):
         state = self.root / 'state'
         state.mkdir(mode=0o700)
-        hba = self.root / 'pg_hba.conf'
+        parent = self.root
+        pg_uid = pg_gid = 0
+        if root_owned_hba:
+            parent = self.root / 'postgres'
+            parent.mkdir(mode=0o755)
+            pg_uid = pg_gid = 60000
+            os.chown(parent, pg_uid, pg_gid)
+        hba = parent / 'pg_hba.conf'
         original = b'local all all peer\n'
-        ops.write_protected(hba, original)
+        ops.write_protected(hba, original, gid=pg_gid, mode=0o640 if root_owned_hba else 0o600,
+            parent_uids=(0, pg_uid))
         current_policy = {'maintenance': False, 'minimum_session_version': 1}
         statements = []
 
@@ -143,17 +189,20 @@ class ProtectedFileTests(unittest.TestCase):
         with patch.object(ops, 'STATE', state), patch.object(ops, 'BUNDLE', self.root / 'credential.age'):
             if fail_validation:
                 with self.assertRaises(ops.OperationError):
-                    ops.install_database(db, plan, encrypt=encrypt, hba_path=hba, postgres_uid=0, postgres_gid=0)
+                    ops.install_database(db, plan, encrypt=encrypt, hba_path=hba, postgres_uid=pg_uid, postgres_gid=pg_gid)
             else:
-                ops.install_database(db, plan, encrypt=encrypt, hba_path=hba, postgres_uid=0, postgres_gid=0)
+                ops.install_database(db, plan, encrypt=encrypt, hba_path=hba, postgres_uid=pg_uid, postgres_gid=pg_gid)
             record = json.loads(ops.read_protected(state / 'install.json'))
             self.assertEqual('prepared' if fail_validation else 'installed_nologin', record['phase'])
-            self.assertTrue(ops.read_protected(hba).endswith(original))
+            hba_bytes, metadata = ops.hba_snapshot(hba, postgres_uid=pg_uid, postgres_gid=pg_gid)
+            self.assertTrue(hba_bytes.endswith(original))
+            self.assertEqual({'uid':0,'gid':pg_gid,'mode':0o640 if root_owned_hba else 0o600}, metadata)
+            self.assertEqual(metadata, record['hba_identity'])
             encrypt.assert_called_once()
             self.assertFalse(any(' LOGIN;' in sql for sql in statements))
             mutations = sum('PASSWORD' in sql for sql in statements)
             with self.assertRaises(ops.OperationError):
-                ops.install_database(db, plan, encrypt=encrypt, hba_path=hba, postgres_uid=0, postgres_gid=0)
+                ops.install_database(db, plan, encrypt=encrypt, hba_path=hba, postgres_uid=pg_uid, postgres_gid=pg_gid)
             self.assertEqual(mutations, sum('PASSWORD' in sql for sql in statements))
             encrypt.assert_called_once()
 

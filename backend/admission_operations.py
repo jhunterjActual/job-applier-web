@@ -73,8 +73,8 @@ def protected_parents(path, owners=(0,)):
         require(stat.S_ISDIR(item.st_mode) and item.st_uid in owners and not item.st_mode & 0o022)
 
 
-def read_protected(path, *, uid=0, modes=(0o600,), limit=65536):
-    protected_parents(path, (0, uid))
+def read_protected(path, *, uid=0, modes=(0o600,), limit=65536, parent_uids=None):
+    protected_parents(path, (0, uid) if parent_uids is None else parent_uids)
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         item = os.fstat(descriptor)
@@ -88,11 +88,11 @@ def read_protected(path, *, uid=0, modes=(0o600,), limit=65536):
         os.close(descriptor)
 
 
-def write_protected(path, value, *, previous=None, uid=0, gid=0, mode=0o600):
+def write_protected(path, value, *, previous=None, uid=0, gid=0, mode=0o600, parent_uids=None):
     """No clobber on creation; compare before replacement under the host lock."""
-    protected_parents(path, (0, uid))
+    protected_parents(path, (0, uid) if parent_uids is None else parent_uids)
     if previous is not None:
-        require(read_protected(path, uid=uid, modes=(mode,)) == previous)
+        require(read_protected(path, uid=uid, modes=(mode,), parent_uids=parent_uids) == previous)
     else:
         require(not path.exists() and not path.is_symlink())
     descriptor, temporary = tempfile.mkstemp(prefix='.admission-', dir=path.parent)
@@ -106,7 +106,7 @@ def write_protected(path, value, *, previous=None, uid=0, gid=0, mode=0o600):
         if previous is None:
             os.link(temporary, path, follow_symlinks=False)
         else:
-            require(read_protected(path, uid=uid, modes=(mode,)) == previous)
+            require(read_protected(path, uid=uid, modes=(mode,), parent_uids=parent_uids) == previous)
             os.replace(temporary, path)
         directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
@@ -363,6 +363,33 @@ def scram(password):
     return f'SCRAM-SHA-256$4096:{b64(salt)}${b64(hashlib.sha256(client).digest())}:{b64(server)}'
 
 
+def hba_snapshot(path, *, postgres_uid, postgres_gid):
+    """HBA-only ownership contract; all ordinary protected-file defaults remain.
+
+    PostgreSQL owns its config directories on Ubuntu. The HBA itself may instead
+    be root-owned and postgres-group-readable. Preserve, never normalize, that
+    boundary. No foreign owner/group or extra write permissions are admitted.
+    """
+    protected_parents(path, (0, postgres_uid))
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(descriptor)
+        mode = stat.S_IMODE(before.st_mode)
+        require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and before.st_size <= 32768
+            and before.st_uid in (0, postgres_uid) and before.st_gid == postgres_gid
+            and mode in (0o600, 0o640)
+            and (before.st_uid == postgres_uid or mode == 0o640))
+        with os.fdopen(descriptor, 'rb', closefd=False) as stream:
+            value = stream.read(32769)
+        require(len(value) <= 32768)
+        identity = lambda item: (item.st_dev, item.st_ino, item.st_uid, item.st_gid,
+            item.st_mode, item.st_nlink, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+        require(identity(path.lstat()) == identity(before))
+        return value, {'uid': before.st_uid, 'gid': before.st_gid, 'mode': mode}
+    finally:
+        os.close(descriptor)
+
+
 def install_database(db, plan, *, encrypt, hba_path=HBA, postgres_uid=None, postgres_gid=None):
     """Initial install only: ambiguous or existing material requires inspection."""
     import pwd
@@ -375,13 +402,12 @@ def install_database(db, plan, *, encrypt, hba_path=HBA, postgres_uid=None, post
     require(db.query('SELECT to_json(current_setting(\'hba_file\'));') == str(hba_path))
     db.query(transaction(assert_quiescent_sql()))
     postgres = pwd.getpwnam('postgres') if postgres_uid is None else None
-    uid, gid = (postgres.pw_uid, postgres.pw_gid) if postgres else (postgres_uid, postgres_gid)
-    original = read_protected(hba_path, uid=uid, modes=(0o600, 0o640), limit=32768)
-    mode = stat.S_IMODE(hba_path.stat().st_mode)
+    pg_uid, pg_gid = (postgres.pw_uid, postgres.pw_gid) if postgres else (postgres_uid, postgres_gid)
+    original, hba_identity = hba_snapshot(hba_path, postgres_uid=pg_uid, postgres_gid=pg_gid)
     candidate = hba_candidate(original, plan)
     marker = STATE / 'install.json'
     require(not marker.exists() and not BUNDLE.exists() and not BUNDLE.is_symlink())
-    state_write(marker, {'phase': 'prepared', 'hba_original': base64.b64encode(original).decode(),
+    state_write(marker, {'phase': 'prepared', 'hba_original': base64.b64encode(original).decode(), 'hba_identity': hba_identity,
         'policy': policy(db), 'operation': str(uuid4())})
     password = secrets.token_urlsafe(48)
     # Encrypt before database mutation. A retained bundle is never overwritten or
@@ -390,7 +416,9 @@ def install_database(db, plan, *, encrypt, hba_path=HBA, postgres_uid=None, post
         'database_host': plan['database_host'], 'transport': plan['transport']}), plan['recipient'])
     require(ciphertext.startswith(b'age-encryption.org/v1'))
     write_protected(BUNDLE, ciphertext)
-    write_protected(hba_path, candidate, previous=original, uid=uid, gid=gid, mode=mode)
+    require(hba_snapshot(hba_path, postgres_uid=pg_uid, postgres_gid=pg_gid) == (original, hba_identity))
+    write_protected(hba_path, candidate, previous=original, **hba_identity, parent_uids=(0, pg_uid))
+    require(hba_snapshot(hba_path, postgres_uid=pg_uid, postgres_gid=pg_gid) == (candidate, hba_identity))
     require(db.query('SELECT count(*)=0 FROM pg_hba_file_rules WHERE error IS NOT NULL;') is True)
     require(db.query('SELECT pg_reload_conf();') is True)
     # Keep NOLOGIN: web installation and explicit login enable are distinct.
@@ -753,9 +781,10 @@ def verify_database_transport(db):
     db.query(assert_quiescent_sql())
     require(db.query('SELECT count(*)=0 FROM pg_hba_file_rules WHERE error IS NOT NULL;') is True)
     original = base64.b64decode(record['hba_original'], validate=True)
-    hba_uid = pwd.getpwnam('postgres').pw_uid
+    postgres = pwd.getpwnam('postgres')
     hba_bytes = hba_candidate(original, plan)
-    require(read_protected(HBA, uid=hba_uid, modes=(0o600, 0o640), limit=32768) == hba_bytes)
+    require(hba_snapshot(HBA, postgres_uid=postgres.pw_uid, postgres_gid=postgres.pw_gid)
+        == (hba_bytes, record['hba_identity']))
     require(db.query("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname='postgres' AND datallowconn);") is True)
     for host in ('127.0.0.1', '/var/run/postgresql'):
         # No password is needed for an HBA reject. Explicit empty passfile and
@@ -768,7 +797,8 @@ def verify_database_transport(db):
         require(result.returncode == 2 and result.stdout == b'')
         transport_rejection(result.stderr, 'hba')
     require(policy(db) == INITIAL_POLICY)
-    require(read_protected(HBA, uid=hba_uid, modes=(0o600, 0o640), limit=32768) == hba_bytes)
+    require(hba_snapshot(HBA, postgres_uid=postgres.pw_uid, postgres_gid=postgres.pw_gid)
+        == (hba_bytes, record['hba_identity']))
     return ['installed_hba_matches', 'hba_parses', 'broker_login_enabled',
         'other_source_loopback_hba_rejected', 'local_socket_hba_rejected', 'policy_default_off']
 

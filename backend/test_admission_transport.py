@@ -223,6 +223,7 @@ class PostgreSQLTransportTests(unittest.TestCase):
         plan = {'recipient': 'age1' + 'a' * 58, 'database_host': '10.70.0.2',
             'source_cidr': '10.70.0.1/32', 'transport': 'wireguard'}
         record = {'phase': 'login_enabled', 'policy': ops.INITIAL_POLICY,
+            'hba_identity': {'uid':0,'gid':999,'mode':0o640},
             'hba_original': base64.b64encode(self.original).decode()}
         with self.admin.connect() as connection:
             current_hba = bytes(connection.scalar(text("SELECT pg_read_binary_file(current_setting('hba_file'))")))
@@ -239,12 +240,13 @@ class PostgreSQLTransportTests(unittest.TestCase):
                 *args], capture_output=True, timeout=10)
         # Native HBA matching, role/schema and initial phase were separately
         # covered; substitute only host facts around the real psql calls here.
-        with patch.dict('sys.modules', {'pwd': types.SimpleNamespace(getpwnam=lambda _: types.SimpleNamespace(pw_uid=999))}), \
+        with patch.dict('sys.modules', {'pwd': types.SimpleNamespace(getpwnam=lambda _: types.SimpleNamespace(pw_uid=999,pw_gid=999))}), \
                 patch.object(ops, 'initial_finished'), patch.object(ops, 'assert_roles'), \
                 patch.object(ops, 'revision', return_value=ops.INITIAL_HEAD), \
                 patch.object(ops, 'policy', return_value=ops.INITIAL_POLICY), \
                 patch.object(ops, 'read_protected', side_effect=lambda p, **kw: files[p]), \
                 patch.object(ops, 'hba_candidate', return_value=current_hba), \
+                patch.object(ops, 'hba_snapshot', return_value=(current_hba,record['hba_identity'])), \
                 patch.object(ops.subprocess, 'run', side_effect=execute):
             checks = ops.verify_database_transport(Mock(query=Mock(side_effect=query)))
             self.assertIn('local_socket_hba_rejected', checks)

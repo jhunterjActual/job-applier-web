@@ -62,6 +62,15 @@ identity or decrypted bundle through chat, argv, environment, logs or receipts.
 The tool generates the broker password internally and encrypts it before DB
 mutation; no plaintext transfer file or exported password is used.
 
+The HBA-specific reader accepts postgres-owned0600/0640, or root-owned0640 with
+the postgres group, beneath non-writable-by-others root/postgres-owned ancestors.
+It obtains content and metadata from an `O_NOFOLLOW` descriptor, checks identity
+stability, and preserves the captured UID/GID/mode through replacement. Generic
+root-only source/config/state readers retain their existing defaults. File and
+ancestor ownership must not be changed to satisfy an installer assumption.
+The install marker retains HBA UID/GID/mode; the transport verifier requires the
+same metadata as well as exact bytes before and after its probes.
+
 First perform the project’s live rediscovery/authority/lock/active-user gates and
 obtain explicit installation/maintenance approval. Complete the protected initial
 0013-to-0014 sequence below before this credential installer. Do not use the
