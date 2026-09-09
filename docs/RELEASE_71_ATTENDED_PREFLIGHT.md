@@ -282,3 +282,79 @@ P0/object/admission plus explicitly enabled real PG18 transport rehearsal:
 checks passed. Bounded independent review found no concrete blocker. A new exact
 ops binding and host-native checks are required before the single approved retry;
 these local results alone do not claim a successful live installation.
+
+### Ownership-preserving broker retry accepted
+
+Corrected ops binding: `3ce2c05770b848e22be9105e3e6b9b9006e6a885`, local-only.
+Archive SHA-256 `b762419d77a8284c6190035231bf1879e4304a042ab6b6fcecb524d233ad9adc`.
+Both installed source manifests matched
+`00dff8226c045a2dd14aaa9f560aea24584b9823ff108459ee23a868ff3c3d88`.
+The new web ops interpreter uses a separately copied, dependency-checked venv;
+source imports/prefix passed and services remained inactive/PID0.
+
+Actual DB-host native tests:16,0.624s,OK,one Docker-only skip. Protected test
+receipt SHA-256 `7c614d3299d4963dc99054a996bc57150deb546e703b480d6d9879a91c32ca28`.
+The corrected HBA reader and candidate generator passed against the live path.
+Before retry, initial migration was finished and both install marker and
+ciphertext were still absent. Current HBA bytes were retained root-only as
+`hba-before-retry` in this ops bundle; no ownership or permission changed.
+
+The single approved `db-install` retry from this exact ops source succeeded.
+Readback confirmed phase `installed_nologin`, a protected age ciphertext, broker
+password present with NOLOGIN retained, zero HBA parse errors and unchanged
+default-off policy. The install marker's original HBA bytes exactly matched the
+pre-retry copy. Installed HBA bytes exactly matched the generated prefix plus
+original content, and actual/recorded ownership remained root:postgres0640.
+No original bytes were deleted. No migration was rerun and no service restarted.
+
+Broker login enablement, encrypted transfer/web installation, paired transport
+verification and application activation are still subsequent steps. Use corrected
+ops source3ce2c05 for the metadata-aware verifier on both hosts; do not use its
+superseded predecessor for DB verification. Application target remains e0cd2e3.
+Staging remains offline at this boundary; no push or PR occurred.
+
+### Broker enabled and ciphertext transferred; web install blocked
+
+On the operator's next approval to proceed, `db-enable-login` from corrected ops
+3ce2c05 succeeded. The installed ciphertext was copied into an operator-private
+transfer directory and transferred DB-to-web over strict-known-host SCP; no
+plaintext or private age identity was transferred. The web copy was validated
+as a bounded regular mode0600 file and published into the root-only no-clobber
+`admission-credential.age` path. Original and transfer ciphertexts were retained.
+
+The subsequent `web-install` returned a guarded failure; `auth-v2.env` is absent,
+and all three application services remain inactive/PID0. No installer retry or
+credential regeneration occurred. Read-only constructor checks passed for the
+existing cookie key, provider metadata and session settings. A phased diagnostic
+passed age decryption, bundle shape and exact runtime-target agreement, then
+failed at broker connection. Database readback confirmed broker LOGIN=true but
+`CONNECT` on `careertrellis`=false, with PUBLIC CONNECT=false and HBA errors0.
+
+The live database is deliberately stricter than the isolated transport fixture,
+which retained default PUBLIC CONNECT. Bootstrap/installer code omitted an
+explicit broker database grant. Correct this narrowly for the broker and only
+the application database, add fixture coverage with PUBLIC CONNECT revoked,
+and preserve the existing credential/install attempt. Do not restore PUBLIC
+CONNECT, grant table access, rerun migration, rotate credentials, or restart
+services merely to bypass this gate. Paired transport verification and application
+activation have not occurred. Staging remains offline.
+
+### Approved broker-only CONNECT correction
+
+The operator approved adding the broker-only database grant, testing with PUBLIC
+access revoked, and retrying web installation without credential rotation or
+migration. A separate immutable `db-grant-connect <attempt-UUID>` operation now
+requires the existing login-enabled installation, completed initial migration,
+default-off policy, exact head, restricted role, preserved HBA and native negative
+transport checks. Host/advisory/lifecycle locks and transactional snapshot checks
+guard the single grant. PUBLIC CONNECT and excess broker database privileges
+cause refusal. A protected attempt receipt precedes the mutation; no install
+marker, password, HBA, application pointer or service is changed. Future login
+enablement grants explicit CONNECT atomically with LOGIN.
+
+The isolated PostgreSQL18 fixture now revokes ALL database privileges from PUBLIC.
+It reproduced the correct-password CONNECT denial and verified the guarded grant,
+idempotent grant semantics, successful broker connection, unchanged password and
+revoked PUBLIC access. Local regression suite:398 tests,13.735s,OK,14 skips.
+Native network-disabled Linux:16 tests,0.728s,all passed. Compileall passed.
+These are preparation receipts only; live correction and web retry remain pending.

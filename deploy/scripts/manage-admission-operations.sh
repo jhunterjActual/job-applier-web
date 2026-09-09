@@ -22,7 +22,7 @@ for path in "${BASH_SOURCE[0]}" "${runner}" "${release}" "${release}/backend"; d
     fi
 done
 case "$1" in
-    db-install|db-enable-login|db-begin|db-quiesce|db-finish|db-initial-begin|db-initial-quiesce|db-initial-finish|db-verify-transport|check-worker-files) python=/usr/bin/python3 ;;
+    db-install|db-enable-login|db-grant-connect|db-begin|db-quiesce|db-finish|db-initial-begin|db-initial-quiesce|db-initial-finish|db-verify-transport|check-worker-files) python=/usr/bin/python3 ;;
     web-install|web-migrate|web-initial-migrate|web-verify-transport) python=${release}/backend/venv/bin/python ;;
     *) echo "Unknown admission operation." >&2; exit 1 ;;
 esac

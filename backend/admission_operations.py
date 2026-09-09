@@ -435,9 +435,41 @@ def enable_broker(db):
     require(record['phase'] == 'installed_nologin')
     assert_roles(db)
     require(policy(db) == record['policy'])
-    db.query(transaction(assert_quiescent_sql() + 'ALTER ROLE ' + BROKER + ' LOGIN;'))
+    db.query(transaction(assert_quiescent_sql() + broker_connect_sql() + 'ALTER ROLE ' + BROKER + ' LOGIN;'))
     record['phase'] = 'login_enabled'
     state_write(marker, record)
+
+
+def broker_connect_sql():
+    # Database admission is distinct from HBA authentication and schema/function
+    # privileges. Never rely on (or restore) PUBLIC CONNECT.
+    return 'GRANT CONNECT ON DATABASE careertrellis TO ' + BROKER + ';'
+
+
+def grant_broker_connect(db):
+    """Bounded recovery for an installed credential; no role/password/HBA edits."""
+    initial_finished()
+    record = strict_json(read_protected(STATE / 'install.json'))
+    require(record['phase'] == 'login_enabled')
+    verify_database_transport(db)
+    require(revision(db) == INITIAL_HEAD and policy(db) == record['policy'] == INITIAL_POLICY)
+    assert_roles(db)
+    require(db.query("SELECT rolcanlogin AND rolpassword IS NOT NULL FROM pg_authid WHERE rolname='" + BROKER + "';") is True)
+    snapshot = roles(db)
+    # Check the head and PUBLIC boundary again inside the locked transaction.
+    boundary = "DO $$ BEGIN IF current_database()<>'careertrellis' OR " \
+        "(SELECT version_num FROM careertrellis.alembic_version)<>'20260907_0014' OR EXISTS(" \
+        "SELECT 1 FROM pg_database d, LATERAL aclexplode(COALESCE(d.datacl,acldefault('d',d.datdba))) a " \
+        "WHERE d.datname='careertrellis' AND ((a.grantee=0 AND a.privilege_type='CONNECT') OR " \
+        "(a.grantee='careertrellis_admission_broker'::regrole AND (a.privilege_type<>'CONNECT' OR a.is_grantable)))) " \
+        "OR has_database_privilege('careertrellis_admission_broker','careertrellis','CREATE,TEMP') " \
+        "THEN RAISE EXCEPTION 'database admission boundary changed'; END IF; END $$;"
+    db.query(transaction(assert_snapshot_sql(INITIAL_POLICY, snapshot) + assert_quiescent_sql()
+        + boundary + broker_connect_sql()))
+    require(db.query("SELECT has_database_privilege('" + BROKER + "','careertrellis','CONNECT');") is True)
+    require(policy(db) == INITIAL_POLICY and roles(db) == snapshot)
+    assert_roles(db)
+    return ['broker_connect_granted', 'public_connect_revoked', 'existing_install_unchanged']
 
 
 def begin_maintenance(db, operation, target):
@@ -715,7 +747,7 @@ def broker_transport_matrix(url, *, expected_source, expected_database='careertr
 
 
 def transport_receipt(side, operation, run):
-    require(side in ('web', 'database') and str(UUID(operation)) == operation)
+    require(side in ('web', 'database', 'database-connect') and str(UUID(operation)) == operation)
     source = Path(__file__).absolute().parent.parent.name
     require(re.fullmatch(r'[0-9a-f]{40}', source))
     path = STATE / ('transport-' + side + '-' + operation + '.json')
@@ -825,7 +857,7 @@ def main(argv=None):
     try:
         require(getattr(os, 'geteuid', lambda: -1)() == 0)
         args = list(sys.argv[1:] if argv is None else argv)
-        require(args and args[0] in ('check-worker-files', 'db-install', 'db-enable-login', 'web-install',
+        require(args and args[0] in ('check-worker-files', 'db-install', 'db-enable-login', 'db-grant-connect', 'web-install',
             'db-begin', 'db-quiesce', 'web-migrate', 'db-finish',
             'db-initial-begin', 'db-initial-quiesce', 'web-initial-migrate', 'db-initial-finish',
             'db-verify-transport', 'web-verify-transport'))
@@ -833,14 +865,14 @@ def main(argv=None):
         source = Path(__file__).absolute()
         protected_parents(source)
         read_protected(source, modes=(0o600, 0o640, 0o644), limit=131072)
-        if operation in ('web-install', 'web-migrate', 'web-initial-migrate',
+        if operation in ('db-grant-connect', 'web-install', 'web-migrate', 'web-initial-migrate',
                 'db-initial-begin', 'db-initial-quiesce', 'db-initial-finish', 'db-verify-transport', 'web-verify-transport'):
             require(re.fullmatch(r'[0-9a-f]{40}', source.parent.parent.name)
                 and source.parent.parent.parent == Path('/opt/careertrellis/staging/releases'))
             sys.path.insert(0, str(source.parent))
         require(len(args) == (3 if operation in ('db-begin', 'web-migrate', 'db-initial-begin', 'web-initial-migrate')
             else 2 if operation in ('db-finish', 'db-quiesce', 'db-initial-quiesce', 'db-initial-finish',
-                'db-verify-transport', 'web-verify-transport') else 1))
+                'db-verify-transport', 'web-verify-transport', 'db-grant-connect') else 1))
         if operation == 'check-worker-files':
             check_worker_delivery()
             print('operation=check-worker-files\nresult=ok\nvalues_disclosed=no')
@@ -879,6 +911,8 @@ def main(argv=None):
                         command(['/usr/bin/age', '--encrypt', '--recipient', recipient], data=raw))
                 elif operation == 'db-enable-login':
                     enable_broker(db)
+                elif operation == 'db-grant-connect':
+                    transport_receipt('database-connect', args[1], lambda: grant_broker_connect(db))
                 elif operation == 'web-install':
                     read_protected(IDENTITY)
                     install_web(lambda raw: command(['/usr/bin/age', '--decrypt', '--identity', str(IDENTITY)], data=raw))

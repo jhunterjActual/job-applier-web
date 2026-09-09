@@ -19,6 +19,22 @@ import admission_operations as ops
 
 
 class TransportTests(unittest.TestCase):
+    def test_connect_recovery_refuses_wrong_phase_and_enable_grants_explicitly(self):
+        for phase in ('prepared', 'installed_nologin', 'unexpected'):
+            db = Mock()
+            with patch.object(ops, 'initial_finished'), patch.object(ops, 'read_protected', return_value=ops.encoded({'phase': phase})):
+                with self.assertRaises(ops.OperationError):
+                    ops.grant_broker_connect(db)
+                db.query.assert_not_called()
+        db = Mock()
+        record = {'phase': 'installed_nologin', 'policy': ops.INITIAL_POLICY}
+        with patch.object(ops, 'read_protected', return_value=ops.encoded(record)), patch.object(ops, 'assert_roles'), \
+                patch.object(ops, 'policy', return_value=ops.INITIAL_POLICY), patch.object(ops, 'state_write'):
+            ops.enable_broker(db)
+        sql = db.query.call_args.args[0]
+        self.assertIn(ops.broker_connect_sql(), sql)
+        self.assertLess(sql.index('GRANT CONNECT'), sql.index('ALTER ROLE'))
+
     def test_network_failure_is_not_denial_and_engine_is_disposed(self):
         from sqlalchemy.exc import OperationalError
         engine = Mock()
@@ -55,7 +71,7 @@ class TransportTests(unittest.TestCase):
 
     def test_cli_dispatch_binding_and_fixed_error(self):
         source = '/opt/careertrellis/staging/releases/' + 'b' * 40 + '/backend/admission_operations.py'
-        for verb, side in (('web-verify-transport', 'web'), ('db-verify-transport', 'database')):
+        for verb, side in (('web-verify-transport', 'web'), ('db-verify-transport', 'database'), ('db-grant-connect', 'database-connect')):
             for valid in (True, False):
                 with tempfile.TemporaryDirectory() as temporary, \
                         patch.object(ops, '__file__', source if valid else '/untrusted/backend/admission_operations.py'), \
@@ -157,6 +173,14 @@ class PostgreSQLTransportTests(unittest.TestCase):
             connection.exec_driver_sql('CREATE SCHEMA careertrellis_admission')
             connection.exec_driver_sql("CREATE FUNCTION careertrellis_admission.availability() RETURNS jsonb LANGUAGE sql AS $$ SELECT '{\"status\":\"closed\"}'::jsonb $$")
             connection.exec_driver_sql('GRANT USAGE ON SCHEMA careertrellis_admission TO ' + ops.BROKER)
+            connection.exec_driver_sql('REVOKE ALL ON DATABASE careertrellis FROM PUBLIC')
+            connection.exec_driver_sql(ops.broker_connect_sql())
+            connection.exec_driver_sql('CREATE SCHEMA careertrellis')
+            connection.exec_driver_sql("CREATE TABLE careertrellis.alembic_version(version_num text); INSERT INTO careertrellis.alembic_version VALUES ('20260907_0014')")
+            columns = ','.join(key + (' boolean' if isinstance(value, bool) else ' integer' if isinstance(value, int) else ' text') for key, value in ops.INITIAL_POLICY.items())
+            connection.exec_driver_sql('CREATE TABLE careertrellis_admission.policy (' + columns + ')')
+            connection.exec_driver_sql('INSERT INTO careertrellis_admission.policy SELECT * FROM json_populate_record(NULL::careertrellis_admission.policy,' + ops.literal(json.dumps(ops.INITIAL_POLICY)) + ')')
+            connection.exec_driver_sql('CREATE FUNCTION careertrellis_admission.lock_lifecycle() RETURNS void LANGUAGE sql AS $$ SELECT pg_advisory_xact_lock(12345) $$')
             cls.hba = connection.scalar(text('SHOW hba_file'))
             if cls.hba != '/var/lib/postgresql/18/docker/pg_hba.conf':
                 raise RuntimeError('Unexpected disposable HBA path')
@@ -204,6 +228,44 @@ class PostgreSQLTransportTests(unittest.TestCase):
             ops.broker_transport_matrix(broker, expected_source='10.70.0.1', expected_server=self.server)
         with self.admin.connect() as connection:
             self.assertEqual(0, connection.scalar(text('SELECT count(*) FROM pg_stat_activity WHERE usename=:role'), {'role': ops.BROKER}))
+
+    def test_connect_recovery_with_public_revoked(self):
+        from sqlalchemy.exc import OperationalError
+        def query(sql):
+            # Same transaction SQL as LocalPostgres, whose psql session commits
+            # explicit BEGIN/COMMIT and closes after each call.
+            with self.admin.connect().execution_options(isolation_level='AUTOCOMMIT') as connection:
+                result = connection.exec_driver_sql(sql)
+                return result.scalar() if result.returns_rows else None
+        with self.admin.begin() as connection:
+            connection.exec_driver_sql('REVOKE CONNECT ON DATABASE careertrellis FROM ' + ops.BROKER)
+            before = connection.scalar(text('SELECT rolpassword FROM pg_authid WHERE rolname=:role'), {'role': ops.BROKER})
+        engine = create_engine(self.url.set(username=ops.BROKER, password='A' * 64), poolclass=NullPool)
+        try:
+            with self.assertRaises(OperationalError) as failed:
+                engine.connect()
+            self.assertIn(failed.exception.orig.sqlstate, (None, '42501'))
+            self.assertIn('User does not have CONNECT privilege.', str(failed.exception.orig))
+            record = {'phase': 'login_enabled', 'policy': ops.INITIAL_POLICY}
+            with patch.object(ops, 'initial_finished'), patch.object(ops, 'read_protected', return_value=ops.encoded(record)), \
+                    patch.object(ops, 'assert_roles'), patch.object(ops, 'verify_database_transport'):
+                for permission, recipient in (('CONNECT', 'PUBLIC'), ('TEMP', ops.BROKER)):
+                    query('GRANT ' + permission + ' ON DATABASE careertrellis TO ' + recipient)
+                    try:
+                        with self.assertRaises(Exception):
+                            ops.grant_broker_connect(Mock(query=Mock(side_effect=query)))
+                    finally:
+                        query('REVOKE ' + permission + ' ON DATABASE careertrellis FROM ' + recipient)
+                ops.grant_broker_connect(Mock(query=Mock(side_effect=query)))
+                ops.grant_broker_connect(Mock(query=Mock(side_effect=query)))
+            with engine.connect() as connection:
+                self.assertEqual(ops.BROKER, connection.scalar(text('SELECT session_user')))
+            with self.admin.connect() as connection:
+                self.assertEqual(before, connection.scalar(text('SELECT rolpassword FROM pg_authid WHERE rolname=:role'), {'role': ops.BROKER}))
+                self.assertEqual(0, connection.scalar(text("SELECT count(*) FROM pg_database d, LATERAL aclexplode(d.datacl) a WHERE d.datname='careertrellis' AND a.grantee=0 AND a.privilege_type='CONNECT'")))
+                self.assertFalse(connection.scalar(text("SELECT has_database_privilege(:role,'careertrellis','CREATE,TEMP')"), {'role': ops.BROKER}))
+        finally:
+            engine.dispose()
 
     def test_false_success_under_trust_is_rejected(self):
         self.docker('exec', '-i', self.name, 'dd', 'of=' + self.hba, 'status=none', data=self.original)

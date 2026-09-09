@@ -291,7 +291,7 @@ class NativeInitialWrapperTests(unittest.TestCase):
             launcher.chmod(0o750)
             environment = {**os.environ, 'CAREERTRELLIS_MIGRATION_DATABASE_URL': 'synthetic-secret',
                 'PGPASSWORD': 'synthetic-secret', 'PYTHONPATH': '/untrusted', 'PGSERVICE': 'unexpected'}
-            for operation in ('db-initial-begin', 'web-initial-migrate', 'db-verify-transport', 'web-verify-transport'):
+            for operation in ('db-initial-begin', 'web-initial-migrate', 'db-verify-transport', 'web-verify-transport', 'db-grant-connect'):
                 result = subprocess.run(['/bin/bash', str(launcher), operation, 'synthetic-attempt', 'b'*40],
                     env=environment, capture_output=True)
                 self.assertEqual(0, result.returncode, result.stderr.decode())
