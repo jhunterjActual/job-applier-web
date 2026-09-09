@@ -358,3 +358,78 @@ idempotent grant semantics, successful broker connection, unchanged password and
 revoked PUBLIC access. Local regression suite:398 tests,13.735s,OK,14 skips.
 Native network-disabled Linux:16 tests,0.728s,all passed. Compileall passed.
 These are preparation receipts only; live correction and web retry remain pending.
+
+### Broker CONNECT, web installation and paired transport accepted
+
+Reviewed ops binding `4a7bf3c46d3b401616c7bfaefacb22c7c7ff30ab` was prepared on
+both hosts without activation. Archive SHA-256
+`32485151967a66e2e0c3303f37630b53c4c8fa2206a80832194cdc5ecba6dad5`;
+matching source-manifest SHA-256
+`08ff8c27d2fccbe17c7a7035696a0f0a30d224c608ecc861c349a5cdaf8039aa`.
+Actual DB native test receipt SHA-256
+`47002b40bd24985de6a5f45c83cca1cbef07c8d088ded4aabadc1228a61a73a1`.
+Independent bounded review found no concrete blocker. The further isolated PG18
+test passed with explicit refusal of PUBLIC CONNECT or excess broker TEMP.
+
+Approved recovery attempt `20b5e577-cd96-488d-a2ce-4282789c850e` succeeded;
+protected receipt SHA-256
+`dbf6bb4578bdec91589afe97842f528b1608644618973cdd6f5b52bfea2c0c9c`.
+Web installation then succeeded using the existing encrypted credential. No
+migration, credential rotation, HBA rewrite or PUBLIC grant occurred.
+
+Paired transport attempt `0ad67c4e-3c98-4e58-9b7c-47d029f9dd06` succeeded on
+both hosts from this ops binding. Web receipt SHA-256
+`6208b44452dbbf5d6a4c1b38efae07df1eed46c0813c6d01ff6b133fc825c566`;
+DB receipt SHA-256
+`76a59c56c5fb6d7ba3c28870cae14c43c932e03ffbd374a248cd4ab364022271`.
+Checks proved correct broker transport and rejected wrong password, other
+database, loopback source and local socket. Policy and v2 remained default-off.
+
+Exact application and ops source bytes were reread against retained archives.
+An initial read-only check used an incorrect parser name and failed without
+mutation; the corrected check passed. The exact e0 application web unit was
+installed while services remained stopped; its prior bytes were retained.
+Loaded EnvironmentFiles were verified as web5/search3/erasure3, with auth-v2.env
+only on web, no PassEnvironment or unexpected inline assignments, and matching
+reviewed drop-ins. All three services remained enabled but inactive/PID0.
+
+At `2026-09-09T03:14:48Z`, activation of application
+`e0cd2e31cd5ac101c6cecd9a87c5e5c3562ea7bc` was dispatched as
+`careertrellis-activate-71-20260909.service`. Its root-only activation log remains
+under the new ops bundle. Terminal activation and live verification were still
+pending at this entry; no commit was pushed and no PR opened.
+
+### Application .71 activated; operator verification accepted
+
+Activation terminated successfully at `2026-09-09T03:15:08Z`, exit0. Current is
+exact application e0cd2e3; previous is ebf372f7988a9b36e90969710ee60a0914d1272b.
+Outage lasted approximately31m17s from the recorded02:43:51Z stop to readiness.
+Activation log SHA-256
+`5eca77503838624681f4802787786eaebf105aa7cf22bc093c93cae0a9ebbea2`.
+
+At03:15:52Z both loopback liveness/readiness returned200 with build20260908.71.
+Web/search/erasure processes ran from the exact application release; all had zero
+restarts. Both workers were idle with matching-build/PID heartbeats5.1s/12.0s old.
+Process environments proved the intended distinct PostgreSQL principals, v2=0
+on web, and no admission URL or v2 settings in either worker. Protected runtime
+receipt SHA-256
+`07a8fdb888b30c0ff01a28c1e47ec0e14ccfaa470f805bd7b94d581d1d1ceb3c`.
+The subsequent stability readback again showed all three services and Caddy
+active with zero restarts. Database readback retained revision0014/default-off
+policy, restricted broker CONNECT, revoked PUBLIC CONNECT and zero HBA errors.
+
+Deployed Caddy privacy checker passed:170 records,31 query records,170
+representative records, no source/personal/secret disclosure. The maintenance
+notice was disabled after successful health checks; readback configured=false,
+revisionccd866a05cf74550b85bdbeb8b0ced9b, all8 audit events retained.
+
+After deployment, the operator confirmed the signed-in API reports `.71`, the
+existing profile loads, and sign-out followed by sign-in succeeds. This closes
+the manual verification gate for the deployed default-off application and
+installed operations bundle. It does not prove the disabled v2 sign-in or
+self-service registration flows and is not broader-beta approval.
+
+No push or PR occurred; the post-install/activation and operator-verification
+closeout remains local documentation pending handoff. No further deployment,
+backup/restore operation or provider configuration change was needed to record
+this acceptance.
