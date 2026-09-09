@@ -20,6 +20,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 ROOT = Path('/etc/careertrellis')
@@ -626,6 +628,151 @@ def install_web(decrypt):
     check_worker_delivery()
 
 
+def transport_rejection(raw, kind, database='careertrellis'):
+    """Recognize only explicit PG18 English rejection; never return raw diagnostics.
+
+    libpq connection failures may have no SQLSTATE. Unknown/localized messages,
+    mixed failures, missing passwords and transport errors are inconclusive.
+    """
+    require(kind in ('password', 'hba'))
+    require(database in ('careertrellis', 'postgres'))
+    message = raw.decode('utf-8', errors='strict') if isinstance(raw, bytes) else raw
+    require(isinstance(message, str) and 0 < len(message) <= 8192)
+    reason = ('password authentication failed for user "' + BROKER + '"' if kind == 'password'
+        else 'pg_hba.conf rejects connection for host "[^"\r\n]+", user "' + BROKER
+        + '", database "' + database + '"(?:, (?:SSL encryption|no encryption))?')
+    prefix = (r'(?:psql: error: |connection failed: )?connection to server (?:at "[^"\r\n]+"'
+        r'(?: \([^\r\n)]+\))?, port [0-9]+|on socket "[^"\r\n]+") failed: FATAL: +')
+    lines = message.strip().splitlines()
+    # libpq warns about the intentionally empty character device. This exact
+    # warning carries no credential and cannot substitute for the FATAL below.
+    if lines and lines[0] == 'WARNING: password file "/dev/null" is not a plain file':
+        lines = lines[1:]
+    require(1 <= len(lines) <= 2 and all(re.fullmatch(prefix + reason, line) for line in lines))
+
+
+def broker_transport_matrix(url, *, expected_source, expected_database='careertrellis', expected_server='10.70.0.2', expected_port=5432):
+    """Read-only connection probes; URL is in-process, never argv/environment."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.pool import NullPool
+
+    def probe(target, denial=None):
+        engine = create_engine(target, poolclass=NullPool, hide_parameters=True,
+            connect_args={'connect_timeout': 5, 'passfile': '/dev/null',
+                'options': '-c statement_timeout=5000 -c default_transaction_read_only=on'})
+        try:
+            try:
+                connection = engine.connect()
+            except OperationalError as exc:
+                require(denial is not None)
+                require(getattr(exc.orig, 'sqlstate', None) in (None, '28P01' if denial == 'password' else '28000'))
+                transport_rejection(str(exc.orig), denial, target.database)
+                return
+            with connection:
+                require(denial is None)
+                row = connection.execute(text('SELECT session_user, current_database(), host(inet_client_addr()), '
+                    'host(inet_server_addr()), inet_server_port()')).one()
+                require(tuple(row) == (BROKER, expected_database, expected_source, expected_server, expected_port))
+                require(connection.scalar(text('SELECT careertrellis_admission.availability()'))['status'] == 'closed')
+        finally:
+            engine.dispose()
+
+    probe(url)
+    # Guaranteed distinct, same-format password: no possibility of a random match.
+    wrong = ('A' if url.password[0] != 'A' else 'B') + url.password[1:]
+    probe(url.set(password=wrong), 'password')
+    probe(url.set(database='postgres'), 'hba')
+    probe(url)
+
+
+def transport_receipt(side, operation, run):
+    require(side in ('web', 'database') and str(UUID(operation)) == operation)
+    source = Path(__file__).absolute().parent.parent.name
+    require(re.fullmatch(r'[0-9a-f]{40}', source))
+    path = STATE / ('transport-' + side + '-' + operation + '.json')
+    receipt = {'schema': 'careertrellis.admission-transport/v1', 'side': side,
+        'operation': operation, 'source_commit': source, 'transport': 'wireguard',
+        'started_at': datetime.now(timezone.utc).isoformat(), 'result': 'started'}
+    write_protected(path, encoded(receipt))
+    start = time.monotonic()
+    try:
+        checks = run()
+    except BaseException:
+        receipt.update(result='incomplete', finished_at=datetime.now(timezone.utc).isoformat(),
+            elapsed_seconds=round(time.monotonic() - start, 3))
+        state_write(path, receipt)
+        raise
+    receipt.update(result='ok', checks=checks, finished_at=datetime.now(timezone.utc).isoformat(),
+        elapsed_seconds=round(time.monotonic() - start, 3))
+    state_write(path, receipt)
+    print('receipt_sha256=' + hashlib.sha256(encoded(receipt)).hexdigest())
+
+
+def verify_web_transport():
+    from postgres_database import postgres_url
+    stopped_services()
+    check_worker_delivery()
+    auth_bytes = read_protected(AUTH_FILE)
+    values = assignments(auth_bytes)
+    require(values.get('CAREERTRELLIS_AUTH_V2_ENABLED') == '0')
+    url = postgres_url(values['CAREERTRELLIS_ADMISSION_DATABASE_URL'])
+    runtime = assignments(read_protected(ROOT / 'postgres-runtime.env'))
+    require(set(runtime) == {'CAREERTRELLIS_DATABASE_URL'})
+    target = postgres_url(runtime['CAREERTRELLIS_DATABASE_URL'])
+    require(url.username == BROKER and re.fullmatch(r'[A-Za-z0-9_-]{64}', url.password or '')
+        and url.host == '10.70.0.2' and url.database == 'careertrellis' and (url.port or 5432) == 5432
+        and set(url.query) <= {'sslmode', 'sslrootcert'}
+        and all(isinstance(value, str) and value for value in url.query.values())
+        and target.username == 'careertrellis_runtime'
+        and (target.host, target.port or 5432, target.database, target.query)
+            == (url.host, url.port or 5432, url.database, url.query))
+    read_protected(IDENTITY)
+    material = strict_json(command(['/usr/bin/age', '--decrypt', '--identity', str(IDENTITY)],
+        data=read_protected(BUNDLE)))
+    require(material == {'version': 1, 'password': url.password, 'database_host': url.host, 'transport': 'wireguard'})
+    route = strict_json(command(['/usr/sbin/ip', '-j', 'route', 'get', '10.70.0.2']))
+    require(len(route) == 1 and route[0].get('dev') == 'wg0' and route[0].get('prefsrc') == '10.70.0.1')
+    broker_transport_matrix(url, expected_source='10.70.0.1')
+    require(read_protected(AUTH_FILE) == auth_bytes)
+    check_worker_delivery()
+    return ['age_decryption_matches_installed_credential', 'wg_route', 'positive_closed_before_after',
+        'wrong_password_rejected', 'other_database_hba_rejected']
+
+
+def verify_database_transport(db):
+    import pwd
+    initial_finished()
+    plan = validate_plan(strict_json(read_protected(PLAN)))
+    require(plan['transport'] == 'wireguard')
+    record = strict_json(read_protected(STATE / 'install.json'))
+    require(record['phase'] == 'login_enabled' and policy(db) == record['policy'] == INITIAL_POLICY)
+    assert_roles(db)
+    require(revision(db) == INITIAL_HEAD)
+    require(db.query("SELECT rolcanlogin AND rolpassword IS NOT NULL FROM pg_authid WHERE rolname='" + BROKER + "';") is True)
+    db.query(assert_quiescent_sql())
+    require(db.query('SELECT count(*)=0 FROM pg_hba_file_rules WHERE error IS NOT NULL;') is True)
+    original = base64.b64decode(record['hba_original'], validate=True)
+    hba_uid = pwd.getpwnam('postgres').pw_uid
+    hba_bytes = hba_candidate(original, plan)
+    require(read_protected(HBA, uid=hba_uid, modes=(0o600, 0o640), limit=32768) == hba_bytes)
+    require(db.query("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname='postgres' AND datallowconn);") is True)
+    for host in ('127.0.0.1', '/var/run/postgresql'):
+        # No password is needed for an HBA reject. Explicit empty passfile and
+        # clean environment prevent an implicit credential source or prompt.
+        result = subprocess.run(['/usr/bin/psql', '-X', '-w', '-qAt', '-d',
+            'host=' + host + ' port=5432 dbname=careertrellis user=' + BROKER
+            + ' sslmode=disable connect_timeout=5 passfile=/dev/null', '-c', 'SELECT 1'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}, timeout=10)
+        require(result.returncode == 2 and result.stdout == b'')
+        transport_rejection(result.stderr, 'hba')
+    require(policy(db) == INITIAL_POLICY)
+    require(read_protected(HBA, uid=hba_uid, modes=(0o600, 0o640), limit=32768) == hba_bytes)
+    return ['installed_hba_matches', 'hba_parses', 'broker_login_enabled',
+        'other_source_loopback_hba_rejected', 'local_socket_hba_rejected', 'policy_default_off']
+
+
 @contextmanager
 def host_locks():
     import fcntl
@@ -650,18 +797,20 @@ def main(argv=None):
         args = list(sys.argv[1:] if argv is None else argv)
         require(args and args[0] in ('check-worker-files', 'db-install', 'db-enable-login', 'web-install',
             'db-begin', 'db-quiesce', 'web-migrate', 'db-finish',
-            'db-initial-begin', 'db-initial-quiesce', 'web-initial-migrate', 'db-initial-finish'))
+            'db-initial-begin', 'db-initial-quiesce', 'web-initial-migrate', 'db-initial-finish',
+            'db-verify-transport', 'web-verify-transport'))
         operation = args[0]
         source = Path(__file__).absolute()
         protected_parents(source)
         read_protected(source, modes=(0o600, 0o640, 0o644), limit=131072)
         if operation in ('web-install', 'web-migrate', 'web-initial-migrate',
-                'db-initial-begin', 'db-initial-quiesce', 'db-initial-finish'):
+                'db-initial-begin', 'db-initial-quiesce', 'db-initial-finish', 'db-verify-transport', 'web-verify-transport'):
             require(re.fullmatch(r'[0-9a-f]{40}', source.parent.parent.name)
                 and source.parent.parent.parent == Path('/opt/careertrellis/staging/releases'))
             sys.path.insert(0, str(source.parent))
         require(len(args) == (3 if operation in ('db-begin', 'web-migrate', 'db-initial-begin', 'web-initial-migrate')
-            else 2 if operation in ('db-finish', 'db-quiesce', 'db-initial-quiesce', 'db-initial-finish') else 1))
+            else 2 if operation in ('db-finish', 'db-quiesce', 'db-initial-quiesce', 'db-initial-finish',
+                'db-verify-transport', 'web-verify-transport') else 1))
         if operation == 'check-worker-files':
             check_worker_delivery()
             print('operation=check-worker-files\nresult=ok\nvalues_disclosed=no')
@@ -680,7 +829,11 @@ def main(argv=None):
                     require(db.query("SELECT current_database()='careertrellis' AND session_user='postgres' "
                         "AND current_setting('server_version_num')::int BETWEEN 180000 AND 189999 "
                         "AND current_setting('data_directory')='/var/lib/postgresql/18/main';") is True)
-                if operation == 'db-initial-begin':
+                if operation == 'db-verify-transport':
+                    transport_receipt('database', args[1], lambda: verify_database_transport(db))
+                elif operation == 'web-verify-transport':
+                    transport_receipt('web', args[1], verify_web_transport)
+                elif operation == 'db-initial-begin':
                     require(source.parent.parent.name == args[2])
                     sql = read_protected(source.parent.parent / 'deploy/postgres/bootstrap-admission-roles.sql',
                         modes=(0o600, 0o640, 0o644), limit=32768).decode('utf-8')

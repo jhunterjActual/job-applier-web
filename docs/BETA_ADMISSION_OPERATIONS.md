@@ -113,6 +113,67 @@ the installer never invents a cap/realm/domain or turns on the adapter.
 
 ## Protected initial bootstrap and migration
 
+### Bounded transport verifier (approved implementation, not live acceptance)
+
+The protected launcher now supports `web-verify-transport <UUID>` and
+`db-verify-transport <same-UUID>`. Bind both to the same reviewed immutable
+**operational source commit** and verify installed bytes. This operations-only
+addition does not bump the application build or authorize moving release links.
+The existing application candidate and initial-migration target retain their
+separate exact binding. Do not edit either prepared immutable release in place.
+
+Run only after initial migration and broker/web installation succeed, while
+web/search/erasure remain stopped and signup/session-v2 remain disabled. Execute
+web verification first, let every connection close, then DB verification; do not
+run the two concurrently. Only a UUID is passed as input; no credential is typed,
+exported, printed or transferred by these commands.
+
+- Web rereads protected installed configuration, requires the fixed approved
+  WireGuard destination, decrypts the retained age ciphertext in process and
+  compares it with the installed broker credential. It verifies wg0 routing and
+  actual database/source/server identity, successful closed availability before
+  and after probes, explicit wrong-password rejection, and explicit HBA rejection
+  for the other database (`postgres`, whose existence DB verification checks).
+- DB requires completed initial/install phases, enabled restricted broker,
+  unchanged default policy, revision0014, quiescent callers and exact installed
+  HBA bytes/parse success. Real no-password psql probes must receive explicit HBA
+  rejection from localhost TCP and the local Unix socket. This is an unauthorized
+  **loopback-source** test, not a claim of testing an independent remote host.
+- Missing password, network/timeout/TLS failure, missing database, unexpected
+  acceptance, unknown/localized diagnostic text and mixed failure messages all
+  fail closed. PG18/libpq may omit SQLSTATE during connection failure; only the
+  bounded known English rejection forms are accepted internally. The exact
+  `/dev/null` password-file warning is recognized but never counts as rejection.
+- Root-only receipts are `admission-operations/transport-web-<UUID>.json` and
+  `transport-database-<UUID>.json`. They record operational source, UUID, UTC
+  start/finish, elapsed seconds and fixed case names; successful execution prints
+  the receipt SHA-256. No credential/configuration fingerprint or raw error is
+  retained. Existing attempt files cannot be reused. Failure records incomplete;
+  interruption may leave started. Neither is success or automatic retry authority.
+
+Require both receipts `ok`, matching UUID/source, fresh timestamps and matching
+digests before accepting this matrix. This is not the entire installation gate:
+independent trusted WireGuard peer evidence, effective web-only systemd delivery,
+live application verification and the remaining rediscovery gates still apply.
+The new verifier is deliberately bounded to the approved WireGuard route. A TLS
+deployment needs a separately reviewed certificate/non-TLS-denial procedure;
+non-TLS traffic inside approved WireGuard is not itself a failed case.
+
+Local rehearsal: nine verifier tests passed, including real PostgreSQL18 correct
+and incorrect-password access, other-database rejection, localhost/socket HBA
+rejection, and refusal to pass under a deliberately permissive synthetic HBA.
+Composed tests cover protected-input/route/age mismatch, installed phase, CLI
+source binding, receipt conflict/incomplete state and network-failure disposal.
+The dedicated database is loopback-only, tmpfs, labeled and auto-removed; every
+test uses synthetic credentials. Native Linux protected-file/launcher tests:
+14 passed, including both new verb dispatches with inherited secrets scrubbed.
+
+Substitutions remain explicit: local DB tests use synthetic minimal availability,
+not another full migration rehearsal; host paths, policy/phase and native file
+facts around composed tests are substituted. Age/route responses are substituted
+in composed web tests. Actual age round-trip, two-host execution, trusted peer and
+installed-systemd acceptance remain live gates. No staging operation occurred.
+
 Local candidate added after live preflight found staging on 0013 with no admission
 roles. This closes the circular prerequisite in the later-maintenance coordinator;
 it does not install credentials, enable v2, restart services or approve an outage.

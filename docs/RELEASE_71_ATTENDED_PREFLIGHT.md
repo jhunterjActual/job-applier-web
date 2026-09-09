@@ -64,3 +64,138 @@ Focused provider/signup tests: 56 passed, including native browser flow.
 Erasure module: 38 tests passed with four POSIX-only skips on Windows.
 Python compileall passed. Full preparation-suite and target-host results are
 required separately before declaring the new candidate prepared.
+
+## Corrected candidate preparation accepted
+
+Exact corrected commit: `e0cd2e31cd5ac101c6cecd9a87c5e5c3562ea7bc`, still
+undeployed build `.71`. The exact source was staged on both hosts; web preparation
+invocation `25940040ad354a28a76f2a2a6b79e170` terminated successfully, MainPID0,
+ExecMainStatus0. Local full suite: 649 tests, 33.266 seconds, 52 platform/fixture
+skips. Web preparation suite: 649 tests, 47.299 seconds, one skip. Exact source
+bytes and 0750 root-owned release/launcher/guard permissions were verified.
+Preparation log SHA-256:
+`7305e3ec50056dca2ca36cfc173d13a3e0153e6422df2f2b1bc9b72ae12de856`.
+
+Additional Linux provider-only verification: 40 tests, 3.313 seconds, passed;
+receipt SHA-256 `f3641a84f998f91f232fe00446fdc484b3df625fe0522487bbb37555bdb4d83b`.
+The earlier additional provider/signup run had one platform error: its explicitly
+Microsoft Edge browser case cannot launch on this host, where Edge is absent.
+That same browser test passed locally in the 56-test provider/signup suite.
+The failed-platform receipt is preserved, not represented as a Linux pass.
+No extra browser was installed. Independent bounded review found no concrete
+regression in the issuer correction.
+
+Live current/previous pointers and web/search/erasure PIDs remained unchanged;
+all three services were active with zero restarts. No shutdown, migration,
+broker credential installation, v2 activation, push or PR occurred.
+Preparation acceptance does not clear the outstanding installer metadata,
+installed operational bundle, live transport matrix or deployment gates.
+
+## Installer metadata and operational helpers
+
+The operator approved `staging-v2-initial` generation, `staging-v2-k1` key ID,
+3600-second sessions, no audience and the existing WireGuard route. Public
+WorkOS discovery was fetched internally from the configured client endpoint;
+issuer and client-scoped JWKS exactly matched the candidate contract. No client
+identifier, provider credential or discovery response was displayed or retained
+in this document. Root-only `admission-web.json` was created without overwrite.
+
+The existing web age identity remained on its host. Its derived public recipient
+was used in a protected plan transferred to DB `admission-install.json`, with
+`10.70.0.1/32` source, `10.70.0.2` database host and `wireguard` transport. Both
+metadata files read back root:root0600, single-link. No broker password, encrypted
+credential bundle or `auth-v2.env` was created. Age encryption/decryption proof
+and actual broker source-denial checks remain later installation gates.
+
+Installed the candidate guard first, then deploy/rollback helpers, using atomic
+file replacements under the existing maintenance lock. Previous helper bytes
+were retained root-only in the candidate ops bundle's `helper-install` directory.
+The first preflight incorrectly required mode0600 on the existing maintenance
+lock and stopped before any install writes. Its actual root:root0644 state is
+non-writable by others; the retry preserved the lock inode and permissions.
+No lock was removed. Adjacent helper overrides were absent. The existing fixed
+maintenance-lock helper already matched the candidate and was not replaced.
+
+All three installed helpers read back root:root0755, single-link, byte-identical
+to candidate source. Bash syntax and standalone worker-file guard passed before
+and after installation, without displaying configuration values. Installed
+manifest SHA-256:
+`6f12c185ee40130ae0f3b94331645c0cf5dea51f45e9be1920654afe257c41d5`.
+The manifest and prior helper bytes remain under the exact candidate ops bundle.
+Rollback was not executed; PostgreSQL/R2 authority does not permit legacy code
+rollback, and this installation is not rollback authorization.
+
+Final route observation remained wg0, source10.70.0.1 to10.70.0.2. Live release
+pointers and all three service PIDs/restart counts remained unchanged; the
+maintenance lock was released. No daemon reload, service stop/start, database
+mutation, signup/session activation, push or PR occurred. The future web-only
+auth environment reference is not yet loaded into systemd; that remains part of
+the attended application activation and installed-delivery verification.
+
+## Final online checks — outage not started
+
+On September 9 around 02:23–02:30 UTC, the provider inventory again matched both
+staging hosts. Strict-known-host SSH checks found PostgreSQL 18.4 at 0013,
+zero users seen in the preceding 15 minutes, zero active search runs and zero
+unfinished erasures. Seven lifecycle connections all used SSL from the approved
+WireGuard source. HBA parse errors and admission-role counts were zero.
+These aggregate counts do not independently prove the absence of in-memory
+tailoring operations or complete every remaining readiness check.
+
+Current/previous release links and all three application service PIDs remained
+unchanged, active with zero restarts. Installed helper manifest and worker-file
+guard passed; no CareerTrellis file lock was observed held. Web routing remained
+wg0, source10.70.0.1 to10.70.0.2. Capacity was available on both hosts; disposable
+web ports55432/55433 had no listener. The signed-in browser displayed the existing
+dashboard and planned-maintenance notice, but an authenticated API-version
+receipt has not yet been obtained.
+
+Both health documents returned result `ok`, with no failure codes: objects
+evaluated at 02:02:41 UTC and database at 02:03:27 UTC. An initial projection
+requested the nonexistent `status` field and returned null; reading the actual
+`result` field confirmed both results. No health evaluation or backup was rerun.
+
+Final procedure review found no verified live negative-transport execution
+artifact in the candidate or installed admission-helper inventory. The installer
+implements positive authentication/closed-availability proof; the required
+wrong-password, other-database, other-source and local-socket rejection matrix
+is still prose plus isolated-test evidence, not an executable live acceptance
+receipt. A protected, bounded verifier and its reviewed execution procedure must
+be ready before beginning an outage that depends on that gate. For approved
+WireGuard transport, non-TLS inside the tunnel is not inherently a failed case.
+
+No service stop, migration, role/HBA mutation, credential installation, release
+activation, push or PR occurred. Staging remains online; all prior evidence,
+configuration and the planned notice were preserved. Deployment is not complete.
+
+## Approved verifier implementation and isolated rehearsal
+
+The operator approved closing the procedure gap without beginning the outage.
+Added protected web/database transport-verification verbs, fixed-error rejection
+classification and no-clobber, source/UUID-bound sanitized receipts. The complete
+execution order and evidence limits are in `BETA_ADMISSION_OPERATIONS.md`.
+This is operations-only; application build `.71` and the prepared runtime binding
+have not changed. The new operational source is still local and uncommitted.
+
+Final isolated verifier suite: nine tests, 3.645 seconds, all passed. Real PG18
+probes exercised password/database/source/socket rejection and confirmed that
+permissive HBA authentication cannot produce a pass. Native network-disabled
+Linux protected-file/launcher suite: 14 tests, 0.674 seconds, all passed. Final
+P0/object/admission regression set: 405 tests, 8.568 seconds, OK with24 platform
+or explicitly unselected database-fixture skips. The separately selected real
+transport suite above ran without skips. Compileall, Bash syntax and Git
+whitespace checks passed. No protected files are staged.
+
+Rehearsal failures were diagnosed before reruns: a test function needed static
+binding; PG inet text included `/32`, requiring `host(inet_client_addr())`;
+psycopg prefixes and the exact empty-device passfile warning needed explicit
+classification; the Windows CLI fixture needed absolute-path normalization.
+No unknown error was accepted merely to make a negative test pass.
+
+Independent bounded review found no remaining concrete blocker after composed
+entry-point and failure/receipt tests were added. Real age execution, trusted
+WireGuard peer and installed systemd delivery remain live acceptance gates,
+not claims made by mocked host facts. Synthetic Docker databases were labeled,
+loopback-only, tmpfs and auto-removed; final inventory found none remaining.
+Only disposable synthetic data was discarded. No staging state, application
+pointer, credential, backup, release build, GitHub branch or PR changed.
