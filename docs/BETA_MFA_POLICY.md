@@ -6,7 +6,10 @@ environment merely by being merged or deployed.
 
 ## Decision
 
-Broader-beta access requires WorkOS AuthKit MFA. Passkeys are the preferred
+Broader-beta access requires MFA. WorkOS AuthKit without paid add-ons is the
+conditional provider candidate pending the self-service admission and provider
+rehearsals in `BETA_SIGNUP_PROTOTYPE.md`; it is not activation approval.
+Passkeys are the preferred
 phishing-resistant sign-in method and a verified passkey satisfies the MFA
 requirement. Password sign-in remains available only with TOTP as a second
 factor so users who cannot use platform biometrics or a hardware-backed passkey
@@ -22,15 +25,57 @@ users through the environment's Authentication settings:
 <https://workos.com/docs/authkit/mfa>. AuthKit also supports passkeys and treats
 a verified passkey as satisfying required MFA, but recommends configuring the
 custom AuthKit domain first because enrolled passkeys are bound to that domain:
-<https://workos.com/docs/authkit/passkeys/passkey-configuration/multi-factor-auth>.
+<https://workos.com/docs/authkit/passkeys>.
+
+## Environment and domain prerequisite — revised, activation unresolved
+
+Readiness review on 2026-09-06 found that the original instruction to configure
+a custom AuthKit domain in **WorkOS staging** is not supported by the documented
+provider offering. [WorkOS custom domains](https://workos.com/docs/custom-domains/authkit)
+are production-only. The application's `staging-app` hostname does not establish
+the WorkOS environment type. Verify the actual provider environment separately.
+`backend/web_auth.py` independently rejects the application's `production`
+runtime. Do not remove that gate or relabel the application environment as an
+incidental part of provider setup.
+
+[Custom domains are a paid service](https://workos.com/docs/custom-domains),
+listed at **$99/month** on the [pricing page](https://workos.com/pricing) at this
+review. The operator rejected that add-on for the no-revenue effort. A custom
+domain is no longer a prerequisite; evaluate a stable provider-managed domain
+without paid add-ons. Neither this
+policy nor a request to continue beta work authorizes billing activation,
+purchase, DNS changes, provider-environment replacement, or identity migration.
+
+[WorkOS environments](https://workos.com/docs/authkit/environments) have separate
+users and credentials; moving to production is not an automatic promotion of
+staging users. CareerTrellis binds tenant access to immutable external IDs, not
+matching email addresses. A credentials-only switch is therefore not an
+acceptable migration. Before any switch, require a reviewed identity-preserving
+transition design, synthetic rehearsal, explicit operator approval, and proof
+that existing tenant data remains correctly owned and accessible. Never reuse
+the pilot enrollment helper to silently rebind existing users or match by email.
+
+The candidate path is a stable provider-managed production domain, subject to
+an accepted future passkey re-enrollment strategy if the domain changes and
+verification of the actual account's costs and available capabilities. Staging-
+only tests cannot close the final-domain gate. The product destination is
+self-service verified registration, capped during beta and uncapped at full
+release, not permanent operator provisioning. See `BETA_SIGNUP_PROTOTYPE.md`.
+
+Before activation, obtain approval for the exact environment, permanent AuthKit
+hostname, any cost, identity transition, and factor-enforcement window. Keep the
+existing pilot configuration unchanged while these prerequisites are unresolved.
+Production activation remains separately authorized; broader-beta invitations
+remain blocked by this factor gate and the separate recovery gates.
 
 ## Activation sequence
 
-1. Finalize and verify the CareerTrellis custom AuthKit domain before any
+1. Resolve the environment/domain prerequisite above, then finalize and verify
+   the accepted stable AuthKit domain before any
    passkey enrollment. Keep the existing application callback and logout
    origins exact and HTTPS-only.
-2. Enable passkeys with progressive enrollment in the WorkOS staging
-   environment.
+2. Enable passkeys with progressive enrollment in the explicitly approved
+   WorkOS environment only after the final domain is verified.
 3. Require MFA in that environment. Existing password users must be prompted
    to enroll TOTP; a user who signs in with a verified passkey must not receive
    a redundant TOTP challenge.
@@ -44,7 +89,8 @@ custom AuthKit domain first because enrolled passkeys are bound to that domain:
 
 ## Privacy-safe acceptance matrix
 
-Use synthetic staging identities and retain only pass/fail, UTC time, tested
+Use synthetic test identities in the approved environment and retain only
+pass/fail, UTC time, tested
 flow, environment, and reviewer. Never retain an email address, WorkOS ID,
 factor ID, QR code, TOTP secret or code, passkey credential data, cookie,
 authorization code, access token, refresh token, or recovery evidence.
@@ -53,7 +99,7 @@ authorization code, access token, refresh token, or recovery evidence.
   broader-beta sign-in.
 - An existing password user is required to enroll on the first sign-in after
   enforcement.
-- A passkey-capable user can enroll on the final custom domain and sign in with
+- A passkey-capable user can enroll on the final accepted domain and sign in with
   the passkey without a redundant TOTP prompt.
 - A user who declines or cannot use a passkey can complete password plus TOTP
   with keyboard-only navigation, visible focus, clear errors, and no timed
@@ -69,6 +115,8 @@ authorization code, access token, refresh token, or recovery evidence.
   weakening invitation-only registration. Previously enrolled factors are not
   silently deleted as part of rollback.
 
-The factor gate is complete only after the staging configuration and every
-applicable row above pass on the final custom domain. Production configuration
-remains a separate future authorization.
+The factor gate is complete only after the approved environment configuration
+and every applicable row above pass on the final accepted domain. A provider
+factor-policy reversal is not an application rollback or identity migration:
+the post-cutover application authority still requires reviewed forward
+correction. Production configuration remains a separate future authorization.

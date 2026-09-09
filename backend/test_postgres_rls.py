@@ -185,7 +185,10 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         if cls.server_url.get_backend_name() != "postgresql":
             raise RuntimeError("The PostgreSQL integration-test URL must use PostgreSQL.")
         cls.admin_server_engine = create_engine(cls.server_url, isolation_level="AUTOCOMMIT")
-        cls._drop_cluster_objects()
+        # Refuse collisions; never delete a pre-existing database or role to set up tests.
+        with cls.admin_server_engine.connect() as connection:
+            if connection.scalar(text("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=:name)"), {'name': DATABASE_NAME}) or connection.scalar(text("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname LIKE 'careertrellis_%')")):
+                raise RuntimeError('Fresh dedicated PostgreSQL test server required')
         cls._create_cluster_objects()
 
         cls.admin_database_url = cls.server_url.set(database=DATABASE_NAME)
@@ -194,6 +197,7 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             connection.execute(
                 text(f"CREATE SCHEMA careertrellis AUTHORIZATION {SCHEMA_OWNER}")
             )
+            connection.execute(text((Path(__file__).resolve().parent.parent / 'deploy/postgres/bootstrap-admission-roles.sql').read_text()))
 
         cls.migration_url = cls._role_url(MIGRATION_ROLE, MIGRATION_PASSWORD)
         previous_migration_url = os.environ.get("CAREERTRELLIS_MIGRATION_DATABASE_URL")
@@ -478,6 +482,8 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 WORKER_ROLE,
                 ERASURE_WORKER_ROLE,
                 SCHEMA_OWNER,
+                'careertrellis_admission_broker',
+                'careertrellis_admission_owner',
             ):
                 connection.exec_driver_sql(f'DROP ROLE IF EXISTS "{role}"')
 
@@ -641,6 +647,7 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         with self.admin_engine.begin() as connection:
+            connection.exec_driver_sql("UPDATE careertrellis_admission.policy SET phase='pilot',signup_open=false,adapter_ready=false,minimum_session_version=1,maintenance=false,generation=0")
             connection.exec_driver_sql(
                 "TRUNCATE TABLE careertrellis.app_users RESTART IDENTITY CASCADE"
             )
@@ -3767,15 +3774,16 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         self.assertFalse(repository.status()["searching"])
         self.assertFalse(repository.status()["last_result"]["success"])
 
-    def test_search_run_migration_downgrade_and_upgrade_restore_one_head(self) -> None:
+    def test_lifecycle_head_refuses_destructive_search_schema_downgrade(self) -> None:
         variable = "CAREERTRELLIS_MIGRATION_DATABASE_URL"
         previous = os.environ.get(variable)
         os.environ[variable] = self.migration_url.render_as_string(hide_password=False)
         alembic_config = Config(str(Path(__file__).with_name("alembic.ini")))
         try:
-            command.downgrade(alembic_config, "20260813_0006")
+            with self.assertRaisesRegex(RuntimeError, 'forward correction'):
+                command.downgrade(alembic_config, "20260813_0006")
             with self.admin_engine.begin() as connection:
-                self.assertIsNone(
+                self.assertIsNotNone(
                     connection.scalar(
                         text("SELECT to_regclass('careertrellis.search_runs')")
                     )
@@ -3932,6 +3940,9 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 {"object-kek-test": b"o" * 32},
             )
             try:
+                with migration_engine.begin() as connection:
+                    connection.exec_driver_sql('SET LOCAL ROLE careertrellis_schema_owner')
+                    connection.exec_driver_sql('SELECT careertrellis_admission.set_import_maintenance(true)')
                 with patch.dict(os.environ, _provider_secret_environment(), clear=False):
                     manifest = import_sqlite_workspace(
                         source_path,
@@ -3959,6 +3970,9 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                         connection.scalar(text("SELECT current_user")),
                     )
             finally:
+                with migration_engine.begin() as connection:
+                    connection.exec_driver_sql('SET LOCAL ROLE careertrellis_schema_owner')
+                    connection.exec_driver_sql('SELECT careertrellis_admission.set_import_maintenance(false)')
                 migration_engine.dispose()
 
         self.assertEqual(1, manifest.counts["profile"])

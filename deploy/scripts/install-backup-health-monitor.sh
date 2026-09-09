@@ -81,6 +81,8 @@ readonly -a source_units=(
 )
 readonly source_core=backend/backup_health.py
 readonly source_generation_core=backend/pgbackrest_inventory.py
+readonly source_tmpfiles=deploy/tmpfiles/careertrellis-pgbackrest.conf
+readonly tmpfiles_target=/etc/tmpfiles.d/careertrellis-pgbackrest.conf
 readonly -a helper_target_paths=(
     /usr/local/libexec/careertrellis/backup_health.py
     /usr/local/sbin/careertrellis-run-pgbackrest-backup
@@ -179,6 +181,7 @@ cleanup_verification_root() {
 trap cleanup_verification_root EXIT
 install -d -o root -g root -m 0755 \
     "${verification_root}/etc" \
+    "${verification_root}/etc/tmpfiles.d" \
     "${verification_root}/etc/systemd" \
     "${verification_root}/etc/systemd/system" \
     "${verification_root}/usr" \
@@ -229,9 +232,16 @@ validate_source() {
     fi
 }
 
-for relative_path in "${source_scripts[@]}" "${source_units[@]}" "${source_core}" "${source_generation_core}"; do
+for relative_path in "${source_scripts[@]}" "${source_units[@]}" "${source_core}" "${source_generation_core}" "${source_tmpfiles}"; do
     validate_source "${relative_path}"
 done
+install -o root -g root -m 0644 \
+    "${repository_source}/${source_tmpfiles}" "${verification_root}${tmpfiles_target}"
+if [[ $(grep -Ev '^(#|[[:space:]]*$)' "${verification_root}${tmpfiles_target}") != \
+      'f /run/lock/careertrellis-pgbackrest-repository.lock 0600 root root - -' ]]; then
+    echo "The repository lock boot rule is not the reviewed nontruncating rule." >&2
+    exit 1
+fi
 install -o root -g root -m 0644 \
     "${repository_source}/${source_core}" \
     "${verification_root}${helper_target_paths[0]}"
@@ -380,7 +390,8 @@ else
     install -d -o root -g root -m 0755 /usr/local/libexec/careertrellis
 fi
 
-for target_path in "${helper_target_paths[@]}" "${unit_target_paths[@]}"; do
+ensure_directory /etc/tmpfiles.d 755 root root
+for target_path in "${helper_target_paths[@]}" "${unit_target_paths[@]}" "${tmpfiles_target}"; do
     if [[ -L ${target_path} || ( -e ${target_path} && ! -f ${target_path} ) ]]; then
         echo "An installed backup-health target has an unsafe type." >&2
         exit 1
@@ -421,7 +432,7 @@ install -d -o root -g root -m 0700 "${rollback_root}/files"
 rollback_metadata="${rollback_root}/targets.tsv"
 install -o root -g root -m 0600 /dev/null "${rollback_metadata}"
 target_index=0
-for target_path in "${helper_target_paths[@]}" "${unit_target_paths[@]}"; do
+for target_path in "${helper_target_paths[@]}" "${unit_target_paths[@]}" "${tmpfiles_target}"; do
     backup_name=$(printf 'target-%03d' "${target_index}")
     if [[ -e ${target_path} ]]; then
         cp --archive --preserve=all --no-dereference \
@@ -432,7 +443,7 @@ for target_path in "${helper_target_paths[@]}" "${unit_target_paths[@]}"; do
     fi
     target_index=$(( target_index + 1 ))
 done
-expected_target_count=$(( ${#helper_target_paths[@]} + ${#unit_target_paths[@]} ))
+expected_target_count=$(( ${#helper_target_paths[@]} + ${#unit_target_paths[@]} + 1 ))
 if [[ ${target_index} -ne ${expected_target_count} ]] || \
     [[ $(wc -l <"${rollback_metadata}") -ne ${expected_target_count} ]]; then
     echo "The rollback target inventory was incomplete." >&2
@@ -470,7 +481,7 @@ rollback_installation() {
 
     while IFS=$'\t' read -r state backup_name target_path; do
         known_target=false
-        for candidate_path in "${helper_target_paths[@]}" "${unit_target_paths[@]}"; do
+        for candidate_path in "${helper_target_paths[@]}" "${unit_target_paths[@]}" "${tmpfiles_target}"; do
             if [[ ${target_path} == "${candidate_path}" ]]; then
                 known_target=true
                 break
@@ -576,6 +587,9 @@ for target_path in "${unit_target_paths[@]}"; do
         "${verification_root}${target_path}" \
         "${target_path}"
 done
+
+install -o root -g root -m 0644 \
+    "${verification_root}${tmpfiles_target}" "${tmpfiles_target}"
 
 systemctl daemon-reload
 systemctl enable \

@@ -1038,10 +1038,6 @@ def import_sqlite_workspace(
             validate_generated_files=not omit_generated_files,
             _connection=source,
         )
-        if not omit_generated_files:
-            resolved_object_backend = resolved_object_backend or runtime_object_backend()
-            require_empty_object_inventory(resolved_object_backend)
-
         owned_engine = engine is None
         target_engine = engine or create_postgres_engine(
             database_url_from_environment(MIGRATION_DATABASE_URL_ENV)
@@ -1051,15 +1047,20 @@ def import_sqlite_workspace(
             commit_started = False
             try:
                 target.exec_driver_sql("SET ROLE careertrellis_schema_owner")
+                # The durable maintenance gate and shared import lock precede
+                # every provider operation. They do not hold the admission lock.
+                target.exec_driver_sql("SELECT careertrellis_admission.assert_import_maintenance()")
+                if not omit_generated_files:
+                    resolved_object_backend = resolved_object_backend or runtime_object_backend()
+                    require_empty_object_inventory(resolved_object_backend)
                 target.execute(
                     text("SELECT pg_advisory_xact_lock(hashtextextended(:name, 0))"),
                     {"name": IMPORT_LOCK_NAME},
                 )
                 if not omit_generated_files:
-                    # The early check avoids taking the database lock for an
-                    # already-dirty bucket. This authoritative check closes the
-                    # race between direct importers before either can create an
-                    # owner, stage an object, or write an imported row.
+                    # Closed maintenance is established before provider setup.
+                    # The import lock makes this inventory check authoritative
+                    # before an owner, object or imported row can be created.
                     require_empty_object_inventory(resolved_object_backend)
                 owner_id = _seed_owner(target, owner_workos_user_id)
                 set_tenant_context(target, owner_id, owner_workos_user_id)

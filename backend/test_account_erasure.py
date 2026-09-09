@@ -101,7 +101,7 @@ class AccountErasureRouteTests(unittest.TestCase):
         sqlite_connection.assert_not_called()
         workos_logout.assert_not_called()
 
-    def test_authenticated_middleware_suppresses_refresh_and_resets_owner_context(self):
+    def authenticated_middleware_erasure_request(self, *, readiness_error=None):
         origin_token = "staging-origin-token-with-at-least-32-characters"
         environment = {
             "CAREERTRELLIS_ENVIRONMENT": "staging",
@@ -138,14 +138,22 @@ class AccountErasureRouteTests(unittest.TestCase):
         with (
             patch.dict(os.environ, environment, clear=False),
             patch.object(app_module, "data_store_kind", return_value=data_store_module.SHARED_DATA_STORE),
-            patch.object(app_module, "authenticate_session", return_value=authenticated),
+            patch.object(app_module, "authenticate_session", return_value=authenticated) as authenticate,
             patch.object(
                 app_module,
                 "authorized_local_user",
                 return_value=local_users_module.AuthorizedLocalUser(41, "owner"),
             ),
-            patch.object(app_module, "runtime_account_erasure_repository", side_effect=selected_repository),
+            patch.object(app_module, "runtime_account_erasure_repository", side_effect=selected_repository) as repository_factory,
             patch.object(app_module, "logout_url") as workos_logout,
+            patch.object(
+                app_module, "check_postgres_ready", return_value=None,
+                side_effect=readiness_error,
+            ) as readiness,
+            patch(
+                "postgres_database.runtime_postgres_engine",
+                side_effect=AssertionError("Synthetic route test attempted database access"),
+            ) as database_factory,
         ):
             client = TestClient(
                 app_module.app, base_url="https://staging-app.jhunterj.com"
@@ -165,6 +173,24 @@ class AccountErasureRouteTests(unittest.TestCase):
             finally:
                 client.close()
 
+        readiness.assert_called_with()
+        database_factory.assert_not_called()
+        workos_logout.assert_not_called()
+        with self.assertRaises(provider_secrets_module.ProviderSecretAuthorizationError):
+            provider_secrets_module.current_owner_user_id()
+        if readiness_error is not None:
+            readiness.assert_called_once_with()
+            authenticate.assert_not_called()
+            repository_factory.assert_not_called()
+            self.assertEqual(503, response.status_code)
+            self.assertEqual("no-store, max-age=0", response.headers["cache-control"])
+            self.assertNotIn("private-refreshed-session", response.headers.get("set-cookie", ""))
+            repository.request_erasure.assert_not_called()
+            return
+
+        # The legacy floor is checked before authentication and before routing.
+        # Erasure suppresses refresh, so there is no third cookie-refresh check.
+        self.assertEqual(2, readiness.call_count)
         self.assertEqual(202, response.status_code)
         self.assertEqual(
             {
@@ -183,9 +209,14 @@ class AccountErasureRouteTests(unittest.TestCase):
         self.assertEqual(1, len(session_cookies))
         self.assertIn("Max-Age=0", session_cookies[0])
         self.assertNotIn("private-refreshed-session", response.headers.get("set-cookie", ""))
-        workos_logout.assert_not_called()
-        with self.assertRaises(provider_secrets_module.ProviderSecretAuthorizationError):
-            provider_secrets_module.current_owner_user_id()
+
+    def test_authenticated_middleware_suppresses_refresh_and_resets_owner_context(self):
+        self.authenticated_middleware_erasure_request()
+
+    def test_authenticated_erasure_is_denied_when_postgres_readiness_fails(self):
+        self.authenticated_middleware_erasure_request(
+            readiness_error=RuntimeError("Synthetic readiness failure")
+        )
 
     def test_local_mode_is_fixed_unsupported_before_sqlite_or_repository_access(self):
         repository_factory = Mock()

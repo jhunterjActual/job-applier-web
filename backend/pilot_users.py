@@ -16,7 +16,7 @@ import sys
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.pool import NullPool
 
-from postgres_database import postgres_url, set_identity_context, validated_workos_user_id
+from postgres_database import postgres_url, set_identity_context, set_tenant_context, validated_workos_user_id
 
 
 MIGRATION_ENVIRONMENT_FILE = Path("/etc/careertrellis/postgres-migration.env")
@@ -123,6 +123,17 @@ def _require_user_state(row, *, active: bool) -> None:
         raise PilotUserOperationError(FIXED_ERROR)
 
 
+def _ensure_profile(connection, row) -> bool:
+    """Provision/repair only the authorized active target, never its content."""
+    _require_user_state(row, active=True)
+    set_tenant_context(connection, row["id"])
+    inserted = connection.execute(text(
+        "INSERT INTO careertrellis.profiles (owner_user_id) VALUES (:owner_user_id) "
+        "ON CONFLICT (owner_user_id) DO NOTHING"
+    ), {"owner_user_id": int(row["id"])})
+    return inserted.rowcount == 1
+
+
 def perform_operation(
     engine: Engine,
     operation: str,
@@ -144,6 +155,11 @@ def perform_operation(
         connection.exec_driver_sql("SET LOCAL log_parameter_max_length = 0")
         connection.exec_driver_sql("SET LOCAL log_parameter_max_length_on_error = 0")
         connection.exec_driver_sql("SET ROLE careertrellis_schema_owner")
+        if operation != "inspect" and connection.scalar(
+            text("SELECT careertrellis_admission.operator_allowed(:operation, :subject)"),
+            {"operation": operation, "subject": target_identity},
+        ) is not True:
+            raise PilotUserOperationError(FIXED_ERROR)
         if connection.scalar(
             text(
                 "SELECT pg_catalog.pg_try_advisory_xact_lock("
@@ -196,6 +212,7 @@ def perform_operation(
                     raise PilotUserOperationError(FIXED_ERROR)
                 row = _mapping(connection, target_identity)
                 _require_user_state(row, active=True)
+                _ensure_profile(connection, row)
                 connection.exec_driver_sql("RESET ROLE")
                 return _result_for_row("created", row, changed=True)
             if row["disabled_at"] is not None:
@@ -203,8 +220,9 @@ def perform_operation(
                 return _result_for_row(
                     "disabled_requires_reinvite", row, changed=False, exit_code=4
                 )
+            repaired = _ensure_profile(connection, row)
             connection.exec_driver_sql("RESET ROLE")
-            return _result_for_row("already_active", row, changed=False)
+            return _result_for_row("already_active", row, changed=repaired)
 
         if operation == "disable":
             if row is None:
@@ -224,6 +242,7 @@ def perform_operation(
             )
             if updated.rowcount != 1:
                 raise PilotUserOperationError(FIXED_ERROR)
+            connection.exec_driver_sql("SELECT careertrellis_admission.invalidate_flows()")
             row = _mapping(connection, target_identity)
             _require_user_state(row, active=False)
             connection.exec_driver_sql("RESET ROLE")
@@ -235,8 +254,9 @@ def perform_operation(
                 "absent_requires_seed", None, changed=False, exit_code=4
             )
         if row["disabled_at"] is None:
+            repaired = _ensure_profile(connection, row)
             connection.exec_driver_sql("RESET ROLE")
-            return _result_for_row("already_active", row, changed=False)
+            return _result_for_row("already_active", row, changed=repaired)
         if connection.scalar(
             text(
                 "SELECT EXISTS ("
@@ -260,8 +280,10 @@ def perform_operation(
         )
         if updated.rowcount != 1:
             raise PilotUserOperationError(FIXED_ERROR)
+        connection.exec_driver_sql("SELECT careertrellis_admission.invalidate_flows()")
         row = _mapping(connection, target_identity)
         _require_user_state(row, active=True)
+        _ensure_profile(connection, row)
         connection.exec_driver_sql("RESET ROLE")
         return _result_for_row("reactivated", row, changed=True)
 

@@ -219,6 +219,9 @@ if [[ ! -d ${release_dir} ]]; then
         "${temporary_release}/deploy/scripts/finalize-postgres-r2-cutover.sh" \
         "${temporary_release}/deploy/scripts/hosted-authority.sh" \
         "${temporary_release}/deploy/scripts/bootstrap-erasure-worker-role.sh" \
+        "${temporary_release}/deploy/scripts/bootstrap-admission-roles.sh" \
+        "${temporary_release}/deploy/scripts/manage-admission-operations.sh" \
+        "${temporary_release}/deploy/scripts/check-worker-admission-environment.sh" \
         "${temporary_release}/deploy/scripts/import-sqlite-postgres.sh" \
         "${temporary_release}/deploy/scripts/install-erasure-worker-credential.sh" \
         "${temporary_release}/deploy/scripts/manage-generated-object-backup-health.sh" \
@@ -417,6 +420,15 @@ validate_release() {
             return 1
         fi
     fi
+    local admission_guard=${script_dir}/check-worker-admission-environment.sh
+    if [[ ! -f ${admission_guard} ]]; then
+        admission_guard=/usr/local/libexec/careertrellis/check-worker-admission-environment.sh
+    fi
+    if [[ ! -f ${admission_guard} || -L ${admission_guard} || $(stat -c '%u' "${admission_guard}") != 0 || ! $(stat -c '%a' "${admission_guard}") =~ ^75[05]$ ]]; then
+        echo "The reviewed worker environment guard is required." >&2
+        return 1
+    fi
+    /bin/bash "${admission_guard}" || return 1
     if grep -Ev '^(#|[[:space:]]*$|CAREERTRELLIS_(ENVIRONMENT|DATA_DIR|DATA_STORE|ACCOUNT_ERASURE_WORKER_(ENABLED|POLL_SECONDS|BATCH_SIZE))=)' \
         /etc/careertrellis/account-erasure-worker.env >/dev/null || \
        grep -Ev '^(#|[[:space:]]*$|CAREERTRELLIS_DATABASE_URL=)' \

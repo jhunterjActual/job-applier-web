@@ -80,6 +80,8 @@ def check_postgres_ready(engine: Engine | None = None) -> None:
     with selected.connect() as connection:
         if connection.scalar(text("SELECT 1")) != 1:
             raise RuntimeError("The PostgreSQL runtime database is not ready.")
+        if connection.scalar(text("SELECT careertrellis.admission_lifecycle_ready()")) is not True:
+            raise RuntimeError("The account lifecycle database contract is not ready.")
 
 
 def dispose_postgres_engines() -> None:

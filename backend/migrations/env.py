@@ -12,6 +12,7 @@ from postgres_database import (
     MIGRATION_DATABASE_URL_ENV,
     MINIMUM_POSTGRES_MAJOR,
     database_url_from_environment,
+    postgres_url,
 )
 
 
@@ -25,6 +26,8 @@ target_metadata = None
 
 
 def migration_url():
+    if 'migration_url' in config.attributes:
+        return postgres_url(config.attributes['migration_url'])
     return database_url_from_environment(MIGRATION_DATABASE_URL_ENV)
 
 

@@ -20,6 +20,7 @@ class AccountChoiceTests(unittest.TestCase):
         environment = regressions.WebAuthenticationTests().staging_environment()
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, environment).start()
+        patch.object(app, 'check_postgres_ready').start()
         self.settings = web_auth.get_auth_configuration()
         self.client = TestClient(app.app, base_url="https://staging-app.jhunterj.com")
         self.addCleanup(self.client.close)

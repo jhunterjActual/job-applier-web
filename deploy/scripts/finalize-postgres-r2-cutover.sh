@@ -76,6 +76,10 @@ if [[ ! -d ${release_dir} || -L ${release_dir} ]]; then
     exit 1
 fi
 release_dir=$(realpath "${release_dir}")
+if [[ -e ${release_dir}/backend/migrations/versions/20260907_0014_admission_lifecycle.py ]]; then
+    echo "Admission releases require the reviewed admission coordinator; legacy cutover is unavailable." >&2
+    exit 1
+fi
 release_revision=$(basename "${release_dir}")
 if [[ $(dirname "${release_dir}") != "/opt/careertrellis/staging/releases" || ! ${release_revision} =~ ^[0-9a-f]{40}$ ]]; then
     echo "The final cutover requires an immutable reviewed release." >&2

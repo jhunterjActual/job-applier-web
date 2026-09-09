@@ -122,6 +122,9 @@ from web_auth import (
     get_auth_configuration,
     logout_url,
 )
+import signup_http
+import secrets
+from postgres_database import check_postgres_ready
 from backup_restore import (
     MAXIMUM_BACKUP_BYTES,
     BackupAuthenticationError,
@@ -270,16 +273,24 @@ async def lifespan(app: FastAPI):
     data_store = validate_data_store_configuration()
     if data_store == LOCAL_DATA_STORE:
         init_db()
-    get_auth_configuration()
+    auth_settings = get_auth_configuration()
     validate_identity_store_configuration()
     validate_provider_secret_store_configuration()
     validate_object_store_configuration()
-    initialize_analytics(APP_BUILD)
+    app.state.signup_runtime = await signup_http.create_runtime(auth_settings, config.BASE_DIR / 'static')
     try:
+        initialize_analytics(APP_BUILD)
         yield
     finally:
-        shutdown_analytics(timeout_seconds=0.5)
-        dispose_postgres_engines()
+        try:
+            shutdown_analytics(timeout_seconds=0.5)
+        finally:
+            try:
+                if app.state.signup_runtime is not None:
+                    await app.state.signup_runtime.aclose()
+            finally:
+                app.state.signup_runtime = None
+                dispose_postgres_engines()
 
 
 app = FastAPI(title="CareerTrellis API", lifespan=lifespan)
@@ -332,7 +343,14 @@ def _secured_response(request: Request, response: Response) -> Response:
     ):
         response.headers["Cache-Control"] = "no-store, max-age=0"
     if request.url.path.startswith("/auth/"):
+        # Clean v2 form pages need same-origin Origin on native POSTs. Callback
+        # and error pages retain no-referrer; no cross-origin referrer is sent.
+        clean_form = (request.url.path in {'/auth/sign-in', '/auth/result'}
+            and response.headers.get('Referrer-Policy') == 'same-origin'
+            and getattr(request.app.state, 'signup_runtime', None) is not None)
         response.headers["Referrer-Policy"] = "no-referrer"
+        if clean_form:
+            response.headers["Referrer-Policy"] = "same-origin"
     else:
         response.headers["Referrer-Policy"] = "same-origin"
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -460,7 +478,51 @@ async def protect_local_browser_boundary(request: Request, call_next):
                 JSONResponse({"detail": "Authentication is not configured."}, status_code=503),
             )
     owner_context_token = None
-    if auth_settings is not None and request.url.path not in PUBLIC_SHARED_HOST_PATHS:
+    try:
+        v2_enabled = signup_http.enabled()
+    except AuthenticationConfigurationError:
+        return _authentication_unavailable_response(request)
+    runtime = getattr(request.app.state, 'signup_runtime', None) if v2_enabled else None
+    if v2_enabled and request.url.path not in {'/health/live', '/health/ready'}:
+        if runtime is None or auth_settings is None:
+            return _authentication_unavailable_response(request)
+        handled = await runtime.handle(request)
+        if handled is not None:
+            return _secured_response(request, handled)
+    # A disabled/old process cannot issue or accept legacy credentials after
+    # the durable database contract has moved to v2. Logout remains available.
+    if (auth_settings is not None and not v2_enabled
+            and request.url.path != '/auth/logout'
+            and (request.url.path not in PUBLIC_SHARED_HOST_PATHS
+                 or request.url.path in {'/auth/login', '/auth/callback'})):
+        try:
+            await run_in_threadpool(check_postgres_ready)
+        except Exception:
+            return _authentication_unavailable_response(request)
+    if v2_enabled and auth_settings is not None and request.url.path not in PUBLIC_SHARED_HOST_PATHS:
+        try:
+            value = signup_http.cookie(request, signup_http.COOKIE_NAME, 3500)
+            authentication = await runtime.adapter.authenticate(value)
+            if authentication.status == 'refresh_required':
+                browser = signup_http.cookie(request, signup_http.BROWSER, 43)
+                if not await runtime.budget(request, 'refresh', browser):
+                    return _authentication_unavailable_response(request)
+                authentication = await runtime.adapter.authenticate(value, refresh=True)
+        except (ValueError, signup_http.StoreUnavailable):
+            return _authentication_unavailable_response(request)
+        if authentication.status in ('unavailable', 'service_limited', 'restart_required', 'refresh_required'):
+            return _authentication_unavailable_response(request)
+        if authentication.status != 'authenticated':
+            response = _unauthenticated_response(request)
+            if authentication.clear_cookie:
+                _delete_auth_cookie(response, signup_http.COOKIE_NAME)
+            return response
+        request.state.local_user_id = authentication.local_id
+        request.state.local_user_role = authentication.role
+        request.state.refreshed_v2_session = authentication.cookie
+        request.state.v2_browser = signup_http.cookie(request, signup_http.BROWSER, 43) or secrets.token_urlsafe(32)
+        owner_context_token = set_current_owner_user_id(authentication.local_id)
+    elif auth_settings is not None and request.url.path not in PUBLIC_SHARED_HOST_PATHS:
         logout_requested = request.method == "POST" and request.url.path == "/auth/logout"
         sealed_session = request.cookies.get(SESSION_COOKIE_NAME, "")
         if len(sealed_session) > 8192:
@@ -496,6 +558,10 @@ async def protect_local_browser_boundary(request: Request, call_next):
         )
         if local_user is None:
             return _unauthenticated_response(request, clear_cookie=True)
+        try:
+            await run_in_threadpool(check_postgres_ready)
+        except Exception:
+            return _authentication_unavailable_response(request)
         local_user_id = local_user.id
         request.state.local_user_id = local_user_id
         request.state.local_user_role = local_user.role
@@ -518,7 +584,19 @@ async def protect_local_browser_boundary(request: Request, call_next):
         if owner_context_token is not None:
             reset_current_owner_user_id(owner_context_token)
     refreshed_session = getattr(request.state, "refreshed_session", None)
+    refreshed_v2 = getattr(request.state, 'refreshed_v2_session', None)
+    if getattr(request.state, 'v2_browser', None) and not getattr(request.state, 'suppress_refreshed_session', False):
+        signup_http.set_cookie(response, signup_http.BROWSER, request.state.v2_browser, runtime.adapter.codec.lifetime_seconds)
+    if refreshed_v2 and not getattr(request.state, 'suppress_refreshed_session', False):
+        try:
+            runtime.set_session(response, refreshed_v2)
+        except signup_http.SessionInvalid:
+            return _authentication_unavailable_response(request)
     if refreshed_session and not getattr(request.state, "suppress_refreshed_session", False):
+        try:
+            await run_in_threadpool(check_postgres_ready)
+        except Exception:
+            return _authentication_unavailable_response(request)
         response.set_cookie(
             SESSION_COOKIE_NAME,
             refreshed_session,
@@ -716,6 +794,7 @@ async def auth_callback(request: Request) -> Response:
         )
         if local_user is None:
             raise LocalUserAuthorizationError("The local user is not active.")
+        await run_in_threadpool(check_postgres_ready)
     except LoginFlowError as exc:
         response = JSONResponse({"detail": "The login attempt expired or is invalid."}, status_code=400)
         _delete_auth_cookie(response, LOGIN_FLOW_COOKIE_NAME)
@@ -786,6 +865,9 @@ def get_session_summary(request: Request) -> dict[str, object]:
         "authentication": "workos",
         "authenticated": bool(getattr(request.state, "local_user_id", None)),
         "account_erasure_available": account_erasure_available,
+        **({'logout_csrf': request.app.state.signup_runtime.token(
+            request.state.v2_browser, 'csrf')}
+           if signup_http.enabled() else {}),
     }
 
 
@@ -827,7 +909,7 @@ def get_liveness() -> dict:
 
 
 @app.get("/health/ready", include_in_schema=False)
-def get_readiness() -> dict:
+async def get_readiness() -> dict:
     """Report readiness only when configuration, storage, and the database are usable."""
     try:
         config.validate_runtime_configuration()
@@ -837,12 +919,22 @@ def get_readiness() -> dict:
             for directory in (config.DATA_DIR, config.UPLOAD_DIR, config.OUTPUT_DIR)
         ):
             raise RuntimeError("Runtime storage is not accessible.")
-        check_data_store_ready(get_db_connection)
-        check_identity_store_ready(
+        if signup_http.enabled():
+            runtime = getattr(app.state, 'signup_runtime', None)
+            if runtime is None:
+                raise RuntimeError('Account boundary is not ready.')
+            await runtime.adapter.context()
+            # The context query above proves connectivity and the v2 contract.
+            # Do not run the intentionally legacy-only downgrade guard here.
+            validate_data_store_configuration()
+        else:
+            await run_in_threadpool(check_data_store_ready, get_db_connection)
+        await run_in_threadpool(
+            check_identity_store_ready,
             auth_settings.owner_workos_user_id if auth_settings is not None else None
         )
-        check_provider_secret_store_ready()
-        check_object_store_ready()
+        await run_in_threadpool(check_provider_secret_store_ready)
+        await run_in_threadpool(check_object_store_ready)
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Service is not ready.") from exc
     return {"status": "ready", "build": APP_BUILD}
@@ -1770,6 +1862,8 @@ def request_account_erasure(
     # account row has been disabled by the acceptance transaction.
     request.state.suppress_refreshed_session = True
     _delete_auth_cookie(response, SESSION_COOKIE_NAME)
+    if signup_http.enabled():
+        signup_http.clear_auth(response)
     return response
 
 
