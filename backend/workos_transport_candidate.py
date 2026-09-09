@@ -12,7 +12,6 @@ import json
 import hashlib
 import re
 import time
-from urllib.parse import urlsplit
 
 import httpx
 import jwt
@@ -69,13 +68,12 @@ class ProviderSettings:
                                          separators=(',', ':')).encode()).hexdigest()
 
     def __post_init__(self):
-        parsed = urlsplit(self.issuer)
+        # AuthKit session issuers are client-scoped, just like the fixed JWKS
+        # endpoint. Never accept a bare origin, another client or URL aliases.
         if (not bounded_string(self.client_id, 128, CLIENT)
                 or not bounded_string(self.client_secret, 512)
                 or not bounded_string(self.generation, 128)
-                or parsed.scheme != 'https' or not parsed.hostname
-                or parsed.port not in (None, 443) or parsed.username or parsed.password
-                or parsed.query or parsed.fragment or parsed.path not in ('', '/')
+                or self.issuer != API + '/user_management/' + self.client_id
                 or (self.audience is not None and not bounded_string(self.audience, 256))):
             raise ValueError('Invalid candidate provider configuration')
 

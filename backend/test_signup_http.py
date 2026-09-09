@@ -277,7 +277,7 @@ class SignupHTTPTests(unittest.IsolatedAsyncioTestCase):
         import web_auth
         settings = web_auth.get_auth_configuration()
         environment = {
-            'CAREERTRELLIS_AUTH_V2_ISSUER': SETTINGS.issuer,
+            'CAREERTRELLIS_AUTH_V2_ISSUER': 'https://api.workos.com/user_management/' + settings.client_id,
             'CAREERTRELLIS_AUTH_V2_GENERATION': GENERATION,
             'CAREERTRELLIS_AUTH_V2_ENVELOPE_KEY': Fernet.generate_key().decode(),
             'CAREERTRELLIS_AUTH_V2_FLOW_KEY': Fernet.generate_key().decode(),

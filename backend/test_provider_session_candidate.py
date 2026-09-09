@@ -34,7 +34,8 @@ from workos_transport_candidate import (API, ProviderSettings, WorkOSTransportCa
 GENERATION = 'synthetic-provider-v2'
 SUBJECT = 'user_synthetic_admitted'
 SID = 'session_synthetic_original'
-SETTINGS = ProviderSettings('client_synthetic_test', 'synthetic-secret-only', API + '/', GENERATION)
+SETTINGS = ProviderSettings('client_synthetic_test', 'synthetic-secret-only',
+    API + '/user_management/client_synthetic_test', GENERATION)
 
 
 def synthetic_cookie_size_receipt():
@@ -81,7 +82,7 @@ class SyntheticHTTP:
 
     def token(self, **claims):
         now = int(time.time())
-        return jwt.encode({'iss': API + '/', 'sub': SUBJECT, 'sid': SID, 'iat': now-5,
+        return jwt.encode({'iss': SETTINGS.issuer, 'sub': SUBJECT, 'sid': SID, 'iat': now-5,
             'exp': now+300, **self.claims, **claims}, self.key, algorithm='RS256', headers={'kid': self.kid})
 
     def jwks(self):
@@ -193,6 +194,24 @@ class CandidateTests(unittest.IsolatedAsyncioTestCase):
         factory.assert_not_called()
         with self.assertRaises(ValueError): build_candidate(enabled='false', factory=factory)
 
+    async def test_client_scoped_issuer_configuration_and_signed_claims(self):
+        self.assertEqual(API + '/user_management/' + SETTINGS.client_id, SETTINGS.issuer)
+        invalid = (API, API + '/', API + '/user_management/client_synthetic_other',
+            SETTINGS.issuer + '/', SETTINGS.issuer + '?x=1', SETTINGS.issuer + '#x',
+            SETTINGS.issuer.replace('https:', 'http:'),
+            SETTINGS.issuer.replace('api.workos.com', 'other.example.test'),
+            SETTINGS.issuer.replace('api.workos.com', 'api.workos.com:443'),
+            SETTINGS.issuer.replace('api.workos.com', 'user@api.workos.com'), None)
+        for issuer in invalid:
+            with self.subTest(issuer=issuer):
+                with self.assertRaises(ValueError): replace(SETTINGS, issuer=issuer)
+                if issuer is None:
+                    continue  # PyJWT's signing API rejects non-string issuers.
+                # A valid signature cannot compensate for an incorrect issuer.
+                with self.assertRaises(ProviderRejected):
+                    await self.provider.verify(self.http.token(iss=issuer), SUBJECT)
+        self.assertEqual(SUBJECT, (await self.provider.verify(self.http.token(), SUBJECT))['sub'])
+
     async def test_fixed_endpoints_exact_pkce_body_no_metadata_retention(self):
         self.http.extra = {'oauth_tokens': {'secret': 'discard-me'}, 'authentication_method': 'Password'}
         result = await self.provider.exchange('synthetic-code', 'v'*43)
@@ -279,7 +298,7 @@ class CandidateTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ProviderRejected): await self.provider.exchange('synthetic-code','v'*43)
 
     async def test_missing_claims_wrong_algorithm_and_signature(self):
-        now=int(time.time()); claims={'iss':API+'/','sub':SUBJECT,'sid':SID,'iat':now-5,'exp':now+300}
+        now=int(time.time()); claims={'iss':SETTINGS.issuer,'sub':SUBJECT,'sid':SID,'iat':now-5,'exp':now+300}
         for missing in claims:
             token=jwt.encode({k:v for k,v in claims.items() if k!=missing},self.key,algorithm='RS256',headers={'kid':self.http.kid})
             with self.assertRaises(ProviderRejected): await self.provider.verify(token,SUBJECT)
@@ -492,7 +511,7 @@ class CandidateTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ProviderRejected): await self.provider.verify(self.http.token(aud='wrong'),SUBJECT)
 
     async def test_hostile_headers_and_duplicate_claim_members(self):
-        claims={'iss':API+'/','sub':SUBJECT,'sid':SID,'iat':int(time.time())-5,'exp':int(time.time())+300}
+        claims={'iss':SETTINGS.issuer,'sub':SUBJECT,'sid':SID,'iat':int(time.time())-5,'exp':int(time.time())+300}
         for header in ({'jku':'https://attacker.example.test/'},{'jwk':{}},{'crit':[]},{'x5u':'https://attacker.example.test/'}):
             token=jwt.encode(claims,self.key,algorithm='RS256',headers={'kid':self.http.kid,**header})
             with self.assertRaises(ProviderRejected): await self.provider.verify(token,SUBJECT)
@@ -523,7 +542,8 @@ class CandidateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_provider_configuration_change_cannot_reuse_same_generation(self):
         cookie=await self.activate()
-        self.provider.settings=replace(SETTINGS,client_id='client_synthetic_changed')
+        self.provider.settings=replace(SETTINGS,client_id='client_synthetic_changed',
+            issuer=API+'/user_management/client_synthetic_changed')
         self.assertEqual('unavailable',(await self.adapter.authenticate(cookie)).status)
         self.assertNotEqual(SETTINGS.binding,self.provider.settings.binding)
 
