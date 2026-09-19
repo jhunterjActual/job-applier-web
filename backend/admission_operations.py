@@ -1,4 +1,4 @@
-"""Root-operated admission installation and phased maintenance; never activation.
+"""Root-operated admission installation, phased maintenance and closed-v2 transition.
 
 Run only through the reviewed wrapper from an immutable root-owned release.
 No secret is accepted in argv/environment, printed, or shell-evaluated. Host
@@ -26,6 +26,7 @@ from uuid import UUID, uuid4
 
 ROOT = Path('/etc/careertrellis')
 STATE = ROOT / 'admission-operations'
+LOCK_ROOT = Path('/run/lock')
 PLAN = ROOT / 'admission-install.json'
 AUTH_FILE = ROOT / 'auth-v2.env'
 BUNDLE = ROOT / 'admission-credential.age'
@@ -566,6 +567,16 @@ def migration_connection_url(database):
     return urls[0]
 
 
+def require_migration_plan(operation, target, expected):
+    import identity_plan_store
+    import session_v2_transition
+    snapshot, selected = identity_plan_store.load(activation=True)
+    activation = selected['activation']
+    require(activation['operation'] == operation and activation['application'] == target
+        and expected == session_v2_transition.schema(activation))
+    identity_plan_store.require_current(snapshot)
+
+
 def migrate_web(operation, target, release, *, database='careertrellis', initial=False):
     """Web-host migration under the separate, already-established DB fence."""
     from sqlalchemy import create_engine, text
@@ -601,11 +612,12 @@ def migrate_web(operation, target, release, *, database='careertrellis', initial
         config = Config()
         config.set_main_option('script_location', str(release / 'backend/migrations'))
         config.attributes['migration_url'] = url
-        expected = ScriptDirectory.from_config(config).get_current_head()
-        require(not initial or expected == INITIAL_HEAD)
+        expected = INITIAL_HEAD if initial else ScriptDirectory.from_config(config).get_current_head()
+        if not initial:
+            require_migration_plan(operation,target,expected)
         write_protected(attempt, encoded({'phase': 'migration_started', 'operation': operation, 'target': target,
             'head': expected}))
-        alembic.upgrade(config, 'head')
+        alembic.upgrade(config, expected)
         apply_runtime_grants(release / 'deploy/postgres/grant-runtime.sql',
             migration_url=url.render_as_string(hide_password=False))
         with engine.connect() as connection:
@@ -841,7 +853,7 @@ def host_locks():
     descriptors = []
     try:
         for name in ('careertrellis-maintenance.lock', 'careertrellis-postgres-migration.lock', 'careertrellis-admission-operation.lock'):
-            path = Path('/run/lock') / name
+            path = LOCK_ROOT / name
             descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
             descriptors.append(descriptor)
             item = os.fstat(descriptor)
@@ -860,22 +872,82 @@ def main(argv=None):
         require(args and args[0] in ('check-worker-files', 'db-install', 'db-enable-login', 'db-grant-connect', 'web-install',
             'db-begin', 'db-quiesce', 'web-migrate', 'db-finish',
             'db-initial-begin', 'db-initial-quiesce', 'web-initial-migrate', 'db-initial-finish',
-            'db-verify-transport', 'web-verify-transport'))
+            'db-verify-transport', 'web-verify-transport', 'db-v2-arm', 'web-v2-enable', 'db-v2-release', 'web-v2-preflight',
+            'web-identity-preflight','web-identity-status','web-identity-attest','web-identity-reconcile','web-identity-enter',
+            'web-provider-enter','web-provider-apply','web-provider-reconcile','web-provider-preflight',
+            'web-plan-enter','web-plan-select','web-plan-status','web-plan-supersede',
+            'web-transition-prepare','web-transition-resume','web-plan-export','db-plan-import','web-receipt-export','web-receipt-import','db-receipt-export','db-receipt-import'))
         operation = args[0]
         source = Path(__file__).absolute()
         protected_parents(source)
         read_protected(source, modes=(0o600, 0o640, 0o644), limit=131072)
         if operation in ('db-grant-connect', 'web-install', 'web-migrate', 'web-initial-migrate',
-                'db-initial-begin', 'db-initial-quiesce', 'db-initial-finish', 'db-verify-transport', 'web-verify-transport'):
+                'db-initial-begin', 'db-initial-quiesce', 'db-initial-finish', 'db-verify-transport', 'web-verify-transport',
+                'db-v2-arm', 'web-v2-enable', 'db-v2-release', 'web-v2-preflight',
+                'web-identity-preflight','web-identity-status','web-identity-attest','web-identity-reconcile','web-identity-enter',
+                'web-provider-enter','web-provider-apply','web-provider-reconcile','web-provider-preflight',
+                'web-plan-enter','web-plan-select','web-plan-status','web-plan-supersede',
+                'web-transition-prepare','web-transition-resume','web-plan-export','db-plan-import','web-receipt-export','web-receipt-import','db-receipt-export','db-receipt-import'):
             require(re.fullmatch(r'[0-9a-f]{40}', source.parent.parent.name)
                 and source.parent.parent.parent == Path('/opt/careertrellis/staging/releases'))
             sys.path.insert(0, str(source.parent))
         require(len(args) == (3 if operation in ('db-begin', 'web-migrate', 'db-initial-begin', 'web-initial-migrate')
-            else 2 if operation in ('db-finish', 'db-quiesce', 'db-initial-quiesce', 'db-initial-finish',
-                'db-verify-transport', 'web-verify-transport', 'db-grant-connect') else 1))
+            else 2 if operation in ('web-receipt-export','web-receipt-import','db-receipt-export','db-receipt-import','db-finish', 'db-quiesce', 'db-initial-quiesce', 'db-initial-finish',
+                'db-verify-transport', 'web-verify-transport', 'db-grant-connect',
+                'web-identity-preflight','web-identity-status','web-identity-attest','web-identity-reconcile','web-identity-enter') else 1))
+        if (operation.startswith(('web-receipt-','db-receipt-','web-plan-','db-plan-',
+                'web-transition-','web-provider-','web-v2-','db-v2-')) or operation=='web-migrate'):
+            read_protected(source.parent/'totp_configuration.py',modes=(0o600,0o640,0o644),limit=32768)
+        if operation in ('web-receipt-export','web-receipt-import','db-receipt-export','db-receipt-import'):
+            for module in ('identity_receipt_transfer.py','identity_plan_store.py','identity_plan_packet.py','identity_configuration.py',
+                    'identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
+                read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
+            import identity_receipt_transfer
+            side,_,action=operation.split('-')
+            return identity_receipt_transfer.run(action,source,side,args[1])
+        if operation in ('web-plan-export','db-plan-import'):
+            for module in ('identity_plan_transfer.py','identity_plan_store.py','identity_plan_packet.py','identity_configuration.py',
+                    'identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
+                read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
+            import identity_plan_transfer
+            return identity_plan_transfer.run('export' if operation=='web-plan-export' else 'import',source)
+        if operation.startswith(('web-plan-','web-transition-')):
+            for module in ('identity_plan_operator.py','identity_transition_operator.py','identity_plan_supersession.py',
+                    'identity_plan_store.py','identity_plan_packet.py','identity_web_handoff.py','identity_configuration.py',
+                    'identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
+                read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
+            if operation=='web-plan-supersede':
+                import identity_plan_supersession
+                return identity_plan_supersession.run(source)
+            if operation.startswith('web-transition-'):
+                import identity_transition_operator
+                return identity_transition_operator.run(operation.removeprefix('web-transition-'),source)
+            import identity_plan_operator
+            return identity_plan_operator.run(operation.removeprefix('web-plan-'),source)
+        if operation.startswith('web-provider-'):
+            for module in ('identity_web_handoff.py','identity_configuration.py','identity_operator.py',
+                    'identity_entry.py','identity_evidence.py','session_v2_transition.py',
+                    'identity_plan_store.py','identity_plan_packet.py','session_authorization.py'):
+                read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
+            import identity_web_handoff
+            return identity_web_handoff.run(operation.removeprefix('web-provider-'),source)
+        if operation.startswith('web-identity-'):
+            for module in ('identity_operator.py','identity_evidence.py','session_authorization.py','identity_entry.py'):
+                read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
+            import identity_operator
+            return identity_operator.run(operation.removeprefix('web-identity-'),args[1],source)
         if operation == 'check-worker-files':
             check_worker_delivery()
             print('operation=check-worker-files\nresult=ok\nvalues_disclosed=no')
+            return 0
+        if operation == 'web-v2-preflight':
+            for module in ('session_v2_transition.py','identity_plan_store.py','identity_plan_packet.py',
+                    'identity_configuration.py','identity_operator.py','identity_evidence.py','session_authorization.py'):
+                read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
+            import session_v2_transition
+            with host_locks():
+                session_v2_transition.run(operation, source, None)
+            print('operation=web-v2-preflight\nresult=ok\nvalues_disclosed=no')
             return 0
         with host_locks():
             if operation == 'check-worker-files':
@@ -891,7 +963,13 @@ def main(argv=None):
                     require(db.query("SELECT current_database()='careertrellis' AND session_user='postgres' "
                         "AND current_setting('server_version_num')::int BETWEEN 180000 AND 189999 "
                         "AND current_setting('data_directory')='/var/lib/postgresql/18/main';") is True)
-                if operation == 'db-verify-transport':
+                if operation in ('db-v2-arm', 'web-v2-enable', 'db-v2-release'):
+                    for module in ('session_v2_transition.py','identity_plan_store.py','identity_plan_packet.py',
+                            'identity_configuration.py','identity_operator.py','identity_evidence.py','session_authorization.py'):
+                        read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
+                    import session_v2_transition
+                    session_v2_transition.run(operation, source, db)
+                elif operation == 'db-verify-transport':
                     transport_receipt('database', args[1], lambda: verify_database_transport(db))
                 elif operation == 'web-verify-transport':
                     transport_receipt('web', args[1], verify_web_transport)
