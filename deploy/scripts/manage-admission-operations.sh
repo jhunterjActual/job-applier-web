@@ -22,8 +22,8 @@ for path in "${BASH_SOURCE[0]}" "${runner}" "${release}" "${release}/backend"; d
     fi
 done
 case "$1" in
-    db-install|db-enable-login|db-grant-connect|db-begin|db-quiesce|db-finish|db-initial-begin|db-initial-quiesce|db-initial-finish|db-verify-transport|check-worker-files) python=/usr/bin/python3 ;;
-    web-install|web-migrate|web-initial-migrate|web-verify-transport) python=${release}/backend/venv/bin/python ;;
+    db-receipt-export|db-receipt-import|db-plan-import|db-install|db-enable-login|db-grant-connect|db-begin|db-quiesce|db-finish|db-initial-begin|db-initial-quiesce|db-initial-finish|db-verify-transport|db-v2-arm|db-v2-release|check-worker-files) python=/usr/bin/python3 ;;
+    web-receipt-export|web-receipt-import|web-install|web-migrate|web-initial-migrate|web-verify-transport|web-v2-enable|web-v2-preflight|web-identity-preflight|web-identity-status|web-identity-attest|web-identity-reconcile|web-identity-enter|web-provider-enter|web-provider-apply|web-provider-reconcile|web-provider-preflight|web-plan-export|web-plan-enter|web-plan-select|web-plan-status|web-plan-supersede|web-transition-prepare|web-transition-resume) python=${release}/backend/venv/bin/python ;;
     *) echo "Unknown admission operation." >&2; exit 1 ;;
 esac
 # Isolated interpreter and fresh environment prevent secret/config inheritance.
