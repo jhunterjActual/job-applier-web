@@ -1,0 +1,21 @@
+{
+  "evidence_origin": "operator_supplied_receipt",
+  "beta_ready": false,
+  "feeds": [
+    {"eligible": 11, "provider": "lever", "result": "ok", "rows": 11},
+    {"eligible": 37, "provider": "greenhouse", "result": "ok", "rows": 37},
+    {"eligible": 32, "provider": "ashby", "result": "ok", "rows": 32}
+  ],
+  "managed": [
+    {"case": 1, "eligible_urls": 10, "result": "ok", "rows": 10},
+    {"case": 2, "eligible_urls": 6, "result": "ok", "rows": 7},
+    {"case": 3, "eligible_urls": 10, "result": "ok", "rows": 10},
+    {"case": 4, "eligible_urls": 9, "result": "ok", "rows": 10},
+    {"case": 5, "eligible_urls": 10, "result": "ok", "rows": 10},
+    {"case": 6, "eligible_urls": 0, "result": "ok", "rows": 0}
+  ],
+  "managed_requests": 6,
+  "observed_at": "2026-09-22T14:11:47.642580+00:00",
+  "requests": 9,
+  "scope": "transport_and_url_controls_only"
+}

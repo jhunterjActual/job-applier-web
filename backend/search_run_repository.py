@@ -34,6 +34,8 @@ SEARCH_CANCELLED_MESSAGE = (
     "Search stopped. Any jobs committed before the stop request were kept."
 )
 MATCH_PROVIDER_FAILURE_MESSAGES = {
+    "keywords_unavailable": "Search terms could not be prepared. Enter a short job title and location, then try again.",
+    "storage_error": "Some matched postings could not be saved. Any earlier saved matches were kept; try again later.",
     "authentication": "The saved AI provider credential could not be used to score the discovered postings. Check it in Profile & Resume, then try again.",
     "missing_key": "An AI provider key is required to score discovered postings. Save one in Profile & Resume, then try again.",
     "model_unavailable": "The selected AI model could not score the discovered postings. Choose an available model, then try again.",
@@ -171,6 +173,68 @@ def _lease_seconds(value: object) -> int:
 
 def minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
     """Keep only bounded UI state; provider responses and credentials stay out."""
+    outcome = result.get("outcome")
+    messages = {
+        "source_unavailable": "Job sources did not return usable postings. Try again later or import a specific job URL.",
+        "no_results": "The job sources returned no postings for this search. Try different keywords or locations.",
+        "no_new_matches": "No new matches were saved. Discovered postings were already known, unavailable, or did not qualify.",
+        "matches_saved": "New matches were saved.",
+        "partial_results": "Search was only partially completed. Any saved matches were kept; some sources or postings could not be processed.",
+    }
+    if isinstance(outcome, str) and outcome in messages:
+        def count(value):
+            return max(0, min(value, 100_000)) if type(value) is int else 0
+
+        counts = result.get("counts")
+        counts = counts if isinstance(counts, Mapping) else {}
+        payload = {
+            "success": bool(result.get("success")) and outcome != "source_unavailable",
+            "outcome": outcome,
+            "jobs_added": count(result.get("jobs_added")),
+            "counts": {name: count(counts.get(name)) for name in (
+                "discovered", "inspected", "accepted", "known", "filtered", "saved"
+            )},
+            "provider_alerts": [],
+        }
+        # Reconstruct notices from enums only, including on subsequent readback.
+        from source_diagnostics import ALLOWED_CODES, ALLOWED_PROVIDERS
+        notice_messages = {
+            "url_format_drift": "Some discovered links did not identify supported job postings.",
+            "content_format_drift": "Some postings could not be read in a supported format.",
+            "access_challenge": "Some job sources blocked automated reading.",
+            "provider_error": "Some job sources could not be reached or returned unusable results.",
+            "stale_postings": "Unavailable postings were skipped.",
+            "partial_results": "Some source results were incomplete or required a fallback.",
+        }
+        alerts = result.get("provider_alerts")
+        seen = set()
+        for alert in (alerts[:20] if isinstance(alerts, list) else []):
+            if not isinstance(alert, Mapping):
+                continue
+            provider, code = alert.get("provider"), alert.get("code")
+            if not isinstance(provider, str) or not isinstance(code, str):
+                continue
+            if provider not in ALLOWED_PROVIDERS or code not in ALLOWED_CODES or (provider, code) in seen:
+                continue
+            seen.add((provider, code))
+            payload["provider_alerts"].append({
+                "provider": provider, "code": code,
+                "message": f"{provider.title()}: {notice_messages[code]}",
+            })
+        message = messages[outcome]
+        if outcome == "matches_saved":
+            message = f"Saved {payload['jobs_added']} new match(es)."
+        if payload["success"]:
+            payload["message"] = message
+            payload["partial"] = outcome == "partial_results"
+        else:
+            failure_code = result.get("failure_code")
+            if isinstance(failure_code, str) and failure_code in MATCH_PROVIDER_FAILURE_CODES:
+                payload["failure_code"] = failure_code
+                payload["error"] = MATCH_PROVIDER_FAILURE_MESSAGES[failure_code]
+            else:
+                payload["error"] = message if outcome == "source_unavailable" else SEARCH_FAILED_MESSAGE
+        return payload
     if not bool(result.get("success")):
         failure_code = str(result.get("failure_code") or "").strip().lower()
         if failure_code not in MATCH_PROVIDER_FAILURE_CODES:

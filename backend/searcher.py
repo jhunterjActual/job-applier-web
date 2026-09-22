@@ -1,5 +1,6 @@
 import base64
 import html
+from html.parser import HTMLParser
 import ipaddress
 import json
 import re
@@ -548,6 +549,18 @@ def provider_alerts_from_health(provider_health: dict) -> list[dict]:
     """Convert abnormal provider outcomes into safe user-facing diagnostics."""
     alerts = []
     for provider, health in provider_health.items():
+        if health.get("source_failures", 0):
+            alerts.append({
+                "provider": provider,
+                "code": "provider_error",
+                "message": f"{provider.title()} discovery could not return usable search results for some requests.",
+            })
+        elif health.get("source_fallbacks", 0):
+            alerts.append({
+                "provider": provider,
+                "code": "partial_results",
+                "message": f"{provider.title()} discovery used a fallback after its first search source was unavailable.",
+            })
         attempted = health.get("new_candidates", 0)
         accepted = health.get("accepted", 0)
         reasons = health.get("rejection_reasons", {})
@@ -597,6 +610,8 @@ def provider_alerts_from_health(provider_health: dict) -> list[dict]:
                 causes.append(f"the {MAX_PROVIDER_CANDIDATES}-posting processing limit was reached")
             if partial.get("timeouts", 0):
                 causes.append(f"a search request exceeded the {SEARCH_HTTP_TIMEOUT_SECONDS}-second timeout")
+            if partial.get("planning_limits", 0):
+                causes.append("the search keyword or location limit was reached")
             alerts.append({
                 "provider": provider,
                 "code": "partial_results",
@@ -733,6 +748,46 @@ def _decoded_search_result_url(link: str) -> str:
     return decoded
 
 
+class _UnusableSearchResponse(ValueError):
+    """An HTTP-success response did not establish candidates or an explicit zero."""
+
+
+class _SearchResponseParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.links = []
+        self.empty_marker = False
+        self.result_marker = False
+        self.text = []
+        self.ignored_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag in {"script", "style"}:
+            self.ignored_depth += 1
+        if tag == "a" and attributes.get("href") and not self.ignored_depth:
+            self.links.append(attributes["href"])
+        markers = set((attributes.get("class", "") or "").lower().split())
+        markers.add((attributes.get("id", "") or "").lower())
+        if markers & {"b_no", "compnoresults", "no-results", "noresults"}:
+            self.empty_marker = True
+        if markers & {"b_algo", "algo"}:
+            self.result_marker = True
+
+    def handle_endtag(self, tag):
+        if tag in {"script", "style"}:
+            self.ignored_depth = max(0, self.ignored_depth - 1)
+
+    def handle_data(self, data):
+        if not self.ignored_depth:
+            self.text.append(data)
+
+
+def _source_counter(health: dict | None, name: str) -> None:
+    if health is not None:
+        health[name] = min(100_000, max(0, health.get(name, 0)) + 1)
+
+
 def _search_result_candidates(
     url: str,
     provider: str,
@@ -746,13 +801,16 @@ def _search_result_candidates(
     })
     with urllib.request.urlopen(request, timeout=SEARCH_HTTP_TIMEOUT_SECONDS) as response:
         payload = response.read(MAX_SEARCH_RESPONSE_BYTES + 1)
-    if len(payload) > MAX_SEARCH_RESPONSE_BYTES:
+    oversized = len(payload) > MAX_SEARCH_RESPONSE_BYTES
+    if oversized:
         if health is not None:
             health["partial_results"]["oversized_responses"] += 1
         payload = payload[:MAX_SEARCH_RESPONSE_BYTES]
     document = payload.decode("utf-8", errors="replace")
+    parser = _SearchResponseParser()
+    parser.feed(document)
     candidates = []
-    for link in re.findall(r'href="([^"]+)"', document):
+    for link in parser.links:
         decoded = _decoded_search_result_url(link)
         if provider_for_url(decoded) != provider or "/embed/" in decoded:
             continue
@@ -768,10 +826,22 @@ def _search_result_candidates(
                 health["partial_results"]["candidate_limit_hits"] += 1
             break
         candidates.append(canonical_url)
+    if not candidates:
+        text = " ".join(" ".join(parser.text).lower().split())
+        explicit_empty = parser.empty_marker and not parser.result_marker and re.search(
+            r"\b(?:no results (?:found|for)|no results\b|there are no results|did not match any (?:documents|results))",
+            text,
+        )
+        if oversized or not explicit_empty:
+            _source_counter(health, "source_unusable")
+            raise _UnusableSearchResponse("Search response did not establish a usable result.")
+        _source_counter(health, "source_empty")
     return candidates
 
 
 def _source_failure_code(exc: BaseException) -> str:
+    if isinstance(exc, _UnusableSearchResponse):
+        return "unusable_response"
     if isinstance(exc, urllib.error.HTTPError):
         return "http_5xx" if 500 <= exc.code <= 599 else "http_error"
     if isinstance(exc, (TimeoutError, socket.timeout)):
@@ -820,11 +890,14 @@ def search_yahoo_jobs(
         yahoo_error = None
         if state["yahoo_available"]:
             try:
+                _source_counter(health, "source_attempts")
                 candidates = _search_result_candidates(
                     f"https://search.yahoo.com/search?p={encoded_query}",
                     provider,
                     health,
                 )
+            except OperationCancelled:
+                raise
             except Exception as exc:
                 yahoo_error = _source_failure_code(exc)
                 state["yahoo_available"] = False
@@ -836,18 +909,23 @@ def search_yahoo_jobs(
                 }, separators=(",", ":")), flush=True)
 
         if candidates is None:
+            _source_counter(health, "source_fallbacks")
             try:
+                _source_counter(health, "source_attempts")
                 candidates = _search_result_candidates(
                     f"https://www.bing.com/search?q={encoded_query}",
                     provider,
                     health,
                 )
+            except OperationCancelled:
+                raise
             except Exception as exc:
                 fallback_error = _source_failure_code(exc)
+                _source_counter(health, "source_failures")
                 if health is not None:
                     if "timeout" in {yahoo_error, fallback_error}:
                         health["partial_results"]["timeouts"] += 1
-                    else:
+                    elif len(health["errors"]) < 20:
                         health["errors"].append(fallback_error)
                 print(json.dumps({
                     "event": "search_source_request_failed",
@@ -892,7 +970,7 @@ def extract_search_keywords_from_resume(
     if not key:
         key = config.get_openai_api_key() if provider == "openai" else config.get_gemini_api_key()
     if not key:
-        return ["Software Engineer"]
+        return []
 
     settings = AIProviderSettings(provider, (ai_model or default_model(provider)).strip(), key)
     try:
@@ -918,13 +996,13 @@ def extract_search_keywords_from_resume(
         ).get("titles", [])
         if isinstance(titles, list) and len(titles) > 0:
             return [str(title).strip() for title in titles[:3] if str(title).strip()]
-        return ["Software Engineer"]
+        return []
     except AIProviderError as exc:
         print(f"AI keyword extraction did not complete: {exc}")
-        return ["Software Engineer"]
+        return []
     except Exception:
         print("AI keyword extraction did not complete because the response was invalid.")
-        return ["Software Engineer"]
+        return []
 
 def _reject_job_fetch(diagnostic: dict | None, status: str, reason: str) -> dict:
     if diagnostic is not None:
@@ -1212,6 +1290,66 @@ def scrape_job_details(url: str, allow_partial: bool = False) -> dict:
     """Compatibility wrapper returning details only for callers that do not need diagnostics."""
     return inspect_job_posting(url, allow_partial)["details"]
 
+def _search_completion(
+    provider_health: dict,
+    discovered: int,
+    inspected: int,
+    analyzed: int,
+    saved: int,
+    ai_error: str | None = None,
+    ai_error_code: str | None = None,
+    save_failures: int = 0,
+) -> dict:
+    """Classify useful work separately from discovery and posting failures."""
+    totals = lambda key: sum(item.get(key, 0) for item in provider_health.values())
+    known = totals("skipped_active") + totals("skipped_archived")
+    suppressed = totals("skipped_suppressed")
+    stale = sum(item.get("rejection_reasons", {}).get("stale", 0) for item in provider_health.values())
+    detail_errors = sum(
+        sum(value for key, value in item.get("rejection_reasons", {}).items() if key != "stale")
+        for item in provider_health.values()
+    )
+    limited = any(
+        any(item.get("partial_results", {}).values()) or item.get("candidate_budget_exhausted")
+        for item in provider_health.values()
+    )
+    source_failed = totals("source_failures") > 0
+    issues = source_failed or detail_errors > 0 or limited
+    useful = totals("accepted") + known + suppressed + stale + totals("source_empty")
+    if save_failures and ai_error is None:
+        ai_error = "Some matched postings could not be saved. Please try again later."
+        ai_error_code = "storage_error"
+    if ai_error is not None:
+        outcome = "partial_results" if saved > 0 else None
+        success = saved > 0
+    elif issues and not useful and not saved:
+        outcome = "source_unavailable"
+        success = False
+        ai_error = "Job sources did not return usable postings. Please try again later."
+        ai_error_code = "source_unavailable"
+    elif issues:
+        outcome = "partial_results"
+        success = True
+    else:
+        outcome = "matches_saved" if saved else "no_new_matches" if discovered else "no_results"
+        success = True
+    counts = {
+        "discovered": discovered, "inspected": inspected,
+        "accepted": totals("accepted"), "known": known,
+        "filtered": suppressed + stale + max(0, analyzed - saved - save_failures), "saved": saved,
+    }
+    result = {
+        "success": success, "partial": outcome == "partial_results",
+        "jobs_added": saved, "error": ai_error, "failure_code": ai_error_code,
+        "counts": {key: max(0, min(100_000, value)) for key, value in counts.items()},
+        "provider_health": provider_health,
+        "provider_alerts": provider_alerts_from_health(provider_health),
+    }
+    if outcome is not None:
+        result["outcome"] = outcome
+    return result
+
+
 def run_job_search_and_matching(
     keywords: str,
     location: str = "",
@@ -1281,12 +1419,19 @@ def run_job_search_and_matching(
             )
             check_cancelled()
             # Cache only when another request has not already populated it.
-            profile_repository.cache_suggested_keywords_if_empty(
-                ",".join(search_keywords)
-            )
+            if search_keywords:
+                profile_repository.cache_suggested_keywords_if_empty(
+                    ",".join(search_keywords)
+                )
             print(json.dumps({"event": "search_keywords_prepared"}), flush=True)
     else:
         search_keywords = [stripped_kw]
+    from discovery_sources import bounded_terms, MAX_KEYWORDS, MAX_LOCATIONS
+    search_keywords, keywords_limited = bounded_terms(search_keywords, MAX_KEYWORDS)
+    if not search_keywords:
+        return {"success": False, "failure_code": "keywords_unavailable",
+                "error": "Search keywords could not be prepared. Enter a job title and try again.",
+                "jobs_added": 0, "provider_alerts": []}
     report_progress("preparing_keywords", 1, 1)
         
     # 3. Parse locations (supports multiple semicolon or comma separated locations)
@@ -1305,6 +1450,10 @@ def run_job_search_and_matching(
             locs = merged_parts
     if not locs:
         locs = [""]
+    locs, locations_limited = bounded_terms(locs, MAX_LOCATIONS) if location else ([""], False)
+    if not locs:
+        return {"success": False, "failure_code": "keywords_unavailable",
+                "error": "Enter a shorter search location and try again.", "jobs_added": 0}
 
     provider_health = {
         provider: {
@@ -1332,23 +1481,31 @@ def run_job_search_and_matching(
     source_completed = 0
     source_state = {"yahoo_available": True}
     report_progress("searching_sources", source_completed, source_total)
-    for kw in search_keywords:
-        for loc in locs:
+    if keywords_limited or locations_limited:
+        for item in provider_health.values():
+            item["partial_results"]["planning_limits"] = 1
+    if config.get_discovery_mode() == "hybrid_feeds":
+        from discovery_sources import collect
+        for item in collect(search_keywords, locs, provider_health, check_cancelled,
+                            feeds_only=True):
             check_cancelled()
-            kw_results = search_yahoo_jobs(
-                kw,
-                loc,
-                provider_health,
-                source_state=source_state,
+            _append_candidate_with_budget(item, results, seen_urls, provider_candidate_counts, provider_health)
+    for kw, loc in ((kw, loc) for kw in search_keywords for loc in locs):
+        check_cancelled()
+        kw_results = search_yahoo_jobs(
+            kw,
+            loc,
+            provider_health,
+            source_state=source_state,
+        )
+        check_cancelled()
+        for item in kw_results:
+            check_cancelled()
+            _append_candidate_with_budget(
+                item, results, seen_urls, provider_candidate_counts, provider_health
             )
-            check_cancelled()
-            for item in kw_results:
-                check_cancelled()
-                _append_candidate_with_budget(
-                    item, results, seen_urls, provider_candidate_counts, provider_health
-                )
-            source_completed += 1
-            report_progress("searching_sources", source_completed, source_total)
+        source_completed += 1
+        report_progress("searching_sources", source_completed, source_total)
     
     # 4. Inspect, analyze, and commit bounded chunks. Completed chunks remain
     # useful if a later provider call fails or the user stops the search.
@@ -1361,12 +1518,13 @@ def run_job_search_and_matching(
     analyzed_count = 0
     saved_count = 0
     matches_added = 0
+    save_failures = 0
     ai_error = None
     ai_error_code = None
     report_progress("inspecting_postings", inspected_count, len(results))
 
     def process_pending_jobs() -> bool:
-        nonlocal analyzed_count, saved_count, matches_added, ai_error, ai_error_code
+        nonlocal analyzed_count, saved_count, matches_added, ai_error, ai_error_code, save_failures
         if not pending_jobs:
             return True
         batch = list(pending_jobs)
@@ -1482,6 +1640,7 @@ def run_job_search_and_matching(
                     except OperationCancelled:
                         raise
                     except Exception:
+                        save_failures += 1
                         print(json.dumps({"event": "search_job_save_failed"}), flush=True)
             saved_count += 1
             report_progress("saving_matches", saved_count, len(results))
@@ -1526,16 +1685,8 @@ def run_job_search_and_matching(
     if ai_error is None:
         process_pending_jobs()
             
-    alerts = provider_alerts_from_health(provider_health)
-
     check_cancelled()
-    partial = ai_error is not None and matches_added > 0
-    return {
-        "success": ai_error is None or partial,
-        "partial": partial,
-        "jobs_added": matches_added,
-        "error": ai_error,
-        "failure_code": ai_error_code,
-        "provider_health": provider_health,
-        "provider_alerts": alerts,
-    }
+    return _search_completion(
+        provider_health, len(results), inspected_count, analyzed_count,
+        matches_added, ai_error, ai_error_code, save_failures,
+    )

@@ -27,6 +27,51 @@ from search_run_repository import (
 
 
 class SQLiteSearchRunTests(unittest.TestCase):
+    def test_outcome_summary_survives_durable_readback_without_private_details(self):
+        repository = self.repository()
+        run = repository.enqueue("00000000-0000-4000-8000-000000000099", "synthetic", "")
+        repository.publish_prepared(run, "synthetic", "")
+        claim = repository.claim(run, "10000000-0000-4000-8000-000000000099")
+        repository.fail(claim, "provider_search_failed", {
+            "success": False, "outcome": "source_unavailable", "error": "PRIVATE",
+            "counts": {"discovered": 0, "saved": -1, "private": "PRIVATE"},
+            "provider_alerts": [{"provider": "lever", "code": "provider_error", "message": "PRIVATE"}],
+        })
+        result = repository.status()["last_result"]
+        self.assertFalse(result["success"])
+        self.assertEqual("source_unavailable", result["outcome"])
+        self.assertEqual(0, result["counts"]["saved"])
+        self.assertEqual("provider_error", result["provider_alerts"][0]["code"])
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertEqual(result, minimized_search_result(result))
+
+    def test_outcome_minimizer_bounds_counts_and_reconstructs_messages(self):
+        for outcome in ("no_results", "no_new_matches", "matches_saved", "partial_results"):
+            with self.subTest(outcome=outcome):
+                result = minimized_search_result({
+                    "success": True, "outcome": outcome, "jobs_added": 2,
+                    "message": "PRIVATE", "counts": {"discovered": 9999999, "saved": True},
+                    "provider_alerts": [{"provider": [], "code": {}}, {"provider": "private", "code": "provider_error"}],
+                })
+                self.assertEqual(outcome, result["outcome"])
+                self.assertEqual(100000, result["counts"]["discovered"])
+                self.assertEqual(0, result["counts"]["saved"])
+                self.assertEqual([], result["provider_alerts"])
+                self.assertEqual(outcome == "partial_results", result["partial"])
+                self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_source_health_history_keeps_only_bounded_aggregate_diagnostics(self):
+        from source_diagnostics import safe_provider_counters
+        counters = safe_provider_counters({
+            "source_attempts": 3, "source_failures": 1, "source_unusable": 2,
+            "source_empty": 0, "source_fallbacks": 2,
+            "query": "PRIVATE", "response": "PRIVATE",
+        })
+        self.assertEqual(3, counters["source_attempts"])
+        self.assertEqual(1, counters["source_failures"])
+        self.assertEqual(2, counters["source_unusable"])
+        self.assertNotIn("PRIVATE", json.dumps(counters))
+
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.database_path = Path(self.temporary_directory.name) / "search-runs.db"

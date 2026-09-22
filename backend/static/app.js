@@ -3046,11 +3046,12 @@ async function finishObservedSearch(status, generation) {
     } else {
         logActivity(
             status.last_result?.partial ? "Job Search Partially Complete" : "Job Search Complete",
-            status.last_result?.message || "Found and analyzed new job openings.",
+            status.last_result?.message || `Search complete. ${Number(status.last_result?.jobs_added) || 0} new matches saved.`,
             status.last_result?.partial ? "warning" : "success"
         );
-        renderProviderAlerts(status.last_result);
     }
+    renderProviderAlerts(status.last_result);
+    announce(status.last_result?.error || status.last_result?.message || "Search complete.");
     await refreshSourceDiagnosticCount();
 }
 
@@ -3156,7 +3157,8 @@ function renderProviderAlerts(searchResult) {
     if (!providerAlerts) return;
     providerAlerts.replaceChildren();
     const alerts = searchResult?.provider_alerts || [];
-    if (!alerts.length) {
+    const completionMessage = searchResult?.error || searchResult?.message;
+    if (!alerts.length && !completionMessage) {
         providerAlerts.hidden = true;
         return;
     }
@@ -3164,7 +3166,9 @@ function renderProviderAlerts(searchResult) {
     const informationalCodes = new Set(["stale_postings", "partial_results"]);
     const needsAttention = alerts.some(alert => !informationalCodes.has(alert.code));
     const header = createElement("div", "provider-alerts-header");
-    header.appendChild(createElement("strong", "", needsAttention ? "Some job sources may need attention" : "Search notes"));
+    header.appendChild(createElement("strong", "", searchResult?.success === false
+        ? "Search could not complete"
+        : (needsAttention ? "Some job sources may need attention" : "Search notes")));
     const actions = createElement("div", "provider-alert-actions");
     const reviewButton = createActionButton("Review history", "fa-solid fa-clock-rotate-left", "btn btn-secondary btn-sm", showSourceDiagnostics);
     const dismissButton = createActionButton("", "fa-solid fa-xmark", "provider-alert-dismiss", dismissProviderAlerts, "Dismiss this source notice");
@@ -3172,6 +3176,7 @@ function renderProviderAlerts(searchResult) {
     actions.append(reviewButton, dismissButton);
     header.appendChild(actions);
     providerAlerts.appendChild(header);
+    if (completionMessage) providerAlerts.appendChild(createElement("p", "", completionMessage));
     const list = createElement("ul", "margin-top-sm");
     alerts.forEach(alert => list.appendChild(createElement("li", "", alert.message)));
     providerAlerts.appendChild(list);
@@ -3201,6 +3206,11 @@ const DIAGNOSTIC_COUNTER_LABELS = {
     skipped_archived: "Already archived",
     skipped_suppressed: "Previously deleted",
     api_fallbacks: "API fallbacks",
+    source_attempts: "Source requests",
+    source_failures: "Unrecovered source failures",
+    source_unusable: "Unusable source responses",
+    source_empty: "Confirmed empty source responses",
+    source_fallbacks: "Search source fallbacks",
     stale: "Stale postings",
     format_drift: "Format mismatches",
     access_challenge: "Access challenges",

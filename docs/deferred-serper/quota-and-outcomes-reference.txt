@@ -1,0 +1,354 @@
+REFERENCE ONLY: whitespace-normalized historical diff; not an applicable patch.
+
+diff --git a/backend/database.py b/backend/database.py
+index 8f5943f..5af7205 100644
+--- a/backend/database.py
++++ b/backend/database.py
+@@ -278,6 +278,20 @@ def init_db() -> None:
+         ON search_runs(owner_user_id, created_at DESC)"""
+     )
+
++    cursor.execute("""
++    CREATE TABLE IF NOT EXISTS search_api_policy (
++        provider TEXT PRIMARY KEY CHECK (provider='serper'),
++        global_daily INTEGER NOT NULL DEFAULT 0 CHECK (global_daily BETWEEN 0 AND 10000),
++        owner_daily INTEGER NOT NULL DEFAULT 0 CHECK (owner_daily BETWEEN 0 AND 1000)
++    )
++    """)
++    cursor.execute("INSERT OR IGNORE INTO search_api_policy(provider) VALUES ('serper')")
++    cursor.execute("""CREATE TABLE IF NOT EXISTS search_api_usage (
++        owner_user_id INTEGER NOT NULL CHECK (owner_user_id >= 0),
++        day TEXT NOT NULL, requests INTEGER NOT NULL CHECK (requests >= 0),
++        PRIMARY KEY(owner_user_id,day)
++    )""")
++
+     cursor.execute("""
+     CREATE TABLE IF NOT EXISTS headquarters_cache (
+         cache_key TEXT PRIMARY KEY,
+diff --git a/backend/search_run_execution.py b/backend/search_run_execution.py
+index 99c6d70..a1e5b47 100644
+--- a/backend/search_run_execution.py
++++ b/backend/search_run_execution.py
+@@ -146,6 +146,7 @@ def execute_search_claim(
+                     claim.location,
+                     lease.checkpoint,
+                     progress_update=lease.progress,
++                    reserve_search_request=lambda: repository.reserve_search_request(claim),
+                 )
+                 lease.checkpoint()
+                 _save_source_diagnostic_history(result)
+diff --git a/backend/search_run_repository.py b/backend/search_run_repository.py
+index 682b898..6e42b81 100644
+--- a/backend/search_run_repository.py
++++ b/backend/search_run_repository.py
+@@ -34,6 +34,8 @@ SEARCH_CANCELLED_MESSAGE = (
+     "Search stopped. Any jobs committed before the stop request were kept."
+ )
+ MATCH_PROVIDER_FAILURE_MESSAGES = {
++    "keywords_unavailable": "Search terms could not be prepared. Enter a short job title and location, then try again.",
++    "storage_error": "Some matched postings could not be saved. Any earlier saved matches were kept; try again later.",
+     "authentication": "The saved AI provider credential could not be used to score the discovered postings. Check it in Profile & Resume, then try again.",
+     "missing_key": "An AI provider key is required to score discovered postings. Save one in Profile & Resume, then try again.",
+     "model_unavailable": "The selected AI model could not score the discovered postings. Choose an available model, then try again.",
+@@ -90,6 +92,8 @@ class SearchRunClaim:
+
+
+ class SearchRunRepository(Protocol):
++    def reserve_search_request(self, claim: SearchRunClaim) -> bool: ...
++
+     def enqueue(self, operation_id: object, keywords: object, location: object) -> str: ...
+
+     def publish_prepared(self, run_id: object, keywords: object, location: object) -> None: ...
+@@ -171,6 +175,68 @@ def _lease_seconds(value: object) -> int:
+
+ def minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
+     """Keep only bounded UI state; provider responses and credentials stay out."""
++    outcome = result.get("outcome")
++    messages = {
++        "source_unavailable": "Job sources did not return usable postings. Try again later or import a specific job URL.",
++        "no_results": "The job sources returned no postings for this search. Try different keywords or locations.",
++        "no_new_matches": "No new matches were saved. Discovered postings were already known, unavailable, or did not qualify.",
++        "matches_saved": "New matches were saved.",
++        "partial_results": "Search was only partially completed. Any saved matches were kept; some sources or postings could not be processed.",
++    }
++    if isinstance(outcome, str) and outcome in messages:
++        def count(value):
++            return max(0, min(value, 100_000)) if type(value) is int else 0
++
++        counts = result.get("counts")
++        counts = counts if isinstance(counts, Mapping) else {}
++        payload = {
++            "success": bool(result.get("success")) and outcome != "source_unavailable",
++            "outcome": outcome,
++            "jobs_added": count(result.get("jobs_added")),
++            "counts": {name: count(counts.get(name)) for name in (
++                "discovered", "inspected", "accepted", "known", "filtered", "saved"
++            )},
++            "provider_alerts": [],
++        }
++        # Reconstruct notices from enums only, including on subsequent readback.
++        from source_diagnostics import ALLOWED_CODES, ALLOWED_PROVIDERS
++        notice_messages = {
++            "url_format_drift": "Some discovered links did not identify supported job postings.",
++            "content_format_drift": "Some postings could not be read in a supported format.",
++            "access_challenge": "Some job sources blocked automated reading.",
++            "provider_error": "Some job sources could not be reached or returned unusable results.",
++            "stale_postings": "Unavailable postings were skipped.",
++            "partial_results": "Some source results were incomplete or required a fallback.",
++        }
++        alerts = result.get("provider_alerts")
++        seen = set()
++        for alert in (alerts[:20] if isinstance(alerts, list) else []):
++            if not isinstance(alert, Mapping):
++                continue
++            provider, code = alert.get("provider"), alert.get("code")
++            if not isinstance(provider, str) or not isinstance(code, str):
++                continue
++            if provider not in ALLOWED_PROVIDERS or code not in ALLOWED_CODES or (provider, code) in seen:
++                continue
++            seen.add((provider, code))
++            payload["provider_alerts"].append({
++                "provider": provider, "code": code,
++                "message": f"{provider.title()}: {notice_messages[code]}",
++            })
++        message = messages[outcome]
++        if outcome == "matches_saved":
++            message = f"Saved {payload['jobs_added']} new match(es)."
++        if payload["success"]:
++            payload["message"] = message
++            payload["partial"] = outcome == "partial_results"
++        else:
++            failure_code = result.get("failure_code")
++            if isinstance(failure_code, str) and failure_code in MATCH_PROVIDER_FAILURE_CODES:
++                payload["failure_code"] = failure_code
++                payload["error"] = MATCH_PROVIDER_FAILURE_MESSAGES[failure_code]
++            else:
++                payload["error"] = message if outcome == "source_unavailable" else SEARCH_FAILED_MESSAGE
++        return payload
+     if not bool(result.get("success")):
+         failure_code = str(result.get("failure_code") or "").strip().lower()
+         if failure_code not in MATCH_PROVIDER_FAILURE_CODES:
+@@ -320,6 +386,38 @@ class SQLiteSearchRunRepository:
+         self._owner_user_id = int(owner_user_id)
+         self._connection_factory = connection_factory
+
++    def reserve_search_request(self, claim: SearchRunClaim) -> bool:
++        connection = self._connection_factory()
++        try:
++            connection.execute("BEGIN IMMEDIATE")
++            now = datetime.now(timezone.utc)
++            row = connection.execute("""SELECT status, lease_expires_at FROM search_runs
++                WHERE id=? AND owner_user_id=? AND lease_token=?""",
++                (claim.run_id, self._owner_user_id, claim.lease_token)).fetchone()
++            if row and row['status'] == 'cancel_requested':
++                raise OperationCancelled("The search was stopped by the user.")
++            if not row or row['status'] != 'running' or not row['lease_expires_at'] or datetime.fromisoformat(row['lease_expires_at']) <= now:
++                raise SearchRunLeaseLost()
++            policy = connection.execute("SELECT global_daily,owner_daily FROM search_api_policy WHERE provider='serper'").fetchone()
++            if not policy:
++                return False
++            day = now.date().isoformat()
++            for owner, cap in ((0, policy['global_daily']), (self._owner_user_id, policy['owner_daily'])):
++                used = connection.execute("SELECT requests FROM search_api_usage WHERE owner_user_id=? AND day=?", (owner, day)).fetchone()
++                if cap <= (used['requests'] if used else 0):
++                    return False
++            for owner in (0, self._owner_user_id):
++                connection.execute("""INSERT INTO search_api_usage VALUES(?,?,1)
++                    ON CONFLICT(owner_user_id,day) DO UPDATE SET requests=requests+1""", (owner, day))
++            connection.execute("DELETE FROM search_api_usage WHERE day < ?", ((now.date()-timedelta(days=35)).isoformat(),))
++            connection.commit()
++            return True
++        except sqlite3.DatabaseError as exc:
++            raise SearchRunUnavailable() from exc
++        finally:
++            connection.rollback()
++            connection.close()
++
+     def enqueue(self, operation_id: object, keywords: object, location: object) -> str:
+         operation = _operation_id(operation_id)
+         query, place = _request(keywords, location)
+@@ -849,6 +947,16 @@ class PostgreSQLSearchRunRepository:
+         except SQLAlchemyError as exc:
+             raise SearchRunUnavailable() from exc
+
++    def reserve_search_request(self, claim: SearchRunClaim) -> bool:
++        try:
++            with tenant_transaction(self._engine, self._owner_user_id) as connection:
++                accepted = connection.execute(text("""SELECT careertrellis.reserve_search_api_request(
++                    CAST(:run AS uuid), :owner, CAST(:lease AS uuid))"""),
++                    {"run": claim.run_id, "owner": self._owner_user_id, "lease": claim.lease_token}).scalar_one()
++            return accepted is True
++        except SQLAlchemyError as exc:
++            raise SearchRunUnavailable() from exc
++
+     def _locked_claim_state(
+         self, connection: Any, claim: SearchRunClaim
+     ) -> Mapping[str, Any]:
+diff --git a/backend/test_postgres_rls.py b/backend/test_postgres_rls.py
+index b8b1fd5..016743f 100644
+--- a/backend/test_postgres_rls.py
++++ b/backend/test_postgres_rls.py
+@@ -1290,6 +1290,43 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
+                     },
+                 ).all()
+
++    def test_search_api_quota_atomic_owner_global_and_role_boundaries(self):
++        with self.admin_engine.begin() as connection:
++            connection.execute(text("TRUNCATE careertrellis.search_api_global_usage,careertrellis.search_api_owner_usage"))
++            connection.execute(text("UPDATE careertrellis.search_api_policy SET global_daily=0,owner_daily=0"))
++        claims = []
++        for owner in (self.user_one, self.user_two):
++            web = PostgreSQLSearchRunRepository(owner, engine=self.runtime_engine)
++            run = web.enqueue(str(uuid4()), "synthetic", "")
++            web.publish_prepared(run, "synthetic", "")
++            claim = claim_next_postgres_search_run(str(uuid4()), engine=self.worker_engine)
++            claims.append((PostgreSQLSearchRunRepository(owner, engine=self.worker_engine), claim))
++        one, first = claims[0]
++        two, second = claims[1]
++        self.assertFalse(one.reserve_search_request(first))
++        for engine in (self.runtime_engine, self.worker_engine, self.erasure_worker_engine):
++            for table in ("search_api_policy", "search_api_global_usage", "search_api_owner_usage"):
++                with self.assertRaises(DBAPIError), tenant_transaction(engine, self.user_one) as connection:
++                    connection.execute(text("SELECT * FROM careertrellis." + table))
++        with self.assertRaises(SearchRunUnavailable):
++            PostgreSQLSearchRunRepository(self.user_one, engine=self.runtime_engine).reserve_search_request(first)
++        self.assertFalse(two.reserve_search_request(first))
++        with self.admin_engine.begin() as connection:
++            connection.execute(text("UPDATE careertrellis.search_api_policy SET global_daily=3,owner_daily=2"))
++        with ThreadPoolExecutor(max_workers=2) as pool:
++            accepted = list(pool.map(lambda _: one.reserve_search_request(first), range(6)))
++        self.assertEqual(2, sum(accepted))
++        self.assertTrue(two.reserve_search_request(second))
++        self.assertFalse(two.reserve_search_request(second))
++        with self.admin_engine.begin() as connection:
++            self.assertEqual(3, connection.scalar(text("SELECT requests FROM careertrellis.search_api_global_usage")))
++            connection.execute(text("UPDATE careertrellis.search_api_policy SET global_daily=10,owner_daily=10"))
++            connection.execute(text("UPDATE careertrellis.search_runs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=CAST(:run AS uuid)"), {"run": first.run_id})
++        self.assertFalse(one.reserve_search_request(first))
++        with self.admin_engine.begin() as connection:
++            self.assertEqual(3, connection.scalar(text("SELECT requests FROM careertrellis.search_api_global_usage")))
++            connection.execute(text("UPDATE careertrellis.search_api_policy SET global_daily=0,owner_daily=0"))
++
+     def test_runtime_cannot_choose_or_change_authorization_fields(self) -> None:
+         with self.assertRaises(DBAPIError):
+             with identity_transaction(self.runtime_engine, "user_new") as connection:
+diff --git a/backend/test_search_runs.py b/backend/test_search_runs.py
+index 9bf227e..929dbb6 100644
+--- a/backend/test_search_runs.py
++++ b/backend/test_search_runs.py
+@@ -7,6 +7,7 @@ import sqlite3
+ import tempfile
+ import unittest
+ from concurrent.futures import ThreadPoolExecutor
++from contextlib import closing
+ from pathlib import Path
+ from threading import Barrier, Event, Lock, current_thread
+ from unittest.mock import ANY, Mock, patch
+@@ -27,6 +28,87 @@ from search_run_repository import (
+
+
+ class SQLiteSearchRunTests(unittest.TestCase):
++    def quota_claim(self, owner=1):
++        from uuid import uuid4
++        repository = self.repository(owner)
++        run = repository.enqueue(str(uuid4()), "synthetic", "")
++        repository.publish_prepared(run, "synthetic", "")
++        return repository, repository.claim(run, str(uuid4()))
++
++    def test_search_quota_default_closed_and_atomic_concurrent_caps(self):
++        one, first = self.quota_claim(1)
++        two, second = self.quota_claim(2)
++        self.assertFalse(one.reserve_search_request(first))
++        with closing(self.connection()) as connection, connection:
++            connection.execute("UPDATE search_api_policy SET global_daily=5,owner_daily=3")
++        with ThreadPoolExecutor(max_workers=8) as pool:
++            accepted = list(pool.map(lambda _: one.reserve_search_request(first), range(8)))
++        self.assertEqual(3, sum(accepted))
++        self.assertTrue(two.reserve_search_request(second))
++        self.assertTrue(two.reserve_search_request(second))
++        self.assertFalse(two.reserve_search_request(second))
++        with closing(self.connection()) as connection, connection:
++            self.assertEqual(5, connection.execute("SELECT requests FROM search_api_usage WHERE owner_user_id=0").fetchone()[0])
++
++    def test_search_quota_lease_loss_and_cancellation_do_not_consume(self):
++        repository, claim = self.quota_claim()
++        with closing(self.connection()) as connection, connection:
++            connection.execute("UPDATE search_api_policy SET global_daily=10,owner_daily=10")
++            connection.execute("UPDATE search_runs SET lease_expires_at='2000-01-01T00:00:00+00:00'")
++        with self.assertRaises(SearchRunLeaseLost):
++            repository.reserve_search_request(claim)
++        with closing(self.connection()) as connection, connection:
++            self.assertEqual(0, connection.execute("SELECT count(*) FROM search_api_usage").fetchone()[0])
++        other, active = self.quota_claim(2)
++        other.request_cancel_active()
++        with self.assertRaises(OperationCancelled):
++            other.reserve_search_request(active)
++
++    def test_outcome_summary_survives_durable_readback_without_private_details(self):
++        repository = self.repository()
++        run = repository.enqueue("00000000-0000-4000-8000-000000000099", "synthetic", "")
++        repository.publish_prepared(run, "synthetic", "")
++        claim = repository.claim(run, "10000000-0000-4000-8000-000000000099")
++        repository.fail(claim, "provider_search_failed", {
++            "success": False, "outcome": "source_unavailable", "error": "PRIVATE",
++            "counts": {"discovered": 0, "saved": -1, "private": "PRIVATE"},
++            "provider_alerts": [{"provider": "lever", "code": "provider_error", "message": "PRIVATE"}],
++        })
++        result = repository.status()["last_result"]
++        self.assertFalse(result["success"])
++        self.assertEqual("source_unavailable", result["outcome"])
++        self.assertEqual(0, result["counts"]["saved"])
++        self.assertEqual("provider_error", result["provider_alerts"][0]["code"])
++        self.assertNotIn("PRIVATE", json.dumps(result))
++        self.assertEqual(result, minimized_search_result(result))
++
++    def test_outcome_minimizer_bounds_counts_and_reconstructs_messages(self):
++        for outcome in ("no_results", "no_new_matches", "matches_saved", "partial_results"):
++            with self.subTest(outcome=outcome):
++                result = minimized_search_result({
++                    "success": True, "outcome": outcome, "jobs_added": 2,
++                    "message": "PRIVATE", "counts": {"discovered": 9999999, "saved": True},
++                    "provider_alerts": [{"provider": [], "code": {}}, {"provider": "private", "code": "provider_error"}],
++                })
++                self.assertEqual(outcome, result["outcome"])
++                self.assertEqual(100000, result["counts"]["discovered"])
++                self.assertEqual(0, result["counts"]["saved"])
++                self.assertEqual([], result["provider_alerts"])
++                self.assertEqual(outcome == "partial_results", result["partial"])
++                self.assertNotIn("PRIVATE", json.dumps(result))
++
++    def test_source_health_history_keeps_only_bounded_aggregate_diagnostics(self):
++        from source_diagnostics import safe_provider_counters
++        counters = safe_provider_counters({
++            "source_attempts": 3, "source_failures": 1, "source_unusable": 2,
++            "source_empty": 0, "source_fallbacks": 2,
++            "query": "PRIVATE", "response": "PRIVATE",
++        })
++        self.assertEqual(3, counters["source_attempts"])
++        self.assertEqual(1, counters["source_failures"])
++        self.assertEqual(2, counters["source_unusable"])
++        self.assertNotIn("PRIVATE", json.dumps(counters))
++
+     def setUp(self) -> None:
+         self.temporary_directory = tempfile.TemporaryDirectory()
+         self.database_path = Path(self.temporary_directory.name) / "search-runs.db"
+diff --git a/deploy/postgres/grant-runtime.sql b/deploy/postgres/grant-runtime.sql
+index 4dd2dd4..8fd558d 100644
+--- a/deploy/postgres/grant-runtime.sql
++++ b/deploy/postgres/grant-runtime.sql
+@@ -49,6 +49,15 @@ REVOKE ALL ON FUNCTION careertrellis.dispatch_due_saved_searches(integer)
+ GRANT EXECUTE ON FUNCTION careertrellis.dispatch_due_saved_searches(integer)
+     TO careertrellis_worker;
+
++-- Paid search policy and global counters remain private after broad re-grants.
++REVOKE ALL ON careertrellis.search_api_policy, careertrellis.search_api_global_usage,
++    careertrellis.search_api_owner_usage
++    FROM PUBLIC, careertrellis_runtime, careertrellis_worker, careertrellis_erasure_worker;
++REVOKE ALL ON FUNCTION careertrellis.reserve_search_api_request(uuid,bigint,uuid)
++    FROM PUBLIC, careertrellis_runtime, careertrellis_worker, careertrellis_erasure_worker;
++GRANT EXECUTE ON FUNCTION careertrellis.reserve_search_api_request(uuid,bigint,uuid)
++    TO careertrellis_worker;
++
+ -- Authentication-controlled rows and fields are operator-managed. Login may
+ -- refresh last_seen_at only after an existing active mapping is authorized.
+ -- Remove the column ACLs granted by the accepted single-owner release before
