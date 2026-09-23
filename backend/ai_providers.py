@@ -2,13 +2,15 @@
 
 import base64
 import json
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
 from google import genai
-from google.genai import types
+from google.genai import errors, types
+import httpx
 from pydantic import BaseModel
 
 import config
@@ -160,18 +162,35 @@ def _validated_data(raw_text: str, schema: type[BaseModel], provider: str) -> di
 
 
 def _gemini_error(exc: Exception) -> AIProviderError:
+    if isinstance(exc, httpx.TimeoutException):
+        return AIProviderError("gemini", "timeout", "Google Gemini timed out. Try again later.")
+    if isinstance(exc, httpx.TransportError):
+        return AIProviderError("gemini", "network", "Google Gemini could not be reached. Try again later.")
+    # Prefer the SDK's status over untrusted response text. In particular, a
+    # server error mentioning a quota must not be classified as a 429 response.
+    status = exc.code if isinstance(exc, errors.APIError) else None
+    if status == 400:
+        details = exc.details if isinstance(exc.details, dict) else {}
+        error = details.get("error", details)
+        reasons = error.get("details", []) if isinstance(error, dict) else []
+        if isinstance(reasons, list) and any(
+            isinstance(item, dict) and item.get("reason") == "API_KEY_INVALID"
+            for item in reasons
+        ):
+            return AIProviderError("gemini", "authentication", "Google Gemini rejected the saved API key.")
+        return AIProviderError("gemini", "unsupported_request", "Google Gemini rejected the request configuration. Check the selected model.")
     message = str(exc).lower()
-    if "api key" in message or "unauth" in message or "401" in message:
+    if status == 401 or (status is None and ("api key" in message or "unauth" in message or "401" in message)):
         return AIProviderError("gemini", "authentication", "Google Gemini rejected the saved API key.")
-    if "429" in message or "quota" in message or "rate" in message:
+    if status == 429 or (status is None and ("429" in message or "quota" in message or re.search(r"\brate[ -]?limit", message))):
         return AIProviderError(
             "gemini",
             "rate_limit",
             "Google Gemini rate limit or quota was reached. Wait and try again, or choose another provider.",
         )
-    if "404" in message or "not found" in message or "model" in message and "invalid" in message:
+    if status == 404 or (status is None and ("404" in message or "not found" in message or "model" in message and "invalid" in message)):
         return AIProviderError("gemini", "model_unavailable", "The selected Google Gemini model is unavailable for this API key.")
-    if "403" in message or "permission" in message:
+    if status == 403 or (status is None and ("403" in message or "permission" in message)):
         return AIProviderError("gemini", "permission", "Google Gemini denied access for the saved API key and selected model.")
     return AIProviderError(
         "gemini",

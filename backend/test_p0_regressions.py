@@ -453,6 +453,40 @@ class AIProviderAbstractionTests(unittest.TestCase):
         config = client.models.generate_content.call_args.kwargs["config"]
         self.assertEqual(0, config.thinking_config.thinking_budget)
 
+    def test_gemini_sdk_status_takes_precedence_over_response_text(self) -> None:
+        for status, expected in ((400, "unsupported_request"), (401, "authentication"), (403, "permission"),
+                                 (404, "model_unavailable"), (429, "rate_limit"),
+                                 (500, "provider_error"), (503, "provider_error")):
+            with self.subTest(status=status):
+                error = ai_providers_module.errors.APIError(status, {
+                    "error": {"message": "PRIVATE api key quota permission not found"}})
+                result = ai_providers_module._gemini_error(error)
+                self.assertEqual(expected, result.code)
+                self.assertNotIn("PRIVATE", str(result))
+
+    def test_gemini_transport_failures_are_classified_without_private_text(self) -> None:
+        for kind, expected in ((ai_providers_module.httpx.ReadTimeout, "timeout"),
+                               (ai_providers_module.httpx.ConnectError, "network")):
+            with self.subTest(kind=kind):
+                result = ai_providers_module._gemini_error(kind("PRIVATE api key"))
+                self.assertEqual(expected, result.code)
+                self.assertNotIn("PRIVATE", str(result))
+
+    def test_gemini_structured_invalid_key_reason_is_authentication(self) -> None:
+        error = ai_providers_module.errors.APIError(400, {"error": {
+            "message": "PRIVATE", "details": [{"reason": "API_KEY_INVALID"}]}})
+        result = ai_providers_module._gemini_error(error)
+        self.assertEqual("authentication", result.code)
+        self.assertNotIn("PRIVATE", str(result))
+
+    def test_gemini_generate_error_is_not_a_rate_limit(self) -> None:
+        error = TypeError("generate_content received an unsupported argument PRIVATE")
+        result = ai_providers_module._gemini_error(error)
+        self.assertEqual("provider_error", result.code)
+        self.assertNotIn("PRIVATE", str(result))
+        self.assertEqual("rate_limit", ai_providers_module._gemini_error(
+            RuntimeError("rate limit exceeded")).code)
+
 
 class MapsProviderAbstractionTests(unittest.TestCase):
     class FakeResponse:
