@@ -285,6 +285,7 @@ def feed_rows(provider, board, budget, *, page_index=None, keywords=()):
 def feed_candidate(provider, board, row):
     if (provider, board) not in CATALOG or not isinstance(row, dict):
         raise SourceError("invalid_response")
+    arrangement, employment = "", ""
     if provider == "lever":
         title, url = row.get("text"), row.get("hostedUrl")
         categories = row.get("categories")
@@ -314,6 +315,14 @@ def feed_candidate(provider, board, row):
         if any(not isinstance(value, str) for value in values):
             raise SourceError("invalid_response")
         location, remote = ", ".join(value for value in values if value), place.get("remote") is True
+        arrangement = "remote" if remote else "hybrid" if place.get("hybrid") is True else ""
+        employment_info = row.get("typeOfEmployment")
+        if isinstance(employment_info, dict):
+            label = employment_info.get("label")
+            if isinstance(label, str):
+                employment = {"full-time": "full_time", "part-time": "part_time",
+                              "contract": "contract", "temporary": "temporary",
+                              "internship": "internship"}.get(label.strip().casefold(), "")
         url = row.get("postingUrl", f"https://jobs.smartrecruiters.com/{board}/{posting_id}")
         ref = row.get("ref")
         if ref is not None:
@@ -353,7 +362,9 @@ def feed_candidate(provider, board, row):
     # These are expressions of interest rather than an advertised current opening.
     if re.search(r"\b(talent (?:pool|community|network)|future opportunities|expression(?:s)? of interest)(?:\s*[-–:|(]|\s*$)", title, re.I):
         return None
-    return {"title": title, "url": url, "location": location, "remote": remote}
+    return {"title": title, "url": url, "location": location, "remote": remote,
+            "work_arrangement": arrangement or ("remote" if remote else ""),
+            "employment_type": employment}
 
 
 def matches(row, keywords, locations):
@@ -375,7 +386,7 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
         item = health[provider]
         item[field] = item.get(field, 0) + 1
 
-    def admit(url, expected=None):
+    def admit(url, expected=None, feed=None):
         canonical = canonicalize_job_url(url)
         if not canonical:
             return False
@@ -384,7 +395,13 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
             return False
         if canonical not in seen:
             seen.add(canonical)
-            candidates.append({"title": "Job Posting", "url": canonical, "snippet": ""})
+            candidate = {"title": "Job Posting", "url": canonical, "snippet": ""}
+            if feed is not None:
+                # Bound public metadata to the independently inspected posting.
+                candidate["feed_metadata"] = {"url": canonical, **{
+                    key: " ".join(feed[key].split())[:240]
+                    for key in ("location", "work_arrangement", "employment_type")}}
+            candidates.append(candidate)
             record(provider, "valid_discovered")
         return True
 
@@ -452,7 +469,7 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
             row = state["selected"].popleft()
             provider = state["provider"]
             record(provider, "raw_candidates")
-            if not admit(row["url"], provider):
+            if not admit(row["url"], provider, feed=row):
                 record(provider, "source_failures")
 
     if feeds_only:

@@ -676,6 +676,32 @@ def _append_candidate_with_budget(
     return True
 
 
+def _supplement_feed_metadata(details: dict, candidate: dict) -> dict:
+    """Fill missing metadata only after detail validation for the same posting."""
+    metadata = candidate.get("feed_metadata")
+    candidate_url = candidate.get("url", "")
+    detail_url = canonicalize_job_url(details.get("url", ""))
+    same_posting = bool(detail_url) and detail_url == candidate_url
+    if not same_posting:
+        # SmartRecruiters adds a human-readable slug on legitimate redirects.
+        # The employer and numeric posting ID must still agree exactly.
+        pattern = r"https://jobs\.smartrecruiters\.com/([^/]+)/([0-9]+)(?:-[a-zA-Z0-9_-]+)?"
+        origin = re.fullmatch(pattern, candidate_url)
+        destination = re.fullmatch(pattern, detail_url or "")
+        same_posting = bool(origin and destination and
+                            origin[1].casefold() == destination[1].casefold() and
+                            origin[2] == destination[2])
+    if (not isinstance(metadata, dict) or
+            metadata.get("url") != candidate_url or not same_posting):
+        return details
+    supplemented = dict(details)
+    for key in ("location", "work_arrangement", "employment_type"):
+        value = metadata.get(key)
+        if not supplemented.get(key) and isinstance(value, str):
+            supplemented[key] = " ".join(value.split())[:240]
+    return supplemented
+
+
 def is_specific_job_url(url: str) -> bool:
     """
     Validates if a Lever, Greenhouse, Ashby, or SmartRecruiters URL is a
@@ -1754,7 +1780,7 @@ def run_job_search_and_matching(
                     reason = reason if reason in provider_health[provider]["rejection_reasons"] else "provider_error"
                     provider_health[provider]["rejection_reasons"][reason] += 1
             else:
-                pending_jobs.append(_bounded_job_details(job_details))
+                pending_jobs.append(_bounded_job_details(_supplement_feed_metadata(job_details, item)))
                 accepted = True
                 if provider in provider_health:
                     provider_health[provider]["accepted"] += 1
