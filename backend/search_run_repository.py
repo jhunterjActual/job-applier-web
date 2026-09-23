@@ -171,7 +171,7 @@ def _lease_seconds(value: object) -> int:
     return seconds
 
 
-def minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
+def _minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
     """Keep only bounded UI state; provider responses and credentials stay out."""
     outcome = result.get("outcome")
     messages = {
@@ -262,6 +262,28 @@ def minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
             "partial": True,
             "message": "Some matched postings were saved before the search provider stopped responding.",
         })
+    return payload
+
+
+def minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
+    """Retain measured aggregates on failures too, without filling old history."""
+    payload = _minimized_search_result(result)
+    counts = result.get("counts")
+    if isinstance(counts, Mapping):
+        safe_counts = payload.setdefault("counts", {})
+        for name in ("discovered", "inspected", "accepted", "known", "filtered", "saved",
+                     "scored", "meeting_minimum"):
+            if type(counts.get(name)) is int:
+                safe_counts[name] = max(0, min(100_000, counts[name]))
+    source_counts = result.get("source_counts")
+    if isinstance(source_counts, Mapping):
+        payload["source_counts"] = {
+            name: max(0, min(100_000, source_counts[name]))
+            for name in ("confirmed_empty", "failed", "unusable", "limited")
+            if type(source_counts.get(name)) is int
+        }
+    if type(result.get("minimum_match_score")) is int:
+        payload["minimum_match_score"] = max(0, min(100, result["minimum_match_score"]))
     return payload
 
 

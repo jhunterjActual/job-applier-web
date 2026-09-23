@@ -226,6 +226,7 @@ class DiscoverySourceTests(unittest.TestCase):
             return [{"title": "Engineer", "url": url, "snippet": ""}]
         with (
             patch.object(searcher.config, "get_discovery_mode", return_value="hybrid_feeds"),
+            patch("public_job_feeds.collect", return_value=[]),
             patch.object(searcher, "settings_from_profile", return_value=AIProviderSettings("gemini", "synthetic", "private-ai")),
             patch.object(sources, "collect", side_effect=lambda kw, loc, health, cancel, **options: acquire(health, feed_ok)) as feeds,
             patch.object(sources, "fetch_json", side_effect=AssertionError("No paid transport")),

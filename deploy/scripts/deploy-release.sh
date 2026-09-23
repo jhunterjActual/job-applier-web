@@ -203,7 +203,7 @@ if [[ ! -d ${release_dir} ]]; then
         CAREERTRELLIS_TRUSTED_PROXY_TOKEN= \
         CAREERTRELLIS_DATA_DIR="${test_data}" \
         PYTHONDONTWRITEBYTECODE=1 \
-        ./venv/bin/python -m unittest test_p0_regressions.py test_account_choice.py test_backup_health.py test_pilot_acceptance.py test_pilot_acceptance_receipts.py test_search_runs.py test_discovery_sources.py test_catalog_reporting.py test_search_outcomes.py test_search_completion_browser.py test_scheduled_search_dispatch.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_cutover_rehearsal.py test_final_cutover_coordinator.py test_generated_object_recovery.py test_generated_object_capture.py test_generated_object_phases.py test_analytics.py test_observability.py
+        ./venv/bin/python -m unittest test_p0_regressions.py test_account_choice.py test_backup_health.py test_pilot_acceptance.py test_pilot_acceptance_receipts.py test_search_runs.py test_discovery_sources.py test_catalog_reporting.py test_public_job_feeds.py test_public_feed_integration.py test_shared_public_cache.py test_search_outcomes.py test_search_completion_browser.py test_scheduled_search_dispatch.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_cutover_rehearsal.py test_final_cutover_coordinator.py test_generated_object_recovery.py test_generated_object_capture.py test_generated_object_phases.py test_analytics.py test_observability.py
         CAREERTRELLIS_ENVIRONMENT=staging \
         CAREERTRELLIS_DATA_DIR="${test_data}/account-erasure" \
         CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=false \
@@ -530,6 +530,18 @@ validate_release() {
 
 validate_release "${release_dir}"
 install -d -o root -g root -m 0755 /usr/local/libexec/careertrellis
+# Shared public listings only. Keep private web and worker DATA_DIRs separate.
+public_feed_cache=/var/lib/careertrellis/public-job-feeds
+if [[ -e ${public_feed_cache} || -L ${public_feed_cache} ]]; then
+    if [[ ! -d ${public_feed_cache} || -L ${public_feed_cache} || \
+          $(realpath "${public_feed_cache}") != "${public_feed_cache}" || \
+          $(stat -c '%U:%G %a' "${public_feed_cache}") != 'careertrellis-worker:careertrellis 750' ]]; then
+        echo 'The public feed cache directory has unexpected ownership or permissions.' >&2
+        exit 1
+    fi
+else
+    install -d -o careertrellis-worker -g careertrellis -m 0750 "${public_feed_cache}"
+fi
 install -o root -g root -m 0755 "${release_dir}/deploy/scripts/maintenance-lock.sh" /usr/local/libexec/careertrellis/maintenance-lock.sh
 install -o root -g root -m 0755 "${release_dir}/deploy/scripts/hosted-authority.sh" /usr/local/sbin/careertrellis-authority
 install -d -o root -g root -m 0755 /etc/systemd/system/careertrellis-web.service.d

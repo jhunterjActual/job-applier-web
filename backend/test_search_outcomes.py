@@ -3,7 +3,7 @@
 import io
 import unittest
 from contextlib import redirect_stdout
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 import searcher
@@ -11,6 +11,58 @@ from operations import OperationCancelled
 
 
 class SearchOutcomeTests(unittest.TestCase):
+    def test_scored_and_qualifying_counts_are_independent_of_storage(self):
+        urls = [f"https://jobs.lever.co/synthetic/job-{index}" for index in range(5)]
+        for save_outcome in ({"outcome": "created"}, {"outcome": "existing"}, RuntimeError("synthetic")):
+            with self.subTest(save_outcome=save_outcome):
+                repository = Mock()
+                repository.search_catalog_context.return_value = {
+                    "known_status_by_url": {urls[4]: "active"}, "suppressed_fingerprints": set(),
+                }
+                if isinstance(save_outcome, Exception):
+                    repository.create_job_if_available.side_effect = save_outcome
+                else:
+                    repository.create_job_if_available.return_value = save_outcome
+                def inspect(url, **_kwargs):
+                    return {"status": "ok", "details": {
+                        "url": url, "title": "Engineer", "company": "Synthetic",
+                        "description": "Synthetic description", "source": "lever",
+                    }}
+                with (
+                    patch.object(searcher.config, "get_discovery_mode", return_value="legacy"),
+                    patch.object(searcher, "settings_from_profile", return_value=Mock(
+                        api_key="synthetic", provider="gemini", model="synthetic")),
+                    patch.object(searcher, "search_yahoo_jobs", return_value=[{"url": url} for url in urls]),
+                    patch.object(searcher, "inspect_job_posting", side_effect=inspect),
+                    patch.object(searcher, "analyze_job_matches_batch", return_value={
+                        "success": True, "matches": [
+                            {"index": 0, "match_score": 40}, {"index": 1, "match_score": 39},
+                            {"index": 2, "match_score": 90}, {"index": 3},
+                        ],
+                    }),
+                    patch("builtins.print"),
+                ):
+                    result = searcher.run_job_search_and_matching("engineer", job_repository=repository,
+                        profile_repository=Mock(get_profile=Mock(return_value={"base_resume_text": "Synthetic"})))
+                self.assertEqual(5, result["counts"]["discovered"])
+                self.assertEqual(1, result["counts"]["known"])
+                self.assertEqual(3, result["counts"]["scored"])
+                self.assertEqual(2, result["counts"]["meeting_minimum"])
+                self.assertEqual(1, result["counts"]["filtered"])
+                self.assertEqual(40, result["minimum_match_score"])
+                self.assertEqual(2, repository.create_job_if_available.call_count)
+                self.assertEqual(2 if save_outcome == {"outcome": "created"} else 0, result["jobs_added"])
+
+    def test_empty_and_failed_source_measures_are_separate(self):
+        health = self.health()
+        health["lever"].update(source_empty=2, source_failures=1, source_unusable=2)
+        health["lever"]["partial_results"]["candidate_limit_hits"] = 3
+        result = searcher._search_completion(health, 0, 0, 0, 0, scored=0, meeting_minimum=0)
+        self.assertEqual({"confirmed_empty": 2, "failed": 1, "unusable": 2, "limited": 1},
+                         result["source_counts"])
+        self.assertEqual("partial_results", result["outcome"])
+        self.assertEqual(0, result["counts"]["meeting_minimum"])
+
     @staticmethod
     def health():
         return {"lever": {

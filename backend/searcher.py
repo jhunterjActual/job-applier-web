@@ -142,6 +142,10 @@ def provider_for_url(url: str) -> str:
         return "ashby"
     if host == "jobs.smartrecruiters.com":
         return "smartrecruiters"
+    if host == "weworkremotely.com":
+        return "weworkremotely"
+    if host == "jobicy.com":
+        return "jobicy"
     return "unknown"
 
 
@@ -684,6 +688,9 @@ def is_specific_job_url(url: str) -> bool:
         bool: True if it matches the specific job posting structure, False otherwise.
     """
     try:
+        if provider_for_url(url) in {"weworkremotely", "jobicy"}:
+            from public_job_feeds import canonical_url
+            return canonical_url(url) is not None
         parsed = urllib.parse.urlparse(url)
         host = (parsed.hostname or "").lower()
         path = parsed.path.strip("/")
@@ -1260,6 +1267,7 @@ def inspect_job_posting(
     url: str,
     allow_partial: bool = False,
     cancel_check: Callable[[], None] | None = None,
+    require_live: bool = False,
 ) -> dict:
     """Return extracted details together with a privacy-safe outcome classification."""
     _cancellation_checkpoint(cancel_check)
@@ -1267,6 +1275,35 @@ def inspect_job_posting(
     is_public, reason = validate_public_http_url(canonical_url)
     if not is_public:
         return _job_fetch_outcome("unsafe_url", reason=reason)
+
+    if provider_for_url(canonical_url) in {"weworkremotely", "jobicy"}:
+        from public_job_feeds import details_for_url, canonical_url as feed_url
+        if not feed_url(url):
+            return _job_fetch_outcome("unsafe_url", reason="Unsupported public-feed listing URL.")
+        if require_live:
+            # Explicit Verify must not certify a cached listing as currently live.
+            from discovery_sources import NoRedirect
+            try:
+                request = urllib.request.Request(canonical_url, method="HEAD",
+                    headers={"User-Agent": "CareerTrellis-listing-verification/1.0"})
+                with urllib.request.build_opener(NoRedirect()).open(request, timeout=12) as response:
+                    if response.status != 200:
+                        return _job_fetch_outcome("provider_error", reason="The listing could not be verified.")
+            except urllib.error.HTTPError as exc:
+                if exc.code in {404, 410}:
+                    return _job_fetch_outcome("stale", reason="The source reports that this listing is no longer available.")
+                return _job_fetch_outcome("provider_error", reason="The listing could not be verified.")
+            except OperationCancelled:
+                raise
+            except Exception:
+                return _job_fetch_outcome("provider_error", reason="The listing could not be verified.")
+        details = details_for_url(canonical_url, cancel_check or (lambda: None))
+        _cancellation_checkpoint(cancel_check)
+        if details is None:
+            return _job_fetch_outcome("provider_error", reason="This posting is not available in a fresh public feed snapshot. Try discovery again after the source refresh.")
+        if not is_useful_job_details(details):
+            return _job_fetch_outcome("format_drift", reason="The public feed did not supply complete posting details.")
+        return _job_fetch_outcome("ok", details)
 
     if provider_for_url(canonical_url) == "lever":
         api_outcome = _lever_posting_from_api(canonical_url)
@@ -1307,6 +1344,8 @@ def _search_completion(
     ai_error: str | None = None,
     ai_error_code: str | None = None,
     save_failures: int = 0,
+    scored: int | None = None,
+    meeting_minimum: int | None = None,
 ) -> dict:
     """Classify useful work separately from discovery and posting failures."""
     totals = lambda key: sum(item.get(key, 0) for item in provider_health.values())
@@ -1346,13 +1385,33 @@ def _search_completion(
         "accepted": totals("accepted"), "known": known,
         "filtered": suppressed + stale + max(0, analyzed - saved - save_failures), "saved": saved,
     }
+    if scored is not None and meeting_minimum is not None:
+        counts.update(scored=scored, meeting_minimum=meeting_minimum)
+        # A match can qualify but already exist by insertion time, or fail to
+        # save. Neither case is a rejection by the minimum match threshold.
+        counts["filtered"] = suppressed + stale + max(0, scored - meeting_minimum)
     result = {
         "success": success, "partial": outcome == "partial_results",
         "jobs_added": saved, "error": ai_error, "failure_code": ai_error_code,
         "counts": {key: max(0, min(100_000, value)) for key, value in counts.items()},
         "provider_health": provider_health,
         "provider_alerts": provider_alerts_from_health(provider_health),
+        # These are separate diagnostic measures, not additive failure totals:
+        # unusable counts responses, failed counts unrecovered source searches.
+        "source_counts": {
+            "confirmed_empty": totals("source_empty"),
+            "failed": totals("source_failures"),
+            "unusable": totals("source_unusable"),
+            "limited": sum(bool(any(item.get("partial_results", {}).values()) or
+                                item.get("candidate_budget_exhausted"))
+                           for item in provider_health.values()),
+        },
     }
+    result["source_counts"] = {
+        key: max(0, min(100_000, value)) for key, value in result["source_counts"].items()
+    }
+    if scored is not None and meeting_minimum is not None:
+        result["minimum_match_score"] = MIN_MATCH_SCORE
     if outcome is not None:
         result["outcome"] = outcome
     return result
@@ -1463,6 +1522,10 @@ def run_job_search_and_matching(
         return {"success": False, "failure_code": "keywords_unavailable",
                 "error": "Enter a shorter search location and try again.", "jobs_added": 0}
 
+    search_providers = list(PROVIDER_DOMAINS)
+    if config.get_discovery_mode() == "hybrid_feeds":
+        from public_job_feeds import PROVIDERS
+        search_providers.extend(PROVIDERS)
     provider_health = {
         provider: {
             "raw_candidates": 0, "valid_discovered": 0, "new_candidates": 0,
@@ -1478,13 +1541,13 @@ def run_job_search_and_matching(
                 "embedded_content": 0, "provider_error": 0,
             },
         }
-        for provider in PROVIDER_DOMAINS
+        for provider in search_providers
     }
 
     # 4. Search Yahoo for matching Greenhouse/Lever postings
     results = []
     seen_urls = set()
-    provider_candidate_counts = {provider: 0 for provider in PROVIDER_DOMAINS}
+    provider_candidate_counts = {provider: 0 for provider in search_providers}
     source_total = len(search_keywords) * len(locs)
     source_completed = 0
     source_state = {"yahoo_available": True}
@@ -1493,6 +1556,10 @@ def run_job_search_and_matching(
         for item in provider_health.values():
             item["partial_results"]["planning_limits"] = 1
     if config.get_discovery_mode() == "hybrid_feeds":
+        from public_job_feeds import collect as collect_public_feeds
+        for item in collect_public_feeds(search_keywords, locs, provider_health, check_cancelled):
+            check_cancelled()
+            _append_candidate_with_budget(item, results, seen_urls, provider_candidate_counts, provider_health)
         from discovery_sources import collect
         for item in collect(search_keywords, locs, provider_health, check_cancelled,
                             feeds_only=True):
@@ -1524,6 +1591,8 @@ def run_job_search_and_matching(
     from job_suppressions import job_url_fingerprint
     inspected_count = 0
     analyzed_count = 0
+    scored_count = 0
+    meeting_minimum_count = 0
     saved_count = 0
     matches_added = 0
     save_failures = 0
@@ -1533,6 +1602,7 @@ def run_job_search_and_matching(
 
     def process_pending_jobs() -> bool:
         nonlocal analyzed_count, saved_count, matches_added, ai_error, ai_error_code, save_failures
+        nonlocal scored_count, meeting_minimum_count
         if not pending_jobs:
             return True
         batch = list(pending_jobs)
@@ -1609,7 +1679,7 @@ def run_job_search_and_matching(
 
         batch_results = {
             match.get("index"): {
-                "score": match.get("match_score", 50),
+                "score": match.get("match_score"),
                 "analysis": match.get("match_analysis", "Matched successfully."),
             }
             for match in batch_res.get("matches", [])
@@ -1626,7 +1696,10 @@ def run_job_search_and_matching(
                     score = max(0, min(100, int(match_info["score"])))
                 except (KeyError, TypeError, ValueError):
                     score = -1
+                if score >= 0:
+                    scored_count += 1
                 if score >= MIN_MATCH_SCORE:
+                    meeting_minimum_count += 1
                     try:
                         created = job_repository.create_job_if_available(
                             title=job["title"],
@@ -1697,4 +1770,5 @@ def run_job_search_and_matching(
     return _search_completion(
         provider_health, len(results), inspected_count, analyzed_count,
         matches_added, ai_error, ai_error_code, save_failures,
+        scored=scored_count, meeting_minimum=meeting_minimum_count,
     )

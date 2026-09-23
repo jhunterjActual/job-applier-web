@@ -2141,7 +2141,8 @@ def _verify_job_posting(job_id: int, operation: OperationToken) -> dict:
         raise HTTPException(status_code=404, detail="Job not found.")
 
     checked_at = datetime.now(timezone.utc)
-    outcome = inspect_job_posting(target["url"], cancel_check=operation.checkpoint)
+    verification_options = {"require_live": True} if provider_for_url(target["url"]) in {"weworkremotely", "jobicy"} else {}
+    outcome = inspect_job_posting(target["url"], cancel_check=operation.checkpoint, **verification_options)
     operation.checkpoint()
     details = outcome["details"]
     if not details and outcome.get("status") != "stale":

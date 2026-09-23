@@ -6,7 +6,7 @@ import sqlite3
 from datetime import date
 
 
-ALLOWED_PROVIDERS = frozenset({"greenhouse", "lever", "ashby", "smartrecruiters"})
+ALLOWED_PROVIDERS = frozenset({"greenhouse", "lever", "ashby", "smartrecruiters", "weworkremotely", "jobicy"})
 ALLOWED_CODES = frozenset({
     "url_format_drift",
     "content_format_drift",
@@ -53,7 +53,8 @@ REJECTION_COUNTERS = (
     "embedded_content",
     "provider_error",
 )
-PARTIAL_COUNTERS = ("oversized_responses", "candidate_limit_hits", "timeouts", "planning_limits")
+PARTIAL_COUNTERS = ("oversized_responses", "candidate_limit_hits", "timeouts", "planning_limits",
+                    "catalog_page_limits", "catalog_request_limits", "catalog_term_limits")
 STORED_COUNTERS = DIRECT_COUNTERS + REJECTION_COUNTERS + PARTIAL_COUNTERS + (
     "search_errors",
     "candidate_budget_exhausted",

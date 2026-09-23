@@ -7,6 +7,39 @@ from search_run_repository import minimized_search_result
 
 
 class SearchCompletionBrowserTests(unittest.TestCase):
+    def test_saved_job_counts_separate_score_and_other_filters(self):
+        source = (Path(__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
+        render = source[source.index("function renderFilteredJobs("):source.index("function buildJobRow(")]
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 390, "height": 844})
+                page.route("**/*", lambda route: route.abort())
+                page.set_content('<select id="score"><option>40</option><option>70</option></select><p id="job-result-count"></p><p id="status"></p><div id="rows"></div>')
+                page.add_script_tag(content="""
+                    const jobsTableBody = document.getElementById('rows');
+                    const jobMinScore = document.getElementById('score');
+                    const jobResultsStatus = document.getElementById('status');
+                    const jobStatusFilter = {value: 'matched'}, jobSortOrder = {value: 'score_desc'};
+                    const loadedJobs = [{match_score: 80, status: 'matched'}, {match_score: 60, status: 'matched'},
+                        {match_score: 90, status: 'applied'}, {match_score: null, status: 'matched'}];
+                    function currentAdvancedJobFilters() { return {}; }
+                    function jobMatchesAdvancedFilters() { return true; }
+                    function updateAdvancedJobFilterSummary() { return 0; }
+                    function buildJobRow() { return document.createElement('div'); }
+                """ + render)
+                page.evaluate('renderFilteredJobs()')
+                self.assertIn('4 saved jobs before filtering; 4 remain', page.locator('#job-result-count').inner_text())
+                self.assertIn('3 shown after all filters', page.locator('#job-result-count').inner_text())
+                page.select_option('#score', '70')
+                page.evaluate('renderFilteredJobs()')
+                self.assertIn('4 saved jobs before filtering; 3 remain', page.locator('#job-result-count').inner_text())
+                self.assertIn('2 shown after all filters', page.locator('#job-result-count').inner_text())
+                self.assertIn('Includes 1 unscored jobs', page.locator('#job-result-count').inner_text())
+                self.assertEqual(page.locator('#job-result-count').inner_text(), page.locator('#status').inner_text())
+            finally:
+                browser.close()
+
     def test_search_stop_respects_enqueue_and_operation_boundaries(self):
         source = (Path(__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
         stop = source[source.index("function showCancellableLoading("):source.index("function showFullBackupModal(")]
@@ -156,6 +189,26 @@ class SearchCompletionBrowserTests(unittest.TestCase):
                 page.evaluate("finishObservedSearch({last_result: {success: true, cancelled: true, message: 'Search stopped; previously saved matches are retained.', provider_alerts: []}}, searchStatusPollGeneration)")
                 self.assertTrue(page.locator('#overlay').is_hidden())
                 self.assertIn('Search stopped', page.locator('#notes').inner_text())
+                for result, expected in (
+                    ({'success': True, 'message': 'No matching results.',
+                      'counts': {'discovered': 0, 'scored': 0, 'meeting_minimum': 0, 'saved': 0},
+                      'minimum_match_score': 40, 'source_counts': {'confirmed_empty': 15, 'failed': 0, 'unusable': 0, 'limited': 0}},
+                     '15 source checks completed with no matching results'),
+                    ({'success': True, 'partial': True, 'message': 'Partial search.',
+                      'counts': {'discovered': 12, 'scored': 8, 'meeting_minimum': 5, 'saved': 4},
+                      'minimum_match_score': 40, 'source_counts': {'confirmed_empty': 3, 'failed': 2, 'unusable': 2, 'limited': 1}},
+                     '12 candidate jobs found; 8 scored; 5 met the minimum match (40%); 4 new jobs saved'),
+                    ({'success': False, 'error': 'Sources unavailable.',
+                      'counts': {'discovered': 0, 'saved': 0}},
+                     'minimum-match counts unavailable for this search'),
+                ):
+                    page.evaluate('result => renderProviderAlerts(result)', result)
+                    self.assertIn(expected, page.locator('#notes').inner_text())
+                    if result.get('partial'):
+                        self.assertIn('3 source checks completed with no matching results; 2 source checks failed', page.locator('#notes').inner_text())
+                        self.assertIn('Counts reflect only completed work', page.locator('#notes').inner_text())
+                    if result.get('source_counts', {}).get('failed') == 0:
+                        self.assertNotIn('source checks failed', page.locator('#notes').inner_text())
                 page.evaluate("renderProviderAlerts({success: true, message: '<img src=x onerror=alert(1)>', provider_alerts: []})")
                 self.assertEqual(0, page.locator('#notes img').count())
                 self.assertIn('<img', page.locator('#notes').inner_text())
