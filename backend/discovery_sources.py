@@ -2,18 +2,38 @@
 
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from collections import OrderedDict, deque
 
 from operations import OperationCancelled
 
 
-CATALOG = (("lever", "tekton"), ("greenhouse", "clear"), ("ashby", "coder"))
+CATALOG = (
+    ("lever", "tekton"), ("greenhouse", "clear"), ("ashby", "coder"),
+    ("greenhouse", "springhealth66"), ("greenhouse", "sothebys"),
+    ("greenhouse", "givedirectly"), ("lever", "rocketship"),
+    ("lever", "weloglobal"), ("smartrecruiters", "BoschGroup"),
+    ("smartrecruiters", "AccorHotel"), ("smartrecruiters", "Eurofins"),
+    ("smartrecruiters", "HMGroup"), ("smartrecruiters", "AECOM2"),
+    ("smartrecruiters", "NorthwesternMedicine"), ("greenhouse", "spacex"),
+)
 MAX_BYTES = 1024 * 1024
-MAX_REQUESTS = 12
+MAX_REQUESTS = 45
+LARGE_BOARD_MAX_BYTES = 4 * MAX_BYTES
+LEVER_PAGE_SIZE = 20
+LEVER_MAX_PAGES = 3
+SMARTRECRUITERS_PAGE_SIZE = 100
+SMARTRECRUITERS_MAX_PAGES = 2
+CACHE_TTL_SECONDS = 300
+CACHE_MAX_BYTES = 16 * MAX_BYTES
+CACHE_MAX_ENTRIES = 32
+_PAGE_CACHE = OrderedDict()
+_CACHE_LOCK = threading.Lock()
 MAX_SERPER_REQUESTS = 6
 MAX_SECONDS = 90
 HTTP_TIMEOUT = 12
@@ -80,7 +100,10 @@ class Budget:
         return min(HTTP_TIMEOUT, remaining)
 
 
-def fetch_json(url, budget, *, api_key=None, payload=None, reserve=None):
+def fetch_json(url, budget, *, api_key=None, payload=None, reserve=None, max_bytes=MAX_BYTES):
+    if max_bytes not in (MAX_BYTES, LARGE_BOARD_MAX_BYTES) or (
+            max_bytes > MAX_BYTES and url != "https://boards-api.greenhouse.io/v1/boards/spacex/jobs"):
+        raise SourceError("invalid_endpoint")
     paid = api_key is not None
     if (paid or urllib.parse.urlsplit(url).hostname == "google.serper.dev") and not SERPER_ENABLED:
         raise SourceError("serper_disabled")
@@ -107,11 +130,11 @@ def fetch_json(url, budget, *, api_key=None, payload=None, reserve=None):
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout) as response:
             chunks = []
             size = 0
-            while size <= MAX_BYTES:
+            while size <= max_bytes:
                 budget.check_cancelled()
                 if time.monotonic() >= budget.deadline:
                     raise SourceError("request_limit")
-                chunk = getattr(response, "read1", response.read)(min(65536, MAX_BYTES + 1 - size))
+                chunk = getattr(response, "read1", response.read)(min(65536, max_bytes + 1 - size))
                 if not chunk:
                     break
                 chunks.append(chunk)
@@ -120,7 +143,7 @@ def fetch_json(url, budget, *, api_key=None, payload=None, reserve=None):
         budget.check_cancelled()
         if time.monotonic() > budget.deadline:
             raise SourceError("request_limit")
-        if len(raw) > MAX_BYTES:
+        if len(raw) > max_bytes:
             raise SourceError("oversized_response")
         return json.loads(raw)
     except (OperationCancelled, SourceError):
@@ -135,40 +158,132 @@ def fetch_json(url, budget, *, api_key=None, payload=None, reserve=None):
         raise SourceError("network") from None
 
 
-def feed_rows(provider, board, budget):
+class FeedRows(list):
+    """Bounded page; complete means this board/query has no remaining rows."""
+
+    def __init__(self, rows=(), *, complete=True, query_index=None):
+        super().__init__(rows)
+        self.complete = complete
+        self.query_index = query_index
+
+
+def clear_feed_cache():
+    with _CACHE_LOCK:
+        _PAGE_CACHE.clear()
+
+
+def _cached_document(key, budget):
+    budget.check_cancelled()
+    now = time.monotonic()
+    if now >= budget.deadline:
+        raise SourceError("request_limit")
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        for item in [item for item, (expires, _) in _PAGE_CACHE.items() if expires <= now]:
+            del _PAGE_CACHE[item]
+        cached = _PAGE_CACHE.get(key)
+        if cached is None:
+            return None
+        _PAGE_CACHE.move_to_end(key)
+        raw = cached[1]
+    return json.loads(raw)  # Return a fresh copy, never shared mutable rows.
+
+
+def _cache_document(key, document):
+    if key is None:
+        return
+    raw = json.dumps(document, separators=(",", ":")).encode("utf-8")
+    if len(raw) > CACHE_MAX_BYTES:
+        return
+    with _CACHE_LOCK:
+        _PAGE_CACHE.pop(key, None)
+        while _PAGE_CACHE and (len(_PAGE_CACHE) >= CACHE_MAX_ENTRIES or
+                sum(len(item[1]) for item in _PAGE_CACHE.values()) + len(raw) > CACHE_MAX_BYTES):
+            _PAGE_CACHE.popitem(last=False)
+        _PAGE_CACHE[key] = (time.monotonic() + CACHE_TTL_SECONDS, raw)
+
+
+def feed_rows(provider, board, budget, *, page_index=None, keywords=()):
     if (provider, board) not in CATALOG:
         raise SourceError("invalid_catalog")
+    terms, _ = bounded_terms(keywords, MAX_KEYWORDS)
+    if provider == "smartrecruiters" and not terms:
+        raise SourceError("missing_keyword")
+    max_pages = (LEVER_MAX_PAGES if provider == "lever" else
+                 SMARTRECRUITERS_MAX_PAGES * len(terms) if provider == "smartrecruiters" else 1)
+    if page_index is None:
+        result, completed = [], set()
+        for index in range(max_pages):
+            query_index = index % len(terms) if provider == "smartrecruiters" else 0
+            if query_index in completed:
+                continue
+            page = feed_rows(provider, board, budget, page_index=index, keywords=terms)
+            result.extend(page)
+            if page.complete:
+                completed.add(query_index)
+        expected = len(terms) if provider == "smartrecruiters" else 1
+        return FeedRows(result, complete=len(completed) == expected)
+    if type(page_index) is not int or not 0 <= page_index < max_pages:
+        raise SourceError("page_limit")
+    # Only fixed unfiltered public pages enter the cross-user process cache.
+    # Search terms and SmartRecruiters query responses are never cached.
+    key = (provider, board, page_index) if provider != "smartrecruiters" else None
+    document = _cached_document(key, budget)
+    from_cache = document is not None
     if provider == "lever":
-        rows = []
-        for offset in (0, 100, 200):
-            page = fetch_json(f"https://api.lever.co/v0/postings/{board}?mode=json&limit=100&skip={offset}", budget)
-            if not isinstance(page, list) or len(page) > 100:
-                raise SourceError("invalid_response")
-            rows.extend(page)
-            if len(page) < 100:
-                return rows
-        raise SourceError("page_limit")
-    if provider == "greenhouse":
-        document = fetch_json(f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs", budget)
+        url = f"https://api.lever.co/v0/postings/{board}?mode=json&limit={LEVER_PAGE_SIZE}&skip={page_index * LEVER_PAGE_SIZE}"
+    elif provider == "greenhouse":
+        url = f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs"
+    elif provider == "ashby":
+        url = f"https://api.ashbyhq.com/posting-api/job-board/{board}"
     else:
-        document = fetch_json(f"https://api.ashbyhq.com/posting-api/job-board/{board}", budget)
-    if not isinstance(document, dict) or not isinstance(document.get("jobs"), list):
-        raise SourceError("invalid_response")
-    rows = document["jobs"]
-    if len(rows) > 1000:
-        raise SourceError("page_limit")
-    if provider == "greenhouse":
-        meta = document.get("meta")
-        if not isinstance(meta, dict):
+        query_index = page_index % len(terms)
+        offset = page_index // len(terms) * SMARTRECRUITERS_PAGE_SIZE
+        query = urllib.parse.urlencode({"q": terms[query_index], "limit": SMARTRECRUITERS_PAGE_SIZE,
+                                       "offset": offset, "destination": "PUBLIC"})
+        url = f"https://api.smartrecruiters.com/v1/companies/{board}/postings?{query}"
+    if not from_cache:
+        if provider == "greenhouse" and board == "spacex":
+            document = fetch_json(url, budget, max_bytes=LARGE_BOARD_MAX_BYTES)
+        else:
+            document = fetch_json(url, budget)
+    if provider == "lever":
+        if not isinstance(document, list) or len(document) > LEVER_PAGE_SIZE:
             raise SourceError("invalid_response")
-        total = meta.get("total")
-        if type(total) is not int or total != len(rows):
+        result = FeedRows(document, complete=len(document) < LEVER_PAGE_SIZE)
+    elif provider == "smartrecruiters":
+        if not isinstance(document, dict) or not isinstance(document.get("content"), list):
             raise SourceError("invalid_response")
-    return rows
+        rows, total = document["content"], document.get("totalFound")
+        if (type(total) is not int or total < 0 or len(rows) > SMARTRECRUITERS_PAGE_SIZE or
+                type(document.get("offset")) is not int or document["offset"] != offset or
+                type(document.get("limit")) is not int or document["limit"] != SMARTRECRUITERS_PAGE_SIZE or
+                (rows and offset + len(rows) > total) or (not rows and offset < total)):
+            raise SourceError("invalid_response")
+        result = FeedRows(rows, complete=offset + len(rows) >= total, query_index=query_index)
+    else:
+        if not isinstance(document, dict) or not isinstance(document.get("jobs"), list):
+            raise SourceError("invalid_response")
+        rows = document["jobs"]
+        if len(rows) > (5000 if board == "spacex" else 1000):
+            raise SourceError("page_limit")
+        if provider == "greenhouse":
+            meta = document.get("meta")
+            if not isinstance(meta, dict) or type(meta.get("total")) is not int or meta["total"] != len(rows):
+                raise SourceError("invalid_response")
+        result = FeedRows(rows)
+    # Cache only validated successes. Never serve stale data after a failed refresh.
+    for row in result:
+        budget.check_cancelled()
+        feed_candidate(provider, board, row)
+    if not from_cache:
+        _cache_document(key, document)
+    return result
 
 
 def feed_candidate(provider, board, row):
-    if not isinstance(row, dict):
+    if (provider, board) not in CATALOG or not isinstance(row, dict):
         raise SourceError("invalid_response")
     if provider == "lever":
         title, url = row.get("text"), row.get("hostedUrl")
@@ -188,6 +303,31 @@ def feed_candidate(provider, board, row):
         if not isinstance(place, dict):
             raise SourceError("invalid_response")
         location, remote = place.get("name", ""), False
+    elif provider == "smartrecruiters":
+        title, posting_id = row.get("name"), row.get("id")
+        company, place = row.get("company"), row.get("location")
+        if (not isinstance(posting_id, str) or not re.fullmatch(r"[0-9]{1,30}", posting_id) or
+                not isinstance(company, dict) or not isinstance(company.get("identifier"), str) or
+                company["identifier"].casefold() != board.casefold() or not isinstance(place, dict)):
+            raise SourceError("invalid_response")
+        values = [place.get(field, "") for field in ("city", "region", "country")]
+        if any(not isinstance(value, str) for value in values):
+            raise SourceError("invalid_response")
+        location, remote = ", ".join(value for value in values if value), place.get("remote") is True
+        url = row.get("postingUrl", f"https://jobs.smartrecruiters.com/{board}/{posting_id}")
+        ref = row.get("ref")
+        if ref is not None:
+            if not isinstance(ref, str):
+                raise SourceError("invalid_response")
+            try:
+                ref_parts = urllib.parse.urlsplit(ref)
+                expected_paths = {f"/{version}/companies/{board}/postings/{posting_id}".casefold()
+                                  for version in ("v1", "api-v1")}
+                if (ref_parts.scheme != "https" or ref_parts.netloc != "api.smartrecruiters.com" or
+                        ref_parts.path.casefold() not in expected_paths or ref_parts.query or ref_parts.fragment):
+                    raise SourceError("invalid_response")
+            except (TypeError, ValueError):
+                raise SourceError("invalid_response") from None
     else:
         if type(row.get("isListed")) is not bool:
             raise SourceError("invalid_response")
@@ -202,10 +342,17 @@ def feed_candidate(provider, board, row):
         parsed = urllib.parse.urlsplit(url)
     except ValueError:
         raise SourceError("invalid_response") from None
-    expected = {"lever": {"jobs.lever.co"}, "greenhouse": {"boards.greenhouse.io", "job-boards.greenhouse.io"}, "ashby": {"jobs.ashbyhq.com"}}
+    expected = {"lever": {"jobs.lever.co"}, "greenhouse": {"boards.greenhouse.io", "job-boards.greenhouse.io"},
+                "ashby": {"jobs.ashbyhq.com"}, "smartrecruiters": {"jobs.smartrecruiters.com"}}
     parts = parsed.path.split("/")
-    if parsed.scheme != "https" or parsed.username or parsed.password or parsed.hostname not in expected[provider] or len(parts) < 3 or parts[1] != board:
+    board_matches = len(parts) >= 3 and (parts[1].casefold() == board.casefold() if provider == "smartrecruiters" else parts[1] == board)
+    if parsed.scheme != "https" or parsed.username or parsed.password or parsed.netloc not in expected[provider] or not board_matches:
         raise SourceError("invalid_response")
+    if provider == "smartrecruiters" and (len(parts) != 3 or parts[2].split("-", 1)[0] != posting_id):
+        raise SourceError("invalid_response")
+    # These are expressions of interest rather than an advertised current opening.
+    if re.search(r"\b(talent (?:pool|community|network)|future opportunities|expression(?:s)? of interest)(?:\s*[-–:|(]|\s*$)", title, re.I):
+        return None
     return {"title": title, "url": url, "location": location, "remote": remote}
 
 
@@ -241,20 +388,72 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
             record(provider, "valid_discovered")
         return True
 
-    for provider, board in CATALOG:
-        check_cancelled()
-        record(provider, "source_attempts")
-        try:
-            rows = [feed_candidate(provider, board, row) for row in feed_rows(provider, board, budget)]
-            selected = [row for row in rows if row and matches(row, keywords, locations)]
-            for row in selected:
-                record(provider, "raw_candidates")
-                if not admit(row["url"], provider):
-                    raise SourceError("invalid_response")
-            if not selected:
-                record(provider, "source_empty")
-        except SourceError:
-            record(provider, "source_failures")
+    keywords, term_limited = bounded_terms(keywords, MAX_KEYWORDS)
+    locations, location_limited = bounded_terms(locations, MAX_LOCATIONS)
+    locations = locations or [""]
+
+    def partial(provider, field):
+        item = health[provider].setdefault("partial_results", {})
+        item[field] = item.get(field, 0) + 1
+
+    states = [{"provider": provider, "board": board, "completed": set(),
+               "selected": deque(), "attempted": False, "failed": False, "limited": False}
+              for provider, board in CATALOG]
+    if term_limited or location_limited:
+        for provider in {item["provider"] for item in states}:
+            partial(provider, "catalog_term_limits")
+    if not keywords:
+        return candidates
+    # Each employer gets its first page before any employer's second page.
+    # Slow/failed providers still share one wall-clock bound, not 15 independent
+    # deadlines. Unattempted employers are explicitly incomplete when it expires.
+    for page_index in range(max(LEVER_MAX_PAGES, SMARTRECRUITERS_MAX_PAGES * len(keywords))):
+        for state in states:
+            check_cancelled()
+            provider, board = state["provider"], state["board"]
+            query_index = page_index % len(keywords) if provider == "smartrecruiters" else 0
+            max_pages = (LEVER_MAX_PAGES if provider == "lever" else
+                         SMARTRECRUITERS_MAX_PAGES * len(keywords) if provider == "smartrecruiters" else 1)
+            if state["failed"] or page_index >= max_pages or query_index in state["completed"]:
+                continue
+            if time.monotonic() >= budget.deadline or budget.requests >= MAX_REQUESTS:
+                state["failed"] = state["limited"] = True
+                partial(provider, "catalog_request_limits")
+                continue
+            if not state["attempted"]:
+                state["attempted"] = True
+                record(provider, "source_attempts")
+            try:
+                page = feed_rows(provider, board, budget, page_index=page_index, keywords=keywords)
+                rows = [feed_candidate(provider, board, row) for row in page]
+                state["selected"].extend(row for row in rows if row and matches(row, keywords, locations))
+                if getattr(page, "complete", True):
+                    state["completed"].add(query_index)
+            except SourceError as error:
+                state["failed"] = True
+                record(provider, "source_failures")
+                if error.code == "request_limit":
+                    state["limited"] = True
+                    partial(provider, "catalog_request_limits")
+    for state in states:
+        provider = state["provider"]
+        expected = len(keywords) if provider == "smartrecruiters" else 1
+        if not state["failed"] and len(state["completed"]) != expected:
+            partial(provider, "catalog_page_limits")
+        elif not state["failed"] and not state["selected"]:
+            record(provider, "source_empty")
+    # Interleave employers before the existing per-provider downstream cap, so a
+    # large early board cannot take every detail-fetch slot for its ATS provider.
+    while any(state["selected"] for state in states):
+        for state in states:
+            check_cancelled()
+            if not state["selected"]:
+                continue
+            row = state["selected"].popleft()
+            provider = state["provider"]
+            record(provider, "raw_candidates")
+            if not admit(row["url"], provider):
+                record(provider, "source_failures")
 
     if feeds_only:
         return candidates

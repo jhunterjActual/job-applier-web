@@ -612,6 +612,14 @@ def provider_alerts_from_health(provider_health: dict) -> list[dict]:
                 causes.append(f"a search request exceeded the {SEARCH_HTTP_TIMEOUT_SECONDS}-second timeout")
             if partial.get("planning_limits", 0):
                 causes.append("the search keyword or location limit was reached")
+            if partial.get("catalog_page_limits", 0):
+                causes.append("some employer feeds have more postings than this search could read")
+            if partial.get("catalog_request_limits", 0):
+                causes.append("the employer-feed request or time limit was reached")
+            if partial.get("catalog_term_limits", 0):
+                causes.append("the employer-feed search term limit was reached")
+            if not causes:
+                causes.append("some sources could not be fully checked")
             alerts.append({
                 "provider": provider,
                 "code": "partial_results",
