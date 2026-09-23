@@ -3162,6 +3162,11 @@ async function searchJobs(e) {
             operation.stopRequested = false;
             operation.stopRequestSent = false;
             operation.cancelUrl = `${API_URL}/api/jobs/search/cancel`;
+            stopLoadingBtn.disabled = false;
+            stopLoadingBtn.replaceChildren(
+                createElement("i", "fa-solid fa-stop"),
+                document.createTextNode(` ${t("common.stop")}`)
+            );
             startSearchStatusPolling(true);
         } else {
             hideLoading();

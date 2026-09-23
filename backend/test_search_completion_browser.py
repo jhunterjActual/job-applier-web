@@ -14,7 +14,7 @@ class SearchCompletionBrowserTests(unittest.TestCase):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             try:
-                for case in ('early_stop', 'repeated_stop', 'failed_start', 'replaced_operation', 'normal_stop'):
+                for case in ('early_stop', 'repeated_stop', 'failed_start', 'replaced_operation', 'normal_stop', 'already_active'):
                     with self.subTest(case=case):
                         page = browser.new_page()
                         page.route("**/*", lambda route: route.abort())
@@ -80,12 +80,20 @@ class SearchCompletionBrowserTests(unittest.TestCase):
                         page.evaluate(
                             "result => settleStart(result, result.success)",
                             {'success': False, 'message': 'Synthetic queue failure'}
-                            if case == 'failed_start' else {'success': True},
+                            if case == 'failed_start' else {'success': False, 'active': True}
+                            if case == 'already_active' else {'success': True},
                         )
                         if case == 'normal_stop':
                             page.locator('#stop').click()
                             page.evaluate('stopActiveLoadingOperation()')
-                        if case in ('failed_start', 'replaced_operation'):
+                        if case == 'already_active':
+                            self.assertEqual(1, page.evaluate('requests.length'))
+                            self.assertTrue(page.locator('#stop').is_enabled())
+                            self.assertEqual('common.stop', page.locator('#stop').inner_text().strip())
+                            self.assertFalse(page.evaluate('activeLoadingOperation.stopRequested'))
+                            page.locator('#stop').click()
+                            self.assertEqual('/api/jobs/search/cancel', page.evaluate('requests[1].url'))
+                        elif case in ('failed_start', 'replaced_operation'):
                             self.assertEqual(1, page.evaluate('requests.length'))
                             self.assertEqual(0, page.evaluate('pollingCalls'))
                             if case == 'failed_start':
