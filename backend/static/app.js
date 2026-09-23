@@ -1046,16 +1046,25 @@ async function stopActiveLoadingOperation() {
     loadingTitle.innerText = t("common.stopping");
     loadingSubtitle.classList.remove("search-progress-status", "tailor-progress-status");
     loadingSubtitle.innerText = t("common.stopping.subtitle");
+    if (operation.enqueuePending) return;
+    await sendStopRequest(operation);
+}
+
+async function sendStopRequest(operation) {
+    if (activeLoadingOperation !== operation || operation.stopRequestSent) return;
+    operation.stopRequestSent = true;
     try {
         const cancelUrl = operation.cancelUrl
             || `${API_URL}/api/operations/${operation.id}/cancel`;
         const response = await fetch(cancelUrl, { method: "POST" });
         const result = await response.json();
+        if (activeLoadingOperation !== operation) return;
         if (!response.ok) throw new Error(result.detail || "The stop request could not be sent.");
         if (!result.active && activeLoadingOperation === operation) {
             loadingSubtitle.classList.remove("search-progress-status", "tailor-progress-status");
             if (operation.kind === "tailor") {
                 operation.stopRequested = false;
+                operation.stopRequestSent = false;
                 operation.stopWhenActive = true;
                 loadingSubtitle.innerText = "Waiting for tailoring to become active so it can be stopped safely...";
             } else {
@@ -1063,7 +1072,9 @@ async function stopActiveLoadingOperation() {
             }
         }
     } catch (error) {
+        if (activeLoadingOperation !== operation) return;
         operation.stopRequested = false;
+        operation.stopRequestSent = false;
         stopLoadingBtn.disabled = false;
         stopLoadingBtn.replaceChildren(
             createElement("i", "fa-solid fa-stop"),
@@ -3113,7 +3124,7 @@ async function searchJobs(e) {
     const operation = showCancellableLoading(
         t("search.loading.title"),
         t("search.loading.subtitle"),
-        { kind: "search" }
+        { kind: "search", enqueuePending: true }
     );
     logActivity("Job Search Started", logMsg, "info");
     
@@ -3131,15 +3142,25 @@ async function searchJobs(e) {
             })
         });
         const result = await res.json();
+        if (activeLoadingOperation !== operation) return;
+        operation.enqueuePending = false;
         
         if (result.cancelled) {
             hideLoading();
             logActivity("Job Search Stopped", result.message || "Search stopped.", "warning");
         } else if (result.success) {
+            // The enqueue response makes the original UUID safe to cancel.
+            // Preserve an early Stop without targeting another active run.
+            if (operation.stopRequested) await sendStopRequest(operation);
+            if (activeLoadingOperation !== operation) return;
             if (saveSearchCheckbox?.checked) await loadSavedSearches();
             await checkDueSavedSearches();
             startSearchStatusPolling(true);
         } else if (result.active) {
+            // This is another already-active run, not the submitted UUID.
+            // Require a fresh Stop for that run rather than transferring intent.
+            operation.stopRequested = false;
+            operation.stopRequestSent = false;
             operation.cancelUrl = `${API_URL}/api/jobs/search/cancel`;
             startSearchStatusPolling(true);
         } else {
@@ -3147,6 +3168,7 @@ async function searchJobs(e) {
             alert(result.message || result.error || t("search.failed"));
         }
     } catch (err) {
+        if (activeLoadingOperation !== operation) return;
         hideLoading();
         console.error(err);
         logActivity("Search Failed", "An error occurred initiating the browser search crawl.", "error");
