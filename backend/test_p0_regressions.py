@@ -4192,7 +4192,6 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("restore_root_created_identity", creation)
 
         future_timers = {
-            "careertrellis-pgbackrest-inventory.timer": "7d",
             "careertrellis-pgbackrest-restore.timer": "30d",
         }
         for timer_name, delay in future_timers.items():
@@ -4201,6 +4200,16 @@ class DependencyLockTests(unittest.TestCase):
             self.assertIn(f"OnUnitActiveSec={delay}", timer)
             self.assertNotIn("OnCalendar=", timer)
             self.assertNotIn("Persistent=true", timer)
+
+        inventory_timer = (systemd / "careertrellis-pgbackrest-inventory.timer").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("OnCalendar=Thu *-*-* 06:00:00 UTC", inventory_timer)
+        self.assertIn("Persistent=true", inventory_timer)
+        self.assertNotIn("OnActiveSec=", inventory_timer)
+        self.assertNotIn("OnUnitActiveSec=", inventory_timer)
+        self.assertIn("RandomizedDelaySec=30m", inventory_timer)
+        self.assertIn("Unit=careertrellis-pgbackrest-inventory.service", inventory_timer)
 
         installer = (scripts / "install-backup-health-monitor.sh").read_text(
             encoding="utf-8"
@@ -4273,10 +4282,15 @@ class DependencyLockTests(unittest.TestCase):
             )
         ]
         self.assertIn("systemctl start", start_boundary)
-        self.assertIn("careertrellis-pgbackrest-inventory.timer", start_boundary)
+        self.assertNotIn("careertrellis-pgbackrest-inventory.timer", start_boundary)
         self.assertIn("careertrellis-pgbackrest-restore.timer", start_boundary)
         self.assertIn("careertrellis-backup-health.timer", start_boundary)
         self.assertNotIn(".service", start_boundary)
+        self.assertIn('"inventory_timer_activation_required":true', installer)
+        self.assertLess(
+            installer.index("\nrequire_inactive_inventory_timer\n"), rollback_capture
+        )
+        self.assertIn("--property=LoadState,ActiveState,Job", installer)
 
     def test_wal_acknowledgement_and_persistent_unit_alerts_are_sticky(self) -> None:
         manager = (

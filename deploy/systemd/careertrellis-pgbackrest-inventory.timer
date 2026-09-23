@@ -2,8 +2,10 @@
 Description=Weekly download-verified PostgreSQL recovery-mirror inventory
 
 [Timer]
-OnActiveSec=7d
-OnUnitActiveSec=7d
+# A relative activation delay postpones verification whenever the timer or host
+# restarts. Keep a UTC calendar schedule and catch one missed occurrence.
+OnCalendar=Thu *-*-* 06:00:00 UTC
+Persistent=true
 RandomizedDelaySec=30m
 Unit=careertrellis-pgbackrest-inventory.service
 
