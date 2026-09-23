@@ -40,6 +40,11 @@ DIRECT_COUNTERS = (
     "skipped_archived",
     "skipped_suppressed",
     "api_fallbacks",
+    "source_attempts",
+    "source_failures",
+    "source_unusable",
+    "source_empty",
+    "source_fallbacks",
 )
 REJECTION_COUNTERS = (
     "stale",
@@ -48,7 +53,7 @@ REJECTION_COUNTERS = (
     "embedded_content",
     "provider_error",
 )
-PARTIAL_COUNTERS = ("oversized_responses", "candidate_limit_hits", "timeouts")
+PARTIAL_COUNTERS = ("oversized_responses", "candidate_limit_hits", "timeouts", "planning_limits")
 STORED_COUNTERS = DIRECT_COUNTERS + REJECTION_COUNTERS + PARTIAL_COUNTERS + (
     "search_errors",
     "candidate_budget_exhausted",

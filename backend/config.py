@@ -58,6 +58,7 @@ ACCOUNT_ERASURE_WORKER_FORBIDDEN_ENVIRONMENT_VARIABLES = frozenset({
     "GEMINI_API_KEY",
     "OPENAI_API_KEY",
     "GOOGLE_MAPS_API_KEY",
+    "CAREERTRELLIS_SERPER_API_KEY",
     "WORKOS_API_KEY",
     "WORKOS_CLIENT_ID",
     "WORKOS_COOKIE_PASSWORD",
@@ -91,6 +92,18 @@ def get_runtime_environment() -> str:
             "CAREERTRELLIS_ENVIRONMENT must be local, staging, or production."
         )
     return environment
+
+
+def get_discovery_mode() -> str:
+    mode = os.environ.get("CAREERTRELLIS_DISCOVERY_MODE", "legacy").strip()
+    if mode not in {"legacy", "hybrid_feeds"}:
+        raise RuntimeConfigurationError("Discovery mode is invalid.")
+    return mode
+
+
+def get_serper_api_key() -> str:
+    # Operator suspended Serper. Environment configuration cannot re-enable it.
+    return ""
 
 
 def get_allowed_public_hosts() -> frozenset[str]:

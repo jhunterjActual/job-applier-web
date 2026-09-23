@@ -1,0 +1,88 @@
+"""Default-closed, durable Serper request budgets."""
+
+from alembic import op
+
+revision = "20260921_0015"
+down_revision = "20260907_0014"
+branch_labels = None
+depends_on = None
+
+
+def upgrade():
+    op.execute("""
+    CREATE TABLE careertrellis.search_api_policy (
+        provider text PRIMARY KEY CHECK (provider = 'serper'),
+        global_daily integer NOT NULL DEFAULT 0 CHECK (global_daily BETWEEN 0 AND 10000),
+        owner_daily integer NOT NULL DEFAULT 0 CHECK (owner_daily BETWEEN 0 AND 1000)
+    );
+    INSERT INTO careertrellis.search_api_policy(provider) VALUES ('serper');
+    CREATE TABLE careertrellis.search_api_global_usage (
+        day date PRIMARY KEY, requests integer NOT NULL CHECK (requests >= 0)
+    );
+    CREATE TABLE careertrellis.search_api_owner_usage (
+        owner_user_id bigint NOT NULL REFERENCES careertrellis.app_users(id) ON DELETE CASCADE,
+        day date NOT NULL, requests integer NOT NULL CHECK (requests >= 0),
+        PRIMARY KEY(owner_user_id, day)
+    );
+    REVOKE ALL ON careertrellis.search_api_policy,
+        careertrellis.search_api_global_usage, careertrellis.search_api_owner_usage
+        FROM PUBLIC, careertrellis_runtime, careertrellis_worker, careertrellis_erasure_worker;
+    ALTER TABLE careertrellis.search_api_policy ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE careertrellis.search_api_policy FORCE ROW LEVEL SECURITY;
+    ALTER TABLE careertrellis.search_api_global_usage ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE careertrellis.search_api_global_usage FORCE ROW LEVEL SECURITY;
+    ALTER TABLE careertrellis.search_api_owner_usage ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE careertrellis.search_api_owner_usage FORCE ROW LEVEL SECURITY;
+    CREATE POLICY quota_broker_only ON careertrellis.search_api_policy
+        TO careertrellis_schema_owner USING (true) WITH CHECK (true);
+    CREATE POLICY quota_broker_only ON careertrellis.search_api_global_usage
+        TO careertrellis_schema_owner USING (true) WITH CHECK (true);
+    CREATE POLICY quota_broker_only ON careertrellis.search_api_owner_usage
+        TO careertrellis_schema_owner USING (true) WITH CHECK (true);
+    CREATE INDEX search_api_usage_day ON careertrellis.search_api_owner_usage(day);
+    CREATE FUNCTION careertrellis.reserve_search_api_request(p_run uuid, p_owner bigint, p_lease uuid)
+    RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path = pg_catalog, careertrellis SET lock_timeout = '2s'
+    AS $$
+    DECLARE today date; global_cap integer; owner_cap integer;
+            global_used integer; owner_used integer; claim record;
+    BEGIN
+        IF SESSION_USER <> 'careertrellis_worker'
+           OR p_owner IS NULL OR p_owner <= 0 OR p_run IS NULL OR p_lease IS NULL
+           OR current_setting('careertrellis.user_id', true) IS DISTINCT FROM p_owner::text THEN
+            RAISE EXCEPTION 'search quota context is invalid' USING ERRCODE='42501';
+        END IF;
+        PERFORM pg_advisory_xact_lock(192837465, 15);
+        SELECT * INTO claim FROM careertrellis.lock_search_run_claim(p_run, p_owner, p_lease);
+        IF NOT FOUND OR claim.run_status <> 'running' OR claim.owner_disabled THEN
+            RETURN false;
+        END IF;
+        SELECT global_daily, owner_daily INTO global_cap, owner_cap
+            FROM careertrellis.search_api_policy WHERE provider='serper' FOR SHARE;
+        IF NOT FOUND OR global_cap=0 OR owner_cap=0 THEN RETURN false; END IF;
+        -- Use wall time after all lock waits, not transaction-start CURRENT_TIMESTAMP.
+        IF NOT EXISTS (SELECT 1 FROM careertrellis.search_runs WHERE id=p_run
+            AND owner_user_id=p_owner AND lease_token=p_lease
+            AND lease_expires_at > clock_timestamp()) THEN RETURN false; END IF;
+        today := (clock_timestamp() AT TIME ZONE 'UTC')::date;
+        SELECT requests INTO global_used FROM careertrellis.search_api_global_usage WHERE day=today;
+        SELECT requests INTO owner_used FROM careertrellis.search_api_owner_usage
+            WHERE day=today AND owner_user_id=p_owner;
+        IF coalesce(global_used,0)>=global_cap OR coalesce(owner_used,0)>=owner_cap THEN RETURN false; END IF;
+        INSERT INTO careertrellis.search_api_global_usage VALUES(today,1)
+            ON CONFLICT(day) DO UPDATE SET requests=search_api_global_usage.requests+1;
+        INSERT INTO careertrellis.search_api_owner_usage VALUES(p_owner,today,1)
+            ON CONFLICT(owner_user_id,day) DO UPDATE SET requests=search_api_owner_usage.requests+1;
+        DELETE FROM careertrellis.search_api_global_usage WHERE day < today-35;
+        DELETE FROM careertrellis.search_api_owner_usage WHERE day < today-35;
+        RETURN true;
+    END $$;
+    REVOKE ALL ON FUNCTION careertrellis.reserve_search_api_request(uuid,bigint,uuid)
+        FROM PUBLIC, careertrellis_runtime, careertrellis_worker, careertrellis_erasure_worker;
+    GRANT EXECUTE ON FUNCTION careertrellis.reserve_search_api_request(uuid,bigint,uuid)
+        TO careertrellis_worker;
+    """)
+
+
+def downgrade():
+    raise RuntimeError("Search request usage must not be reset by downgrade; use reviewed forward correction.")

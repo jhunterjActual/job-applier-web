@@ -10149,6 +10149,9 @@ class SearchQualityTests(unittest.TestCase):
         print_message.assert_any_call(
             json.dumps({"event": "search_job_save_failed"}), flush=True
         )
+        self.assertFalse(result["success"])
+        self.assertEqual("storage_error", result["failure_code"])
+        self.assertEqual(0, result["counts"]["filtered"])
         log_text = " ".join(str(call) for call in print_message.call_args_list)
         self.assertNotIn(secret, log_text)
         self.assertNotIn(url, log_text)

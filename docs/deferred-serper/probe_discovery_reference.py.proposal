@@ -1,0 +1,78 @@
+"""Operator-run, generic public discovery trial; no profiles or stored secrets."""
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+import re
+import urllib.parse
+
+from discovery_sources import Budget, CATALOG, SourceError, feed_candidate, feed_rows, fetch_json
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--serper", action="store_true", help="Prompt on the controlling terminal; make at most six Serper requests.")
+    args = parser.parse_args()
+    if args.serper:
+        parser.error("Serper use is suspended pending renewed explicit operator approval.")
+    os.environ["CAREERTRELLIS_CONFIG_READ_ONLY"] = "1"
+    key = None
+    if args.serper:
+        import resource
+        from owner_recovery import Terminal
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        # Never start this prompt in an agent/background execution session.
+        with Terminal() as terminal:
+            key = terminal.ask("Serper API key for this six-request trial")
+        if not re.fullmatch(r"[!-~]{16,128}", key):
+            raise ValueError("Search credential format is invalid.")
+    budget = Budget(lambda: None)
+    receipt = {"observed_at": datetime.now(timezone.utc).isoformat(), "feeds": [], "managed": [],
+               "scope": "transport_and_url_controls_only", "beta_ready": False}
+    for provider, board in CATALOG:
+        try:
+            rows = feed_rows(provider, board, budget)
+            candidates = [feed_candidate(provider, board, row) for row in rows]
+            receipt["feeds"].append({"provider": provider, "rows": len(rows),
+                                     "eligible": sum(row is not None for row in candidates), "result": "ok"})
+        except SourceError as exc:
+            receipt["feeds"].append({"provider": provider, "result": exc.code})
+    if key:
+        from searcher import canonicalize_job_url, is_specific_job_url, provider_for_url
+        queries = ("Software Engineer remote", "Data Engineer remote", "Data Architect Ohio",
+                   "Project Manager remote", "Business Analyst Ohio", '"zzqv-no-such-role-829174"')
+        scope = "(site:greenhouse.io OR site:lever.co OR site:ashbyhq.com OR site:smartrecruiters.com)"
+        for index, query in enumerate(queries):
+            try:
+                document = fetch_json("https://google.serper.dev/search", budget, api_key=key,
+                                      payload={"q": f"{scope} {query}", "num": 10}, reserve=lambda: True)
+                rows = document.get("organic") if isinstance(document, dict) else None
+                if not isinstance(rows, list) or len(rows) > 10:
+                    raise SourceError("invalid_response")
+                eligible = 0
+                for row in rows:
+                    if not isinstance(row, dict) or not isinstance(row.get("link"), str):
+                        raise SourceError("invalid_response")
+                    url = canonicalize_job_url(row["link"])
+                    eligible += int(bool(url and provider_for_url(url) != "unknown" and is_specific_job_url(url)))
+                verdict = "ok"
+                if index < 5 and eligible == 0:
+                    verdict = "positive_control_failed"
+                if index == 5 and rows:
+                    verdict = "negative_control_failed"
+                receipt["managed"].append({"case": index + 1, "rows": len(rows), "eligible_urls": eligible, "result": verdict})
+            except SourceError as exc:
+                receipt["managed"].append({"case": index + 1, "result": exc.code})
+                break
+    receipt["requests"] = budget.requests
+    receipt["managed_requests"] = budget.serper_requests
+    print(json.dumps(receipt, sort_keys=True))
+    return 0 if all(row["result"] == "ok" for row in receipt["feeds"] + receipt["managed"]) else 1
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception:
+        print('{"result":"probe_failed"}')
+        raise SystemExit(1)

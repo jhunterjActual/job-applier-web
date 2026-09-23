@@ -1046,16 +1046,25 @@ async function stopActiveLoadingOperation() {
     loadingTitle.innerText = t("common.stopping");
     loadingSubtitle.classList.remove("search-progress-status", "tailor-progress-status");
     loadingSubtitle.innerText = t("common.stopping.subtitle");
+    if (operation.enqueuePending) return;
+    await sendStopRequest(operation);
+}
+
+async function sendStopRequest(operation) {
+    if (activeLoadingOperation !== operation || operation.stopRequestSent) return;
+    operation.stopRequestSent = true;
     try {
         const cancelUrl = operation.cancelUrl
             || `${API_URL}/api/operations/${operation.id}/cancel`;
         const response = await fetch(cancelUrl, { method: "POST" });
         const result = await response.json();
+        if (activeLoadingOperation !== operation) return;
         if (!response.ok) throw new Error(result.detail || "The stop request could not be sent.");
         if (!result.active && activeLoadingOperation === operation) {
             loadingSubtitle.classList.remove("search-progress-status", "tailor-progress-status");
             if (operation.kind === "tailor") {
                 operation.stopRequested = false;
+                operation.stopRequestSent = false;
                 operation.stopWhenActive = true;
                 loadingSubtitle.innerText = "Waiting for tailoring to become active so it can be stopped safely...";
             } else {
@@ -1063,7 +1072,9 @@ async function stopActiveLoadingOperation() {
             }
         }
     } catch (error) {
+        if (activeLoadingOperation !== operation) return;
         operation.stopRequested = false;
+        operation.stopRequestSent = false;
         stopLoadingBtn.disabled = false;
         stopLoadingBtn.replaceChildren(
             createElement("i", "fa-solid fa-stop"),
@@ -3046,11 +3057,12 @@ async function finishObservedSearch(status, generation) {
     } else {
         logActivity(
             status.last_result?.partial ? "Job Search Partially Complete" : "Job Search Complete",
-            status.last_result?.message || "Found and analyzed new job openings.",
+            status.last_result?.message || `Search complete. ${Number(status.last_result?.jobs_added) || 0} new matches saved.`,
             status.last_result?.partial ? "warning" : "success"
         );
-        renderProviderAlerts(status.last_result);
     }
+    renderProviderAlerts(status.last_result);
+    announce(status.last_result?.error || status.last_result?.message || "Search complete.");
     await refreshSourceDiagnosticCount();
 }
 
@@ -3112,7 +3124,7 @@ async function searchJobs(e) {
     const operation = showCancellableLoading(
         t("search.loading.title"),
         t("search.loading.subtitle"),
-        { kind: "search" }
+        { kind: "search", enqueuePending: true }
     );
     logActivity("Job Search Started", logMsg, "info");
     
@@ -3130,22 +3142,38 @@ async function searchJobs(e) {
             })
         });
         const result = await res.json();
+        if (activeLoadingOperation !== operation) return;
+        operation.enqueuePending = false;
         
         if (result.cancelled) {
             hideLoading();
             logActivity("Job Search Stopped", result.message || "Search stopped.", "warning");
         } else if (result.success) {
+            // The enqueue response makes the original UUID safe to cancel.
+            // Preserve an early Stop without targeting another active run.
+            if (operation.stopRequested) await sendStopRequest(operation);
+            if (activeLoadingOperation !== operation) return;
             if (saveSearchCheckbox?.checked) await loadSavedSearches();
             await checkDueSavedSearches();
             startSearchStatusPolling(true);
         } else if (result.active) {
+            // This is another already-active run, not the submitted UUID.
+            // Require a fresh Stop for that run rather than transferring intent.
+            operation.stopRequested = false;
+            operation.stopRequestSent = false;
             operation.cancelUrl = `${API_URL}/api/jobs/search/cancel`;
+            stopLoadingBtn.disabled = false;
+            stopLoadingBtn.replaceChildren(
+                createElement("i", "fa-solid fa-stop"),
+                document.createTextNode(` ${t("common.stop")}`)
+            );
             startSearchStatusPolling(true);
         } else {
             hideLoading();
             alert(result.message || result.error || t("search.failed"));
         }
     } catch (err) {
+        if (activeLoadingOperation !== operation) return;
         hideLoading();
         console.error(err);
         logActivity("Search Failed", "An error occurred initiating the browser search crawl.", "error");
@@ -3156,7 +3184,8 @@ function renderProviderAlerts(searchResult) {
     if (!providerAlerts) return;
     providerAlerts.replaceChildren();
     const alerts = searchResult?.provider_alerts || [];
-    if (!alerts.length) {
+    const completionMessage = searchResult?.error || searchResult?.message;
+    if (!alerts.length && !completionMessage) {
         providerAlerts.hidden = true;
         return;
     }
@@ -3164,7 +3193,9 @@ function renderProviderAlerts(searchResult) {
     const informationalCodes = new Set(["stale_postings", "partial_results"]);
     const needsAttention = alerts.some(alert => !informationalCodes.has(alert.code));
     const header = createElement("div", "provider-alerts-header");
-    header.appendChild(createElement("strong", "", needsAttention ? "Some job sources may need attention" : "Search notes"));
+    header.appendChild(createElement("strong", "", searchResult?.success === false
+        ? "Search could not complete"
+        : (needsAttention ? "Some job sources may need attention" : "Search notes")));
     const actions = createElement("div", "provider-alert-actions");
     const reviewButton = createActionButton("Review history", "fa-solid fa-clock-rotate-left", "btn btn-secondary btn-sm", showSourceDiagnostics);
     const dismissButton = createActionButton("", "fa-solid fa-xmark", "provider-alert-dismiss", dismissProviderAlerts, "Dismiss this source notice");
@@ -3172,6 +3203,7 @@ function renderProviderAlerts(searchResult) {
     actions.append(reviewButton, dismissButton);
     header.appendChild(actions);
     providerAlerts.appendChild(header);
+    if (completionMessage) providerAlerts.appendChild(createElement("p", "", completionMessage));
     const list = createElement("ul", "margin-top-sm");
     alerts.forEach(alert => list.appendChild(createElement("li", "", alert.message)));
     providerAlerts.appendChild(list);
@@ -3201,6 +3233,11 @@ const DIAGNOSTIC_COUNTER_LABELS = {
     skipped_archived: "Already archived",
     skipped_suppressed: "Previously deleted",
     api_fallbacks: "API fallbacks",
+    source_attempts: "Source requests",
+    source_failures: "Unrecovered source failures",
+    source_unusable: "Unusable source responses",
+    source_empty: "Confirmed empty source responses",
+    source_fallbacks: "Search source fallbacks",
     stale: "Stale postings",
     format_drift: "Format mismatches",
     access_challenge: "Access challenges",

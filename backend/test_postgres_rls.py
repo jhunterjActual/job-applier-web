@@ -176,6 +176,16 @@ class PostgreSQLConfigurationTests(unittest.TestCase):
 
 
 class PostgreSQLTenantIsolationTests(unittest.TestCase):
+    def test_interim_schema_preserves_recovery_head_without_paid_objects(self):
+        with self.admin_engine.connect() as connection:
+            self.assertEqual("20260907_0014", connection.scalar(text(
+                "SELECT version_num FROM careertrellis.alembic_version")))
+            for name in ("search_api_policy", "search_api_global_usage", "search_api_owner_usage"):
+                self.assertIsNone(connection.scalar(text("SELECT to_regclass(:name)"),
+                                                   {"name": "careertrellis." + name}))
+            self.assertIsNone(connection.scalar(text(
+                "SELECT to_regprocedure('careertrellis.reserve_search_api_request(uuid,bigint,uuid)')")))
+
     @classmethod
     def setUpClass(cls) -> None:
         raw_admin_url = os.environ.get(ADMIN_URL_ENV, "").strip()
