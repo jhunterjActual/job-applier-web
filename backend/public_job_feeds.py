@@ -318,12 +318,25 @@ def collect(keywords, locations, health, check_cancelled):
             partial['catalog_term_limits'] = partial.get('catalog_term_limits', 0) + 1
         try:
             rows = _snapshot(provider, check_cancelled)
-            selected = [row for row in rows if matches(row, keywords, locations or [''])]
+            from candidate_filters import role_matches, detail_location_matches
+            # Snapshot row counts do not imply a complete provider inventory or a fresh HTTP fetch.
+            count('coverage_snapshots_read')
+            selected = []
+            for row in rows:
+                count('coverage_rows_read')
+                if not role_matches(row['title'], keywords):
+                    count('coverage_role_excluded')
+                elif not detail_location_matches(row, locations or ['']):
+                    count('coverage_location_excluded')
+                else:
+                    count('coverage_metadata_matches')
+                    selected.append(row)
             if not selected:
                 count('source_empty')
             for row in selected:
                 check_cancelled()
                 candidates.append({'title': row['title'], 'url': row['url'],
+                                   'verify_query': True,
                                    'snippet': row['location'] + ' | ' + row['source']})
                 count('raw_candidates')
                 count('valid_discovered')

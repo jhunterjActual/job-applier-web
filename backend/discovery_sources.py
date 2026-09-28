@@ -161,10 +161,12 @@ def fetch_json(url, budget, *, api_key=None, payload=None, reserve=None, max_byt
 class FeedRows(list):
     """Bounded page; complete means this board/query has no remaining rows."""
 
-    def __init__(self, rows=(), *, complete=True, query_index=None):
+    def __init__(self, rows=(), *, complete=True, query_index=None, advertised_total=None, from_cache=False):
         super().__init__(rows)
         self.complete = complete
         self.query_index = query_index
+        self.advertised_total = advertised_total
+        self.from_cache = from_cache
 
 
 def clear_feed_cache():
@@ -261,7 +263,8 @@ def feed_rows(provider, board, budget, *, page_index=None, keywords=()):
                 type(document.get("limit")) is not int or document["limit"] != SMARTRECRUITERS_PAGE_SIZE or
                 (rows and offset + len(rows) > total) or (not rows and offset < total)):
             raise SourceError("invalid_response")
-        result = FeedRows(rows, complete=offset + len(rows) >= total, query_index=query_index)
+        result = FeedRows(rows, complete=offset + len(rows) >= total, query_index=query_index,
+                          advertised_total=total)
     else:
         if not isinstance(document, dict) or not isinstance(document.get("jobs"), list):
             raise SourceError("invalid_response")
@@ -273,6 +276,9 @@ def feed_rows(provider, board, budget, *, page_index=None, keywords=()):
             if not isinstance(meta, dict) or type(meta.get("total")) is not int or meta["total"] != len(rows):
                 raise SourceError("invalid_response")
         result = FeedRows(rows)
+        if provider == "greenhouse":
+            result.advertised_total = meta["total"]
+    result.from_cache = from_cache
     # Cache only validated successes. Never serve stale data after a failed refresh.
     for row in result:
         budget.check_cancelled()
@@ -368,11 +374,8 @@ def feed_candidate(provider, board, row):
 
 
 def matches(row, keywords, locations):
-    title = row["title"].casefold()
-    role = any(all(word in title for word in re.findall(r"\w+", phrase.casefold())) for phrase in keywords)
-    place = row["location"].casefold()
-    location = any(not value or value.casefold() in place or (value.casefold() == "remote" and row["remote"]) for value in locations)
-    return role and location
+    from candidate_filters import role_matches, location_matches
+    return role_matches(row['title'], keywords) and location_matches(row, locations)
 
 
 def collect(keywords, locations, health, check_cancelled, *, api_key=None, reserve=None, feeds_only=False):
@@ -382,9 +385,9 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
     budget = Budget(check_cancelled)
     candidates, seen = [], set()
 
-    def record(provider, field):
+    def record(provider, field, amount=1):
         item = health[provider]
-        item[field] = item.get(field, 0) + 1
+        item[field] = item.get(field, 0) + amount
 
     def admit(url, expected=None, feed=None):
         canonical = canonicalize_job_url(url)
@@ -397,12 +400,15 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
             seen.add(canonical)
             candidate = {"title": "Job Posting", "url": canonical, "snippet": ""}
             if feed is not None:
+                candidate['verify_query'] = True
                 # Bound public metadata to the independently inspected posting.
                 candidate["feed_metadata"] = {"url": canonical, **{
                     key: " ".join(feed[key].split())[:240]
                     for key in ("location", "work_arrangement", "employment_type")}}
             candidates.append(candidate)
             record(provider, "valid_discovered")
+        else:
+            record(provider, "coverage_duplicate_candidates")
         return True
 
     keywords, term_limited = bounded_terms(keywords, MAX_KEYWORDS)
@@ -414,7 +420,7 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
         item[field] = item.get(field, 0) + 1
 
     states = [{"provider": provider, "board": board, "completed": set(),
-               "selected": deque(), "attempted": False, "failed": False, "limited": False}
+               "selected": deque(), "unknown": deque(), "attempted": False, "failed": False, "limited": False}
               for provider, board in CATALOG]
     if term_limited or location_limited:
         for provider in {item["provider"] for item in states}:
@@ -441,13 +447,44 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
                 state["attempted"] = True
                 record(provider, "source_attempts")
             try:
-                page = feed_rows(provider, board, budget, page_index=page_index, keywords=keywords)
+                before_requests = budget.requests
+                try:
+                    page = feed_rows(provider, board, budget, page_index=page_index, keywords=keywords)
+                finally:
+                    record(provider, 'coverage_http_attempts', budget.requests - before_requests)
+                record(provider, 'coverage_pages_read')
+                record(provider, 'coverage_cached_pages', int(getattr(page, 'from_cache', False)))
+                record(provider, 'coverage_rows_read', len(page))
+                # First page per query only; overlapping query totals are NOT unique inventory.
+                if page_index < (len(keywords) if provider == 'smartrecruiters' else 1):
+                    total = getattr(page, 'advertised_total', None)
+                    if type(total) is int and total >= 0:
+                        record(provider, 'coverage_queries_with_total')
+                        record(provider, 'coverage_advertised_rows', total)
                 rows = [feed_candidate(provider, board, row) for row in page]
-                state["selected"].extend(row for row in rows if row and matches(row, keywords, locations))
+                from candidate_filters import role_matches, needs_location_details
+                for row in rows:
+                    if not row:
+                        record(provider, 'coverage_unlisted_rows')
+                    elif not role_matches(row['title'], keywords):
+                        record(provider, 'coverage_role_excluded')
+                    elif matches(row, keywords, locations):
+                        record(provider, 'coverage_metadata_matches')
+                        state['selected'].append(row)
+                    elif needs_location_details(row, locations):
+                        record(provider, 'coverage_location_unknown')
+                        # Unknown metadata cannot consume every detail slot.
+                        if len(state['unknown']) < 2:
+                            state['unknown'].append(row)
+                        else:
+                            partial(provider, 'unknown_location_limit')
+                    else:
+                        record(provider, 'coverage_location_excluded')
                 if getattr(page, "complete", True):
                     state["completed"].add(query_index)
             except SourceError as error:
                 state["failed"] = True
+                record(provider, 'coverage_failed_boards')
                 record(provider, "source_failures")
                 if error.code == "request_limit":
                     state["limited"] = True
@@ -457,8 +494,10 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
         expected = len(keywords) if provider == "smartrecruiters" else 1
         if not state["failed"] and len(state["completed"]) != expected:
             partial(provider, "catalog_page_limits")
-        elif not state["failed"] and not state["selected"]:
-            record(provider, "source_empty")
+        elif not state['failed']:
+            record(provider, 'coverage_complete_boards')
+            if not state["selected"] and not state['unknown']:
+                record(provider, "source_empty")
     # Interleave employers before the existing per-provider downstream cap, so a
     # large early board cannot take every detail-fetch slot for its ATS provider.
     while any(state["selected"] for state in states):
@@ -471,6 +510,20 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
             record(provider, "raw_candidates")
             if not admit(row["url"], provider, feed=row):
                 record(provider, "source_failures")
+
+    # Known matches take priority; at most five uncertain candidates per provider
+    # enter the existing 25-posting downstream budget.
+    unknown_counts = {}
+    for state in states:
+        provider = state['provider']
+        for row in state['unknown']:
+            check_cancelled()
+            if unknown_counts.get(provider, 0) >= 5:
+                partial(provider, 'unknown_location_limit')
+                break
+            unknown_counts[provider] = unknown_counts.get(provider, 0) + 1
+            record(provider, 'raw_candidates')
+            admit(row['url'], provider, feed=row)
 
     if feeds_only:
         return candidates

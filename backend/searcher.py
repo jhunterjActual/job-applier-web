@@ -104,6 +104,9 @@ def canonicalize_job_url(url: str) -> str:
     """Normalize a web posting URL while preserving unknown-site identifiers."""
     try:
         parsed = urllib.parse.urlsplit(url.strip())
+        if parsed.hostname in {'employment.udayton.edu', 'www.ziprecruiter.com', 'ziprecruiter.com'}:
+            from additional_sources import canonical_source_url
+            return canonical_source_url(url.strip()) or ''
         scheme = parsed.scheme.lower()
         host = (parsed.hostname or "").encode("idna").decode("ascii").lower()
         if scheme not in {"http", "https"} or not host or parsed.username or parsed.password:
@@ -146,6 +149,10 @@ def provider_for_url(url: str) -> str:
         return "weworkremotely"
     if host == "jobicy.com":
         return "jobicy"
+    if host == 'employment.udayton.edu':
+        return 'udayton'
+    if host in {'ziprecruiter.com', 'www.ziprecruiter.com'}:
+        return 'ziprecruiter'
     return "unknown"
 
 
@@ -587,7 +594,8 @@ def provider_alerts_from_health(provider_health: dict) -> list[dict]:
                 "code": "access_challenge",
                 "message": f"{provider.title()} prevented automated reading of {count} posting(s); those results were skipped.",
             })
-        elif provider != "lever" and attempted >= 2 and accepted == 0:
+        elif (provider != "lever" and accepted == 0 and
+              attempted - reasons.get('query_mismatch', 0) - reasons.get('eligibility_unknown', 0) >= 2):
             alerts.append({
                 "provider": provider,
                 "code": "content_format_drift",
@@ -622,6 +630,8 @@ def provider_alerts_from_health(provider_health: dict) -> list[dict]:
                 causes.append("the employer-feed request or time limit was reached")
             if partial.get("catalog_term_limits", 0):
                 causes.append("the employer-feed search term limit was reached")
+            if partial.get('unknown_location_limit', 0):
+                causes.append('some postings need more location detail than this search could inspect')
             if not causes:
                 causes.append("some sources could not be fully checked")
             alerts.append({
@@ -648,6 +658,7 @@ def is_useful_job_details(details: dict) -> bool:
 def _bounded_job_details(details: dict) -> dict:
     """Apply final retention limits before job details enter matching or storage."""
     bounded = dict(details)
+    bounded.pop('_work_arrangement_from_text', None)
     bounded["description"] = str(bounded.get("description") or "")[:MAX_JOB_DESCRIPTION_CHARS]
     return bounded
 
@@ -661,11 +672,18 @@ def _append_candidate_with_budget(
 ) -> bool:
     """Append one canonical candidate unless its provider has reached the run-wide cap."""
     url = canonicalize_job_url(item.get("url", ""))
-    if not url or url in seen_urls:
+    if not url:
         return False
     provider = provider_for_url(url)
+    if url in seen_urls:
+        if provider in provider_health:
+            health = provider_health[provider]
+            health['coverage_duplicate_candidates'] = health.get('coverage_duplicate_candidates', 0) + 1
+        return False
     if provider in provider_candidate_counts:
         if provider_candidate_counts[provider] >= MAX_PROVIDER_CANDIDATES:
+            health = provider_health[provider]
+            health['coverage_detail_cap_excluded'] = health.get('coverage_detail_cap_excluded', 0) + 1
             provider_health[provider]["candidate_budget_exhausted"] = True
             return False
         provider_candidate_counts[provider] += 1
@@ -714,6 +732,9 @@ def is_specific_job_url(url: str) -> bool:
         bool: True if it matches the specific job posting structure, False otherwise.
     """
     try:
+        if provider_for_url(url) in {'udayton', 'ziprecruiter'}:
+            from additional_sources import canonical_source_url
+            return canonical_source_url(url) is not None
         if provider_for_url(url) in {"weworkremotely", "jobicy"}:
             from public_job_feeds import canonical_url
             return canonical_url(url) is not None
@@ -752,12 +773,19 @@ def _canonical_redirected_job_url(requested_url: str, final_url: str) -> str:
     if not canonical_url:
         return ""
     requested_provider = provider_for_url(requested_url)
-    if requested_provider in PROVIDER_DOMAINS:
+    if requested_provider in PROVIDER_DOMAINS or requested_provider in {'udayton', 'ziprecruiter'}:
         if (
             provider_for_url(canonical_url) != requested_provider
             or not is_specific_job_url(canonical_url)
         ):
             return ""
+        if requested_provider in {'udayton', 'ziprecruiter'}:
+            before = urllib.parse.urlsplit(canonicalize_job_url(requested_url))
+            after = urllib.parse.urlsplit(canonical_url)
+            if requested_provider == 'udayton' and before.path.split('/')[3] != after.path.split('/')[3]:
+                return ''
+            if requested_provider == 'ziprecruiter' and before.query != after.query:
+                return ''
     return canonical_url
 
 
@@ -1271,6 +1299,8 @@ def _scrape_job_details_browser(url: str, allow_partial: bool = False, diagnosti
     details["description"] = details["description"].strip()[:MAX_JOB_DESCRIPTION_CHARS]
     metadata = _metadata_from_text(f"{details['title']}\n{details['location']}\n{details['description'][:2500]}")
     for key, value in metadata.items():
+        if key == 'work_arrangement' and not details.get(key) and value:
+            details['_work_arrangement_from_text'] = True
         details[key] = details.get(key) or value
 
     # Reject generic/error pages and content that cannot support a real match.
@@ -1379,7 +1409,7 @@ def _search_completion(
     suppressed = totals("skipped_suppressed")
     stale = sum(item.get("rejection_reasons", {}).get("stale", 0) for item in provider_health.values())
     detail_errors = sum(
-        sum(value for key, value in item.get("rejection_reasons", {}).items() if key != "stale")
+        sum(value for key, value in item.get("rejection_reasons", {}).items() if key not in {"stale", "query_mismatch", "eligibility_unknown"})
         for item in provider_health.values()
     )
     limited = any(
@@ -1388,7 +1418,10 @@ def _search_completion(
     )
     source_failed = totals("source_failures") > 0
     issues = source_failed or detail_errors > 0 or limited
-    useful = totals("accepted") + known + suppressed + stale + totals("source_empty")
+    query_filtered = sum(item.get('rejection_reasons', {}).get('query_mismatch', 0) +
+                         item.get('rejection_reasons', {}).get('eligibility_unknown', 0)
+                         for item in provider_health.values())
+    useful = totals("accepted") + known + suppressed + stale + totals("source_empty") + query_filtered
     if save_failures and ai_error is None:
         ai_error = "Some matched postings could not be saved. Please try again later."
         ai_error_code = "storage_error"
@@ -1409,13 +1442,13 @@ def _search_completion(
     counts = {
         "discovered": discovered, "inspected": inspected,
         "accepted": totals("accepted"), "known": known,
-        "filtered": suppressed + stale + max(0, analyzed - saved - save_failures), "saved": saved,
+        "filtered": suppressed + stale + query_filtered + max(0, analyzed - saved - save_failures), "saved": saved,
     }
     if scored is not None and meeting_minimum is not None:
         counts.update(scored=scored, meeting_minimum=meeting_minimum)
         # A match can qualify but already exist by insertion time, or fail to
         # save. Neither case is a rejection by the minimum match threshold.
-        counts["filtered"] = suppressed + stale + max(0, scored - meeting_minimum)
+        counts["filtered"] = suppressed + stale + query_filtered + max(0, scored - meeting_minimum)
     result = {
         "success": success, "partial": outcome == "partial_results",
         "jobs_added": saved, "error": ai_error, "failure_code": ai_error_code,
@@ -1552,6 +1585,8 @@ def run_job_search_and_matching(
     if config.get_discovery_mode() == "hybrid_feeds":
         from public_job_feeds import PROVIDERS
         search_providers.extend(PROVIDERS)
+        from additional_sources import ENABLED
+        search_providers.extend(ENABLED)
     provider_health = {
         provider: {
             "raw_candidates": 0, "valid_discovered": 0, "new_candidates": 0,
@@ -1582,6 +1617,10 @@ def run_job_search_and_matching(
         for item in provider_health.values():
             item["partial_results"]["planning_limits"] = 1
     if config.get_discovery_mode() == "hybrid_feeds":
+        from additional_sources import collect as collect_additional_sources
+        for item in collect_additional_sources(search_keywords, locs, provider_health, check_cancelled):
+            check_cancelled()
+            _append_candidate_with_budget(item, results, seen_urls, provider_candidate_counts, provider_health)
         from public_job_feeds import collect as collect_public_feeds
         for item in collect_public_feeds(search_keywords, locs, provider_health, check_cancelled):
             check_cancelled()
@@ -1780,10 +1819,20 @@ def run_job_search_and_matching(
                     reason = reason if reason in provider_health[provider]["rejection_reasons"] else "provider_error"
                     provider_health[provider]["rejection_reasons"][reason] += 1
             else:
-                pending_jobs.append(_bounded_job_details(_supplement_feed_metadata(job_details, item)))
-                accepted = True
-                if provider in provider_health:
-                    provider_health[provider]["accepted"] += 1
+                job_details = _supplement_feed_metadata(job_details, item)
+                from candidate_filters import role_matches, detail_location_matches
+                role_ok = not item.get('verify_query') or role_matches(job_details['title'], search_keywords)
+                place_ok = not item.get('verify_query') or detail_location_matches(job_details, locs)
+                if role_ok and place_ok:
+                    pending_jobs.append(_bounded_job_details(job_details))
+                    accepted = True
+                    if provider in provider_health:
+                        provider_health[provider]["accepted"] += 1
+                elif provider in provider_health:
+                    provider_health[provider]['rejected'] += 1
+                    reasons = provider_health[provider]['rejection_reasons']
+                    code = 'query_mismatch' if not role_ok else 'eligibility_unknown'
+                    reasons[code] = reasons.get(code, 0) + 1
         inspected_count += 1
         report_progress("inspecting_postings", inspected_count, len(results))
         if accepted and len(pending_jobs) >= MATCH_BATCH_SIZE and not process_pending_jobs():
