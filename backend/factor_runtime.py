@@ -39,6 +39,6 @@ def removal_enabled(enrollment_enabled):
 async def factor_readiness(store,engine):
     evidence=await store._query(engine,READINESS_SQL,mapping=True)
     if (not isinstance(evidence,dict) or set(evidence)!= {'schema','functions_ready','grants_ready'}
-            or evidence['schema']!='20260929_0020'
+            or evidence['schema'] not in ('20260929_0020','20260929_0021')
             or evidence['functions_ready'] is not True or evidence['grants_ready'] is not True):
         raise ValueError('Factor feature schema is not ready.')

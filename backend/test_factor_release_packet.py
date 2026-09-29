@@ -168,7 +168,7 @@ class FactorReleasePacketTests(unittest.TestCase):
             self.files['backend/version.py']=('APP_BUILD = '+repr(build)+'\n').encode()
             result=packet.source_packet(self.files,base=BASE)
             self.assertEqual(build,result['build'])
-            self.assertEqual('20260929_0020',result['schema'])
+            self.assertEqual('20260929_0021',result['schema'])
             self.assertEqual('local_source_checked_not_release_ready',result['phase'])
             self.assertFalse(result['execution_authorized'])
             self.assertIn('immutable_release_commit_and_distinct_build',result['pending'])

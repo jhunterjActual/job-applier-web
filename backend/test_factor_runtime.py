@@ -112,10 +112,18 @@ class FactorRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(AuthenticationConfigurationError): await self.build()
         self.assertEqual([],self.factor_providers); self.assertEqual([],self.removal_providers)
 
+    async def test_search_cleanup_schema_preserves_factor_contract(self):
+        self.flags('1','1')
+        self.ready['schema']='20260929_0021'
+        runtime=await self.build()
+        self.assertIsInstance(runtime.removal_http,RemovalHTTP)
+        await runtime.aclose(); self.assert_closed()
+
     async def test_stale_missing_or_malformed_readiness_fails_before_factor_construction(self):
         self.flags('1','1')
         for ready in (None,True,{}, {'schema':'20260928_0018','functions_ready':True,'grants_ready':True},
                       {'schema':'20260929_0019','functions_ready':True,'grants_ready':True},
+                      {'schema':'20260929_0022','functions_ready':True,'grants_ready':True},
                       {'schema':'20260929_0020','functions_ready':False,'grants_ready':True},
                       {'schema':'20260929_0020','functions_ready':True,'grants_ready':False},
                       {'schema':'20260929_0020','functions_ready':1,'grants_ready':True},

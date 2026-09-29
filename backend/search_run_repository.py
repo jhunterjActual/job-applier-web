@@ -1015,6 +1015,20 @@ class PostgreSQLSearchRunRepository:
             raise ValueError("Search result summary is too large.")
         try:
             with tenant_transaction(self._engine, self._owner_user_id) as connection:
+                # Older deployed schemas retain their original completion path.
+                # Identity-aware schemas expose only a boolean terminal-cleanup
+                # broker; ordinary disabled-owner rows remain hidden by RLS.
+                cleanup_available = connection.scalar(text(
+                    "SELECT to_regprocedure("
+                    "'careertrellis.cancel_disabled_search_run(uuid,bigint,uuid)'"
+                    ") IS NOT NULL"
+                ))
+                if cleanup_available is True and connection.scalar(text(
+                    "SELECT careertrellis.cancel_disabled_search_run("
+                    "CAST(:run AS uuid), :owner, CAST(:lease AS uuid))"
+                ), {"run": claim.run_id, "owner": self._owner_user_id,
+                    "lease": claim.lease_token}) is True:
+                    return
                 locked = self._locked_claim_state(connection, claim)
                 changed = connection.execute(text("""UPDATE careertrellis.search_runs AS run SET
                     status=CASE

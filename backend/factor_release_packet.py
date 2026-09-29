@@ -5,15 +5,15 @@ import re
 from pathlib import PurePosixPath
 
 
-SCHEMA='20260929_0020'
+SCHEMA='20260929_0021'
 CHAIN=('20260909_0015','20260915_0016','20260928_0017',
-       '20260928_0018','20260929_0019',SCHEMA)
-MODULES=('signup_http','account_session_candidate','factor_runtime',
+       '20260928_0018','20260929_0019','20260929_0020',SCHEMA)
+MODULES=('signup_http','account_session_candidate','factor_runtime','search_run_repository',
     'enrollment_disposition','enrollment_disposition_postgres','factor_removal',
     'factor_removal_http','factor_removal_postgres','workos_removal','totp_enrollment',
     'totp_postgres','totp_http','workos_totp','session_v2_transition','totp_configuration',
     'admission_operations','identity_operator','identity_plan_operator','owner_recovery')
-TESTS=('test_factor_runtime','test_factor_runtime_postgres','test_factor_removal',
+TESTS=('test_disabled_search_cleanup','test_postgres_rls','test_factor_runtime','test_factor_runtime_postgres','test_factor_removal',
     'test_factor_removal_store','test_factor_removal_http','test_workos_removal',
     'test_enrollment_disposition','test_enrollment_transfer_postgres',
     'test_removal_session_postgres','test_security_slots_postgres','test_totp_configuration',
@@ -25,7 +25,7 @@ REQUIRED=tuple('backend/'+name+'.py' for name in MODULES+TESTS)+(
     'backend/dependency_lock.py')
 PENDING=('immutable_release_commit_and_distinct_build',
     'successor_preparation_and_native_verification_tools',
-    'identity_plan_and_session_transition_schema0020_contract',
+    'identity_plan_and_session_transition_schema0021_contract',
     'protected_configuration_and_removal_flag_contract',
     'quiescence_and_no_existing_removal_attempts',
     'target_source_function_and_restricted_grant_verification',

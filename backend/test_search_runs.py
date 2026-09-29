@@ -21,12 +21,41 @@ from search_run_repository import (
     PostgreSQLSearchRunRepository,
     SQLiteSearchRunRepository,
     SearchRunAlreadyActive,
+    SearchRunClaim,
     SearchRunLeaseLost,
     minimized_search_result,
 )
 
 
 class SQLiteSearchRunTests(unittest.TestCase):
+    def test_postgres_finish_preserves_older_schema_and_ordinary_completion(self):
+        claim = SearchRunClaim('00000000-0000-4000-8000-000000000001', 42,
+            '00000000-0000-4000-8000-000000000002', 'synthetic', '',
+            '00000000-0000-4000-8000-000000000003', 1)
+        for available, cancelled in ((False, False), (True, False), (True, True)):
+            with self.subTest(available=available, cancelled=cancelled):
+                connection = Mock()
+                connection.scalar.side_effect = [available, cancelled]
+                connection.execute.return_value.rowcount = 1
+                transaction = Mock()
+                transaction.__enter__ = Mock(return_value=connection)
+                transaction.__exit__ = Mock(return_value=False)
+                repository = PostgreSQLSearchRunRepository(42, engine=Mock())
+                with patch('search_run_repository.tenant_transaction', return_value=transaction), patch.object(
+                    repository, '_locked_claim_state', return_value={
+                        'run_status': 'running', 'owner_disabled': False}) as lock:
+                    repository.succeed(claim, {'success': True, 'jobs_added': 3})
+                self.assertEqual(2 if available else 1, connection.scalar.call_count)
+                if available:
+                    self.assertEqual({'run': claim.run_id, 'owner': 42,
+                        'lease': claim.lease_token}, connection.scalar.call_args.args[1])
+                if cancelled:
+                    lock.assert_not_called()
+                    connection.execute.assert_not_called()
+                else:
+                    lock.assert_called_once_with(connection, claim)
+                    connection.execute.assert_called_once()
+
     def test_measured_match_and_source_counts_survive_failure_readback(self):
         repository = self.repository()
         run = repository.enqueue("00000000-0000-4000-8000-000000000099", "synthetic", "")

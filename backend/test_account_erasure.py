@@ -360,6 +360,7 @@ class AccountErasureRouteTests(unittest.TestCase):
                 "authentication": "local",
                 "authenticated": True,
                 "account_erasure_available": False,
+                "authenticator_setup_available": False,
             },
             local_summary,
         )
@@ -384,6 +385,7 @@ class AccountErasureRouteTests(unittest.TestCase):
                 "authentication": "workos",
                 "authenticated": True,
                 "account_erasure_available": True,
+                "authenticator_setup_available": False,
             },
             shared_summary,
         )
@@ -402,6 +404,7 @@ class AccountErasureRouteTests(unittest.TestCase):
                 "authentication": "workos",
                 "authenticated": True,
                 "account_erasure_available": False,
+                "authenticator_setup_available": False,
             },
             workos_sqlite_summary,
         )

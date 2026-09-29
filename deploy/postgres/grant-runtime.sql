@@ -190,4 +190,12 @@ DO $$ BEGIN
             TO careertrellis_runtime;
     END IF;
 END $$;
+DO $$ BEGIN
+    IF to_regprocedure('careertrellis.cancel_disabled_search_run(uuid,bigint,uuid)') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION careertrellis.cancel_disabled_search_run(uuid,bigint,uuid)
+            FROM PUBLIC,careertrellis_runtime,careertrellis_erasure_worker,careertrellis_admission_broker;
+        GRANT EXECUTE ON FUNCTION careertrellis.cancel_disabled_search_run(uuid,bigint,uuid)
+            TO careertrellis_worker;
+    END IF;
+END $$;
 RESET ROLE;
