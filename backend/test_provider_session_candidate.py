@@ -225,6 +225,23 @@ class CandidateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({'access_token','refresh_token','user'}, set(unseal_data(sealed,self.codec._provider_key)))
         self.assertEqual({'id': SUBJECT,'email_verified':True}, self.codec.provider_open(sealed)['user'])
 
+    async def test_security_freshness_requires_signed_active_auth_not_recent_token_issue(self):
+        now = int(time.time())
+        ordinary = await self.provider.verify(self.http.token(), SUBJECT)
+        sid = ordinary['sid']
+        with self.assertRaises(ProviderRejected):
+            await self.provider.verify_recent(self.http.token(), SUBJECT, sid)
+        for value in (None, True, str(now), now - 301, now + 60, -1):
+            with self.subTest(auth_time=value), self.assertRaises(ProviderRejected):
+                await self.provider.verify_recent(self.http.token(auth_time=value), SUBJECT, sid)
+        verified = await self.provider.verify_recent(self.http.token(iat=now, auth_time=now), SUBJECT, sid)
+        self.assertEqual(now, verified['auth_time'])
+        with self.assertRaises(ProviderRejected):
+            await self.provider.verify_recent(self.http.token(iat=now, auth_time=now), SUBJECT, 'session_wrong_identity')
+        with self.assertRaises(ProviderRejected):
+            await self.provider.verify_recent(self.http.token(iat=now, auth_time=now), 'user_wrong_identity', sid)
+        self.assertEqual(0, self.http.posts)
+
     async def test_refresh_body_is_one_request(self):
         await self.provider.refresh('synthetic-refresh-only')
         self.assertEqual({'grant_type':'refresh_token','refresh_token':'synthetic-refresh-only',

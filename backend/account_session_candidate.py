@@ -6,6 +6,7 @@ import time
 from urllib.parse import urlencode
 
 from cryptography.fernet import Fernet, InvalidToken
+from session_authorization import SessionAuthorization
 from workos.session import seal_session_from_auth_response
 
 from workos_transport_candidate import (API, SUBJECT, SESSION, VerifiedTokens,
@@ -38,6 +39,7 @@ class SessionOutcome:
     role: str | None = None
     clear_cookie: bool = False
     logout_url: str = ''
+    authorization: SessionAuthorization | None = None
 
 
 @dataclass(frozen=True, repr=False)
@@ -50,10 +52,12 @@ class BoundSession:
     issued: int
     expires: int
     provider_binding: str
+    epoch: int | None = None
+    incarnation: str | None = None
 
 
 class SessionCodec:
-    def __init__(self, envelope_key, provider_key, *, key_id, generation, lifetime_seconds, provider_binding):
+    def __init__(self, envelope_key, provider_key, *, key_id, generation, lifetime_seconds, provider_binding, require_epoch=False):
         envelope_key = envelope_key.encode('ascii') if isinstance(envelope_key, str) else envelope_key
         provider_key = provider_key.encode('ascii') if isinstance(provider_key, str) else provider_key
         if (not bounded_string(key_id, 32) or not bounded_string(generation, 128)
@@ -65,6 +69,7 @@ class SessionCodec:
         self._provider_key = provider_key.decode('ascii') if isinstance(provider_key, bytes) else provider_key
         self.key_id, self.generation, self.lifetime_seconds = key_id, generation, lifetime_seconds
         self.provider_binding = provider_binding
+        self.require_epoch = require_epoch
 
     def provider_seal(self, identity):
         # Compatible pinned SDK format, minimal verified user; no email/profile/upstream tokens.
@@ -81,13 +86,19 @@ class SessionCodec:
             raise SessionCapacity()
         return value
 
-    def issue(self, identity, local_id):
+    def issue(self, identity, local_id, *, epoch=None, incarnation=None):
         if (type(local_id) is not int or not 0 < local_id <= MAX_LOCAL_ID
                 or identity.generation != self.generation or identity.provider_binding != self.provider_binding):
             raise SessionInvalid()
         now = int(time.time())
+        if self.require_epoch:
+            try:
+                SessionAuthorization(local_id, identity.subject, identity.provider_binding, epoch, incarnation)
+            except (ValueError, TypeError, AttributeError):
+                raise SessionInvalid() from None
         return self.pack(BoundSession(local_id, identity.generation, identity.subject,
-            identity.session_id, self.provider_seal(identity), now, now + self.lifetime_seconds, identity.provider_binding))
+            identity.session_id, self.provider_seal(identity), now, now + self.lifetime_seconds, identity.provider_binding,
+            epoch, incarnation))
 
     def open(self, cookie):
         try:
@@ -102,6 +113,8 @@ class SessionCodec:
                     or set(envelope['data']) != set(BoundSession.__dataclass_fields__)):
                 raise ValueError()
             session = BoundSession(**envelope['data'])
+            if self.require_epoch:
+                SessionAuthorization(session.local_id, session.subject, session.provider_binding, session.epoch, session.incarnation)
             now = time.time()
             if (type(session.local_id) is not int or not 0 < session.local_id <= MAX_LOCAL_ID
                     or session.generation != self.generation
@@ -165,6 +178,21 @@ class AccountSessionCandidate:
             raise SessionInvalid()
         return row
 
+    async def session_mapping(self, session):
+        if not self.codec.require_epoch:
+            return await self.mapping(session.subject, session.local_id)
+        row = await self.store.session_mapping(session)
+        if (not row or row.get('id') != session.local_id or row.get('role') not in ('user','owner')
+                or (session.subject == self.owner_subject) != (row['role'] == 'owner')):
+            raise SessionInvalid()
+        return row
+
+    def authorization(self, session):
+        if not self.codec.require_epoch:
+            return None
+        return SessionAuthorization(session.local_id, session.subject, session.provider_binding,
+            session.epoch, session.incarnation)
+
     async def authenticate(self, cookie, *, refresh=False):
         try:
             session = self.codec.open(cookie)  # Legacy never reaches mapping or refresh.
@@ -175,7 +203,7 @@ class AccountSessionCandidate:
             claims = await self.provider.verify(data['access_token'], data['user']['id'], allow_expired=True)
             if claims['sub'] != session.subject or claims['sid'] != session.session_id:
                 raise SessionInvalid()
-            row = await self.mapping(session.subject, session.local_id)
+            row = await self.session_mapping(session)
             if session.expires <= time.time():
                 raise SessionInvalid()
             if claims['exp'] <= time.time():
@@ -193,22 +221,22 @@ class AccountSessionCandidate:
                 await self.context()
                 if self.coordination and not await self.coordination.check(session):
                     return SessionOutcome('restart_required')
-                row = await self.mapping(session.subject, session.local_id)
+                row = await self.session_mapping(session)
                 if session.expires <= time.time():
                     raise SessionInvalid()
                 if identity.expires <= time.time():
                     return SessionOutcome('unavailable')
                 cookie = self.codec.pack(replace(session, provider=self.codec.provider_seal(identity)))
-                return SessionOutcome('authenticated', cookie, row['id'], row['role'])
+                return SessionOutcome('authenticated', cookie, row['id'], row['role'], authorization=self.authorization(session))
             await self.context()
             if self.coordination and not await self.coordination.check(session):
                 raise SessionInvalid()
-            row = await self.mapping(session.subject, session.local_id)
+            row = await self.session_mapping(session)
             if session.expires <= time.time():
                 raise SessionInvalid()
             if claims['exp'] <= time.time():
                 return SessionOutcome('refresh_required')
-            return SessionOutcome('authenticated', local_id=row['id'], role=row['role'])
+            return SessionOutcome('authenticated', local_id=row['id'], role=row['role'], authorization=self.authorization(session))
         except (ProviderUnavailable, StoreUnavailable):
             return SessionOutcome('unavailable')
         except SessionCapacity:

@@ -15,6 +15,8 @@ from typing import Iterator
 
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import Connection, URL, make_url
+from session_authorization import current as current_session_authorization
+from session_authorization import SessionAuthorizationRejected
 
 
 DATABASE_URL_ENV = "CAREERTRELLIS_DATABASE_URL"
@@ -147,6 +149,19 @@ def set_tenant_context(
     )
     if workos_user_id is not None:
         set_identity_context(connection, workos_user_id)
+    authorization = current_session_authorization.get()
+    if authorization is not None:
+        if authorization.local_id != _positive_user_id(user_id):
+            raise ValueError('Session account mismatch.')
+        connection.execute(text("SELECT set_config('careertrellis.provider_binding', :binding, true), "
+            "set_config('careertrellis.session_epoch', :epoch, true), "
+            "set_config('careertrellis.account_incarnation', :incarnation, true)"),
+            {'binding': authorization.provider_binding, 'epoch': str(authorization.epoch),
+             'incarnation': authorization.incarnation})
+        set_identity_context(connection, authorization.subject)
+        # Holds the same database lock through the protected effect and COMMIT.
+        if connection.scalar(text('SELECT careertrellis.current_app_user_id()')) != authorization.local_id:
+            raise SessionAuthorizationRejected()
 
 
 @contextmanager

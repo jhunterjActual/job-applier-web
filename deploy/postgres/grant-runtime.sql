@@ -154,4 +154,40 @@ ALTER DEFAULT PRIVILEGES FOR ROLE careertrellis_schema_owner IN SCHEMA careertre
 ALTER DEFAULT PRIVILEGES FOR ROLE careertrellis_schema_owner IN SCHEMA careertrellis
     REVOKE EXECUTE ON FUNCTIONS FROM careertrellis_erasure_worker;
 
+DO $$ BEGIN
+    IF to_regprocedure('careertrellis.identity_session_ready(text)') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION careertrellis.identity_session_ready(text),
+            careertrellis.identity_owner_ready(text,text),
+            careertrellis.identity_session_check(bigint,text,text,bigint,uuid)
+            FROM PUBLIC,careertrellis_worker,careertrellis_erasure_worker;
+        GRANT EXECUTE ON FUNCTION careertrellis.identity_session_ready(text),
+            careertrellis.identity_owner_ready(text,text),
+            careertrellis.identity_session_check(bigint,text,text,bigint,uuid)
+            TO careertrellis_runtime;
+    END IF;
+END $$;
+DO $$ BEGIN
+    IF to_regprocedure('careertrellis.totp_request(jsonb,text,text,uuid,jsonb,jsonb)') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION careertrellis.totp_request(jsonb,text,text,uuid,jsonb,jsonb)
+            FROM PUBLIC,careertrellis_worker,careertrellis_erasure_worker;
+        GRANT EXECUTE ON FUNCTION careertrellis.totp_request(jsonb,text,text,uuid,jsonb,jsonb)
+            TO careertrellis_runtime;
+    END IF;
+END $$;
+DO $$ BEGIN
+    IF to_regprocedure('careertrellis.factor_removal_request(jsonb,text,text,uuid,jsonb,jsonb)') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION careertrellis.factor_removal_request(jsonb,text,text,uuid,jsonb,jsonb)
+            FROM PUBLIC,careertrellis_worker,careertrellis_erasure_worker;
+        GRANT EXECUTE ON FUNCTION careertrellis.factor_removal_request(jsonb,text,text,uuid,jsonb,jsonb)
+            TO careertrellis_runtime;
+    END IF;
+END $$;
+DO $$ BEGIN
+    IF to_regprocedure('careertrellis.totp_finish_verified(jsonb,text,jsonb,jsonb)') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION careertrellis.totp_finish_verified(jsonb,text,jsonb,jsonb)
+            FROM PUBLIC,careertrellis_worker,careertrellis_erasure_worker;
+        GRANT EXECUTE ON FUNCTION careertrellis.totp_finish_verified(jsonb,text,jsonb,jsonb)
+            TO careertrellis_runtime;
+    END IF;
+END $$;
 RESET ROLE;

@@ -60,7 +60,7 @@ class AdmissionLifecycleTests(unittest.TestCase):
     @classmethod
     def upgrade(cls):
         with patch.dict(os.environ, {'CAREERTRELLIS_MIGRATION_DATABASE_URL': cls.migration.url.render_as_string(hide_password=False), 'CAREERTRELLIS_CONFIG_READ_ONLY':'1'}):
-            command.upgrade(cls.config, 'head')
+            command.upgrade(cls.config, '20260907_0014')
 
     def query(self, sql, engine=None, **params):
         with (engine or self.admin).begin() as connection:

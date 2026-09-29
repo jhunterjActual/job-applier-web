@@ -492,6 +492,12 @@ async function configureSessionControls() {
             csrf.value = session.logout_csrf;
         }
         sessionSignout.hidden = session.authentication !== "workos" || !session.authenticated;
+        const securityAvailable = session.authentication === "workos" && session.authenticated
+            && session.authenticator_setup_available === true;
+        const securityLink = document.getElementById("account-security-link");
+        const securityInvitation = document.getElementById("authenticator-invitation");
+        if (securityLink) securityLink.hidden = !securityAvailable;
+        if (securityInvitation) securityInvitation.hidden = !securityAvailable || securityInvitation.dataset.dismissed === "true";
         if (openAccountErasureBtn) {
             openAccountErasureBtn.hidden = session.authentication !== "workos"
                 || !session.authenticated
@@ -501,6 +507,13 @@ async function configureSessionControls() {
         console.warn("Session controls are unavailable.");
     }
 }
+
+document.getElementById("dismiss-authenticator-invitation")?.addEventListener("click", () => {
+    const invitation = document.getElementById("authenticator-invitation");
+    invitation.dataset.dismissed = "true";
+    invitation.hidden = true;
+    document.getElementById("p-interface-language")?.focus();
+});
 
 function bindEvent(element, eventName, handler) {
     if (element) element.addEventListener(eventName, handler);

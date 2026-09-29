@@ -103,6 +103,29 @@ class Fixture:
                 self.engine('careertrellis_migration').url.render_as_string(hide_password=False)}):
             apply_runtime_grants(ROOT.parent / 'deploy/postgres/grant-runtime.sql')
 
+    def upgrade_identity_sessions(self, target_revision='20260909_0015'):
+        """Explicit synthetic identity/TOTP fence; never an operational installer."""
+        if target_revision not in ('20260909_0015', '20260915_0016', '20260928_0017', '20260928_0018', '20260929_0019', '20260929_0020'):
+            raise ValueError('Unsupported synthetic migration target')
+        from alembic import command
+        from alembic.config import Config
+        for engine in self.engines.values():
+            engine.dispose()
+        callers=('careertrellis_runtime','careertrellis_worker','careertrellis_erasure_worker','careertrellis_admission_broker')
+        with self.admin.begin() as c:
+            previous=c.execute(text('SELECT maintenance,signup_open FROM careertrellis_admission.policy')).one()
+            states={role:c.execute(text('SELECT rolcanlogin FROM pg_roles WHERE rolname=:role'),{'role':role}).scalar_one() for role in callers}
+            c.exec_driver_sql('UPDATE careertrellis_admission.policy SET maintenance=true,signup_open=false')
+            for role in callers: c.exec_driver_sql('ALTER ROLE '+role+' NOLOGIN')
+        cfg=Config(); cfg.set_main_option('script_location',str(ROOT/'migrations'))
+        cfg.attributes['migration_url']=self.engine('careertrellis_migration').url
+        command.upgrade(cfg,target_revision)
+        self.grants()
+        with self.admin.begin() as c:
+            c.execute(text('UPDATE careertrellis_admission.policy SET maintenance=:m,signup_open=:s'),{'m':previous[0],'s':previous[1]})
+            for role,login in states.items():
+                c.exec_driver_sql('ALTER ROLE '+role+(' LOGIN' if login else ' NOLOGIN'))
+
     def close(self):
         for engine in self.engines.values():
             engine.dispose()

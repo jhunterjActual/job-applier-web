@@ -53,12 +53,13 @@ class AdmissionOutcome:
 
 
 class AsyncAdmissionStore:
-    def __init__(self, broker, runtime):
+    def __init__(self, broker, runtime, *, provider_binding=None):
         if (not isinstance(broker, AsyncEngine) or not isinstance(runtime, AsyncEngine)
                 or broker.url.username != 'careertrellis_admission_broker'
                 or runtime.url.username != 'careertrellis_runtime'):
             raise ValueError('Explicit restricted candidate engines required')
         self.broker, self.runtime = broker, runtime
+        self.provider_binding = provider_binding
 
     async def _query(self, engine, sql, parameters=None, *, subject=None, mapping=False):
         try:
@@ -92,7 +93,13 @@ class AsyncAdmissionStore:
              'operation': operation, 'snapshot': snapshot})
 
     async def context(self):
-        return await self._query(self.runtime, 'SELECT careertrellis.admission_session_context()')
+        result = await self._query(self.runtime, 'SELECT careertrellis.admission_session_context()')
+        if self.provider_binding is not None:
+            ready = await self._query(self.runtime, 'SELECT careertrellis.identity_session_ready(:binding)',
+                {'binding':self.provider_binding})
+            if ready is not True:
+                raise StoreUnavailable()
+        return result
 
     async def reserve(self, flow):
         return await self._query(self.broker,
@@ -105,6 +112,11 @@ class AsyncAdmissionStore:
                                  {**flow.parameters(), 'digest': digest(code), 'attempt': attempt})
 
     async def finish(self, flow, attempt, identity):
+        if self.provider_binding is not None:
+            return await self._query(self.broker,
+                'SELECT careertrellis_admission.finish_session(:rid,:proof,:attempt,:subject,:realm,:binding)',
+                {**flow.parameters(), 'attempt':attempt,'subject':identity.subject,
+                 'realm':identity.generation,'binding':identity.provider_binding})
         return await self._query(self.broker, 'SELECT careertrellis_admission.finish(:rid,:proof,:attempt,:subject,:realm)',
             {**flow.parameters(), 'attempt': attempt, 'subject': identity.subject, 'realm': identity.generation})
 
@@ -116,6 +128,16 @@ class AsyncAdmissionStore:
         return await self._query(self.runtime,
             'SELECT id,role FROM careertrellis.app_users WHERE id=:uid AND workos_user_id=:subject AND disabled_at IS NULL',
             {'uid': local_id, 'subject': subject}, subject=subject, mapping=True)
+
+    async def session_mapping(self, session):
+        return await self._query(self.runtime,
+            'SELECT careertrellis.identity_session_check(:uid,:binding,:subject,:epoch,CAST(:incarnation AS uuid))',
+            {'uid':session.local_id,'binding':session.provider_binding,'subject':session.subject,
+             'epoch':session.epoch,'incarnation':session.incarnation})
+
+    async def owner_ready(self, subject):
+        return await self._query(self.runtime, 'SELECT careertrellis.identity_owner_ready(:binding,:subject)',
+            {'binding':self.provider_binding,'subject':subject})
 
 
 def build_candidate(*, enabled=False, factory):
@@ -169,7 +191,7 @@ class AdmissionAdapterCandidate(AccountSessionCandidate):
             parameters = {
                 'client_id': self.provider.settings.client_id, 'redirect_uri': self.redirect_uri,
                 'response_type': 'code', 'provider': 'authkit', 'state': flow.state,
-                'code_challenge': challenge, 'code_challenge_method': 'S256', 'prompt': 'login',
+                'code_challenge': challenge, 'code_challenge_method': 'S256', 'prompt': 'login', 'max_age': 0,
                 'screen_hint': 'sign-up' if purpose == 'signup' else 'sign-in',
             }
             if different_account:
@@ -214,15 +236,19 @@ class AdmissionAdapterCandidate(AccountSessionCandidate):
                     return AdmissionOutcome('ineligible')
                 await self.context()
                 # Known oversize cannot consume a local account seat.
-                self.codec.issue(identity, MAX_LOCAL_ID)
+                sample = {'epoch':MAX_LOCAL_ID-1,'incarnation':'ffffffff-ffff-4fff-8fff-ffffffffffff'} if self.codec.require_epoch else {}
+                self.codec.issue(identity, MAX_LOCAL_ID, **sample)
                 result = await self.store.finish(flow, attempt, identity)
                 if result['status'] not in ('activated', 'login'):
                     return AdmissionOutcome(result['status'])
                 await self.context()
-                await self.mapping(identity.subject, result['local_id'])
+                bound = ({'epoch':result['epoch'],'incarnation':result['incarnation']}
+                    if self.codec.require_epoch else {})
+                issued = self.codec.issue(identity, result['local_id'], **bound)
+                await self.session_mapping(self.codec.open(issued))
                 if flow.deadline <= time.time() or identity.expires <= time.time():
                     return AdmissionOutcome('incomplete')
-                return AdmissionOutcome(result['status'], self.codec.issue(identity, result['local_id']))
+                return AdmissionOutcome(result['status'], issued)
         except (StoreUnavailable, TimeoutError):
             return AdmissionOutcome('unavailable')
         except SessionCapacity:

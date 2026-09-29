@@ -31,7 +31,7 @@ BROWSER = '__Host-careertrellis_browser_v2'
 FLOW = '__Host-careertrellis_flow_v2'
 RECEIPT = '__Host-careertrellis_result_v2'
 AUTH_COOKIES = (COOKIE_NAME, SESSION_COOKIE_NAME, LOGIN_FLOW_COOKIE_NAME, FLOW, BROWSER, RECEIPT)
-PUBLIC_PATHS = frozenset(('/auth/sign-in', '/auth/login', '/auth/start', '/auth/callback',
+PUBLIC_PATHS = frozenset(('/auth/sign-in', '/auth/login', '/auth/initiate', '/auth/start', '/auth/callback',
     '/auth/complete', '/auth/result', '/auth/cancel', '/auth/logout',
     '/static/signup-v2.js', '/static/signup-v2.css'))
 MESSAGES = {
@@ -115,9 +115,17 @@ class SignupHTTP:
             hmac.new(base64.urlsafe_b64decode(key), b'http-coordination-v1', hashlib.sha256).digest(),
             adapter.codec.provider_binding)
         adapter.coordination = self.coordination
+        # Explicitly injected only after enrollment storage/keys/provider acceptance.
+        # Default construction leaves this disabled; factory opt-in is explicit.
+        self.enrollment_http = None
+        self.enrollment_provider = None
+        self.removal_http = None
+        self.removal_provider = None
 
     async def aclose(self):
         results = await asyncio.gather(self.adapter.provider.aclose(),
+            *([self.enrollment_provider.aclose()] if self.enrollment_provider else []),
+            *([self.removal_provider.aclose()] if self.removal_provider else []),
             *(engine.dispose() for engine in self.engines), return_exceptions=True)
         if any(isinstance(result, BaseException) for result in results):
             raise StoreUnavailable()
@@ -261,13 +269,58 @@ class SignupHTTP:
         clear_auth(response)
         return response
 
+    async def initiate(self, request):
+        # Hosted WorkOS recovery/invitation screens own their tokens. This entry
+        # point only starts an ordinary login with fresh state and PKCE. Never
+        # forward arbitrary query parameters, trust an invitation as admission,
+        # revoke an existing session on GET, or create an account in this lane.
+        if request.query_params:
+            raise ValueError()
+        browser = cookie(request, BROWSER, 43) or secrets.token_urlsafe(32)
+        if not await self.budget(request, 'login', browser):
+            response = self.page(browser, 'limited')
+            response.status_code = 429
+            return response
+        previous = cookie(request, FLOW, 2000)
+        if previous:
+            status = await self.adapter.status(previous, browser)
+            if status.status not in ('invalid', 'expired', 'cancelled', 'login', 'activated', 'ineligible', 'incomplete'):
+                response = self.page(browser, 'unavailable' if status.status == 'unavailable' else 'pending')
+                response.status_code = 503 if status.status == 'unavailable' else 409
+                return response
+        outcome = await self.adapter.begin(browser, 'login')
+        if outcome.status != 'reserved':
+            response = self.page(browser, outcome.status)
+            response.status_code = 503
+            return response
+        response = RedirectResponse(outcome.authorization_url, 303,
+            headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
+                'Content-Security-Policy': "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"})
+        set_cookie(response, BROWSER, browser, self.adapter.codec.lifetime_seconds)
+        set_cookie(response, FLOW, outcome.cookie)
+        return response
+
     async def handle(self, request):
         path = request.url.path
         try:
-            if path in ('/static/signup-v2.js', '/static/signup-v2.css') and request.method == 'GET':
+            if path == '/account/security/removal' or path.startswith('/account/security/removal/'):
+                if self.removal_http is None:
+                    return JSONResponse({'detail': 'Authenticator removal is not enabled.'},404,
+                                        headers={'Cache-Control': 'no-store'})
+                return await self.removal_http.handle(request)
+            if path == '/account/security' or path.startswith('/account/security/'):
+                if self.enrollment_http is None:
+                    return JSONResponse({'detail': 'Account security setup is not enabled.'}, 404,
+                                        headers={'Cache-Control': 'no-store'})
+                return await self.enrollment_http.handle(request)
+            if path in ('/static/signup-v2.js', '/static/signup-v2.css', '/static/totp-enrollment.js', '/static/factor-removal.js') and request.method == 'GET':
                 return FileResponse(self.static_dir / path.rsplit('/', 1)[1])
             if path not in PUBLIC_PATHS:
                 return None
+            if path == '/auth/initiate':
+                if request.method != 'GET':
+                    return JSONResponse({'detail': 'Method not allowed.'}, 405)
+                return await self.initiate(request)
             browser = cookie(request, BROWSER, 43)
             if request.method == 'GET' and path in ('/auth/sign-in', '/auth/login', '/auth/result', '/auth/callback'):
                 if path in ('/auth/sign-in', '/auth/result') and request.query_params:
@@ -352,11 +405,32 @@ class SignupHTTP:
             return JSONResponse({'detail': MESSAGES['unavailable']}, 503)
 
 
+def enrollment_key(existing_keys):
+    """Explicit opt-in; disabled construction never reads an enrollment key."""
+    flag = os.environ.get('CAREERTRELLIS_AUTH_V2_TOTP_ENABLED', '0')
+    if flag not in ('0','1'):
+        raise ValueError('Invalid enrollment configuration.')
+    if flag == '0':
+        return None
+    key = os.environ.get('CAREERTRELLIS_AUTH_V2_TOTP_KEY', '')
+    # Fernet also checks encoding/length; compare decoded bytes, not spelling.
+    Fernet(key)
+    raw = base64.b64decode(key, altchars=b'-_', validate=True)
+    if len(raw)!=32 or raw in {base64.urlsafe_b64decode(value) for value in existing_keys}:
+        raise ValueError('Distinct enrollment key required.')
+    return key
+
+
+from factor_runtime import factor_readiness, removal_enabled
+
+
 async def create_runtime(settings, static_dir):
     if not enabled():
         return None
     engines = []
     provider = None
+    factor_provider = None
+    removal_provider = None
     try:
         if settings is None:
             raise ValueError()
@@ -370,9 +444,11 @@ async def create_runtime(settings, static_dir):
         key, flow_key = required('ENVELOPE_KEY'), required('FLOW_KEY')
         if len({base64.urlsafe_b64decode(value) for value in (key, flow_key, settings.cookie_password)}) != 3:
             raise ValueError()
+        factor_key = enrollment_key((key, flow_key, settings.cookie_password))
+        enable_removal = removal_enabled(factor_key is not None)
         codec = SessionCodec(key, settings.cookie_password, key_id=required('KEY_ID'),
             generation=provider_settings.generation, lifetime_seconds=int(required('SESSION_SECONDS')),
-            provider_binding=provider_settings.binding)
+            provider_binding=provider_settings.binding, require_epoch=True)
         urls = [database_url_from_environment('CAREERTRELLIS_ADMISSION_DATABASE_URL'), database_url_from_environment()]
         for url, principal in zip(urls, ('careertrellis_admission_broker', 'careertrellis_runtime')):
             if (url.username != principal or not url.password or not url.host or ',' in url.host
@@ -385,7 +461,7 @@ async def create_runtime(settings, static_dir):
         for url in urls:
             engines.append(create_async_engine(url, hide_parameters=True, pool_size=2,
                 max_overflow=0, pool_timeout=2, connect_args={'connect_timeout': 3}, pool_pre_ping=True))
-        store = AsyncAdmissionStore(*engines)
+        store = AsyncAdmissionStore(*engines, provider_binding=provider_settings.binding)
         for engine, principal in zip(engines, ('careertrellis_admission_broker', 'careertrellis_runtime')):
             if await store._query(engine, 'SELECT session_user') != principal:
                 raise ValueError()
@@ -393,10 +469,33 @@ async def create_runtime(settings, static_dir):
         adapter = AdmissionAdapterCandidate(store, provider, codec, owner_subject=settings.owner_workos_user_id,
             flow_key=flow_key, redirect_uri=settings.redirect_uri)
         await adapter.context()
-        return SignupHTTP(adapter, key=key, logout_return_to=settings.logout_return_to,
+        runtime = SignupHTTP(adapter, key=key, logout_return_to=settings.logout_return_to,
             static_dir=static_dir, engines=engines)
+        if factor_key is not None:
+            from enrollment_disposition_postgres import PostgreSQLEnrollmentDispositionStore
+            from enrollment_disposition import AttributableEnrollmentCoordinator
+            from totp_http import EnrollmentHTTP
+            from workos_totp import WorkOSTOTP
+            await factor_readiness(store,engines[1])
+            factor_provider = WorkOSTOTP(settings.api_key)
+            enrollment_store = PostgreSQLEnrollmentDispositionStore(engines[1],runtime.coordination)
+            coordinator = AttributableEnrollmentCoordinator(enrollment_store,factor_provider,factor_key)
+            runtime.enrollment_provider = factor_provider
+            runtime.enrollment_http = EnrollmentHTTP(runtime,coordinator)
+            if enable_removal:
+                from workos_removal import WorkOSRemoval
+                from factor_removal import SessionEndingRemovalCoordinator
+                from factor_removal_postgres import PostgreSQLRemovalStore
+                from factor_removal_http import RemovalHTTP
+                removal_provider = WorkOSRemoval(provider_settings)
+                runtime.removal_provider = removal_provider
+                removal = SessionEndingRemovalCoordinator(PostgreSQLRemovalStore(engines[1],runtime.coordination),removal_provider)
+                runtime.removal_http = RemovalHTTP(runtime,removal,enrollment_store)
+        return runtime
     except BaseException as exc:
         await asyncio.gather(*([provider.aclose()] if provider else []),
+            *([factor_provider.aclose()] if factor_provider else []),
+            *([removal_provider.aclose()] if removal_provider else []),
             *(engine.dispose() for engine in engines), return_exceptions=True)
         if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
             raise

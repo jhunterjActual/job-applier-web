@@ -1636,8 +1636,8 @@ class FrontendStartupTests(unittest.TestCase):
                 self.assertIn(f'id="{element_id}"', html_source)
         self.assertIn("Checking AI Provider", html_source)
         self.assertIn("i18n.js?v=20260812-1", html_source)
-        self.assertIn("app.js?v=20260904-3", html_source)
-        self.assertIn("index.css?v=20260904-3", html_source)
+        self.assertIn("app.js?v=20260916-1", html_source)
+        self.assertIn("index.css?v=20260916-1", html_source)
 
     def test_profile_and_provider_secrets_use_separate_form_boundaries(self) -> None:
         parser = self._profile_form_parser()
@@ -6821,6 +6821,7 @@ class WebAuthenticationTests(unittest.TestCase):
                 "authentication": "workos",
                 "authenticated": True,
                 "account_erasure_available": False,
+                "authenticator_setup_available": False,
             },
             session_response.json(),
         )

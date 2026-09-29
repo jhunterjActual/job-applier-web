@@ -1,11 +1,14 @@
 """Synthetic atomic launcher publication; never touches installed credentials."""
 from pathlib import Path
+import os
 import runpy
 import tempfile
 import unittest
 from unittest.mock import patch
 
 
+@unittest.skipUnless(os.name == 'posix' and hasattr(os, 'O_NOFOLLOW'),
+                     'Native POSIX no-follow and executable mode semantics required')
 class BridgeInstallerTests(unittest.TestCase):
     def setUp(self):
         self.functions = runpy.run_path(str(Path(__file__).resolve().parents[1] /
