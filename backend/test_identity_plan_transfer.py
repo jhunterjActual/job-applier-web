@@ -3,6 +3,7 @@ from copy import deepcopy
 from contextlib import redirect_stdout
 import hashlib
 import io
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -81,10 +82,31 @@ class TransferTests(StoreTests):
         return (self.root/'identity-plan-transfer.outgoing.json').read_bytes()
 
     def destination(self):
-        path=Path(self.stack.enter_context(tempfile.TemporaryDirectory(dir='/' if __import__('os').name=='posix' else None)))
+        native=os.name=='posix' and os.geteuid()==0
+        path=Path(self.stack.enter_context(tempfile.TemporaryDirectory(dir='/' if native else None)))
         self.stack.enter_context(patch.object(ops,'ROOT',path))
         self.stack.enter_context(patch.object(ops,'STATE',path))
         return path
+
+    def test_nonroot_posix_destination_uses_writable_temporary_root(self):
+        created=[]
+        temporary_directory=tempfile.TemporaryDirectory
+        def temporary(*,dir):
+            created.append(dir)
+            return temporary_directory(dir=dir)
+        # Keep Path's platform selection unchanged; only this fixture's POSIX
+        # privilege check is simulated, including on a Windows test runner.
+        with patch(__name__+'.os') as operating_system, \
+                patch.object(tempfile,'TemporaryDirectory',side_effect=temporary):
+            operating_system.name='posix'
+            operating_system.geteuid.return_value=1000
+            destination=self.destination()
+        self.assertEqual([None],created)
+        self.assertEqual(destination,ops.ROOT)
+        self.assertEqual(destination,ops.STATE)
+        probe=destination/'synthetic-probe'
+        probe.write_bytes(b'fixture writable')
+        self.assertEqual(b'fixture writable',probe.read_bytes())
 
     def test_export_import_exact_retry_and_no_other_files(self):
         raw=self.outgoing(); destination=self.destination(); calls=[]
