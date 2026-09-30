@@ -164,6 +164,7 @@ def _build(value,ask,*,now,holder=None,holder_expires=None):
 
 
 def enter(operation,engine):
+    operator.barrier.require_unblocked()
     # Finish filesystem, principal, schema, logging and exact operation preflight
     # before opening a terminal. Never keep a DB transaction across human input.
     path,journal=operator.locations(operation)
@@ -177,10 +178,12 @@ def enter(operation,engine):
     with SecureTerminal() as terminal:
         raw=build(initial,terminal.ask)
     # Recheck mutable state after the human pause, under both host and DB locks.
-    with ops.host_locks(), operator.secure_connection(engine) as connection:
-        operator.setup(connection)
-        evidence._same_context(initial,context(connection,operation))
-        ops.require(not journal.exists() and not journal.is_symlink())
-        ops.require(evidence.instant(evidence.validate(raw)['expires_at'])>datetime.now(timezone.utc))
-        ops.write_protected(path,raw)
+    with ops.host_locks():
+        operator.barrier.require_unblocked()
+        with operator.secure_connection(engine) as connection:
+            operator.setup(connection)
+            evidence._same_context(initial,context(connection,operation))
+            ops.require(not journal.exists() and not journal.is_symlink())
+            ops.require(evidence.instant(evidence.validate(raw)['expires_at'])>datetime.now(timezone.utc))
+            ops.write_protected(path,raw)
     return {'outcome':'manifest_saved_not_submitted'}

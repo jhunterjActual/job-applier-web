@@ -9,6 +9,7 @@ import re
 
 import admission_operations as ops
 import identity_plan_packet as packet
+import identity_selection_barrier as barrier
 
 
 def location():
@@ -37,6 +38,7 @@ def register(raw):
         ops.require(packet.validate(canonical)['version']==1)
         digest=hashlib.sha256(canonical).hexdigest()
         with ops.host_locks():
+            barrier.require_unblocked()
             path=archive(digest)
             if path.exists() or path.is_symlink():
                 ops.require(ops.read_protected(path,limit=packet.LIMIT)==canonical)
@@ -72,6 +74,7 @@ def decode(raw, *, activation=False):
 def load(*, activation=False):
     """One pointer snapshot, validated against an immutable exact archive."""
     try:
+        barrier.require_unblocked()
         legacy_absent()
         raw=ops.read_protected(location(),limit=1024)
         _,pair=decode(raw,activation=activation)
@@ -86,6 +89,19 @@ def require_current(snapshot):
     ops.require(raw==snapshot)
 
 
+def inspect_selection():
+    """Read-only reconciliation metadata; never returns an executable plan."""
+    try:
+        blocked=barrier.inspect()
+        legacy_absent()
+        raw=ops.read_protected(location(),limit=1024)
+        selected,_=decode(raw)
+        return {'selection_sha256':hashlib.sha256(raw).hexdigest(),
+            'selection':selected,'barrier':blocked}
+    except Exception:
+        raise ops.OperationError(ops.ERROR) from None
+
+
 def select(digest, operation, *, previous):
     """Atomic compare-and-select under host locks. None means first selection.
 
@@ -95,6 +111,7 @@ def select(digest, operation, *, previous):
     """
     try:
         with ops.host_locks():
+            barrier.require_unblocked()
             legacy_absent()
             sequence=1
             if previous is None:

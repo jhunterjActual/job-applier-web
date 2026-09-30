@@ -14,11 +14,12 @@ from uuid import UUID
 
 import admission_operations as ops
 import identity_evidence as evidence
+import identity_selection_barrier as barrier
 
 INBOX = Path('/run/careertrellis/identity-intake')
 DATABASE = 'careertrellis'
 HEAD = '20260909_0015'
-HEADS = (HEAD, '20260915_0016')
+HEADS = (HEAD, '20260915_0016', '20260929_0021')
 STATES = ('held','verified','committed','superseded')
 
 
@@ -99,6 +100,8 @@ def recorded_status(engine, operation, record):
 def process(action, operation, source, engine, *, submit=None):
     """Caller holds host locks for attest/reconcile. No raw input in receipts."""
     ops.require(action in ('status','attest','reconcile') and re.fullmatch('[0-9a-f]{40}',source))
+    if action != 'status':
+        barrier.require_unblocked()
     path,record_path=locations(operation)
     preflight(engine)
     record=journal(record_path,operation,source) if record_path.exists() else None

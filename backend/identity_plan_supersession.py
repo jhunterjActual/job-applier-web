@@ -63,6 +63,7 @@ def replacement(connection, original):
 
 
 def supersede(snapshot, source, engine):
+    store.barrier.require_unblocked()
     from cryptography.fernet import Fernet
     with handoff.locks(),operator.secure_connection(engine) as connection:
         store.require_current(snapshot)

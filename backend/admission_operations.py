@@ -900,21 +900,21 @@ def main(argv=None):
             read_protected(source.parent/'totp_configuration.py',modes=(0o600,0o640,0o644),limit=32768)
         if operation in ('web-receipt-export','web-receipt-import','db-receipt-export','db-receipt-import'):
             for module in ('identity_receipt_transfer.py','identity_plan_store.py','identity_plan_packet.py','identity_configuration.py',
-                    'identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
+                    'identity_selection_barrier.py','identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
                 read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
             import identity_receipt_transfer
             side,_,action=operation.split('-')
             return identity_receipt_transfer.run(action,source,side,args[1])
         if operation in ('web-plan-export','db-plan-import'):
             for module in ('identity_plan_transfer.py','identity_plan_store.py','identity_plan_packet.py','identity_configuration.py',
-                    'identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
+                    'identity_selection_barrier.py','identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
                 read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
             import identity_plan_transfer
             return identity_plan_transfer.run('export' if operation=='web-plan-export' else 'import',source)
         if operation.startswith(('web-plan-','web-transition-')):
             for module in ('identity_plan_operator.py','identity_transition_operator.py','identity_plan_supersession.py',
                     'identity_plan_store.py','identity_plan_packet.py','identity_web_handoff.py','identity_configuration.py',
-                    'identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
+                    'identity_selection_barrier.py','identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
                 read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
             if operation=='web-plan-supersede':
                 import identity_plan_supersession
@@ -925,14 +925,14 @@ def main(argv=None):
             import identity_plan_operator
             return identity_plan_operator.run(operation.removeprefix('web-plan-'),source)
         if operation.startswith('web-provider-'):
-            for module in ('identity_web_handoff.py','identity_configuration.py','identity_operator.py',
+            for module in ('identity_web_handoff.py','identity_configuration.py','identity_selection_barrier.py','identity_operator.py',
                     'identity_entry.py','identity_evidence.py','session_v2_transition.py',
                     'identity_plan_store.py','identity_plan_packet.py','session_authorization.py'):
                 read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
             import identity_web_handoff
             return identity_web_handoff.run(operation.removeprefix('web-provider-'),source)
         if operation.startswith('web-identity-'):
-            for module in ('identity_operator.py','identity_evidence.py','session_authorization.py','identity_entry.py'):
+            for module in ('identity_selection_barrier.py','identity_operator.py','identity_evidence.py','session_authorization.py','identity_entry.py'):
                 read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
             import identity_operator
             return identity_operator.run(operation.removeprefix('web-identity-'),args[1],source)
@@ -942,7 +942,7 @@ def main(argv=None):
             return 0
         if operation == 'web-v2-preflight':
             for module in ('session_v2_transition.py','identity_plan_store.py','identity_plan_packet.py',
-                    'identity_configuration.py','identity_operator.py','identity_evidence.py','session_authorization.py'):
+                    'identity_configuration.py','identity_selection_barrier.py','identity_operator.py','identity_evidence.py','session_authorization.py'):
                 read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
             import session_v2_transition
             with host_locks():
@@ -965,7 +965,7 @@ def main(argv=None):
                         "AND current_setting('data_directory')='/var/lib/postgresql/18/main';") is True)
                 if operation in ('db-v2-arm', 'web-v2-enable', 'db-v2-release'):
                     for module in ('session_v2_transition.py','identity_plan_store.py','identity_plan_packet.py',
-                            'identity_configuration.py','identity_operator.py','identity_evidence.py','session_authorization.py'):
+                            'identity_configuration.py','identity_selection_barrier.py','identity_operator.py','identity_evidence.py','session_authorization.py'):
                         read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
                     import session_v2_transition
                     session_v2_transition.run(operation, source, db)

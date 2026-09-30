@@ -17,6 +17,8 @@ class OperatorTests(unittest.TestCase):
     def setUp(self):
         self.stack=ExitStack(); self.addCleanup(self.stack.close)
         self.root=Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.stack.enter_context(patch.object(ops,'ROOT',self.root))
+        self.stack.enter_context(patch.object(ops,'protected_parents'))
         self.proof=packet(); self.op=self.proof['context']['operation']
         self.path=self.root/(self.op+'.json'); self.record=self.root/'journal.json'
         self.raw=ops.encoded(self.proof); self.path.write_bytes(self.raw)

@@ -31,7 +31,7 @@ DB_TESTS=('test_identity_plan_packet','test_identity_plan_store','test_identity_
     'test_admission_purge','test_totp_cleanup_operations','test_schema16_coordination',
     'test_admission_reporter','test_admission_alert_contract','test_admission_healthchecks','test_monitoring_rebind')
 WEB_TESTS=(*DB_TESTS,'test_identity_transition_operator','test_identity_web_handoff','test_identity_evidence','test_identity_configuration','test_identity_plan_supersession')
-REQUIRED=('identity_web_handoff','identity_configuration','identity_entry','identity_operator','identity_evidence',
+REQUIRED=('identity_web_handoff','identity_configuration','identity_entry','identity_selection_barrier','identity_operator','identity_evidence',
     'session_v2_transition','session_authorization','totp_configuration','identity_plan_operator','identity_plan_packet','identity_plan_store',
     'identity_plan_supersession','identity_plan_transfer','identity_receipt_transfer','identity_transition_operator',
     'admission_purge','totp_cleanup','totp_cleanup_operations','totp_cleanup_alert_contract',

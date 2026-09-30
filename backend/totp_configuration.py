@@ -2,10 +2,14 @@
 import base64
 
 PREFIX = 'CAREERTRELLIS_AUTH_V2_'
-FIELDS = frozenset((PREFIX+'TOTP_ENABLED', PREFIX+'TOTP_KEY'))
+FIELDS = frozenset((PREFIX+'TOTP_ENABLED', PREFIX+'TOTP_KEY', PREFIX+'REMOVAL_ENABLED'))
 
 
 def validate(values, existing_keys, *, activation_schema=None):
+    # Initial schema21 rollout keeps removal unavailable. Enabling it requires
+    # a separately reviewed protected configuration/attended acceptance path.
+    if values.get(PREFIX+'REMOVAL_ENABLED', '0') != '0':
+        raise ValueError('Removal activation unavailable.')
     flag = values.get(PREFIX+'TOTP_ENABLED', '0')
     if flag not in ('0', '1'):
         raise ValueError('Invalid enrollment configuration.')

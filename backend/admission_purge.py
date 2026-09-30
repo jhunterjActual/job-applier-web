@@ -29,14 +29,14 @@ RESULTS = ('running', 'ok', 'backlog', 'failed')
 
 
 def schema_gate_sql():
-    # 0014 retains its accepted contract. 0015/0016 must have completed closed-v2
+    # 0014 retains its accepted contract. Identity heads must complete closed-v2
     # release and populated its private identity ledger before cleanup can run.
-    # PL/pgSQL plans the identity branch only on 0015/0016 (absent on 0014).
+    # PL/pgSQL plans the identity branch only on identity heads (absent on0014).
     return ("DO $$ DECLARE head text; BEGIN SELECT version_num INTO STRICT head FROM careertrellis.alembic_version; "
-        "IF head NOT IN ('20260907_0014','20260909_0015','20260915_0016') OR head IS NULL "
+        "IF head NOT IN ('20260907_0014','20260909_0015','20260915_0016','20260929_0021') OR head IS NULL "
         "OR (SELECT maintenance FROM careertrellis_admission.policy) IS DISTINCT FROM false "
         "THEN RAISE EXCEPTION 'purge unavailable'; END IF; "
-        "IF head IN ('20260909_0015','20260915_0016') THEN "
+        "IF head IN ('20260909_0015','20260915_0016','20260929_0021') THEN "
         "IF (SELECT minimum_session_version=2 AND adapter_ready FROM careertrellis_admission.policy) IS DISTINCT FROM true "
         "OR (SELECT binding FROM careertrellis_admission.identity_provider) IS NULL "
         "OR EXISTS(SELECT 1 FROM careertrellis.app_users u LEFT JOIN careertrellis_admission.identity_accounts a ON a.id=u.id WHERE a.id IS NULL) "

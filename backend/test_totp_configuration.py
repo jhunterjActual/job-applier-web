@@ -10,6 +10,17 @@ import admission_operations as ops
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_schema21_protected_configuration_keeps_both_factor_features_off(self):
+        import totp_configuration as protected
+        values={protected.PREFIX+'TOTP_ENABLED':'0',protected.PREFIX+'REMOVAL_ENABLED':'0'}
+        self.assertFalse(protected.validate(values,(),activation_schema='20260929_0021'))
+        for value in ('1','yes',True,0):
+            with self.assertRaises(ValueError):
+                protected.validate({**values,protected.PREFIX+'REMOVAL_ENABLED':value},(),activation_schema='20260929_0021')
+        with self.assertRaises(ValueError):
+            protected.validate({**values,protected.PREFIX+'TOTP_ENABLED':'1',
+                protected.PREFIX+'TOTP_KEY':Fernet.generate_key().decode()},(),activation_schema='20260929_0021')
+
     def test_disabled_ignores_unconfigured_key_and_invalid_flag_rejects(self):
         with patch.dict(os.environ,{'CAREERTRELLIS_AUTH_V2_TOTP_ENABLED':'0',
                                    'CAREERTRELLIS_AUTH_V2_TOTP_KEY':'not-a-key'}):

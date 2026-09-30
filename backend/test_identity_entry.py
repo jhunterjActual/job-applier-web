@@ -49,6 +49,7 @@ class GuidedEntryTests(unittest.TestCase):
     def test_no_prompt_until_preflight_and_no_db_transaction_during_input(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root=Path(directory); path=root/'input'; journal=root/'journal'; c=packet()['context']; active=[]
+            stack.enter_context(patch.object(operator.barrier,'require_unblocked'))
             stack.enter_context(patch.object(operator,'locations',return_value=(path,journal)))
             stack.enter_context(patch.object(ops,'STATE',root))
             stack.enter_context(patch.object(ops,'protected_parents'))

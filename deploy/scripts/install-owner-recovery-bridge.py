@@ -101,7 +101,7 @@ def install(commit, digest, *, upgrade=False):
             names.add(item.name)
             if item.isfile(): manifest[item.name] = hashlib.sha256(archive.extractfile(item).read()).hexdigest()
         require(all('backend/' + name + '.py' in manifest for name in (*TESTS,
-            'owner_recovery_bridge_cli', 'owner_recovery_bridge', 'identity_evidence', 'identity_operator')))
+            'owner_recovery_bridge_cli', 'owner_recovery_bridge', 'identity_evidence', 'identity_selection_barrier','identity_operator')))
         require('source-manifest.json' not in names and 'installation.json' not in names)
         for parent in (BASE.parent, *BASE.parent.parents):
             info = parent.lstat()

@@ -68,7 +68,7 @@ def transition_receipt(receipt, credential):
             'expires', 'context', 'selection', 'schema', 'credential'})
     require(receipt['scope'] == TRANSITION_SCOPE and receipt['credential'] == credential['id']
             and receipt['binding'] == credential['binding']
-            and receipt['schema'] in ('20260909_0015', '20260915_0016'))
+            and receipt['schema'] in ('20260909_0015', '20260915_0016', '20260929_0021'))
     context = receipt['context']
     started, deadline = context_times(context)
     require(receipt['operation'] == context['operation'] and type(receipt['selection']) is str

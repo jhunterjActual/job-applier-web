@@ -60,6 +60,7 @@ def install(raw,previous,source,guard):
     value,pair=validate(raw); selection=value['selection']
     ops.require(pair['provider']['operations']==source.parent.parent.name)
     with ops.host_locks():
+        store.barrier.require_unblocked()
         guard()
         store.legacy_absent()
         if previous is None: ops.require(not store.exists())

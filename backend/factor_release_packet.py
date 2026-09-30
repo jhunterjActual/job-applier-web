@@ -12,7 +12,7 @@ MODULES=('signup_http','account_session_candidate','factor_runtime','search_run_
     'enrollment_disposition','enrollment_disposition_postgres','factor_removal',
     'factor_removal_http','factor_removal_postgres','workos_removal','totp_enrollment',
     'totp_postgres','totp_http','workos_totp','session_v2_transition','totp_configuration',
-    'admission_operations','identity_operator','identity_plan_operator','owner_recovery')
+    'admission_operations','identity_selection_barrier','identity_operator','identity_plan_operator','owner_recovery')
 TESTS=('test_disabled_search_cleanup','test_postgres_rls','test_factor_runtime','test_factor_runtime_postgres','test_factor_removal',
     'test_factor_removal_store','test_factor_removal_http','test_workos_removal',
     'test_enrollment_disposition','test_enrollment_transfer_postgres',

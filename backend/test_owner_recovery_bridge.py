@@ -25,6 +25,20 @@ def view():
 
 
 class InstalledSourceTests(unittest.TestCase):
+    def test_0021_receipt_exact_context_and_credential_binding(self):
+        observed=view(); observed['schema']='20260929_0021'
+        credential={'id':'c'*64,'binding':observed['binding'],'created':1000,'confirmed':1001}
+        receipt={'operation':observed['context']['operation'],'scope':recovery.TRANSITION_SCOPE,
+            'binding':credential['binding'],'issued':1010,'expires':1100,
+            'context':observed['context'],'selection':observed['selection'],
+            'schema':observed['schema'],'credential':credential['id']}
+        self.assertEqual(receipt,recovery.transition_receipt(receipt,credential))
+        for changes in ({'schema':'20260929_0020'},{'schema':'20260930_0022'},
+                {'selection':'invalid'},{'credential':'d'*64},{'operation':str(uuid4())},
+                {'expires':1401}):
+            with self.assertRaises(ValueError):
+                recovery.transition_receipt({**receipt,**changes},credential)
+
     def test_mismatched_installed_source_refuses_before_database_or_input(self):
         pair={'provider': {'operations': 'a'*40}, 'activation': {'operations': 'a'*40}}
         with patch.object(bridge.ops,'host_locks',side_effect=nullcontext), \
