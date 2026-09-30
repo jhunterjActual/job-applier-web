@@ -26,7 +26,11 @@ def require(value):
 def write(path, raw, mode=0o600):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     with os.fdopen(fd, 'wb') as stream:
-        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+        stream.write(raw); stream.flush()
+        # The installer can inherit systemd's restrictive UMask=0077. Apply the
+        # reviewed exact mode to this exclusively created inode before publish.
+        os.fchmod(stream.fileno(), mode)
+        os.fsync(stream.fileno())
     fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try: os.fsync(fd)
     finally: os.close(fd)
