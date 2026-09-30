@@ -1,8 +1,11 @@
 """Synthetic new-release contracts; no host writes or deployment operations."""
 from copy import deepcopy
+import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -41,6 +44,12 @@ class Schema21PreparationTests(unittest.TestCase):
         self.assertEqual('20260929_0021',self.rules.SCHEMA)
 
     def test_78_snapshot_requires_exact_current_and_rejects_changed_protected_state(self):
+        # snapshot() models Linux host paths, including literal POSIX dictionary
+        # keys. Keep its synthetic paths POSIX even when this test runs on Windows.
+        class HostPath(PurePosixPath):
+            def resolve(self): return expected
+            def exists(self): return False
+            def is_symlink(self): return False
         for filename in ('schema21-application-contract.py','fallback79-application-contract.py'):
             rules=load(filename)
             utility=Mock()
@@ -53,18 +62,17 @@ class Schema21PreparationTests(unittest.TestCase):
             utility.command.side_effect=lambda argv: (b'postgres-r2-authoritative\n'
                 if argv[0].endswith('careertrellis-authority') else
                 b'ActiveState=active\nMainPID=7\nNRestarts=0\n')
-            expected=Path('/opt/careertrellis/staging/releases/cafad5b48a579adc80695519f0f8b7d39f621cd5')
-            with self.subTest(contract=filename),patch.object(Path,'resolve',return_value=expected), \
-                    patch.object(Path,'exists',return_value=False),patch.object(Path,'is_symlink',return_value=False):
+            expected=HostPath('/opt/careertrellis/staging/releases/cafad5b48a579adc80695519f0f8b7d39f621cd5')
+            with self.subTest(contract=filename),patch('pathlib.Path',HostPath):
                 before=rules.snapshot(utility)
                 self.assertEqual(20,len(before['files']))
                 self.assertEqual(3,len(before['services']))
                 rules.require(rules.snapshot(utility)==before)
                 changed[0]=True
                 with self.assertRaises(RuntimeError): rules.require(rules.snapshot(utility)==before)
-                with patch.object(Path,'resolve',return_value=Path('/wrong/current')):
+                with patch.object(HostPath,'resolve',return_value=HostPath('/wrong/current')):
                     with self.assertRaises(RuntimeError): rules.snapshot(utility)
-                with patch.object(Path,'is_symlink',return_value=True):
+                with patch.object(HostPath,'is_symlink',return_value=True):
                     with self.assertRaises(RuntimeError): rules.snapshot(utility)
             utility.snapshot.assert_not_called()
 
@@ -114,6 +122,47 @@ class Schema21PreparationTests(unittest.TestCase):
             altered=deepcopy(policy); altered[key]=[] if key=='tests' else 'changed'
             with self.subTest(key=key),self.assertRaises(RuntimeError):
                 self.rules.policy(altered,'a'*40,'b'*40,'c'*64)
+
+    def test_verifiers_read_policy_from_protected_evidence_before_fixture_effects(self):
+        class PolicyReadReached(Exception): pass
+        for prefix,build in (('schema21','20260930.80'),('fallback79','20260930.79')):
+            # No account lookup is reached before the protected policy read.
+            # Supply the POSIX import on Windows without pretending to do one.
+            pwd_stub=SimpleNamespace(getpwnam=Mock(side_effect=AssertionError('unexpected account lookup')))
+            with patch.dict(sys.modules,{'pwd':pwd_stub}):
+                verifier=load('verify-prepared-'+prefix+'-application.py')
+            commit,operations,digest='a'*40,'b'*40,'c'*64
+            evidence=verifier.RELEASES/commit/(prefix+'-application-preparation')
+            expected=evidence/'reviewed-test-policy.json'
+            rules=Mock(CURRENT='d'*40)
+            utility=Mock()
+            complete=dict(application=commit,phase='private_runtime_prepared_not_activated',
+                ops=operations,runtime_ops=verifier.OPS,archive_sha256=digest,
+                build=build,schema='20260929_0021')
+            def protected(path,**kwargs):
+                if path.name=='version.py': return b'APP_BUILD="20260928.78"'
+                if path==evidence/'complete.json': return json.dumps(complete).encode()
+                if path==evidence/'source-manifest.json': return b'{}'
+                self.assertEqual(expected,path)
+                self.assertEqual({'modes':(0o600,)},kwargs)
+                self.assertNotIn(verifier.FIXTURES,path.parents)
+                self.assertFalse(path.name.startswith('native-'))
+                raise PolicyReadReached()
+            utility.protected.side_effect=protected
+            with self.subTest(prefix=prefix), \
+                    patch.object(verifier.os,'geteuid',return_value=0,create=True), \
+                    patch.object(verifier.os,'uname',return_value=SimpleNamespace(
+                        nodename='careertrellis-staging-web-1'),create=True), \
+                    patch.object(verifier,'contract',return_value=rules), \
+                    patch.object(Path,'resolve',return_value=verifier.RELEASES/rules.CURRENT), \
+                    patch.object(Path,'glob',return_value=iter(())), \
+                    patch.object(verifier.tempfile,'mkdtemp') as make_fixture, \
+                    patch.object(verifier.subprocess,'Popen') as start_process:
+                with self.assertRaises(PolicyReadReached):
+                    verifier.verify(commit,digest,operations,utility)
+                self.assertEqual(Path('/var/tmp'),verifier.FIXTURES)
+                make_fixture.assert_not_called(); start_process.assert_not_called()
+                utility.record.assert_not_called(); utility.runtime_manifest.assert_not_called()
 
     def test_unexpected_skip_failure_or_empty_suite_cannot_pass(self):
         policy=self.reviewed()

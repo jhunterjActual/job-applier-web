@@ -101,7 +101,7 @@ def verify(commit,digest,operations,util):
     require(not any(evidence.glob('native-*')))
     manifest=json.loads(util.protected(evidence/'source-manifest.json',modes=(0o600,)))
     rules=contract()
-    policy_path=FIXTURES/('careertrellis-schema21-native-policy-'+commit+'.json')
+    policy_path=evidence/'reviewed-test-policy.json'
     policy_raw=util.protected(policy_path,modes=(0o600,))
     reviewed=rules.policy(json.loads(policy_raw),commit,operations,digest)
     archive_sha256=digest
