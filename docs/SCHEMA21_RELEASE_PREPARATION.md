@@ -1,7 +1,7 @@
 # Schema21 release preparation
 
 Build20260930.80 targets the forward migration from20260907_0014 to20260929_0021.
-The immutable operational source is0449f323947b3b89cc2f6aa7aeb1c0c1c6d1e25a.
+The immutable operational source isbbbc4298b2ca80df107e64d2673d6c1f243c5e41.
 The application commit containing this binding must have a distinct release
 directory. Preparation never changes the current application pointer or schema.
 
