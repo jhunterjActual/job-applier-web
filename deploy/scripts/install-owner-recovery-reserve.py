@@ -178,8 +178,9 @@ def locked():
             'careertrellis-provider-secret-rotation.lock'))]
         for path in paths:
             lock_parents(path);fd=os.open(path,os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK);descriptors.append(fd)
+            allowed=(0o600,) if path==PRIMARY/'lock' else (0o600,0o644)
             item=os.fstat(fd);require(stat.S_ISREG(item.st_mode) and item.st_uid==0 and item.st_nlink==1
-                and not item.st_mode&0o077)
+                and stat.S_IMODE(item.st_mode) in allowed and item.st_size==0)
             fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         yield
     finally:

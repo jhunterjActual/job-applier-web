@@ -150,4 +150,60 @@ class InstallTests(unittest.TestCase):
         link.unlink();os.link(self.incoming,link)
         with self.assertRaises(ValueError):installer.protected(link)
 
+@unittest.skipUnless(os.name=='posix' and hasattr(os,'geteuid') and os.geteuid()==0,'native root-POSIX fixture')
+class ExistingLockTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name);self.primary=self.root/'primary';self.primary.mkdir(mode=0o700)
+        self.host=self.root/'host';self.host.mkdir(mode=0o700)
+        self.paths=[self.primary/'lock',*(self.host/name for name in (
+            'careertrellis-maintenance.lock','careertrellis-postgres-migration.lock',
+            'careertrellis-admission-operation.lock','careertrellis-provider-secret-rotation.lock'))]
+        for index,path in enumerate(self.paths):
+            path.write_bytes(b'');path.chmod(0o600 if index in (0,3) else 0o644)
+        self.stack=ExitStack();self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch.object(installer,'PRIMARY',self.primary))
+        # Only ancestor checks are replaced for the disposable /tmp fixture.
+        # All opens, fstats and flocks operate on actual native files.
+        self.stack.enter_context(patch.object(installer,'lock_parents'))
+        self.original_open=os.open;self.opens=[]
+        def opened(path,flags,*args,**kwargs):
+            path=Path(path)
+            if path.parent==Path('/run/lock'):path=self.host/path.name
+            self.opens.append((path,flags))
+            return self.original_open(path,flags,*args,**kwargs)
+        self.stack.enter_context(patch.object(installer.os,'open',side_effect=opened))
+    def test_existing_600_and_644_empty_locks_acquired_without_mutation(self):
+        import fcntl
+        before={path:(path.read_bytes(),path.stat().st_mode,path.stat().st_ino) for path in self.paths}
+        with installer.locked():
+            self.assertEqual([path for path,_ in self.opens],self.paths)
+            self.assertTrue(all(not flags&os.O_CREAT for _,flags in self.opens))
+            for path in self.paths:
+                fd=self.original_open(path,os.O_RDWR|os.O_NOFOLLOW)
+                try:
+                    with self.assertRaises(BlockingIOError):fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                finally:os.close(fd)
+        self.assertEqual(before,{path:(path.read_bytes(),path.stat().st_mode,path.stat().st_ino) for path in self.paths})
+    def test_world_writable_host_lock_refused(self):
+        self.paths[1].chmod(0o666)
+        with self.assertRaises(ValueError):
+            with installer.locked():self.fail('unsafe lock accepted')
+    def test_missing_host_lock_is_not_created(self):
+        self.paths[2].unlink()
+        with self.assertRaises(FileNotFoundError):
+            with installer.locked():self.fail('missing lock accepted')
+        self.assertFalse(self.paths[2].exists())
+    def test_primary_644_refused(self):
+        self.paths[0].chmod(0o644)
+        with self.assertRaises(ValueError):
+            with installer.locked():self.fail('nonprivate primary lock accepted')
+    def test_nonempty_host_or_primary_lock_refused(self):
+        for index in (0,1):
+            with self.subTest(index=index):
+                self.paths[index].write_bytes(b'unexpected')
+                with self.assertRaises(ValueError):
+                    with installer.locked():self.fail('nonempty lock accepted')
+                self.paths[index].write_bytes(b'')
+
 if __name__=='__main__':unittest.main()
