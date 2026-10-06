@@ -55,7 +55,9 @@ class SecureTerminal:
 
     def ask(self,prompt,*,limit=256):
         # Prompts are fixed strings from this module, never database values.
-        ops.require(type(limit) is int and 1<=limit<=512)
+        # Recovery callback JSON needs a larger explicitly requested bound;
+        # existing prompts retain the 256-byte default and their own limits.
+        ops.require(type(limit) is int and 1<=limit<=4096)
         os.write(self.fd,(prompt+' (hidden): ').encode())
         deadline=min(self.deadline,time.monotonic()+120); value=bytearray(); pasted=False
         def read_char():

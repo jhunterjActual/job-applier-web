@@ -183,6 +183,14 @@ DO $$ BEGIN
     END IF;
 END $$;
 DO $$ BEGIN
+    IF to_regprocedure('careertrellis.recovery_credentials_request(jsonb,text,text,uuid,jsonb,jsonb,jsonb,text)') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION careertrellis.recovery_credentials_request(jsonb,text,text,uuid,jsonb,jsonb,jsonb,text)
+            FROM PUBLIC,careertrellis_worker,careertrellis_erasure_worker,careertrellis_admission_broker,careertrellis_migration;
+        GRANT EXECUTE ON FUNCTION careertrellis.recovery_credentials_request(jsonb,text,text,uuid,jsonb,jsonb,jsonb,text)
+            TO careertrellis_runtime;
+    END IF;
+END $$;
+DO $$ BEGIN
     IF to_regprocedure('careertrellis.totp_finish_verified(jsonb,text,jsonb,jsonb)') IS NOT NULL THEN
         REVOKE ALL ON FUNCTION careertrellis.totp_finish_verified(jsonb,text,jsonb,jsonb)
             FROM PUBLIC,careertrellis_worker,careertrellis_erasure_worker;

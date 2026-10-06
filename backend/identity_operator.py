@@ -19,7 +19,7 @@ import identity_selection_barrier as barrier
 INBOX = Path('/run/careertrellis/identity-intake')
 DATABASE = 'careertrellis'
 HEAD = '20260909_0015'
-HEADS = (HEAD, '20260915_0016', '20260929_0021')
+HEADS = (HEAD, '20260915_0016', '20260929_0021', '20261005_0023')
 STATES = ('held','verified','committed','superseded')
 
 

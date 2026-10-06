@@ -875,7 +875,7 @@ def main(argv=None):
             'db-verify-transport', 'web-verify-transport', 'db-v2-arm', 'web-v2-enable', 'db-v2-release', 'web-v2-preflight',
             'web-identity-preflight','web-identity-status','web-identity-attest','web-identity-reconcile','web-identity-enter',
             'web-provider-enter','web-provider-apply','web-provider-reconcile','web-provider-preflight',
-            'web-plan-enter','web-plan-select','web-plan-status','web-plan-supersede',
+            'web-plan-enter','web-plan-select','web-plan-status','web-plan-supersede','web-recovery-attended',
             'web-transition-prepare','web-transition-resume','web-plan-export','db-plan-import','web-receipt-export','web-receipt-import','db-receipt-export','db-receipt-import'))
         operation = args[0]
         source = Path(__file__).absolute()
@@ -886,7 +886,7 @@ def main(argv=None):
                 'db-v2-arm', 'web-v2-enable', 'db-v2-release', 'web-v2-preflight',
                 'web-identity-preflight','web-identity-status','web-identity-attest','web-identity-reconcile','web-identity-enter',
                 'web-provider-enter','web-provider-apply','web-provider-reconcile','web-provider-preflight',
-                'web-plan-enter','web-plan-select','web-plan-status','web-plan-supersede',
+                'web-plan-enter','web-plan-select','web-plan-status','web-plan-supersede','web-recovery-attended',
                 'web-transition-prepare','web-transition-resume','web-plan-export','db-plan-import','web-receipt-export','web-receipt-import','db-receipt-export','db-receipt-import'):
             require(re.fullmatch(r'[0-9a-f]{40}', source.parent.parent.name)
                 and source.parent.parent.parent == Path('/opt/careertrellis/staging/releases'))
@@ -895,6 +895,22 @@ def main(argv=None):
             else 2 if operation in ('web-receipt-export','web-receipt-import','db-receipt-export','db-receipt-import','db-finish', 'db-quiesce', 'db-initial-quiesce', 'db-initial-finish',
                 'db-verify-transport', 'web-verify-transport', 'db-grant-connect',
                 'web-identity-preflight','web-identity-status','web-identity-attest','web-identity-reconcile','web-identity-enter') else 1))
+        if operation == 'web-recovery-attended':
+            for module in ('recovery_attended_entry', 'recovery_attended_auth', 'recovery_attended_hold',
+                    'recovery_runtime', 'recovery_workflow', 'recovery_provider',
+                    'recovery_credentials_hold_postgres', 'recovery_credentials_postgres',
+                    'recovery_release_postgres', 'recovery_credentials', 'recovery_factor_proof',
+                    'workos_transport_candidate', 'workos_removal', 'identity_entry', 'identity_operator',
+                    'identity_evidence', 'identity_selection_barrier', 'session_authorization'):
+                read_protected(source.parent/(module + '.py'), modes=(0o600,0o640,0o644), limit=131072)
+            import asyncio
+            import resource
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+            import recovery_attended_entry
+            result = asyncio.run(recovery_attended_entry.attended())
+            require(result == {'outcome': 'recovery_released_fresh_sign_in_required'})
+            print(encoded(result).decode().strip())
+            return 0
         if (operation.startswith(('web-receipt-','db-receipt-','web-plan-','db-plan-',
                 'web-transition-','web-provider-','web-v2-','db-v2-')) or operation=='web-migrate'):
             read_protected(source.parent/'totp_configuration.py',modes=(0o600,0o640,0o644),limit=32768)

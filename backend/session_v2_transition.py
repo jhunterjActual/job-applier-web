@@ -13,7 +13,7 @@ import admission_operations as ops
 import totp_configuration
 
 HEAD = '20260909_0015'
-HEADS = (HEAD, '20260915_0016', '20260929_0021')
+HEADS = (HEAD, '20260915_0016', '20260929_0021', '20261005_0023')
 
 
 def schema(p):
@@ -65,7 +65,7 @@ def validate_plan(raw):
     ops.require(type(value['cap']) is int and 1 <= value['cap'] <= 1000000)
     ops.require(type(value['ttl']) is int and 60 <= value['ttl'] <= 900)
     ops.require(type(value['session_seconds']) is int and value['session_seconds'] == 3600)
-    if value['schema'] == '20260929_0021':
+    if value['schema'] in ('20260929_0021', '20261005_0023'):
         ops.require(value['cap'] == 25 and value['ttl'] == 600)
     return value
 

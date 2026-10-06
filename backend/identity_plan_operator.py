@@ -65,7 +65,7 @@ def build(initial,ask):
         for _ in range(quarantine_count)]
     ops.require(ask('Provider domain, mappings, owner and target settings independently verified: type VERIFIED')=='VERIFIED')
     ops.require(ask('Exact two-operation plan authoring approved; this does not approve execution: type AUTHORING-AUTHORIZED')=='AUTHORING-AUTHORIZED')
-    schema=ask('Exact approved target migration head (20260909_0015, 20260915_0016 or 20260929_0021)')
+    schema=ask('Exact approved target migration head (20260909_0015, 20260915_0016, 20260929_0021 or 20261005_0023)')
     ops.require(schema in transition.HEADS)
     def pair(operation,mode,target_binding,subject,expected,transitions,quarantined):
         proof=transition.owner_proof(operation,target_binding,subject)

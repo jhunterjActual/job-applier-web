@@ -74,6 +74,8 @@ class EnrollmentHTTP:
                     'pattern="[0-9]{6}" maxlength="6" required></label>')
             if operation and status != 'complete':
                 content += form('check', 'Check completion') + form('close', 'Close setup')
+        if getattr(self.runtime, 'recovery_http', None) is not None:
+            content += '<p><a href="/account/security/recovery">Manage recovery codes</a></p>'
         content += '<p><a href="/">Return to workspace</a></p>'
         return HTMLResponse('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'

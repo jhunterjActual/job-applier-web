@@ -257,7 +257,8 @@ class IdentitySessionPostgresTests(unittest.IsolatedAsyncioTestCase):
         context=self.operator('SELECT careertrellis_admission.identity_evidence_context(CAST(:op AS uuid))',op=op)
         raw=ops.encoded(packet(context)); engine=self.fixture.engine('careertrellis_migration')
         real_submit=evidence.submit
-        def lost(*args): real_submit(*args); raise RuntimeError('synthetic lost acknowledgement')
+        class LostAcknowledgement(RuntimeError): pass
+        def lost(*args): real_submit(*args); raise LostAcknowledgement('synthetic lost acknowledgement')
         def write(path,value,previous=None,**kw):
             if previous is None: self.assertFalse(path.exists())
             else: self.assertEqual(previous,path.read_bytes())
@@ -265,12 +266,18 @@ class IdentitySessionPostgresTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             path=Path(directory)/'input.json'; receipt=Path(directory)/'journal.json'; path.write_bytes(raw)
             stack.enter_context(patch.object(operator,'DATABASE','ct_signup_integration'))
+            # Native DB semantics are under test, not this machine's root-owned
+            # /etc selection barrier. An unrelated OperationError is also a
+            # RuntimeError and previously masqueraded as our lost acknowledgement.
+            stack.enter_context(patch.object(operator.barrier,'inspect',return_value=None))
             stack.enter_context(patch.object(operator,'locations',return_value=(path,receipt)))
             stack.enter_context(patch.object(ops,'read_protected',side_effect=lambda p,**kw:p.read_bytes()))
             stack.enter_context(patch.object(ops,'write_protected',side_effect=write))
             stack.enter_context(patch.object(operator,'remove_exact',side_effect=lambda p,*args:p.unlink()))
-            with patch.object(evidence,'submit',side_effect=lost),self.assertRaises(RuntimeError):
+            with patch.object(evidence,'submit',side_effect=lost) as submitted,self.assertRaises(LostAcknowledgement):
                 operator.process('attest',op,'c'*40,engine)
+            submitted.assert_called_once()
+            self.assertEqual('verified',self.query('SELECT state FROM careertrellis_admission.identity_transitions WHERE operation=CAST(:op AS uuid)',op=op))
             self.assertTrue(path.exists())
             self.operator('SELECT careertrellis_admission.identity_activate(CAST(:op AS uuid),:e)',op=op,e=session.epoch+1)
             with patch.object(evidence,'submit',side_effect=AssertionError('reconcile must not submit')):
@@ -406,7 +413,9 @@ class IdentitySessionPostgresTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(SETTINGS.binding,self.query('SELECT binding FROM careertrellis_admission.identity_provider'))
                 self.assertTrue(self.query('SELECT bool_and(held) FROM careertrellis_admission.identity_accounts WHERE NOT disabled'))
                 self.query('DROP TRIGGER synthetic_failure ON careertrellis_admission.identity_configuration_receipts; DROP FUNCTION careertrellis_admission.synthetic_receipt_failure()')
-                self.assertEqual({'outcome':'configuration_committed_maintenance_retained'},configuration.apply(ops.encoded(p),engine,verified_current_binding=SETTINGS.binding))
+                # Rechecking the exact schema must retain logging safeguards
+                # after setup has switched to the restricted admission role.
+                self.assertEqual({'outcome':'configuration_committed_maintenance_retained'},configuration.apply(ops.encoded(p),engine,verified_current_binding=SETTINGS.binding,expected_schema=self.schema_revision))
                 generation=self.query('SELECT generation FROM careertrellis_admission.policy')
                 # Provider configuration + activation + changed-subject trigger
                 # for each of the two mapped accounts; quarantine adds none.

@@ -235,6 +235,30 @@ class SignupHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(303, (await self.client.post('/auth/start', data=valid)).status_code)
         self.assertEqual(0, len(self.store.flows)); self.assertEqual(0, self.http.posts)
 
+    async def test_normal_sign_in_does_not_use_recovery_state_namespace(self):
+        with patch('admission_adapter_candidate.secrets.token_urlsafe',
+                   side_effect=['r1_' + 'x' * 40, 'a' * 43, 'v' * 43]):
+            outcome = await self.adapter.begin('b' * 43, 'login')
+        self.assertEqual('reserved', outcome.status)
+        self.assertEqual(['a' * 43], parse_qs(urlsplit(outcome.authorization_url).query)['state'])
+
+    async def test_recovery_callback_displays_without_session_or_provider_exchange(self):
+        state = 'r1_' + 'a' * 40
+        response = await self.client.get('/auth/callback', params={'code': 'private-recovery-code', 'state': state})
+        self.assertEqual(200, response.status_code)
+        self.assertIn('/static/recovery-callback.js', response.text)
+        self.assertNotIn('/static/signup-v2.js', response.text)
+        self.assertNotIn('private-recovery-code', response.text)
+        self.assertNotIn(state, response.text)
+        self.assertEqual([], response.headers.get_list('set-cookie'))
+        self.assertEqual(0, self.http.posts)
+        self.assertEqual(0, len(self.store.flows))
+        self.assertIn('no-store', response.headers['cache-control'])
+        self.assertEqual(200, (await self.client.get('/static/recovery-callback.js')).status_code)
+        malformed = await self.client.get('/auth/callback', params=[('state', state), ('state', state), ('code', 'x')])
+        self.assertEqual(400, malformed.status_code)
+        self.assertEqual(0, self.http.posts)
+
     async def test_callback_clean_result_cookie_and_account_bound_private_route(self):
         response = await self.start()
         state = parse_qs(urlsplit(self.authorization_url(response)).query)['state'][0]
@@ -557,6 +581,14 @@ class SignupHTTPTests(unittest.IsolatedAsyncioTestCase):
                         page = await context.new_page()
                         responses = []
                         page.on('response', lambda response: responses.append((urlsplit(response.url).path, response.status)))
+                        recovery_state = 'r1_' + 'a' * 40
+                        await page.goto(origin + '/auth/callback?state=' + recovery_state + '&code=synthetic-recovery-code')
+                        await page.wait_for_function("location.search === ''")
+                        self.assertEqual({'state': recovery_state, 'code': 'synthetic-recovery-code'},
+                            __import__('json').loads(await page.locator('#recovery-response').input_value()))
+                        self.assertEqual([], await context.cookies())
+                        self.assertEqual([], observed_origins)
+                        self.assertEqual(0, self.http.posts)
                         await page.goto(origin + '/auth/sign-in')
                         self.assertFalse(await page.evaluate('document.documentElement.scrollWidth > innerWidth'))
                         self.assertEqual('Create account', await page.get_by_role('button', name='Create account', exact=True).inner_text())

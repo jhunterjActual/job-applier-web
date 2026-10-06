@@ -10,6 +10,26 @@ import admission_operations as ops
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_schema23_opt_in_requires_enrollment_and_distinct_key(self):
+        import totp_configuration as protected
+        existing = (Fernet.generate_key().decode(),)
+        values = {protected.PREFIX+'TOTP_ENABLED': '1',
+                  protected.PREFIX+'TOTP_KEY': Fernet.generate_key().decode(),
+                  protected.PREFIX+'REMOVAL_ENABLED': '1',
+                  protected.PREFIX+'RECOVERY_ENABLED': '1'}
+        self.assertTrue(protected.validate(values, existing, activation_schema='20261005_0023'))
+        for schema in (None, '20260915_0016', '20260929_0021', '20261005_0022', '20261006_0024'):
+            with self.assertRaises(ValueError):
+                protected.validate(values, existing, activation_schema=schema)
+        for change in ({protected.PREFIX+'TOTP_ENABLED': '0'},
+                       {protected.PREFIX+'TOTP_KEY': existing[0]},
+                       {protected.PREFIX+'RECOVERY_ENABLED': 'true'}):
+            with self.assertRaises(ValueError):
+                protected.validate({**values, **change}, existing, activation_schema='20261005_0023')
+        self.assertFalse(protected.validate({}, existing, activation_schema='20261005_0023'))
+        legacy = {protected.PREFIX+'TOTP_ENABLED': '1', protected.PREFIX+'TOTP_KEY': values[protected.PREFIX+'TOTP_KEY']}
+        self.assertTrue(protected.validate(legacy, existing, activation_schema='20260915_0016'))
+
     def test_schema21_protected_configuration_keeps_both_factor_features_off(self):
         import totp_configuration as protected
         values={protected.PREFIX+'TOTP_ENABLED':'0',protected.PREFIX+'REMOVAL_ENABLED':'0'}

@@ -112,9 +112,57 @@ class FactorRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(AuthenticationConfigurationError): await self.build()
         self.assertEqual([],self.factor_providers); self.assertEqual([],self.removal_providers)
 
+    async def test_recovery_schema23_builds_restricted_issuance_with_shared_provider(self):
+        from recovery_credentials import RecoveryCredentialCoordinator
+        from recovery_credentials_postgres import PostgreSQLRecoveryCredentialStore
+        self.flags('1', '1')
+        os.environ['CAREERTRELLIS_AUTH_V2_RECOVERY_ENABLED'] = '1'
+        self.ready['schema'] = '20261005_0023'
+        runtime = await self.build()
+        self.assertIsInstance(runtime.recovery_http.credentials, RecoveryCredentialCoordinator)
+        self.assertIsInstance(runtime.recovery_http.credentials.store, PostgreSQLRecoveryCredentialStore)
+        self.assertIs(runtime.recovery_http.credentials.provider, runtime.removal_provider)
+        self.assertEqual(len(self.removal_providers), 1)
+        await runtime.aclose()
+        self.assert_closed()
+
+    async def test_recovery_without_removal_reuses_provider_but_not_removal_routes(self):
+        self.flags('1', '0')
+        os.environ['CAREERTRELLIS_AUTH_V2_RECOVERY_ENABLED'] = '1'
+        self.ready['schema'] = '20261005_0023'
+        runtime = await self.build()
+        self.assertIsNone(runtime.removal_http)
+        self.assertIsNotNone(runtime.recovery_http)
+        await runtime.aclose()
+        self.assert_closed()
+
+    async def test_recovery_rejects_old_schema_and_cleans_owned_resources(self):
+        self.flags('1', '0')
+        os.environ['CAREERTRELLIS_AUTH_V2_RECOVERY_ENABLED'] = '1'
+        self.ready['schema'] = '20260929_0021'
+        with self.assertRaises(AuthenticationConfigurationError):
+            await self.build()
+        self.assert_closed()
+
+    async def test_recovery_constructor_failure_closes_shared_provider_once(self):
+        self.flags('1', '1')
+        os.environ['CAREERTRELLIS_AUTH_V2_RECOVERY_ENABLED'] = '1'
+        self.ready['schema'] = '20261005_0023'
+        with patch('recovery_credentials_http.RecoveryCredentialsHTTP', side_effect=ValueError('private failure')):
+            with self.assertRaises(AuthenticationConfigurationError):
+                await self.build()
+        self.assert_closed()
+
     async def test_search_cleanup_schema_preserves_factor_contract(self):
         self.flags('1','1')
         self.ready['schema']='20260929_0021'
+        runtime=await self.build()
+        self.assertIsInstance(runtime.removal_http,RemovalHTTP)
+        await runtime.aclose(); self.assert_closed()
+
+    async def test_recovery_release_schema_preserves_factor_contract(self):
+        self.flags('1','1')
+        self.ready['schema']='20261005_0023'
         runtime=await self.build()
         self.assertIsInstance(runtime.removal_http,RemovalHTTP)
         await runtime.aclose(); self.assert_closed()
@@ -162,6 +210,48 @@ class FactorRuntimeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(AuthenticationConfigurationError): await self.build()
         self.assertEqual(1,len(self.factor_providers)); self.assertEqual([],self.removal_providers)
         self.assert_closed()
+
+
+class RecoveryRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def test_explicit_recovery_flag_requires_enrollment(self):
+        from factor_runtime import recovery_enabled
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(recovery_enabled(False))
+        for value, enrollment in (('1', False), ('yes', True), ('', True)):
+            with patch.dict(os.environ, {'CAREERTRELLIS_AUTH_V2_RECOVERY_ENABLED': value}):
+                with self.assertRaises(ValueError):
+                    recovery_enabled(enrollment)
+        with patch.dict(os.environ, {'CAREERTRELLIS_AUTH_V2_RECOVERY_ENABLED': '1'}):
+            self.assertTrue(recovery_enabled(True))
+
+    async def test_recovery_readiness_exact_schema_and_privileges(self):
+        from factor_runtime import recovery_readiness
+        store = SimpleNamespace(_query=AsyncMock())
+        good = {'schema': '20261005_0023', 'functions_ready': True, 'grants_ready': True}
+        store._query.return_value = good
+        await recovery_readiness(store, object())
+        for changed in ({'schema': '20261005_0022'}, {'schema': '20260929_0021'},
+                        {'schema': '20261006_0024'}, {'functions_ready': False},
+                        {'grants_ready': False}, {'grants_ready': 1}):
+            store._query.return_value = {**good, **changed}
+            with self.assertRaises(ValueError):
+                await recovery_readiness(store, object())
+
+    def test_constructor_uses_only_runtime_store_and_existing_provider(self):
+        from factor_runtime import build_recovery_credentials
+        from recovery_credentials import RecoveryCredentialCoordinator
+        from recovery_credentials_postgres import PostgreSQLRecoveryCredentialStore
+        engine = Mock(spec=AsyncEngine)
+        engine.url = URL.create('postgresql+psycopg', username='careertrellis_runtime')
+        coordination, provider = object(), object()
+        value = build_recovery_credentials(engine, coordination, provider)
+        self.assertIsInstance(value, RecoveryCredentialCoordinator)
+        self.assertIsInstance(value.store, PostgreSQLRecoveryCredentialStore)
+        self.assertIs(value.store.coordination, coordination)
+        self.assertIs(value.provider, provider)
+        engine.url = URL.create('postgresql+psycopg', username='careertrellis_migration')
+        with self.assertRaises(ValueError):
+            build_recovery_credentials(engine, coordination, provider)
 
 
 if __name__=='__main__': unittest.main()

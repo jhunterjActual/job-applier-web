@@ -89,7 +89,7 @@ class GuidedEntryTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name=='posix','Native Linux terminal fixture required')
 class NativeTerminalTests(unittest.TestCase):
-    def exercise(self,payload,expected):
+    def exercise(self,payload,expected,*,limit=256,answer='SYNTHETIC_ONLY'):
         import fcntl
         import select
         import termios
@@ -109,7 +109,7 @@ class NativeTerminalTests(unittest.TestCase):
                         if payload==b'BACKGROUND': stack.enter_context(patch.object(os,'tcgetpgrp',return_value=os.getpgrp()+1))
                         terminal=stack.enter_context(entry.SecureTerminal())
                         if payload==b'TIMEOUT': terminal.deadline=time.monotonic()-.1
-                        outcome='accepted' if terminal.ask('Synthetic fixture')=='SYNTHETIC_ONLY' else 'wrong'
+                        outcome='accepted' if terminal.ask('Synthetic fixture',limit=limit)==answer else 'wrong'
                 except (Exception,KeyboardInterrupt): pass
                 okay=outcome==expected and termios.tcgetattr(0)==before and all(signal.getsignal(s)==h for s,h in handlers.items())
                 os._exit(0 if okay else 1)
@@ -132,6 +132,8 @@ class NativeTerminalTests(unittest.TestCase):
                 os.kill(pid,9); os.waitpid(pid,0); self.fail('synthetic terminal timed out')
             self.assertEqual(0,os.waitstatus_to_exitcode(status))
             self.assertNotIn(b'SYNTHETIC_ONLY',captured)
+            if answer:
+                self.assertNotIn(answer.encode('ascii'),captured)
         finally: os.close(master)
 
     def test_hidden_input_and_terminal_restoration(self): self.exercise(b'SYNTHETIC_ONLY\n','accepted')
@@ -149,3 +151,19 @@ class NativeTerminalTests(unittest.TestCase):
     def test_setup_failure_restores_terminal(self): self.exercise(b'INIT_FAIL','refused')
     def test_background_terminal_refuses(self): self.exercise(b'BACKGROUND','refused')
     def test_end_of_input_cancels_and_restores(self): self.exercise(b'\x04','refused')
+
+    def test_large_balanced_recovery_paste_no_echo_and_restoration(self):
+        answer='{"code":"'+('SYNTHETIC_ONLY'*150)+'","state":"r1_'+('A'*40)+'"}'
+        self.exercise(b'\x1b[200~'+answer.encode('ascii')+b'\x1b[201~\n',
+                      'accepted',limit=4096,answer=answer)
+
+    def test_maximum_explicit_limit_balanced_paste(self):
+        answer='SYNTHETIC_ONLY'+('x'*(4096-len('SYNTHETIC_ONLY')))
+        self.exercise(b'\x1b[200~'+answer.encode('ascii')+b'\x1b[201~\n',
+                      'accepted',limit=4096,answer=answer)
+
+    def test_oversized_recovery_paste_refused_and_restored(self):
+        self.exercise(b'\x1b[200~'+b'x'*4097+b'\x1b[201~\n','refused',limit=4096)
+
+    def test_large_limit_does_not_allow_multiline_paste(self):
+        self.exercise(b'\x1b[200~'+b'x'*1000+b'\nsecond\x1b[201~\n','refused',limit=4096)

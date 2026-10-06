@@ -24,6 +24,7 @@ from admission_adapter_candidate import AdmissionAdapterCandidate, AsyncAdmissio
 from postgres_database import database_url_from_environment
 from web_auth import SESSION_COOKIE_NAME, LOGIN_FLOW_COOKIE_NAME, AuthenticationConfigurationError
 from workos_transport_candidate import ProviderSettings, WorkOSTransportCandidate, strict_json
+from recovery_callback import is_recovery_callback, recovery_callback_response
 
 
 ENABLED_ENV = 'CAREERTRELLIS_AUTH_V2_ENABLED'
@@ -33,7 +34,7 @@ RECEIPT = '__Host-careertrellis_result_v2'
 AUTH_COOKIES = (COOKIE_NAME, SESSION_COOKIE_NAME, LOGIN_FLOW_COOKIE_NAME, FLOW, BROWSER, RECEIPT)
 PUBLIC_PATHS = frozenset(('/auth/sign-in', '/auth/login', '/auth/initiate', '/auth/start', '/auth/callback',
     '/auth/complete', '/auth/result', '/auth/cancel', '/auth/logout',
-    '/static/signup-v2.js', '/static/signup-v2.css'))
+    '/static/signup-v2.js', '/static/signup-v2.css', '/static/recovery-callback.js'))
 MESSAGES = {
     'available': 'Create an account to join the beta. You will verify your email before activation.',
     'closed': 'New account registration is currently closed. Existing users can still sign in.',
@@ -121,6 +122,7 @@ class SignupHTTP:
         self.enrollment_provider = None
         self.removal_http = None
         self.removal_provider = None
+        self.recovery_http = None
 
     async def aclose(self):
         results = await asyncio.gather(self.adapter.provider.aclose(),
@@ -303,6 +305,11 @@ class SignupHTTP:
     async def handle(self, request):
         path = request.url.path
         try:
+            if path == '/account/security/recovery' or path.startswith('/account/security/recovery/'):
+                if self.recovery_http is None:
+                    return JSONResponse({'detail': 'Recovery codes are not enabled.'}, 404,
+                                        headers={'Cache-Control': 'no-store'})
+                return await self.recovery_http.handle(request)
             if path == '/account/security/removal' or path.startswith('/account/security/removal/'):
                 if self.removal_http is None:
                     return JSONResponse({'detail': 'Authenticator removal is not enabled.'},404,
@@ -313,7 +320,7 @@ class SignupHTTP:
                     return JSONResponse({'detail': 'Account security setup is not enabled.'}, 404,
                                         headers={'Cache-Control': 'no-store'})
                 return await self.enrollment_http.handle(request)
-            if path in ('/static/signup-v2.js', '/static/signup-v2.css', '/static/totp-enrollment.js', '/static/factor-removal.js') and request.method == 'GET':
+            if path in ('/static/signup-v2.js', '/static/signup-v2.css', '/static/totp-enrollment.js', '/static/factor-removal.js', '/static/recovery-callback.js', '/static/recovery-credentials.js') and request.method == 'GET':
                 return FileResponse(self.static_dir / path.rsplit('/', 1)[1])
             if path not in PUBLIC_PATHS:
                 return None
@@ -321,6 +328,10 @@ class SignupHTTP:
                 if request.method != 'GET':
                     return JSONResponse({'detail': 'Method not allowed.'}, 405)
                 return await self.initiate(request)
+            if request.method == 'GET' and path == '/auth/callback':
+                pairs = list(request.query_params.multi_items())
+                if is_recovery_callback(pairs):
+                    return recovery_callback_response(pairs)
             browser = cookie(request, BROWSER, 43)
             if request.method == 'GET' and path in ('/auth/sign-in', '/auth/login', '/auth/result', '/auth/callback'):
                 if path in ('/auth/sign-in', '/auth/result') and request.query_params:
@@ -421,7 +432,8 @@ def enrollment_key(existing_keys):
     return key
 
 
-from factor_runtime import factor_readiness, removal_enabled
+from factor_runtime import (factor_readiness, removal_enabled, recovery_enabled,
+                            recovery_readiness, build_recovery_credentials)
 
 
 async def create_runtime(settings, static_dir):
@@ -446,6 +458,7 @@ async def create_runtime(settings, static_dir):
             raise ValueError()
         factor_key = enrollment_key((key, flow_key, settings.cookie_password))
         enable_removal = removal_enabled(factor_key is not None)
+        enable_recovery = recovery_enabled(factor_key is not None)
         codec = SessionCodec(key, settings.cookie_password, key_id=required('KEY_ID'),
             generation=provider_settings.generation, lifetime_seconds=int(required('SESSION_SECONDS')),
             provider_binding=provider_settings.binding, require_epoch=True)
@@ -482,15 +495,21 @@ async def create_runtime(settings, static_dir):
             coordinator = AttributableEnrollmentCoordinator(enrollment_store,factor_provider,factor_key)
             runtime.enrollment_provider = factor_provider
             runtime.enrollment_http = EnrollmentHTTP(runtime,coordinator)
-            if enable_removal:
+            if enable_removal or enable_recovery:
                 from workos_removal import WorkOSRemoval
+                removal_provider = WorkOSRemoval(provider_settings)
+                runtime.removal_provider = removal_provider
+            if enable_removal:
                 from factor_removal import SessionEndingRemovalCoordinator
                 from factor_removal_postgres import PostgreSQLRemovalStore
                 from factor_removal_http import RemovalHTTP
-                removal_provider = WorkOSRemoval(provider_settings)
-                runtime.removal_provider = removal_provider
                 removal = SessionEndingRemovalCoordinator(PostgreSQLRemovalStore(engines[1],runtime.coordination),removal_provider)
                 runtime.removal_http = RemovalHTTP(runtime,removal,enrollment_store)
+            if enable_recovery:
+                from recovery_credentials_http import RecoveryCredentialsHTTP
+                await recovery_readiness(store, engines[1])
+                credentials = build_recovery_credentials(engines[1], runtime.coordination, removal_provider)
+                runtime.recovery_http = RecoveryCredentialsHTTP(runtime, credentials, enrollment_store)
         return runtime
     except BaseException as exc:
         await asyncio.gather(*([provider.aclose()] if provider else []),

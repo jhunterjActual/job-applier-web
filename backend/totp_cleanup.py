@@ -18,7 +18,7 @@ SELECT pg_advisory_xact_lock(hashtextextended('careertrellis-admission-maintenan
 SELECT careertrellis_admission.lock_lifecycle();
 DO $$ BEGIN
  IF session_user<>'postgres'
-  OR (SELECT version_num IN ('20260915_0016','20260929_0021')
+  OR (SELECT version_num IN ('20260915_0016','20260929_0021','20261005_0023')
       FROM careertrellis.alembic_version) IS DISTINCT FROM true
   OR (SELECT NOT maintenance AND minimum_session_version=2 AND adapter_ready
       FROM careertrellis_admission.policy) IS DISTINCT FROM true

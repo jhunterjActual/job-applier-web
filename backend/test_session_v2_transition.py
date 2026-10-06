@@ -25,6 +25,13 @@ def synthetic_plan():
 
 
 class PlanTests(unittest.TestCase):
+    def test_recovery_head_preserves_exact_policy(self):
+        p={**synthetic_plan(),'schema':'20261005_0023'}
+        self.assertEqual(p,transition.validate_plan(ops.encoded(p)))
+        for changes in ({'cap':24},{'ttl':601},{'session_seconds':3601}):
+            with self.assertRaises(ops.OperationError):
+                transition.validate_plan(ops.encoded({**p,**changes}))
+
     def test_0021_exact_policy_and_unknown_intermediate_heads_rejected(self):
         p={**synthetic_plan(),'schema':'20260929_0021'}
         self.assertEqual(p,transition.validate_plan(ops.encoded(p)))

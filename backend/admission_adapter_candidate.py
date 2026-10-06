@@ -181,7 +181,14 @@ class AdmissionAdapterCandidate(AccountSessionCandidate):
             if not bounded_string(browser, 43) or len(browser) != 43 or purpose not in ('signup', 'login'):
                 return AdmissionOutcome('invalid')
             await self.context()
-            flow = Flow(str(uuid4()), purpose, secrets.token_urlsafe(32), secrets.token_urlsafe(32),
+            state = secrets.token_urlsafe(32)
+            for _ in range(4):
+                if not state.startswith('r1_'):
+                    break
+                state = secrets.token_urlsafe(32)
+            if state.startswith('r1_'):
+                return AdmissionOutcome('unavailable')
+            flow = Flow(str(uuid4()), purpose, state, secrets.token_urlsafe(32),
                         digest(browser), int(time.time()) + 900, self.codec.generation, self.codec.provider_binding)
             result = await self.store.reserve(flow)
             if result['status'] != 'reserved':

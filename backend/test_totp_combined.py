@@ -92,7 +92,8 @@ class CombinedEnrollmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0,self.factor_provider.verifications)
         self.assertEqual(1,self.factor_provider.creates)
 
-    async def test_opt_in_factory_with_distinct_key_closes_without_provider_calls(self):
+    async def test_historical_schema16_factory_refuses_modern_features_without_provider_calls(self):
+        from web_auth import AuthenticationConfigurationError
         settings=SimpleNamespace(client_id=self.provider.settings.client_id,
             api_key=self.provider.settings.client_secret,cookie_password=Fernet.generate_key().decode(),
             owner_workos_user_id='user_synthetic_owner',redirect_uri=self.adapter.redirect_uri,
@@ -106,14 +107,14 @@ class CombinedEnrollmentTests(unittest.IsolatedAsyncioTestCase):
             role='careertrellis_admission_broker' if name else 'careertrellis_runtime'
             return self.fixture.url.set(username=role,password='synthetic-integration-only')
         with patch.dict(os.environ,values),patch.object(signup_http,'database_url_from_environment',side_effect=url), \
-                patch('httpx.AsyncClient.send',side_effect=AssertionError('No provider calls permitted')):
-            runtime=await signup_http.create_runtime(settings,config.BASE_DIR/'static')
-        try:
-            self.assertIsNotNone(runtime.enrollment_http)
-            self.assertFalse(runtime.enrollment_provider.client.is_closed)
-        finally:
-            await runtime.aclose()
-        self.assertTrue(runtime.enrollment_provider.client.is_closed)
+                patch('httpx.AsyncClient.send',side_effect=AssertionError('No provider calls permitted')) as send:
+            # This class deliberately retains the historical0016 store fixture.
+            # The current factory requires later attribution/removal contracts;
+            # successful0023 construction is exercised by check_factory against
+            # the separate current-head disposable migration fixture.
+            with self.assertRaises(AuthenticationConfigurationError):
+                await signup_http.create_runtime(settings,config.BASE_DIR/'static')
+            send.assert_not_called()
 
     async def test_db_host_cleanup_detects_locked_remainder_and_preserves_slot(self):
         from sqlalchemy import text

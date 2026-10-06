@@ -56,6 +56,9 @@ def apply(raw,engine,*,verified_current_binding,expected_schema=None):
             c.exec_driver_sql('SELECT careertrellis_admission.lock_lifecycle()')
             if expected_schema is not None:
                 c.exec_driver_sql("SELECT pg_advisory_xact_lock(hashtextextended('careertrellis-alembic-migrations-v1',0))")
+                # setup left the effective role as admission_owner. Its logging
+                # safeguards require the verified migration session role again.
+                c.exec_driver_sql('SET LOCAL ROLE NONE')
                 operator.setup(c,expected_schema=expected_schema)
             record=c.execute(text('SELECT plan_digest,generation FROM careertrellis_admission.identity_configuration_receipts WHERE operation=CAST(:op AS uuid)'),{'op':p['operation']}).first()
             if record:
