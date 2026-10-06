@@ -95,7 +95,7 @@ async def continue_held(terminal, recovery):
     try:
         url = flow.begin(context, staging['WORKOS_REDIRECT_URI'], authentication.settings)
         display_authorization(terminal, url)
-        response = terminal.ask('Paste the recovery response copied from the sign-in page', limit=4096)
+        response = terminal.ask('Paste the recovery response copied from the sign-in page', limit=4096, timeout_seconds=600)
         try:
             result = await flow.finish(response)
         finally:
@@ -110,7 +110,7 @@ async def attended():
     require(os.name == 'posix' and os.geteuid() == 0
             and os.uname().nodename == 'careertrellis-staging-web-1')
     async with open_recovery_runtime() as recovery:
-        with SecureTerminal() as terminal:
+        with SecureTerminal(session_seconds=900) as terminal:
             return await continue_held(terminal, recovery)
 
 

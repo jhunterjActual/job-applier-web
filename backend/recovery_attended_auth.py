@@ -55,7 +55,9 @@ class AttendedRecoveryAuthentication:
                     and not target.query and not target.fragment
                     and not any(ord(c) <= 32 or ord(c) == 127 for c in redirect_uri))
             self._held_deadline = context['deadline']
-            self._deadline = min(self.now() + 300, instant(self._held_deadline))
+            # Browser handoff allowance is independent of signed authentication
+            # freshness; RecoveryWorkflow still verifies auth_time within300s.
+            self._deadline = min(self.now() + 600, instant(self._held_deadline))
             require(self._deadline > self.now())
             verifier = secrets.token_urlsafe(32)
             state = 'r1_' + secrets.token_urlsafe(30)

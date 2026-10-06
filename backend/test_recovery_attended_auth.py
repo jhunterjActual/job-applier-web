@@ -123,12 +123,19 @@ class AttendedAuthenticationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.events.count('exchange'), count)
             self.assertIsNone(self.auth._verifier)
 
-    async def test_five_minute_bound_even_when_hold_lasts_longer(self):
+    async def test_ten_minute_bound_even_when_hold_lasts_longer(self):
+        self.context['deadline'] = utc(1800)
         self.begin()
-        self.clock = 1300
+        self.clock = 1600
         with self.assertRaises(RecoveryProofUncertain):
             await self.auth.finish(self.response())
         self.assertNotIn('claim', self.events)
+
+    async def test_browser_handoff_can_take_more_than_five_minutes(self):
+        self.context['deadline'] = utc(1800)
+        self.begin()
+        self.clock = 1350
+        self.assertEqual(await self.auth.finish(self.response()), {'state': 'committed', 'epoch': 2})
 
     async def test_concurrent_finish_dispatches_once(self):
         self.begin()

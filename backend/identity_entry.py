@@ -15,6 +15,10 @@ import identity_operator as operator
 
 
 class SecureTerminal:
+    def __init__(self, *, session_seconds=300):
+        ops.require(type(session_seconds) is int and 1<=session_seconds<=900)
+        self.session_seconds=session_seconds
+
     def __enter__(self):
         ops.require(os.name=='posix' and all(os.isatty(fd) for fd in (0,1,2)))
         import termios
@@ -32,7 +36,7 @@ class SecureTerminal:
             hidden[3] &= ~(termios.ECHO|termios.ECHONL|termios.ICANON)
             hidden[6][termios.VMIN]=1; hidden[6][termios.VTIME]=0
             termios.tcsetattr(self.fd,termios.TCSAFLUSH,hidden)
-            self.deadline=time.monotonic()+300
+            self.deadline=time.monotonic()+self.session_seconds
             return self
         except BaseException:
             self.restore()
@@ -53,13 +57,14 @@ class SecureTerminal:
                 os.close(self.fd)
         finally: signal.pthread_sigmask(signal.SIG_SETMASK,previous)
 
-    def ask(self,prompt,*,limit=256):
+    def ask(self,prompt,*,limit=256,timeout_seconds=120):
         # Prompts are fixed strings from this module, never database values.
         # Recovery callback JSON needs a larger explicitly requested bound;
         # existing prompts retain the 256-byte default and their own limits.
         ops.require(type(limit) is int and 1<=limit<=4096)
+        ops.require(type(timeout_seconds) is int and 1<=timeout_seconds<=600)
         os.write(self.fd,(prompt+' (hidden): ').encode())
-        deadline=min(self.deadline,time.monotonic()+120); value=bytearray(); pasted=False
+        deadline=min(self.deadline,time.monotonic()+timeout_seconds); value=bytearray(); pasted=False
         def read_char():
             remaining=deadline-time.monotonic()
             ops.require(remaining>0 and select.select([self.fd],[],[],remaining)[0])

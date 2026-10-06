@@ -87,6 +87,25 @@ class EntryTests(unittest.IsolatedAsyncioTestCase):
         flow.finish.assert_awaited_once_with('synthetic-response')
         flow.close.assert_called_once()
         self.assertEqual(4096, terminal.ask.call_args.kwargs['limit'])
+        self.assertEqual(600, terminal.ask.call_args.kwargs['timeout_seconds'])
+
+    async def test_attended_uses_fixed_fifteen_minute_terminal_budget(self):
+        from contextlib import asynccontextmanager
+        recovery, terminal = object(), object()
+
+        @asynccontextmanager
+        async def runtime():
+            yield recovery
+
+        with patch.object(entry.os,'name','posix'), patch.object(entry.os,'geteuid',return_value=0,create=True), \
+                patch.object(entry.os,'uname',return_value=SimpleNamespace(nodename='careertrellis-staging-web-1'),create=True), \
+                patch.object(entry,'open_recovery_runtime',runtime), \
+                patch.object(entry,'SecureTerminal') as opened, \
+                patch.object(entry,'continue_held',new=AsyncMock(return_value={'outcome':'synthetic'})) as continued:
+            opened.return_value.__enter__.return_value=terminal
+            self.assertEqual({'outcome':'synthetic'},await entry.attended())
+            opened.assert_called_once_with(session_seconds=900)
+            continued.assert_awaited_once_with(terminal,recovery)
 
     async def test_uncertain_containment_never_starts_fresh_auth(self):
         terminal = SimpleNamespace(ask=Mock(side_effect=[
