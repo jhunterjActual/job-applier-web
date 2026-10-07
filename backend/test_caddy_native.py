@@ -58,7 +58,12 @@ class NativeCaddyPrivacyTests(unittest.TestCase):
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
-        source = (Path(__file__).resolve().parent.parent / "deploy/caddy/Caddyfile.staging").read_text()
+        # Keep the historical pilot authentication/encoder cases explicit.
+        # Canonical public-beta configuration has no proxy Basic Auth gate.
+        source = Path(__file__).with_name("Caddyfile.legacy-pilot-test").read_text()
+        privacy.validate_caddy_config(source)
+        # The legacy fixture has exactly one site, replaced with loopback below.
+        self.assertEqual(source.count("staging-app.jhunterj.com {"), 1)
         password = "synthetic-test-only"
         hashed = subprocess.run(
             [binary, "hash-password", "--algorithm", "argon2id", "--plaintext", password],

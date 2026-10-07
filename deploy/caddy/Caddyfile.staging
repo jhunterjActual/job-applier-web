@@ -15,15 +15,8 @@
 	}
 }
 
-staging-app.jhunterj.com {
+careertrellis.jhunterj.com {
 	encode zstd gzip
-
-	# Keep this temporary outer gate while the Stage 2 WorkOS flow is validated.
-	# Remove it only in a separate reviewed release after the acceptance checks pass.
-	basic_auth argon2id {
-		{$STAGING_BASIC_AUTH_USER} {$STAGING_BASIC_AUTH_HASH}
-		pilot-01 {$STAGING_BASIC_AUTH_PILOT_01_HASH}
-	}
 
 	header {
 		-Server
@@ -69,4 +62,38 @@ staging-app.jhunterj.com {
 	# recovery context, or session transitions. Keep every /auth route out of the
 	# access log rather than relying on a growing path-by-path denylist.
 	log_skip /auth*
+}
+
+# Candidate only: validate against the fresh live configuration before deployment.
+staging-app.jhunterj.com {
+    header {
+        -Server
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        Cache-Control "no-store"
+    }
+
+    # An explicit route preserves order. Never forward callback queries or POSTs.
+    route {
+        @oldAuth path /auth*
+        handle @oldAuth {
+            header Content-Type "text/html; charset=utf-8"
+            respond "<!doctype html><html lang='en'><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>CareerTrellis has moved</title><main><h1>CareerTrellis has moved</h1><p>This sign-in attempt ended because our address changed. Please sign in again at our new address.</p><p><a href='https://careertrellis.jhunterj.com/'>Sign in to CareerTrellis</a></p></main></html>" 200
+        }
+        @oldApi path /api /api/*
+        handle @oldApi {
+            respond "CareerTrellis has moved. Open https://careertrellis.jhunterj.com/ and sign in again. This request was not processed." 409
+        }
+        @navigation method GET HEAD
+        handle @navigation {
+            # Preserve path only, intentionally discard query parameters.
+            redir https://careertrellis.jhunterj.com{path} 302
+        }
+        handle {
+            respond "CareerTrellis has moved. Open https://careertrellis.jhunterj.com/ and sign in again. This request was not processed." 409
+        }
+    }
+    # No site access log on the retired hostname; global logger strips URI/headers.
 }

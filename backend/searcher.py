@@ -1483,6 +1483,8 @@ def run_job_search_and_matching(
     job_repository: Any | None = None,
     profile_repository: Any | None = None,
     progress_update: Callable[[str, int, int | None], None] | None = None,
+    serper_api_key: str | None = None,
+    reserve_search_request: Callable[[], bool] | None = None,
 ) -> dict:
     """
     Coordinates the entire job search pipeline: retrieves the resume,
@@ -1627,7 +1629,8 @@ def run_job_search_and_matching(
             _append_candidate_with_budget(item, results, seen_urls, provider_candidate_counts, provider_health)
         from discovery_sources import collect
         for item in collect(search_keywords, locs, provider_health, check_cancelled,
-                            feeds_only=True):
+                            api_key=serper_api_key, reserve=reserve_search_request,
+                            feeds_only=not bool(serper_api_key and reserve_search_request)):
             check_cancelled()
             _append_candidate_with_budget(item, results, seen_urls, provider_candidate_counts, provider_health)
     for kw, loc in ((kw, loc) for kw in search_keywords for loc in locs):

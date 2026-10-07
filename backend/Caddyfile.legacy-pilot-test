@@ -1,0 +1,72 @@
+{
+	# The site access log has its own filtered file sink below. Caddy may also
+	# emit HTTP records through its default process logger, which systemd sends
+	# to journald. Keep those records useful while removing every request value.
+	log default {
+		format filter {
+			user_id delete
+			request>remote_ip hash
+			request>client_ip hash
+			request>uri delete
+			request>headers delete
+			resp_headers delete
+			wrap json
+		}
+	}
+}
+
+staging-app.jhunterj.com {
+	encode zstd gzip
+
+	# Keep this temporary outer gate while the Stage 2 WorkOS flow is validated.
+	# Remove it only in a separate reviewed release after the acceptance checks pass.
+	basic_auth argon2id {
+		{$STAGING_BASIC_AUTH_USER} {$STAGING_BASIC_AUTH_HASH}
+		pilot-01 {$STAGING_BASIC_AUTH_PILOT_01_HASH}
+	}
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		# Preserve a concrete Origin for same-origin form POSTs such as logout.
+		# The application still applies no-referrer to /auth/* responses, and the
+		# callback query string remains excluded from access logs below.
+		Referrer-Policy "same-origin"
+	}
+
+	reverse_proxy 127.0.0.1:8001 {
+		# Overwrite any client-supplied value with the root-owned origin secret.
+		header_up X-CareerTrellis-Proxy-Token {$CAREERTRELLIS_TRUSTED_PROXY_TOKEN}
+		health_uri /health/ready
+		health_interval 30s
+		health_timeout 5s
+		transport http {
+			dial_timeout 3s
+			response_header_timeout 300s
+		}
+	}
+
+	log {
+		output file /var/log/caddy/careertrellis-staging-access-v7.log {
+			roll_size 10MiB
+			roll_keep 5
+			roll_keep_for 168h
+		}
+		format filter {
+			user_id delete
+			request>remote_ip hash
+			request>client_ip hash
+			# Delete whole maps so new or renamed header fields cannot escape.
+			request>headers delete
+			resp_headers delete
+			wrap json
+		}
+	}
+
+	# Authentication paths may carry identity-provider state, callback material,
+	# recovery context, or session transitions. Keep every /auth route out of the
+	# access log rather than relying on a growing path-by-path denylist.
+	log_skip /auth*
+}

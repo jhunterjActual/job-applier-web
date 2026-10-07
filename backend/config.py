@@ -59,6 +59,7 @@ ACCOUNT_ERASURE_WORKER_FORBIDDEN_ENVIRONMENT_VARIABLES = frozenset({
     "OPENAI_API_KEY",
     "GOOGLE_MAPS_API_KEY",
     "CAREERTRELLIS_SERPER_API_KEY",
+    "CAREERTRELLIS_SERPER_ENABLED",
     "WORKOS_API_KEY",
     "WORKOS_CLIENT_ID",
     "WORKOS_COOKIE_PASSWORD",
@@ -102,8 +103,10 @@ def get_discovery_mode() -> str:
 
 
 def get_serper_api_key() -> str:
-    # Operator suspended Serper. Environment configuration cannot re-enable it.
-    return ""
+    # Only the separately configured durable worker may supply this credential.
+    if os.environ.get("CAREERTRELLIS_SERPER_ENABLED", "0") != "1" or not search_worker_enabled():
+        return ""
+    return os.environ.get("CAREERTRELLIS_SERPER_API_KEY", "").strip()
 
 
 def get_allowed_public_hosts() -> frozenset[str]:
@@ -258,6 +261,8 @@ def validate_worker_runtime_configuration() -> dict[str, object]:
 
 def validate_runtime_configuration() -> dict[str, object]:
     """Fail closed when a shared-host deployment omits its origin protections."""
+    if any(name in os.environ for name in ("CAREERTRELLIS_SERPER_API_KEY", "CAREERTRELLIS_SERPER_ENABLED")):
+        raise RuntimeConfigurationError("Serper configuration belongs only to the search worker.")
     environment = get_runtime_environment()
     public_hosts = get_allowed_public_hosts()
     proxy_token = get_trusted_proxy_token()

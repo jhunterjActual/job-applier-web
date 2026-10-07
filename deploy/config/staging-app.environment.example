@@ -1,7 +1,7 @@
 # Root-owned systemd EnvironmentFile for the application services.
 # Install as /etc/careertrellis/staging.env with mode 0600.
 CAREERTRELLIS_ENVIRONMENT=staging
-CAREERTRELLIS_ALLOWED_HOSTS=staging-app.jhunterj.com
+CAREERTRELLIS_ALLOWED_HOSTS=careertrellis.jhunterj.com
 CAREERTRELLIS_DATA_DIR=/var/lib/careertrellis/staging
 CAREERTRELLIS_TRUSTED_PROXY_TOKEN=replace-with-the-same-64-character-random-value-used-by-caddy
 PLAYWRIGHT_BROWSERS_PATH=/var/lib/careertrellis/shared/ms-playwright
@@ -21,8 +21,8 @@ CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED=false
 WORKOS_API_KEY=replace-with-the-staging-workos-api-key
 WORKOS_CLIENT_ID=replace-with-the-staging-workos-client-id
 WORKOS_COOKIE_PASSWORD=replace-with-a-url-safe-base64-key-from-32-random-bytes
-WORKOS_REDIRECT_URI=https://staging-app.jhunterj.com/auth/callback
-WORKOS_LOGOUT_RETURN_TO=https://staging-app.jhunterj.com/
+WORKOS_REDIRECT_URI=https://careertrellis.jhunterj.com/auth/callback
+WORKOS_LOGOUT_RETURN_TO=https://careertrellis.jhunterj.com/
 CAREERTRELLIS_STAGING_OWNER_WORKOS_USER_ID=replace-with-the-approved-immutable-workos-user-id
 
 # CAREERTRELLIS_DATABASE_URL is loaded separately from the root-owned

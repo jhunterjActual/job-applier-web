@@ -18,6 +18,7 @@ from search_run_repository import (
     SearchRunRepository,
 )
 from searcher import run_job_search_and_matching
+import config
 
 
 class SearchWorkerStopping(Exception):
@@ -141,11 +142,21 @@ def execute_search_claim(
     try:
         with owner_user_scope(claim.owner_user_id):
             with lease:
+                serper_options = {}
+                serper_key = config.get_serper_api_key()
+                if serper_key:
+                    from serper_budget import reserve
+                    serper_options = {
+                        "serper_api_key": serper_key,
+                        "reserve_search_request": lambda: reserve(
+                            claim.owner_user_id, claim.run_id, serper_key, lease.checkpoint),
+                    }
                 result = run_job_search_and_matching(
                     claim.keywords,
                     claim.location,
                     lease.checkpoint,
                     progress_update=lease.progress,
+                    **serper_options,
                 )
                 lease.checkpoint()
                 _save_source_diagnostic_history(result)

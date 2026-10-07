@@ -3071,6 +3071,7 @@ class DependencyLockTests(unittest.TestCase):
                 "EnvironmentFile=/etc/careertrellis/search-worker.env",
                 "EnvironmentFile=/etc/careertrellis/postgres-worker.env",
                 "EnvironmentFile=/etc/careertrellis/provider-secrets.env",
+                "EnvironmentFile=-/etc/careertrellis/serper-worker.env",
             },
             {
                 line.strip()
@@ -3294,7 +3295,7 @@ class DependencyLockTests(unittest.TestCase):
         project_dir = self.project_dir()
         scripts = project_dir / "deploy" / "scripts"
         caddy_source = (
-            project_dir / "deploy" / "caddy" / "Caddyfile.staging"
+            project_dir / "backend" / "Caddyfile.legacy-pilot-test"
         ).read_text(encoding="utf-8")
         environment = (
             project_dir / "deploy" / "config" / "staging-caddy.environment.example"
@@ -4694,8 +4695,10 @@ class DependencyLockTests(unittest.TestCase):
         )
         self.assertNotIn("log_credentials", caddy_source)
         self.assertNotIn("{http.auth.user.id}", caddy_source)
-        self.assertIn('Referrer-Policy "same-origin"', caddy_source)
-        self.assertNotIn('Referrer-Policy "no-referrer"', caddy_source)
+        serving_source, retired_source = caddy_source.split("staging-app.jhunterj.com {", 1)
+        self.assertIn('Referrer-Policy "same-origin"', serving_source)
+        self.assertNotIn('Referrer-Policy "no-referrer"', serving_source)
+        self.assertIn('Referrer-Policy "no-referrer"', retired_source)
         self.assertIn('response.headers["Referrer-Policy"] = "no-referrer"', app_source)
         self.assertIn("--no-access-log", service_source)
 
