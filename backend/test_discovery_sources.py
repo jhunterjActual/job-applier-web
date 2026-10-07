@@ -12,8 +12,9 @@ from operations import OperationCancelled
 
 
 class SuspensionDefaultTests(unittest.TestCase):
-    def test_production_default_is_disabled(self):
-        self.assertIs(sources.SERPER_ENABLED, False)
+    def test_runtime_default_has_no_serper_key(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual("", searcher.config.get_serper_api_key())
 
     def test_catalog_contains_exactly_the_fifteen_approved_employers(self):
         expected = {
@@ -59,6 +60,25 @@ class DiscoverySourceTests(unittest.TestCase):
             self.assertEqual("", searcher.config.get_serper_api_key())
             with self.assertRaises(searcher.config.RuntimeConfigurationError):
                 searcher.config.get_discovery_mode()
+
+    def test_enabled_endpoint_requires_key_before_reservation_or_transport(self):
+        reserve = Mock(return_value=True)
+        with patch.object(sources.urllib.request, "build_opener") as opener:
+            for key in (None, "", " ", False, 1):
+                with self.subTest(key=key), self.assertRaisesRegex(sources.SourceError, "quota_unavailable"):
+                    sources.fetch_json("https://google.serper.dev/search", sources.Budget(lambda: None),
+                                       api_key=key, reserve=reserve)
+            reserve.assert_not_called()
+            opener.assert_not_called()
+
+    def test_enabled_endpoint_requires_explicit_successful_reservation(self):
+        with patch.object(sources.urllib.request, "build_opener") as opener:
+            for reserve in (None, True, Mock(return_value=False), Mock(return_value=None),
+                            Mock(return_value=1), Mock(return_value="yes")):
+                with self.subTest(reserve=reserve), self.assertRaisesRegex(sources.SourceError, "quota_unavailable"):
+                    sources.fetch_json("https://google.serper.dev/search", sources.Budget(lambda: None),
+                                       api_key="synthetic", reserve=reserve)
+            opener.assert_not_called()
 
     def test_trial_refuses_serper_before_prompt_or_feed_request(self):
         import probe_discovery
@@ -202,8 +222,31 @@ class DiscoverySourceTests(unittest.TestCase):
         with patch.object(searcher.config, "get_gemini_api_key", return_value=""):
             self.assertEqual([], searcher.extract_search_keywords_from_resume("synthetic", ""))
 
+    def test_managed_candidates_retain_query_checks_and_duplicate_feed_metadata(self):
+        url = "https://jobs.lever.co/tekton/posting"
+        row = {"text": "Engineer", "hostedUrl": url, "categories": {"location": "Remote"}}
+        with patch.object(sources, "fetch_json", return_value={"organic": [{"link": url}]}), \
+                patch.object(sources, "feed_rows", side_effect=lambda provider, *args, **kwargs: [row] if provider == "lever" else []):
+            result = sources.collect(["Engineer"], ["Remote"], self.health(), lambda: None,
+                                     api_key="synthetic", reserve=lambda: True)
+        self.assertEqual(1, len(result))
+        self.assertIs(True, result[0]["verify_query"])
+        self.assertEqual("Remote", result[0]["feed_metadata"]["location"])
+
+    def test_managed_failure_does_not_mark_unrelated_feed_failed(self):
+        health = self.health()
+        health["unrelated_feed"] = {"source_attempts": 7}
+        with patch.object(sources, "feed_rows", return_value=[]), \
+                patch.object(sources, "fetch_json", side_effect=sources.SourceError("quota_unavailable")):
+            sources.collect(["Engineer"], ["Remote"], health, lambda: None,
+                            api_key="synthetic", reserve=lambda: False)
+        self.assertEqual({"source_attempts": 7}, health["unrelated_feed"])
+
     def test_hybrid_pipeline_keeps_owner_repository_and_match_save_flow(self):
         self.check_hybrid_pipeline(True, True)
+
+    def test_enabled_pipeline_passes_key_and_reservation_without_bypassing_save_flow(self):
+        self.check_hybrid_pipeline(True, True, enabled=True)
 
     def test_hybrid_saves_legacy_results_when_feed_fails(self):
         self.check_hybrid_pipeline(False, True)
@@ -211,7 +254,7 @@ class DiscoverySourceTests(unittest.TestCase):
     def test_hybrid_saves_feed_results_when_legacy_fails(self):
         self.check_hybrid_pipeline(True, False)
 
-    def check_hybrid_pipeline(self, feed_ok, legacy_ok):
+    def check_hybrid_pipeline(self, feed_ok, legacy_ok, enabled=False):
         from ai_providers import AIProviderSettings
         url = "https://jobs.lever.co/tekton/posting"
         repository = Mock()
@@ -237,13 +280,18 @@ class DiscoverySourceTests(unittest.TestCase):
                 {"index": 0, "match_score": 90, "match_analysis": "Synthetic match"}]}),
             patch.object(searcher, "search_yahoo_jobs", side_effect=lambda kw, loc, health, **options: acquire(health, legacy_ok)) as legacy,
         ):
+            reservation = Mock(return_value=True)
+            options = {"serper_api_key": "synthetic", "reserve_search_request": reservation} if enabled else {}
             result = searcher.run_job_search_and_matching("Engineer", job_repository=repository,
-                        profile_repository=profile)
+                        profile_repository=profile, **options)
         self.assertEqual("matches_saved" if feed_ok and legacy_ok else "partial_results", result["outcome"])
         self.assertEqual(1, result["jobs_added"])
         self.assertEqual(url, repository.create_job_if_available.call_args.kwargs["url"])
         legacy.assert_called_once()
-        self.assertTrue(feeds.call_args.kwargs["feeds_only"])
+        self.assertEqual(not enabled, feeds.call_args.kwargs["feeds_only"])
+        if enabled:
+            self.assertEqual("synthetic", feeds.call_args.kwargs["api_key"])
+            self.assertIs(reservation, feeds.call_args.kwargs["reserve"])
         repository.create_job_if_available.assert_called_once()
 
     def test_reservation_wait_cancellation_never_starts_transport(self):

@@ -16,8 +16,11 @@ import sys
 try:
     root = Path('/etc/careertrellis')
     for name in ('search-worker.env', 'postgres-worker.env', 'provider-secrets.env',
-                 'account-erasure-worker.env', 'postgres-erasure-worker.env', 'account-erasure-object-storage.env'):
+                 'account-erasure-worker.env', 'postgres-erasure-worker.env', 'account-erasure-object-storage.env',
+                 'serper-worker.env'):
         path = root / name
+        if name == 'serper-worker.env' and not path.exists() and not path.is_symlink():
+            continue
         for parent in path.parents:
             item = parent.lstat()
             if not stat.S_ISDIR(item.st_mode) or item.st_uid != 0 or item.st_mode & 0o022:
@@ -43,6 +46,17 @@ try:
             names.add(match[1])
             if match[1] == 'CAREERTRELLIS_ADMISSION_DATABASE_URL' or match[1].startswith('CAREERTRELLIS_AUTH_V2_'):
                 raise ValueError()
+            if name == 'serper-worker.env':
+                if match[1] == 'CAREERTRELLIS_SERPER_ENABLED':
+                    if match[2] not in ('0', '1'):
+                        raise ValueError()
+                elif match[1] == 'CAREERTRELLIS_SERPER_API_KEY':
+                    if re.fullmatch(r'[A-Za-z0-9_-]{20,256}', match[2]) is None:
+                        raise ValueError()
+                else:
+                    raise ValueError()
+        if name == 'serper-worker.env' and names != {'CAREERTRELLIS_SERPER_ENABLED', 'CAREERTRELLIS_SERPER_API_KEY'}:
+            raise ValueError()
 except BaseException:
     print('The worker environment delivery check did not pass.', file=sys.stderr)
     sys.exit(1)

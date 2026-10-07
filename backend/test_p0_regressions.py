@@ -3071,6 +3071,7 @@ class DependencyLockTests(unittest.TestCase):
                 "EnvironmentFile=/etc/careertrellis/search-worker.env",
                 "EnvironmentFile=/etc/careertrellis/postgres-worker.env",
                 "EnvironmentFile=/etc/careertrellis/provider-secrets.env",
+                "EnvironmentFile=-/etc/careertrellis/serper-worker.env",
             },
             {
                 line.strip()

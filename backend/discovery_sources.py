@@ -40,7 +40,7 @@ HTTP_TIMEOUT = 12
 MAX_KEYWORDS = 3
 MAX_LOCATIONS = 2
 MAX_TERM_CHARS = 120
-SERPER_ENABLED = False  # Requires a reviewed code change after renewed approval.
+SERPER_ENABLED = True  # Runtime still requires worker key and durable reservation.
 
 
 class SourceError(Exception):
@@ -104,15 +104,16 @@ def fetch_json(url, budget, *, api_key=None, payload=None, reserve=None, max_byt
     if max_bytes not in (MAX_BYTES, LARGE_BOARD_MAX_BYTES) or (
             max_bytes > MAX_BYTES and url != "https://boards-api.greenhouse.io/v1/boards/spacex/jobs"):
         raise SourceError("invalid_endpoint")
-    paid = api_key is not None
-    if (paid or urllib.parse.urlsplit(url).hostname == "google.serper.dev") and not SERPER_ENABLED:
+    serper_endpoint = urllib.parse.urlsplit(url).hostname == "google.serper.dev"
+    paid = api_key is not None or serper_endpoint
+    if paid and not SERPER_ENABLED:
         raise SourceError("serper_disabled")
     timeout = budget.take(paid)
     if paid:
         if url != "https://google.serper.dev/search":
             raise SourceError("invalid_endpoint")
         # Reservation is durable and happens before transport, including failures.
-        if not api_key or reserve is None or not reserve():
+        if not isinstance(api_key, str) or not api_key.strip() or not callable(reserve) or reserve() is not True:
             raise SourceError("quota_unavailable")
         budget.check_cancelled()
         remaining = budget.deadline - time.monotonic()
@@ -398,7 +399,7 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
             return False
         if canonical not in seen:
             seen.add(canonical)
-            candidate = {"title": "Job Posting", "url": canonical, "snippet": ""}
+            candidate = {"title": "Job Posting", "url": canonical, "snippet": "", "verify_query": True}
             if feed is not None:
                 candidate['verify_query'] = True
                 # Bound public metadata to the independently inspected posting.
@@ -409,6 +410,11 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
             record(provider, "valid_discovered")
         else:
             record(provider, "coverage_duplicate_candidates")
+            if feed is not None:
+                candidate = next(item for item in candidates if item['url'] == canonical)
+                candidate['feed_metadata'] = {"url": canonical, **{
+                    key: " ".join(feed[key].split())[:240]
+                    for key in ("location", "work_arrangement", "employment_type")}}
         return True
 
     keywords, term_limited = bounded_terms(keywords, MAX_KEYWORDS)
@@ -418,6 +424,12 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
     def partial(provider, field):
         item = health[provider].setdefault("partial_results", {})
         item[field] = item.get(field, 0) + 1
+
+    if not feeds_only and keywords:
+        # Reserve part of the same request/time budget for managed search before
+        # a slow catalog can consume it all. Failures still allow direct feeds.
+        _collect_managed(keywords, locations, health, check_cancelled, budget,
+                         api_key, reserve, admit, record)
 
     states = [{"provider": provider, "board": board, "completed": set(),
                "selected": deque(), "unknown": deque(), "attempted": False, "failed": False, "limited": False}
@@ -525,16 +537,20 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
             record(provider, 'raw_candidates')
             admit(row['url'], provider, feed=row)
 
-    if feeds_only:
-        return candidates
+    return candidates
 
+
+def _collect_managed(keywords, locations, health, check_cancelled, budget,
+                     api_key, reserve, admit, record):
     # One multi-domain query per keyword/location, rather than one per ATS.
     # Coverage equivalence must be established by the live acceptance matrix.
     domains = "(site:greenhouse.io OR site:lever.co OR site:ashbyhq.com OR site:smartrecruiters.com)"
+    providers = tuple(provider for provider in ('greenhouse', 'lever', 'ashby', 'smartrecruiters')
+                      if provider in health)
     for keyword in keywords:
         for location in locations:
             check_cancelled()
-            for provider in health:
+            for provider in providers:
                 record(provider, "source_attempts")
             try:
                 document = fetch_json("https://google.serper.dev/search", budget, api_key=api_key,
@@ -552,14 +568,13 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
                 if rows and not valid:
                     raise SourceError("invalid_response")
                 if not rows:
-                    for provider in health:
+                    for provider in providers:
                         record(provider, "source_empty")
                 if len(rows) == 10:
-                    for item in health.values():
+                    for item in (health[provider] for provider in providers):
                         item["partial_results"]["candidate_limit_hits"] += 1
             except SourceError:
-                for provider in health:
+                for provider in providers:
                     record(provider, "source_failures")
                 # Run-wide circuit breaker: no blind retry on outage or quota.
-                return candidates
-    return candidates
+                return
