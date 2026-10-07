@@ -112,6 +112,43 @@ class SignupHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({'redirect': '/auth/result'}, result.json())
         return state, result
 
+    async def test_landing_actions_and_real_pending_cancellation(self):
+        for status in ('available', 'closed', 'full'):
+            self.store.availability_status = status
+            response = await self.landing()
+            self.assertIn('>Sign in</button>', response.text)
+            self.assertIn('>Create account</button>', response.text)
+            self.assertNotIn('Use a different account', response.text)
+            self.assertNotIn('Cancel this attempt', response.text)
+            self.assertEqual(status != 'available', 'type="submit" disabled' in response.text)
+        for status in ('cancelled', 'expired', 'invalid', 'ineligible', 'unavailable'):
+            page = self.runtime.page('b' * 43, status).body.decode()
+            self.assertNotIn('Cancel this attempt', page)
+            self.assertIn(boundary.MESSAGES[status], page)
+        self.assertIn('action="/auth/cancel"', self.runtime.page('b' * 43, 'pending').body.decode())
+        self.assertIn('id="auth-cancel"', self.runtime.page('b' * 43, 'pending', complete=True).body.decode())
+
+    async def test_success_receipt_routes_to_protected_root_without_granting_access(self):
+        await self.landing()
+        browser = self.client.cookies.get(boundary.BROWSER)
+        for status in ('activated', 'login'):
+            self.client.cookies.set(boundary.RECEIPT, self.runtime.token(browser, 'receipt', status=status))
+            response = await self.client.get('/auth/result')
+            self.assertEqual(303, response.status_code)
+            self.assertEqual('/', response.headers['location'])
+            self.assertNotIn('Continue to workspace', response.text)
+            for session in ('', 'invalid-synthetic-session'):
+                self.client.cookies.set(boundary.COOKIE_NAME, session)
+                root = await self.client.get('/')
+                self.assertIn(root.status_code, (302, 303, 307))
+                self.assertEqual('/auth/sign-in', root.headers['location'])
+                self.assertEqual(200, (await self.client.get('/auth/sign-in')).status_code)
+        self.client.cookies.set(boundary.RECEIPT, self.runtime.token(browser, 'receipt', status='ineligible'))
+        failure = await self.client.get('/auth/result')
+        self.assertEqual(200, failure.status_code)
+        self.assertNotIn('location', failure.headers)
+        self.assertIn(boundary.MESSAGES['ineligible'], failure.text)
+
     async def test_default_switch_has_no_factory_or_new_routes(self):
         with patch.dict(os.environ, {boundary.ENABLED_ENV: '0'}), patch.object(boundary, 'create_async_engine') as engine:
             self.assertIsNone(await boundary.create_runtime(None, config.BASE_DIR))
@@ -277,7 +314,11 @@ class SignupHTTPTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(attribute, session)
         self.assertLess(len(session), 4096)
         self.assertNotIn('Domain=', session)
-        self.assertIn('Your account is ready', (await self.client.get('/auth/result')).text)
+        landing = await self.client.get('/auth/result')
+        self.assertEqual(303, landing.status_code)
+        self.assertEqual('/', landing.headers['location'])
+        self.assertIn('no-store', landing.headers['cache-control'])
+        self.assertEqual(200, (await self.client.get('/')).status_code)
         self.assertEqual(200, (await self.client.get('/api/version')).status_code)
         summary = (await self.client.get('/api/session')).json()
         self.assertTrue(summary['authenticated']); self.assertIn('logout_csrf', summary)
@@ -595,35 +636,34 @@ class SignupHTTPTests(unittest.IsolatedAsyncioTestCase):
                         await page.get_by_role('button', name='Create account', exact=True).focus()
                         await page.keyboard.press('Enter')
                         try:
-                            await page.wait_for_url(origin + '/auth/result', timeout=7000)
+                            await page.wait_for_url(origin + '/', timeout=7000)
                         except Exception:
                             self.fail(f'Browser path={urlsplit(page.url).path}; responses={responses}; post_origins={observed_origins}; text={(await page.locator("body").inner_text())[:300]}')
-                        self.assertIn('Your account is ready', await page.locator('body').inner_text())
+                        self.assertTrue(await page.get_by_role('heading', name='Dashboard Overview').is_visible())
                         self.assertNotIn('code=', page.url)
                         cookies = await context.cookies()
                         session = next(c for c in cookies if c['name'] == boundary.COOKIE_NAME)
                         self.assertTrue(session['secure']); self.assertTrue(session['httpOnly'])
                         self.assertEqual('Lax', session['sameSite'])
-                        await page.goto(origin + '/api/version')
-                        self.assertIn(app.APP_BUILD, await page.locator('body').inner_text())
                         self.assertEqual([('/auth/start', origin), ('/auth/complete', origin)], observed_origins)
-                        self.assertEqual([], external)
+                        self.assertCountEqual(['fonts.googleapis.com', 'cdnjs.cloudflare.com'], external)
                         self.assertEqual(1, self.http.posts)
-                        await page.goto(origin + '/')
                         self.assertIn('CareerTrellis', await page.title())
                         self.assertCountEqual(['fonts.googleapis.com', 'cdnjs.cloudflare.com'], external)
                         blocked_dashboard_assets = list(external)
                         self.store.availability_status = 'closed'
                         await page.goto(origin + '/auth/initiate')
                         try:
-                            await page.wait_for_url(origin + '/auth/result', timeout=7000)
+                            await page.wait_for_url(origin + '/', timeout=7000)
                         except Exception:
                             self.fail(f'Initiation path={urlsplit(page.url).path}; responses={responses}; '
                                 f'text={(await page.locator("body").inner_text())[:300]}')
-                        self.assertIn('You are signed in', await page.locator('body').inner_text())
+                        self.assertTrue(await page.get_by_role('heading', name='Dashboard Overview').is_visible())
                         self.assertNotIn('code=', page.url)
                         self.assertEqual(2, self.http.posts)
-                        self.assertEqual(blocked_dashboard_assets, external)
+                        self.assertEqual(blocked_dashboard_assets * 2, external)
+                        await page.goto(origin + '/api/version')
+                        self.assertIn(app.APP_BUILD, await page.locator('body').inner_text())
                     finally:
                         await browser.close()
             finally:

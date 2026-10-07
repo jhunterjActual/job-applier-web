@@ -194,12 +194,10 @@ class SignupHTTP:
             if complete else '')
         if complete:
             actions += '<button type="button" id="auth-cancel">Cancel this attempt</button>'
-        elif status in ('activated', 'login'):
-            actions += '<p><a href="/">Continue to workspace</a></p>'
         else:
-            actions += form('login', 'Sign in') + form('login', 'Use a different account', 'different')
+            actions += form('login', 'Sign in')
             actions += form('signup', 'Create account', disabled=status != 'available')
-        if not complete:
+        if not complete and status == 'pending':
             actions += ('<form action="/auth/cancel" method="post">'
                 f'<input type="hidden" name="csrf" value="{csrf}"><button type="submit">Cancel this attempt</button></form>')
         response = HTMLResponse('<!doctype html><html lang="en"><head><meta charset="utf-8">'
@@ -353,6 +351,11 @@ class SignupHTTP:
                     return self.page(browser, 'limited')
                 if path == '/auth/result':
                     status = self.open_token(cookie(request, RECEIPT), browser, 'receipt').get('status')
+                    if status in ('activated', 'login'):
+                        # The protected root authenticates the session again. A receipt
+                        # never grants access or supplies a redirect destination.
+                        return RedirectResponse('/', 303, headers={
+                            'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
                 else:
                     await self.adapter.context()
                     status = (await self.adapter.store.availability())['status']

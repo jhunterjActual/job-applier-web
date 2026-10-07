@@ -132,6 +132,7 @@ REQUIRED_CONFIG_DIRECTIVES = (
     *REQUIRED_RUNTIME_CONFIG_DIRECTIVES,
 )
 SITE_BLOCK_OPENER = "staging-app.jhunterj.com {"
+CANONICAL_SITE_BLOCK_OPENER = "careertrellis.jhunterj.com {"
 SITE_LOG_OUTPUT_OPENER = (
     "output file /var/log/caddy/careertrellis-staging-access-v7.log {"
 )
@@ -195,8 +196,44 @@ def validate_caddy_config(source: str) -> None:
             raise CaddyPrivacyError("config_contract_invalid")
     global_start, global_end = _block_bounds(lines, "{")
     runtime_log_start, runtime_log_end = _block_bounds(lines, "log default {")
-    site_start, site_end = _block_bounds(lines, SITE_BLOCK_OPENER)
     log_start, log_end = _block_bounds(lines, "log {")
+    # Accept the retained staging configuration and the reviewed hostname
+    # transition, but never infer a trusted site from an arbitrary hostname.
+    # Only the canonical serving site may coexist with the retired legacy site.
+    site_blocks: dict[str, tuple[int, int]] = {}
+    index = global_end + 1
+    while index < len(lines):
+        opener = lines[index]
+        if opener not in (SITE_BLOCK_OPENER, CANONICAL_SITE_BLOCK_OPENER):
+            raise CaddyPrivacyError("config_contract_invalid")
+        if opener in site_blocks:
+            raise CaddyPrivacyError("config_contract_invalid")
+        end = _block_end(lines, index)
+        site_blocks[opener] = (index, end)
+        index = end + 1
+    serving = [bounds for bounds in site_blocks.values()
+               if bounds[0] < log_start < log_end < bounds[1]]
+    if len(serving) != 1 or global_start != 0:
+        raise CaddyPrivacyError("config_contract_invalid")
+    site_start, site_end = serving[0]
+    if len(site_blocks) == 2:
+        if site_blocks[CANONICAL_SITE_BLOCK_OPENER] != serving[0]:
+            raise CaddyPrivacyError("config_contract_invalid")
+        retired_start, retired_end = site_blocks[SITE_BLOCK_OPENER]
+        if any(re.match(r"^reverse_proxy(?:\s|$)", line)
+               for line in lines[retired_start + 1:retired_end]):
+            raise CaddyPrivacyError("config_contract_invalid")
+    # The access logger and auth exclusion must be direct site directives;
+    # nesting either inside a matcher/handle can leave other requests exposed.
+    site_children = []
+    index = site_start + 1
+    while index < site_end:
+        site_children.append(index)
+        index = _block_end(lines, index) + 1 if lines[index].endswith(" {") else index + 1
+    if log_start not in site_children or not any(
+        lines[index] == "log_skip /auth*" for index in site_children
+    ):
+        raise CaddyPrivacyError("config_contract_invalid")
     filter_starts = tuple(
         index for index, line in enumerate(lines) if line == "format filter {"
     )
