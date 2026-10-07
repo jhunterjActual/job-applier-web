@@ -342,10 +342,13 @@ def _secured_response(request: Request, response: Response) -> Response:
         or request.url.path == "/api/account/erasure"
     ):
         response.headers["Cache-Control"] = "no-store, max-age=0"
-    if request.url.path.startswith("/auth/"):
+    if request.url.path == '/account/security' or request.url.path.startswith('/account/security/'):
+        response.headers['Referrer-Policy'] = 'no-referrer'
+        response.headers['Cache-Control'] = 'no-store, max-age=0'
+    elif request.url.path.startswith("/auth/"):
         # Clean v2 form pages need same-origin Origin on native POSTs. Callback
         # and error pages retain no-referrer; no cross-origin referrer is sent.
-        clean_form = (request.url.path in {'/auth/sign-in', '/auth/result'}
+        clean_form = (request.url.path in {'/auth/sign-in', '/auth/result', '/auth/initiate'}
             and response.headers.get('Referrer-Policy') == 'same-origin'
             and getattr(request.app.state, 'signup_runtime', None) is not None)
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -478,6 +481,8 @@ async def protect_local_browser_boundary(request: Request, call_next):
                 JSONResponse({"detail": "Authentication is not configured."}, status_code=503),
             )
     owner_context_token = None
+    from session_authorization import current as current_session_authorization, SessionAuthorizationRejected
+    session_context_token = None
     try:
         v2_enabled = signup_http.enabled()
     except AuthenticationConfigurationError:
@@ -522,6 +527,7 @@ async def protect_local_browser_boundary(request: Request, call_next):
         request.state.refreshed_v2_session = authentication.cookie
         request.state.v2_browser = signup_http.cookie(request, signup_http.BROWSER, 43) or secrets.token_urlsafe(32)
         owner_context_token = set_current_owner_user_id(authentication.local_id)
+        session_context_token = current_session_authorization.set(authentication.authorization)
     elif auth_settings is not None and request.url.path not in PUBLIC_SHARED_HOST_PATHS:
         logout_requested = request.method == "POST" and request.url.path == "/auth/logout"
         sealed_session = request.cookies.get(SESSION_COOKIE_NAME, "")
@@ -580,7 +586,13 @@ async def protect_local_browser_boundary(request: Request, call_next):
             )
         else:
             response = await call_next(request)
+    except SessionAuthorizationRejected:
+        request.state.suppress_refreshed_session = True
+        response = _unauthenticated_response(request)
+        _delete_auth_cookie(response, signup_http.COOKIE_NAME)
     finally:
+        if session_context_token is not None:
+            current_session_authorization.reset(session_context_token)
         if owner_context_token is not None:
             reset_current_owner_user_id(owner_context_token)
     refreshed_session = getattr(request.state, "refreshed_session", None)
@@ -853,6 +865,7 @@ def get_session_summary(request: Request) -> dict[str, object]:
             "authentication": "local",
             "authenticated": True,
             "account_erasure_available": False,
+            "authenticator_setup_available": False,
         }
     try:
         account_erasure_available = (
@@ -865,6 +878,9 @@ def get_session_summary(request: Request) -> dict[str, object]:
         "authentication": "workos",
         "authenticated": bool(getattr(request.state, "local_user_id", None)),
         "account_erasure_available": account_erasure_available,
+        "authenticator_setup_available": bool(signup_http.enabled()
+            and getattr(request.state, 'local_user_id', None)
+            and getattr(getattr(request.app.state, 'signup_runtime', None), 'enrollment_http', None)),
         **({'logout_csrf': request.app.state.signup_runtime.token(
             request.state.v2_browser, 'csrf')}
            if signup_http.enabled() else {}),
@@ -929,10 +945,14 @@ async def get_readiness() -> dict:
             validate_data_store_configuration()
         else:
             await run_in_threadpool(check_data_store_ready, get_db_connection)
-        await run_in_threadpool(
-            check_identity_store_ready,
-            auth_settings.owner_workos_user_id if auth_settings is not None else None
-        )
+        if signup_http.enabled() and runtime.adapter.codec.require_epoch:
+            if not await runtime.adapter.store.owner_ready(runtime.adapter.owner_subject):
+                raise RuntimeError('Configured owner is unavailable.')
+        else:
+            await run_in_threadpool(
+                check_identity_store_ready,
+                auth_settings.owner_workos_user_id if auth_settings is not None else None
+            )
         await run_in_threadpool(check_provider_secret_store_ready)
         await run_in_threadpool(check_object_store_ready)
     except Exception as exc:
@@ -2141,7 +2161,8 @@ def _verify_job_posting(job_id: int, operation: OperationToken) -> dict:
         raise HTTPException(status_code=404, detail="Job not found.")
 
     checked_at = datetime.now(timezone.utc)
-    outcome = inspect_job_posting(target["url"], cancel_check=operation.checkpoint)
+    verification_options = {"require_live": True} if provider_for_url(target["url"]) in {"weworkremotely", "jobicy"} else {}
+    outcome = inspect_job_posting(target["url"], cancel_check=operation.checkpoint, **verification_options)
     operation.checkpoint()
     details = outcome["details"]
     if not details and outcome.get("status") != "stale":

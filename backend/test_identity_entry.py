@@ -22,6 +22,19 @@ def answers(c):
 
 
 class GuidedEntryTests(unittest.TestCase):
+    def test_terminal_time_bounds_are_explicit_and_strict(self):
+        self.assertEqual(300,entry.SecureTerminal().session_seconds)
+        self.assertEqual(900,entry.SecureTerminal(session_seconds=900).session_seconds)
+        for value in (0,-1,901,True,300.0,'900'):
+            with self.assertRaises(ops.OperationError):
+                entry.SecureTerminal(session_seconds=value)
+        terminal=entry.SecureTerminal()
+        with patch.object(os,'write') as written:
+            for value in (0,-1,601,True,120.0,'600'):
+                with self.assertRaises(ops.OperationError):
+                    terminal.ask('Synthetic fixture',timeout_seconds=value)
+            written.assert_not_called()
+
     def test_valid_scope_and_separate_owner_assertion(self):
         for owner in (False,True):
             c=packet()['context']
@@ -49,6 +62,7 @@ class GuidedEntryTests(unittest.TestCase):
     def test_no_prompt_until_preflight_and_no_db_transaction_during_input(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root=Path(directory); path=root/'input'; journal=root/'journal'; c=packet()['context']; active=[]
+            stack.enter_context(patch.object(operator.barrier,'require_unblocked'))
             stack.enter_context(patch.object(operator,'locations',return_value=(path,journal)))
             stack.enter_context(patch.object(ops,'STATE',root))
             stack.enter_context(patch.object(ops,'protected_parents'))
@@ -88,7 +102,8 @@ class GuidedEntryTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name=='posix','Native Linux terminal fixture required')
 class NativeTerminalTests(unittest.TestCase):
-    def exercise(self,payload,expected):
+    def exercise(self,payload,expected,*,limit=256,answer='SYNTHETIC_ONLY',
+                 session_seconds=300,timeout_seconds=120,expected_wait=None):
         import fcntl
         import select
         import termios
@@ -100,17 +115,24 @@ class NativeTerminalTests(unittest.TestCase):
                 os.close(master); os.setsid(); fcntl.ioctl(slave,termios.TIOCSCTTY,0)
                 for fd in (0,1,2): os.dup2(slave,fd)
                 if slave>2: os.close(slave)
-                before=termios.tcgetattr(0); outcome='refused'
+                before=termios.tcgetattr(0); outcome='refused'; waits=[]
+                real_select=select.select
+                def observed_select(read,write,error,timeout):
+                    waits.append(timeout)
+                    return real_select(read,write,error,timeout)
                 handlers={s:signal.getsignal(s) for s in (signal.SIGTERM,signal.SIGHUP,signal.SIGTSTP,signal.SIGINT,signal.SIGTTIN,signal.SIGTTOU)}
                 try:
                     with ExitStack() as stack:
+                        stack.enter_context(patch.object(entry.select,'select',side_effect=observed_select))
                         if payload==b'INIT_FAIL': stack.enter_context(patch.object(entry.time,'monotonic',side_effect=RuntimeError('synthetic setup failure')))
                         if payload==b'BACKGROUND': stack.enter_context(patch.object(os,'tcgetpgrp',return_value=os.getpgrp()+1))
-                        terminal=stack.enter_context(entry.SecureTerminal())
+                        terminal=stack.enter_context(entry.SecureTerminal(session_seconds=session_seconds))
                         if payload==b'TIMEOUT': terminal.deadline=time.monotonic()-.1
-                        outcome='accepted' if terminal.ask('Synthetic fixture')=='SYNTHETIC_ONLY' else 'wrong'
+                        outcome='accepted' if terminal.ask('Synthetic fixture',limit=limit,timeout_seconds=timeout_seconds)==answer else 'wrong'
                 except (Exception,KeyboardInterrupt): pass
                 okay=outcome==expected and termios.tcgetattr(0)==before and all(signal.getsignal(s)==h for s,h in handlers.items())
+                if expected_wait is not None:
+                    okay=okay and bool(waits) and expected_wait-2<waits[0]<=expected_wait
                 os._exit(0 if okay else 1)
             except BaseException: os._exit(2)
         os.close(slave); captured=b''; sent=False; status=None
@@ -131,9 +153,19 @@ class NativeTerminalTests(unittest.TestCase):
                 os.kill(pid,9); os.waitpid(pid,0); self.fail('synthetic terminal timed out')
             self.assertEqual(0,os.waitstatus_to_exitcode(status))
             self.assertNotIn(b'SYNTHETIC_ONLY',captured)
+            if answer:
+                self.assertNotIn(answer.encode('ascii'),captured)
         finally: os.close(master)
 
     def test_hidden_input_and_terminal_restoration(self): self.exercise(b'SYNTHETIC_ONLY\n','accepted')
+    def test_explicit_recovery_windows_and_restoration(self):
+        self.exercise(b'SYNTHETIC_ONLY\n','accepted',session_seconds=900,timeout_seconds=600,expected_wait=600)
+    def test_prompt_window_never_extends_session_deadline(self):
+        self.exercise(b'SYNTHETIC_ONLY\n','accepted',session_seconds=30,timeout_seconds=600,expected_wait=30)
+    def test_invalid_prompt_window_restores_terminal(self):
+        self.exercise(b'SYNTHETIC_ONLY\n','refused',session_seconds=900,timeout_seconds=601)
+    def test_invalid_session_window_leaves_terminal_unchanged(self):
+        self.exercise(b'SYNTHETIC_ONLY\n','refused',session_seconds=901)
     def test_hidden_bracketed_paste_and_restoration(self): self.exercise(b'\x1b[200~SYNTHETIC_ONLY\x1b[201~\n','accepted')
     def test_multiline_bracketed_paste_refuses(self): self.exercise(b'\x1b[200~first\nsecond\x1b[201~\n','refused')
     def test_unmatched_paste_end_refuses(self): self.exercise(b'first\x1b[201~\n','refused')
@@ -148,3 +180,19 @@ class NativeTerminalTests(unittest.TestCase):
     def test_setup_failure_restores_terminal(self): self.exercise(b'INIT_FAIL','refused')
     def test_background_terminal_refuses(self): self.exercise(b'BACKGROUND','refused')
     def test_end_of_input_cancels_and_restores(self): self.exercise(b'\x04','refused')
+
+    def test_large_balanced_recovery_paste_no_echo_and_restoration(self):
+        answer='{"code":"'+('SYNTHETIC_ONLY'*150)+'","state":"r1_'+('A'*40)+'"}'
+        self.exercise(b'\x1b[200~'+answer.encode('ascii')+b'\x1b[201~\n',
+                      'accepted',limit=4096,answer=answer)
+
+    def test_maximum_explicit_limit_balanced_paste(self):
+        answer='SYNTHETIC_ONLY'+('x'*(4096-len('SYNTHETIC_ONLY')))
+        self.exercise(b'\x1b[200~'+answer.encode('ascii')+b'\x1b[201~\n',
+                      'accepted',limit=4096,answer=answer)
+
+    def test_oversized_recovery_paste_refused_and_restored(self):
+        self.exercise(b'\x1b[200~'+b'x'*4097+b'\x1b[201~\n','refused',limit=4096)
+
+    def test_large_limit_does_not_allow_multiline_paste(self):
+        self.exercise(b'\x1b[200~'+b'x'*1000+b'\nsecond\x1b[201~\n','refused',limit=4096)

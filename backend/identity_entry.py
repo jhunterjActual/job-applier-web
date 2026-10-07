@@ -15,6 +15,10 @@ import identity_operator as operator
 
 
 class SecureTerminal:
+    def __init__(self, *, session_seconds=300):
+        ops.require(type(session_seconds) is int and 1<=session_seconds<=900)
+        self.session_seconds=session_seconds
+
     def __enter__(self):
         ops.require(os.name=='posix' and all(os.isatty(fd) for fd in (0,1,2)))
         import termios
@@ -32,7 +36,7 @@ class SecureTerminal:
             hidden[3] &= ~(termios.ECHO|termios.ECHONL|termios.ICANON)
             hidden[6][termios.VMIN]=1; hidden[6][termios.VTIME]=0
             termios.tcsetattr(self.fd,termios.TCSAFLUSH,hidden)
-            self.deadline=time.monotonic()+300
+            self.deadline=time.monotonic()+self.session_seconds
             return self
         except BaseException:
             self.restore()
@@ -53,11 +57,14 @@ class SecureTerminal:
                 os.close(self.fd)
         finally: signal.pthread_sigmask(signal.SIG_SETMASK,previous)
 
-    def ask(self,prompt,*,limit=256):
+    def ask(self,prompt,*,limit=256,timeout_seconds=120):
         # Prompts are fixed strings from this module, never database values.
-        ops.require(type(limit) is int and 1<=limit<=512)
+        # Recovery callback JSON needs a larger explicitly requested bound;
+        # existing prompts retain the 256-byte default and their own limits.
+        ops.require(type(limit) is int and 1<=limit<=4096)
+        ops.require(type(timeout_seconds) is int and 1<=timeout_seconds<=600)
         os.write(self.fd,(prompt+' (hidden): ').encode())
-        deadline=min(self.deadline,time.monotonic()+120); value=bytearray(); pasted=False
+        deadline=min(self.deadline,time.monotonic()+timeout_seconds); value=bytearray(); pasted=False
         def read_char():
             remaining=deadline-time.monotonic()
             ops.require(remaining>0 and select.select([self.fd],[],[],remaining)[0])
@@ -164,6 +171,7 @@ def _build(value,ask,*,now,holder=None,holder_expires=None):
 
 
 def enter(operation,engine):
+    operator.barrier.require_unblocked()
     # Finish filesystem, principal, schema, logging and exact operation preflight
     # before opening a terminal. Never keep a DB transaction across human input.
     path,journal=operator.locations(operation)
@@ -177,10 +185,12 @@ def enter(operation,engine):
     with SecureTerminal() as terminal:
         raw=build(initial,terminal.ask)
     # Recheck mutable state after the human pause, under both host and DB locks.
-    with ops.host_locks(), operator.secure_connection(engine) as connection:
-        operator.setup(connection)
-        evidence._same_context(initial,context(connection,operation))
-        ops.require(not journal.exists() and not journal.is_symlink())
-        ops.require(evidence.instant(evidence.validate(raw)['expires_at'])>datetime.now(timezone.utc))
-        ops.write_protected(path,raw)
+    with ops.host_locks():
+        operator.barrier.require_unblocked()
+        with operator.secure_connection(engine) as connection:
+            operator.setup(connection)
+            evidence._same_context(initial,context(connection,operation))
+            ops.require(not journal.exists() and not journal.is_symlink())
+            ops.require(evidence.instant(evidence.validate(raw)['expires_at'])>datetime.now(timezone.utc))
+            ops.write_protected(path,raw)
     return {'outcome':'manifest_saved_not_submitted'}

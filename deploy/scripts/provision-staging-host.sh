@@ -154,6 +154,17 @@ install -d -o careertrellis -g careertrellis -m 0700 /var/lib/careertrellis/stag
 install -d -o careertrellis-worker -g careertrellis -m 0700 /var/lib/careertrellis/worker
 install -d -o careertrellis-erasure-worker -g careertrellis -m 0700 /var/lib/careertrellis/account-erasure
 install -d -o root -g careertrellis -m 0750 /var/lib/careertrellis/shared
+public_feed_cache=/var/lib/careertrellis/public-job-feeds
+if [[ -e ${public_feed_cache} || -L ${public_feed_cache} ]]; then
+    if [[ ! -d ${public_feed_cache} || -L ${public_feed_cache} || \
+          $(realpath "${public_feed_cache}") != "${public_feed_cache}" || \
+          $(stat -c '%U:%G %a' "${public_feed_cache}") != 'careertrellis-worker:careertrellis 750' ]]; then
+        echo 'The public feed cache directory has unexpected ownership or permissions.' >&2
+        exit 1
+    fi
+else
+    install -d -o careertrellis-worker -g careertrellis -m 0750 "${public_feed_cache}"
+fi
 for object_health_directory in \
     /var/backups/careertrellis/backup-health \
     /var/backups/careertrellis/backup-health/operations \

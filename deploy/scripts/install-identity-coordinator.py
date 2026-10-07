@@ -33,7 +33,7 @@ WEB_TESTS=(*DB_TESTS,'test_identity_transition_operator','test_identity_web_hand
     'test_identity_evidence','test_identity_configuration','test_identity_plan_supersession',
     'test_identity_operator','test_owner_recovery','test_owner_recovery_bridge',
     'test_owner_recovery_bridge_installer')
-REQUIRED=('identity_web_handoff','identity_configuration','identity_entry','identity_operator','identity_evidence',
+REQUIRED=('identity_web_handoff','identity_configuration','identity_entry','identity_selection_barrier','identity_operator','identity_evidence',
     'session_v2_transition','session_authorization','totp_configuration','identity_plan_operator','identity_plan_packet',
     'identity_plan_store','identity_plan_supersession','identity_plan_transfer','identity_receipt_transfer',
     'identity_transition_operator','owner_recovery','owner_recovery_bridge')

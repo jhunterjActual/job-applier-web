@@ -15,6 +15,17 @@ from test_identity_plan_packet import fixture
 
 
 class OperatorTests(unittest.TestCase):
+    def test_explicit_0021_authoring_keeps_initial_pairs_and_policy(self):
+        replies=self.replies(); replies[-2]='20260929_0021'
+        with patch.object(operator.handoff,'validate_files',return_value=self.provider()):
+            value=packet.validate(operator.build(self.initial(),lambda _:replies.pop(0)))
+        self.assertEqual(1,value['version'])
+        for name in ('bind','switch'):
+            activation=value[name]['activation']
+            self.assertEqual('20260929_0021',activation['schema'])
+            self.assertEqual((25,600,3600),(activation['cap'],activation['ttl'],activation['session_seconds']))
+        self.assertNotEqual(value['bind']['provider']['operation'],value['switch']['provider']['operation'])
+
     def test_explicit_0016_authoring(self):
         replies=self.replies(); replies[-2]='20260915_0016'
         with patch.object(operator.handoff,'validate_files',return_value=self.provider()):

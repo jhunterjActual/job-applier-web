@@ -26,7 +26,11 @@ def require(value):
 def write(path, raw, mode=0o600):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     with os.fdopen(fd, 'wb') as stream:
-        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+        stream.write(raw); stream.flush()
+        # The installer can inherit systemd's restrictive UMask=0077. Apply the
+        # reviewed exact mode to this exclusively created inode before publish.
+        os.fchmod(stream.fileno(), mode)
+        os.fsync(stream.fileno())
     fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try: os.fsync(fd)
     finally: os.close(fd)
@@ -101,7 +105,7 @@ def install(commit, digest, *, upgrade=False):
             names.add(item.name)
             if item.isfile(): manifest[item.name] = hashlib.sha256(archive.extractfile(item).read()).hexdigest()
         require(all('backend/' + name + '.py' in manifest for name in (*TESTS,
-            'owner_recovery_bridge_cli', 'owner_recovery_bridge', 'identity_evidence', 'identity_operator')))
+            'owner_recovery_bridge_cli', 'owner_recovery_bridge', 'identity_evidence', 'identity_selection_barrier','identity_operator')))
         require('source-manifest.json' not in names and 'installation.json' not in names)
         for parent in (BASE.parent, *BASE.parent.parents):
             info = parent.lstat()

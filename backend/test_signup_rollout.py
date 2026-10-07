@@ -16,6 +16,8 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import time
+from dataclasses import replace
 from threading import Event
 import unittest
 from unittest.mock import Mock, patch
@@ -32,6 +34,8 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.pool import NullPool
 
 import admission_migration_preflight
+import admission_operations as ops
+import session_v2_transition as transition
 import app
 import config
 import postgres_database
@@ -92,12 +96,12 @@ class SignupRolloutTests(unittest.IsolatedAsyncioTestCase):
         self.broker.dispose()
         postgres_database.dispose_postgres_engines()
 
-    def migrate(self):
+    def migrate(self, target='20260907_0014'):
         self.quiesce_owned_pools()
         admission_migration_preflight.check(self.migration)
         with patch.dict(os.environ, {'CAREERTRELLIS_CONFIG_READ_ONLY': '1',
                 'CAREERTRELLIS_MIGRATION_DATABASE_URL': self.migration.url.render_as_string(hide_password=False)}):
-            command.upgrade(self.config, 'head')
+            command.upgrade(self.config, target)
         self.fixture.grants()
 
     def install_synthetic_login(self):
@@ -107,8 +111,48 @@ class SignupRolloutTests(unittest.IsolatedAsyncioTestCase):
         self.query("ALTER ROLE careertrellis_admission_broker LOGIN PASSWORD 'synthetic-integration-only'")
 
     def enable_v2_closed(self):
-        self.query("UPDATE careertrellis_admission.policy SET phase='beta',cap=3,"
-            "signup_open=false,adapter_ready=true,minimum_session_version=2,realm=:realm", realm=GENERATION)
+        self.quiesce_owned_pools()
+        # The fixture has already migrated and installed synthetic login. Run
+        # the real policy transition; substitute protected host files only.
+        self.query('ALTER ROLE careertrellis_admission_broker LOGIN')
+        p = {'operation': str(uuid4()), 'application': 'b'*40, 'operations': 'c'*40,
+            'realm': GENERATION, 'cap': 3, 'ttl': 600, 'session_seconds': 3600,
+            'schema': transition.HEAD, 'provider_binding': SETTINGS.binding}
+        p['owner_proof'] = transition.owner_proof(p['operation'], SETTINGS.binding, OWNER)
+        class Database:
+            def query(inner, sql):
+                with self.fixture.admin.begin() as connection:
+                    result = connection.exec_driver_sql(sql.replace('%', '%%'))
+                    return result.scalar() if result.returns_rows else None
+        db = Database()
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            state = Path(directory)
+            stack.enter_context(patch.object(ops, 'STATE', state))
+            stack.enter_context(patch.object(ops, 'initial_finished'))
+            read = Path.read_text
+            stack.enter_context(patch.object(Path, 'read_text', lambda path, *a, **kw:
+                'synthetic-boot' if path == Path('/proc/sys/kernel/random/boot_id') else read(path, *a, **kw)))
+            stack.enter_context(patch.object(ops, 'read_protected', side_effect=lambda path, **kw: path.read_bytes()))
+            def write(path, raw, *, previous=None, **kw):
+                if previous is not None:
+                    self.assertEqual(previous, path.read_bytes())
+                else:
+                    self.assertFalse(path.exists())
+                path.write_bytes(raw)
+            stack.enter_context(patch.object(ops, 'write_protected', side_effect=write))
+            ops.begin_maintenance(db, p['operation'], p['application'])
+            self.fixture.upgrade_identity_sessions()
+            self.query('SELECT careertrellis_admission.configure_identity_provider(NULL,:binding)',
+                self.migration, binding=SETTINGS.binding)
+            (state / ('web-' + p['operation'] + '.json')).write_bytes(ops.encoded({
+                'phase': 'migrated', 'operation': p['operation'],
+                'target': p['application'], 'head': transition.HEAD}))
+            self.quiesce_owned_pools()
+            transition.db_arm(db, p)
+            # Web protected-byte switch has its own tests; this receipt is an
+            # explicit synthetic cross-host substitute, not live acceptance.
+            transition.path(p, 'web').write_bytes(ops.encoded(transition.receipt(p, 'enabled')))
+            transition.db_release(db, p)
 
     async def test_01_broker_installation_migration_and_next_maintenance(self):
         original = self.query("SELECT row_to_json(p)::text FROM careertrellis.profiles p")
@@ -146,7 +190,7 @@ class SignupRolloutTests(unittest.IsolatedAsyncioTestCase):
                 self.query('SELECT 1', self.broker)
             with self.assertRaisesRegex(RuntimeError, 'quiesced'):
                 admission_migration_preflight.check(self.migration)
-        self.migrate()  # Existing head check: no fabricated forward migration.
+        self.migrate(transition.HEAD)  # Existing head check, never downgrade.
         self.assertEqual(2, self.query('SELECT minimum_session_version FROM careertrellis_admission.policy'))
         self.assertEqual(original, self.query('SELECT row_to_json(p)::text FROM careertrellis.profiles p'))
         self.query('ALTER ROLE careertrellis_admission_broker LOGIN')
@@ -317,6 +361,21 @@ class SignupRolloutTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(saved.json()['success'])
                     self.assertEqual(profile['name'], (await client.get('/api/profile')).json()['name'])
                     self.assertEqual(preserved, self.query('SELECT row_to_json(p)::text FROM careertrellis.profiles p ORDER BY id LIMIT 1'))
+                    runtime = app.app.state.signup_runtime
+                    codec = runtime.adapter.codec
+                    old_cookie = client.cookies.get(signup_http.COOKIE_NAME)
+                    original = codec.open(old_cookie)
+                    data = codec.provider_open(original.provider)
+                    data['access_token'] = self.http.token(exp=int(time.time()) - 1)
+                    expired = replace(original, provider=codec._provider_seal.encrypt(json.dumps(data).encode()).decode())
+                    refreshed = await runtime.adapter.authenticate(codec.pack(expired), refresh=True)
+                    self.assertEqual('authenticated', refreshed.status)
+                    self.assertEqual(original.expires, codec.open(refreshed.cookie).expires)
+                    response = await client.post('/auth/logout', data={'csrf': csrf})
+                    self.assertEqual(303, response.status_code)
+                    self.assertEqual('unauthenticated', (await runtime.adapter.authenticate(old_cookie)).status)
+                    self.assertEqual('unauthenticated', (await runtime.adapter.authenticate(refreshed.cookie)).status)
+                    await self.sign_in(client, 'login', PILOT)
                     existing_count = self.query('SELECT count(*) FROM careertrellis.app_users')
                     self.query('UPDATE careertrellis_admission.policy SET signup_open=true')
                     await self.sign_in(client, 'signup', NEW_USER)
@@ -374,6 +433,7 @@ class SignupRolloutTests(unittest.IsolatedAsyncioTestCase):
         import account_erasure_worker
         from account_erasure_repository import PostgreSQLAccountErasureRepository
         from search_run_repository import PostgreSQLSearchRunRepository
+        from session_authorization import SessionAuthorization, current
 
         self.migrate()
         perform_operation(self.migration, 'seed', OWNER, PILOT)
@@ -381,8 +441,17 @@ class SignupRolloutTests(unittest.IsolatedAsyncioTestCase):
         self.enable_v2_closed()
         runtime = self.fixture.engine('careertrellis_runtime')
         repository = PostgreSQLSearchRunRepository(uid, engine=runtime)
-        run_id = repository.enqueue(str(uuid4()), 'synthetic', '')
-        repository.publish_prepared(run_id, 'synthetic', '')
+        with self.fixture.admin.begin() as connection:
+            epoch, incarnation = connection.execute(text(
+                'SELECT epoch,incarnation FROM careertrellis_admission.identity_accounts WHERE id=:uid'),
+                {'uid': uid}).one()
+        evidence = SessionAuthorization(uid, PILOT, SETTINGS.binding, epoch, str(incarnation))
+        token = current.set(evidence)
+        try:
+            run_id = repository.enqueue(str(uuid4()), 'synthetic', '')
+            repository.publish_prepared(run_id, 'synthetic', '')
+        finally:
+            current.reset(token)
         keyring = base64.urlsafe_b64encode(json.dumps({'synthetic': Fernet.generate_key().decode()}).encode()).decode()
         search_environment = {
             'CAREERTRELLIS_CONFIG_READ_ONLY': '1', 'CAREERTRELLIS_ENVIRONMENT': 'staging',
@@ -412,7 +481,11 @@ class SignupRolloutTests(unittest.IsolatedAsyncioTestCase):
             oid = uuid4()
             self.query("INSERT INTO careertrellis.stored_objects(id,owner_user_id,object_key,content_type,plaintext_size,sha256,wrapped_data_key) VALUES(:oid,:uid,:key,'application/pdf',1,:sha,:wrapped)",
                 oid=oid, uid=uid, key='v1/' + oid.hex, sha=b'a'*32, wrapped=b'synthetic')
-            PostgreSQLAccountErasureRepository(uid, engine=runtime).request_erasure()
+            token = current.set(evidence)
+            try:
+                PostgreSQLAccountErasureRepository(uid, engine=runtime).request_erasure()
+            finally:
+                current.reset(token)
             erasure_environment = {
                 'CAREERTRELLIS_CONFIG_READ_ONLY': '1', 'CAREERTRELLIS_ENVIRONMENT': 'staging',
                 'CAREERTRELLIS_DATA_STORE': 'postgres', 'CAREERTRELLIS_OBJECT_STORE': 'r2_encrypted',
@@ -492,7 +565,7 @@ class SignupRolloutTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(ops, 'stopped_services'), patch.object(ops, 'check_worker_delivery'), \
                     patch.object(ops, 'write_protected', side_effect=lambda path, raw: state.__setitem__(str(path), raw)):
                 acknowledgement = ops.migrate_web(operation, target, Release(), database='ct_signup_integration')
-            acknowledgement = {'phase': 'migrated', 'operation': operation, 'target': target, 'head': '20260907_0014'}
+            self.assertEqual(transition.HEAD, acknowledgement['head'])
             with self.assertRaises(ops.OperationError):
                 ops.finish_maintenance(db, operation, {**acknowledgement, 'operation': str(uuid4())})
             self.assertTrue(ops.policy(db)['maintenance'])

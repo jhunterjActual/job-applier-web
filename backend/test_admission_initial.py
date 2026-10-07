@@ -81,6 +81,7 @@ class InitialMigrationTests(unittest.TestCase):
         self.stack.enter_context(patch.object(Path, 'read_text',
             lambda path, *a, **kw: 'synthetic-boot' if path == boot else read(path, *a, **kw)))
         self.stack.enter_context(patch.object(ops, 'read_protected', side_effect=lambda path, **kw: path.read_bytes()))
+        self.stack.enter_context(patch.object(ops, 'protected_parents'))
         self.stack.enter_context(patch.object(ops, 'write_protected', side_effect=self.write))
         class Database:
             def query(inner, statement):

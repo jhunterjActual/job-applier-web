@@ -48,6 +48,7 @@ class StoreTests(unittest.TestCase):
         self.real_locks=ops.host_locks
         self.stack.enter_context(patch.object(ops,'host_locks',side_effect=nullcontext))
         if not native:
+            self.stack.enter_context(patch.object(ops,'protected_parents'))
             self.stack.enter_context(patch.object(ops,'read_protected',side_effect=lambda p,**k:p.read_bytes()))
             self.stack.enter_context(patch.object(ops,'write_protected',side_effect=self.write))
         self.value=fixture(); self.digest=store.register(ops.encoded(self.value))

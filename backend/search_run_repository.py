@@ -171,7 +171,7 @@ def _lease_seconds(value: object) -> int:
     return seconds
 
 
-def minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
+def _minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
     """Keep only bounded UI state; provider responses and credentials stay out."""
     outcome = result.get("outcome")
     messages = {
@@ -262,6 +262,28 @@ def minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
             "partial": True,
             "message": "Some matched postings were saved before the search provider stopped responding.",
         })
+    return payload
+
+
+def minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
+    """Retain measured aggregates on failures too, without filling old history."""
+    payload = _minimized_search_result(result)
+    counts = result.get("counts")
+    if isinstance(counts, Mapping):
+        safe_counts = payload.setdefault("counts", {})
+        for name in ("discovered", "inspected", "accepted", "known", "filtered", "saved",
+                     "scored", "meeting_minimum"):
+            if type(counts.get(name)) is int:
+                safe_counts[name] = max(0, min(100_000, counts[name]))
+    source_counts = result.get("source_counts")
+    if isinstance(source_counts, Mapping):
+        payload["source_counts"] = {
+            name: max(0, min(100_000, source_counts[name]))
+            for name in ("confirmed_empty", "failed", "unusable", "limited")
+            if type(source_counts.get(name)) is int
+        }
+    if type(result.get("minimum_match_score")) is int:
+        payload["minimum_match_score"] = max(0, min(100, result["minimum_match_score"]))
     return payload
 
 
@@ -993,6 +1015,20 @@ class PostgreSQLSearchRunRepository:
             raise ValueError("Search result summary is too large.")
         try:
             with tenant_transaction(self._engine, self._owner_user_id) as connection:
+                # Older deployed schemas retain their original completion path.
+                # Identity-aware schemas expose only a boolean terminal-cleanup
+                # broker; ordinary disabled-owner rows remain hidden by RLS.
+                cleanup_available = connection.scalar(text(
+                    "SELECT to_regprocedure("
+                    "'careertrellis.cancel_disabled_search_run(uuid,bigint,uuid)'"
+                    ") IS NOT NULL"
+                ))
+                if cleanup_available is True and connection.scalar(text(
+                    "SELECT careertrellis.cancel_disabled_search_run("
+                    "CAST(:run AS uuid), :owner, CAST(:lease AS uuid))"
+                ), {"run": claim.run_id, "owner": self._owner_user_id,
+                    "lease": claim.lease_token}) is True:
+                    return
                 locked = self._locked_claim_state(connection, claim)
                 changed = connection.execute(text("""UPDATE careertrellis.search_runs AS run SET
                     status=CASE

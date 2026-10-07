@@ -44,7 +44,9 @@ class PostgreSQLCandidateTests(unittest.IsolatedAsyncioTestCase):
         cls.fixture.schemas+=['careertrellis_admission','careertrellis_lifecycle']
         cfg=Config(); cfg.set_main_option('script_location',str(ROOT/'migrations'))
         with patch.dict(os.environ,{'CAREERTRELLIS_MIGRATION_DATABASE_URL':cls.fixture.engine('careertrellis_migration').url.render_as_string(hide_password=False)}):
-            command.upgrade(cfg,'head'); command.upgrade(cfg,'head')
+            command.upgrade(cfg,'20260907_0014'); command.upgrade(cfg,'20260907_0014')
+        if getattr(cls, 'schema_revision', '20260907_0014')=='20260909_0015':
+            cls.fixture.upgrade_identity_sessions()
         cls.fixture.grants()
         with cls.fixture.admin.begin() as c:
             c.exec_driver_sql("ALTER ROLE careertrellis_admission_broker LOGIN PASSWORD 'synthetic-integration-only'")
@@ -175,9 +177,10 @@ class PostgreSQLCandidateTests(unittest.IsolatedAsyncioTestCase):
             'CAREERTRELLIS_DATABASE_URL': self.runtime.url.render_as_string(hide_password=False),
         }
         with patch.dict(os.environ, environment), patch('workos_transport_candidate.httpx.AsyncClient.send', new_callable=AsyncMock) as send:
-            runtime = await create_runtime(settings, ROOT/'static')
-            self.assertIsNotNone(runtime.adapter.coordination)
-            await runtime.aclose()
+            # 0014 remains a historical adapter fixture. The production factory
+            # now requires the additive identity/epoch schema and binding.
+            with self.assertRaises(AuthenticationConfigurationError):
+                await create_runtime(settings, ROOT/'static')
             self.query('UPDATE careertrellis_admission.policy SET adapter_ready=false,minimum_session_version=1')
             with self.assertRaises(AuthenticationConfigurationError):
                 await create_runtime(settings, ROOT/'static')

@@ -21,12 +21,76 @@ from search_run_repository import (
     PostgreSQLSearchRunRepository,
     SQLiteSearchRunRepository,
     SearchRunAlreadyActive,
+    SearchRunClaim,
     SearchRunLeaseLost,
     minimized_search_result,
 )
 
 
 class SQLiteSearchRunTests(unittest.TestCase):
+    def test_postgres_finish_preserves_older_schema_and_ordinary_completion(self):
+        claim = SearchRunClaim('00000000-0000-4000-8000-000000000001', 42,
+            '00000000-0000-4000-8000-000000000002', 'synthetic', '',
+            '00000000-0000-4000-8000-000000000003', 1)
+        for available, cancelled in ((False, False), (True, False), (True, True)):
+            with self.subTest(available=available, cancelled=cancelled):
+                connection = Mock()
+                connection.scalar.side_effect = [available, cancelled]
+                connection.execute.return_value.rowcount = 1
+                transaction = Mock()
+                transaction.__enter__ = Mock(return_value=connection)
+                transaction.__exit__ = Mock(return_value=False)
+                repository = PostgreSQLSearchRunRepository(42, engine=Mock())
+                with patch('search_run_repository.tenant_transaction', return_value=transaction), patch.object(
+                    repository, '_locked_claim_state', return_value={
+                        'run_status': 'running', 'owner_disabled': False}) as lock:
+                    repository.succeed(claim, {'success': True, 'jobs_added': 3})
+                self.assertEqual(2 if available else 1, connection.scalar.call_count)
+                if available:
+                    self.assertEqual({'run': claim.run_id, 'owner': 42,
+                        'lease': claim.lease_token}, connection.scalar.call_args.args[1])
+                if cancelled:
+                    lock.assert_not_called()
+                    connection.execute.assert_not_called()
+                else:
+                    lock.assert_called_once_with(connection, claim)
+                    connection.execute.assert_called_once()
+
+    def test_measured_match_and_source_counts_survive_failure_readback(self):
+        repository = self.repository()
+        run = repository.enqueue("00000000-0000-4000-8000-000000000099", "synthetic", "")
+        repository.publish_prepared(run, "synthetic", "")
+        claim = repository.claim(run, "10000000-0000-4000-8000-000000000099")
+        repository.fail(claim, "provider_search_failed", {
+            "success": False, "failure_code": "storage_error",
+            "counts": {"discovered": 8, "scored": 5, "meeting_minimum": 3, "saved": 0, "private": "PRIVATE"},
+            "minimum_match_score": 40,
+            "source_counts": {"confirmed_empty": 2, "failed": 1, "unusable": 2, "limited": 0,
+                              "private": "PRIVATE"},
+        })
+        result = repository.status()["last_result"]
+        self.assertEqual(5, result["counts"]["scored"])
+        self.assertEqual(3, result["counts"]["meeting_minimum"])
+        self.assertEqual(40, result["minimum_match_score"])
+        self.assertEqual(2, result["source_counts"]["confirmed_empty"])
+        self.assertEqual(1, result["source_counts"]["failed"])
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertEqual(result, minimized_search_result(result))
+
+    def test_new_counters_remain_unknown_in_historical_results(self):
+        result = minimized_search_result({"success": True, "outcome": "no_new_matches", "counts": {"saved": 0}})
+        self.assertNotIn("scored", result["counts"])
+        self.assertNotIn("meeting_minimum", result["counts"])
+        self.assertNotIn("source_counts", result)
+        self.assertNotIn("minimum_match_score", result)
+        malformed = minimized_search_result({"success": True, "outcome": "no_results",
+            "counts": {"scored": True, "meeting_minimum": "PRIVATE"}, "minimum_match_score": True,
+            "source_counts": {"failed": True, "confirmed_empty": 9999999}})
+        self.assertNotIn("scored", malformed["counts"])
+        self.assertNotIn("meeting_minimum", malformed["counts"])
+        self.assertEqual({"confirmed_empty": 100000}, malformed["source_counts"])
+        self.assertNotIn("minimum_match_score", malformed)
+
     def test_outcome_summary_survives_durable_readback_without_private_details(self):
         repository = self.repository()
         run = repository.enqueue("00000000-0000-4000-8000-000000000099", "synthetic", "")

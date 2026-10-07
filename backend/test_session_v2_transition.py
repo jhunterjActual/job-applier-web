@@ -25,6 +25,21 @@ def synthetic_plan():
 
 
 class PlanTests(unittest.TestCase):
+    def test_recovery_head_preserves_exact_policy(self):
+        p={**synthetic_plan(),'schema':'20261005_0023'}
+        self.assertEqual(p,transition.validate_plan(ops.encoded(p)))
+        for changes in ({'cap':24},{'ttl':601},{'session_seconds':3601}):
+            with self.assertRaises(ops.OperationError):
+                transition.validate_plan(ops.encoded({**p,**changes}))
+
+    def test_0021_exact_policy_and_unknown_intermediate_heads_rejected(self):
+        p={**synthetic_plan(),'schema':'20260929_0021'}
+        self.assertEqual(p,transition.validate_plan(ops.encoded(p)))
+        for changes in ({'cap':24},{'ttl':601},{'session_seconds':3601},
+                        {'schema':'20260929_0020'},{'schema':'20260930_0022'}):
+            with self.assertRaises(ops.OperationError):
+                transition.validate_plan(ops.encoded({**p,**changes}))
+
     def test_strict_shape_and_approved_lifetime(self):
         p = synthetic_plan()
         self.assertEqual(p, transition.validate_plan(ops.encoded(p)))
@@ -223,6 +238,49 @@ class DatabaseTransitionTests(unittest.TestCase):
         self.assertEqual(2,ops.policy(self.db)['minimum_session_version'])
         self.assertFalse(ops.policy(self.db)['signup_open'])
         self.db.query(admission_purge.schema_gate_sql())
+        self.assertEqual(self.original_profile,self.db.query('SELECT row_to_json(p) FROM careertrellis.profiles p'))
+
+    def test_0021_initial_0014_fence_exact_receipts_and_closed_release(self):
+        import identity_operator
+        import admission_purge
+        from sqlalchemy.exc import DBAPIError
+        self.prepare(schema='20260929_0021',prior_invalidations=6)
+        with self.assertRaises(DBAPIError): self.db.query(admission_purge.schema_gate_sql())
+        import totp_cleanup
+        with self.assertRaises(DBAPIError): self.db.query(totp_cleanup.batch_sql())
+        with patch.object(identity_operator,'DATABASE','ct_signup_integration'):
+            with self.migration.begin() as connection:
+                identity_operator.setup(connection,expected_schema='20260929_0021')
+            with self.assertRaises(ops.OperationError):
+                with self.migration.begin() as connection:
+                    identity_operator.setup(connection,expected_schema='20260915_0016')
+        marker=ops.strict_json((ops.STATE/('maintenance-'+self.p['operation']+'.json')).read_bytes())
+        self.assertEqual('20260907_0014',marker['revision'])
+        for field,bad in (('schema','20260915_0016'),('operation',str(uuid4())),('application','f'*40)):
+            with self.assertRaises((ops.OperationError,FileNotFoundError)):
+                transition.db_arm(self.db,{**self.p,field:bad},baseline_generation=6)
+        with self.assertRaises(ops.OperationError):
+            transition.db_arm(self.db,self.p,baseline_generation=0)
+        self.quiesce()
+        transition.db_arm(self.db,self.p,baseline_generation=6)
+        self.assertTrue(ops.policy(self.db)['maintenance'])
+        self.accept_web(); transition.db_release(self.db,self.p)
+        policy=ops.policy(self.db)
+        self.assertEqual((25,600,2),(policy['cap'],policy['ttl'],policy['minimum_session_version']))
+        self.assertFalse(policy['signup_open']); self.assertFalse(policy['maintenance'])
+        self.assertEqual('20260929_0021',ops.revision(self.db))
+        self.db.query(admission_purge.schema_gate_sql())
+        # This batch has multiple result sets and a trailing COMMIT. Preserve
+        # the JSON result as the real psql transport does, not the final status.
+        with self.fixture.admin.connect().execution_options(isolation_level='AUTOCOMMIT') as connection:
+            with connection.connection.cursor() as cursor:
+                cursor.execute(totp_cleanup.batch_sql()); result=None
+                while True:
+                    if cursor.description:
+                        row=cursor.fetchone()
+                        if row: result=row[0]
+                    if not cursor.nextset(): break
+        self.assertEqual({'scrubbed':0,'remaining':False},result)
         self.assertEqual(self.original_profile,self.db.query('SELECT row_to_json(p) FROM careertrellis.profiles p'))
 
     def test_nonzero_maintenance_generation_is_preserved_and_mismatch_rejected(self):

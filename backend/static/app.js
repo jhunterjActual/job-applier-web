@@ -492,6 +492,12 @@ async function configureSessionControls() {
             csrf.value = session.logout_csrf;
         }
         sessionSignout.hidden = session.authentication !== "workos" || !session.authenticated;
+        const securityAvailable = session.authentication === "workos" && session.authenticated
+            && session.authenticator_setup_available === true;
+        const securityLink = document.getElementById("account-security-link");
+        const securityInvitation = document.getElementById("authenticator-invitation");
+        if (securityLink) securityLink.hidden = !securityAvailable;
+        if (securityInvitation) securityInvitation.hidden = !securityAvailable || securityInvitation.dataset.dismissed === "true";
         if (openAccountErasureBtn) {
             openAccountErasureBtn.hidden = session.authentication !== "workos"
                 || !session.authenticated
@@ -501,6 +507,13 @@ async function configureSessionControls() {
         console.warn("Session controls are unavailable.");
     }
 }
+
+document.getElementById("dismiss-authenticator-invitation")?.addEventListener("click", () => {
+    const invitation = document.getElementById("authenticator-invitation");
+    invitation.dataset.dismissed = "true";
+    invitation.hidden = true;
+    document.getElementById("p-interface-language")?.focus();
+});
 
 function bindEvent(element, eventName, handler) {
     if (element) element.addEventListener(eventName, handler);
@@ -2590,6 +2603,8 @@ function renderFilteredJobs(revealJobId = null) {
     const statusFilter = jobStatusFilter?.value || "";
     const advancedFilters = currentAdvancedJobFilters();
     let jobs = loadedJobs.filter(job => job.match_score === null || Number(job.match_score) >= minimumScore);
+    const afterMinimumScore = jobs.length;
+    const unscoredJobs = loadedJobs.filter(job => job.match_score === null).length;
     if (statusFilter === "applied") {
         jobs = jobs.filter(job => ["applied", "interview", "offer", "rejected", "withdrawn", "closed"].includes(job.status));
     } else if (statusFilter) {
@@ -2603,13 +2618,14 @@ function renderFilteredJobs(revealJobId = null) {
             ? String(b.date_found || "").localeCompare(String(a.date_found || ""))
             : Number(b.match_score ?? -1) - Number(a.match_score ?? -1));
     const activeAdvancedFilters = updateAdvancedJobFilterSummary(advancedFilters);
+    const resultSummary = `${loadedJobs.length} saved jobs before filtering; ${afterMinimumScore} remain after the minimum match filter (${minimumScore}%). ${jobs.length} shown after all filters.${unscoredJobs ? ` Includes ${unscoredJobs} unscored jobs, which are kept visible.` : ""}`;
     const resultCount = document.getElementById("job-result-count");
     if (resultCount) {
         const filterSummary = activeAdvancedFilters ? ` · ${activeAdvancedFilters} advanced` : "";
-        resultCount.textContent = `${t("search.count", { shown: jobs.length, total: loadedJobs.length })}${filterSummary}`;
+        resultCount.textContent = `${resultSummary}${filterSummary}`;
     }
     if (jobResultsStatus) {
-        jobResultsStatus.textContent = t("search.shown", { shown: jobs.length, total: loadedJobs.length });
+        jobResultsStatus.textContent = resultSummary;
     }
 
     if (jobs.length === 0) {
@@ -2648,7 +2664,7 @@ function buildJobRow(job) {
         job.location || "Location not listed",
         [job.work_arrangement, job.employment_type].filter(Boolean).map(value => String(value).replaceAll("_", " ")).join(" · "),
         job.compensation || "",
-        [job.source || "unknown source", job.date_found || "date unknown"].join(" · ")
+        [{ weworkremotely: "We Work Remotely", jobicy: "Jobicy" }[job.source] || job.source || "unknown source", job.date_found || "date unknown"].join(" · ")
     ].filter(Boolean);
     detailParts.forEach(part => detailsCell.appendChild(createElement("span", "", String(part))));
     const requirementSummary = jobRequirementSummary(job);
@@ -3204,6 +3220,39 @@ function renderProviderAlerts(searchResult) {
     header.appendChild(actions);
     providerAlerts.appendChild(header);
     if (completionMessage) providerAlerts.appendChild(createElement("p", "", completionMessage));
+    const counts = searchResult?.counts;
+    const validCount = value => Number.isInteger(value) && value >= 0 && value <= 100000;
+    if (counts && validCount(counts.discovered)) {
+        const summary = createElement("p", "search-result-summary");
+        const parts = [`${counts.discovered} candidate jobs found`];
+        if (validCount(counts.scored) && validCount(counts.meeting_minimum)
+                && validCount(searchResult.minimum_match_score) && searchResult.minimum_match_score <= 100) {
+            parts.push(`${counts.scored} scored`);
+            parts.push(`${counts.meeting_minimum} met the minimum match (${searchResult.minimum_match_score}%)`);
+        } else {
+            parts.push("minimum-match counts unavailable for this search");
+        }
+        if (validCount(counts.saved)) parts.push(`${counts.saved} new jobs saved`);
+        summary.textContent = `${parts.join("; ")}.${searchResult.partial || searchResult.success === false ? " Counts reflect only completed work; some results may be missing." : ""}`;
+        providerAlerts.appendChild(summary);
+    }
+    const sources = searchResult?.source_counts;
+    if (sources) {
+        const parts = [];
+        if (validCount(sources.confirmed_empty) && sources.confirmed_empty > 0) {
+            parts.push(`${sources.confirmed_empty} source checks completed with no matching results`);
+        }
+        if (validCount(sources.failed) && sources.failed > 0) {
+            parts.push(`${sources.failed} source checks failed`);
+        }
+        if (validCount(sources.unusable) && sources.unusable > 0) {
+            parts.push(`${sources.unusable} unusable response attempts (may overlap failed checks)`);
+        }
+        if (validCount(sources.limited) && sources.limited > 0) {
+            parts.push(`${sources.limited} provider groups reached limits; coverage was incomplete`);
+        }
+        if (parts.length) providerAlerts.appendChild(createElement("p", "search-source-summary", `${parts.join("; ")}.`));
+    }
     const list = createElement("ul", "margin-top-sm");
     alerts.forEach(alert => list.appendChild(createElement("li", "", alert.message)));
     providerAlerts.appendChild(list);
@@ -3247,7 +3296,10 @@ const DIAGNOSTIC_COUNTER_LABELS = {
     candidate_limit_hits: "Candidate limits reached",
     timeouts: "Timeouts",
     search_errors: "Search errors",
-    candidate_budget_exhausted: "Run limit reached"
+    candidate_budget_exhausted: "Run limit reached",
+    catalog_page_limits: "Employer page limits",
+    catalog_request_limits: "Employer request or time limits",
+    catalog_term_limits: "Employer search term limits"
 };
 
 async function refreshSourceDiagnosticCount() {

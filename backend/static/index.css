@@ -1005,6 +1005,10 @@ select:focus {
 .margin-bottom-md { margin-bottom: 24px; }
 
 /* Buttons */
+#account-security-link[hidden] {
+    display: none;
+}
+
 .btn {
     display: inline-flex;
     align-items: center;

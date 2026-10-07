@@ -33,6 +33,7 @@ ProtectControlGroups=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/var/lib/careertrellis/staging
+ReadOnlyPaths=/var/lib/careertrellis/public-job-feeds
 TasksMax=256
 MemoryHigh=1100M
 MemoryMax=1400M

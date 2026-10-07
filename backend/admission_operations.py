@@ -875,7 +875,7 @@ def main(argv=None):
             'db-verify-transport', 'web-verify-transport', 'db-v2-arm', 'web-v2-enable', 'db-v2-release', 'web-v2-preflight',
             'web-identity-preflight','web-identity-status','web-identity-attest','web-identity-reconcile','web-identity-enter',
             'web-provider-enter','web-provider-apply','web-provider-reconcile','web-provider-preflight',
-            'web-plan-enter','web-plan-select','web-plan-status','web-plan-supersede',
+            'web-plan-enter','web-plan-select','web-plan-status','web-plan-supersede','web-recovery-attended',
             'web-transition-prepare','web-transition-resume','web-plan-export','db-plan-import','web-receipt-export','web-receipt-import','db-receipt-export','db-receipt-import'))
         operation = args[0]
         source = Path(__file__).absolute()
@@ -886,7 +886,7 @@ def main(argv=None):
                 'db-v2-arm', 'web-v2-enable', 'db-v2-release', 'web-v2-preflight',
                 'web-identity-preflight','web-identity-status','web-identity-attest','web-identity-reconcile','web-identity-enter',
                 'web-provider-enter','web-provider-apply','web-provider-reconcile','web-provider-preflight',
-                'web-plan-enter','web-plan-select','web-plan-status','web-plan-supersede',
+                'web-plan-enter','web-plan-select','web-plan-status','web-plan-supersede','web-recovery-attended',
                 'web-transition-prepare','web-transition-resume','web-plan-export','db-plan-import','web-receipt-export','web-receipt-import','db-receipt-export','db-receipt-import'):
             require(re.fullmatch(r'[0-9a-f]{40}', source.parent.parent.name)
                 and source.parent.parent.parent == Path('/opt/careertrellis/staging/releases'))
@@ -895,26 +895,42 @@ def main(argv=None):
             else 2 if operation in ('web-receipt-export','web-receipt-import','db-receipt-export','db-receipt-import','db-finish', 'db-quiesce', 'db-initial-quiesce', 'db-initial-finish',
                 'db-verify-transport', 'web-verify-transport', 'db-grant-connect',
                 'web-identity-preflight','web-identity-status','web-identity-attest','web-identity-reconcile','web-identity-enter') else 1))
+        if operation == 'web-recovery-attended':
+            for module in ('recovery_attended_entry', 'recovery_attended_auth', 'recovery_attended_hold',
+                    'recovery_runtime', 'recovery_workflow', 'recovery_provider',
+                    'recovery_credentials_hold_postgres', 'recovery_credentials_postgres',
+                    'recovery_release_postgres', 'recovery_credentials', 'recovery_factor_proof',
+                    'workos_transport_candidate', 'workos_removal', 'identity_entry', 'identity_operator',
+                    'identity_evidence', 'identity_selection_barrier', 'session_authorization'):
+                read_protected(source.parent/(module + '.py'), modes=(0o600,0o640,0o644), limit=131072)
+            import asyncio
+            import resource
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+            import recovery_attended_entry
+            result = asyncio.run(recovery_attended_entry.attended())
+            require(result == {'outcome': 'recovery_released_fresh_sign_in_required'})
+            print(encoded(result).decode().strip())
+            return 0
         if (operation.startswith(('web-receipt-','db-receipt-','web-plan-','db-plan-',
                 'web-transition-','web-provider-','web-v2-','db-v2-')) or operation=='web-migrate'):
             read_protected(source.parent/'totp_configuration.py',modes=(0o600,0o640,0o644),limit=32768)
         if operation in ('web-receipt-export','web-receipt-import','db-receipt-export','db-receipt-import'):
             for module in ('identity_receipt_transfer.py','identity_plan_store.py','identity_plan_packet.py','identity_configuration.py',
-                    'identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
+                    'identity_selection_barrier.py','identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
                 read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
             import identity_receipt_transfer
             side,_,action=operation.split('-')
             return identity_receipt_transfer.run(action,source,side,args[1])
         if operation in ('web-plan-export','db-plan-import'):
             for module in ('identity_plan_transfer.py','identity_plan_store.py','identity_plan_packet.py','identity_configuration.py',
-                    'identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
+                    'identity_selection_barrier.py','identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
                 read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
             import identity_plan_transfer
             return identity_plan_transfer.run('export' if operation=='web-plan-export' else 'import',source)
         if operation.startswith(('web-plan-','web-transition-')):
             for module in ('identity_plan_operator.py','identity_transition_operator.py','identity_plan_supersession.py',
                     'identity_plan_store.py','identity_plan_packet.py','identity_web_handoff.py','identity_configuration.py',
-                    'identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
+                    'identity_selection_barrier.py','identity_operator.py','identity_entry.py','identity_evidence.py','session_v2_transition.py','session_authorization.py'):
                 read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
             if operation=='web-plan-supersede':
                 import identity_plan_supersession
@@ -925,14 +941,14 @@ def main(argv=None):
             import identity_plan_operator
             return identity_plan_operator.run(operation.removeprefix('web-plan-'),source)
         if operation.startswith('web-provider-'):
-            for module in ('identity_web_handoff.py','identity_configuration.py','identity_operator.py',
+            for module in ('identity_web_handoff.py','identity_configuration.py','identity_selection_barrier.py','identity_operator.py',
                     'identity_entry.py','identity_evidence.py','session_v2_transition.py',
                     'identity_plan_store.py','identity_plan_packet.py','session_authorization.py'):
                 read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
             import identity_web_handoff
             return identity_web_handoff.run(operation.removeprefix('web-provider-'),source)
         if operation.startswith('web-identity-'):
-            for module in ('identity_operator.py','identity_evidence.py','session_authorization.py','identity_entry.py'):
+            for module in ('identity_selection_barrier.py','identity_operator.py','identity_evidence.py','session_authorization.py','identity_entry.py'):
                 read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
             import identity_operator
             return identity_operator.run(operation.removeprefix('web-identity-'),args[1],source)
@@ -942,7 +958,7 @@ def main(argv=None):
             return 0
         if operation == 'web-v2-preflight':
             for module in ('session_v2_transition.py','identity_plan_store.py','identity_plan_packet.py',
-                    'identity_configuration.py','identity_operator.py','identity_evidence.py','session_authorization.py'):
+                    'identity_configuration.py','identity_selection_barrier.py','identity_operator.py','identity_evidence.py','session_authorization.py'):
                 read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
             import session_v2_transition
             with host_locks():
@@ -965,7 +981,7 @@ def main(argv=None):
                         "AND current_setting('data_directory')='/var/lib/postgresql/18/main';") is True)
                 if operation in ('db-v2-arm', 'web-v2-enable', 'db-v2-release'):
                     for module in ('session_v2_transition.py','identity_plan_store.py','identity_plan_packet.py',
-                            'identity_configuration.py','identity_operator.py','identity_evidence.py','session_authorization.py'):
+                            'identity_configuration.py','identity_selection_barrier.py','identity_operator.py','identity_evidence.py','session_authorization.py'):
                         read_protected(source.parent/module,modes=(0o600,0o640,0o644),limit=32768)
                     import session_v2_transition
                     session_v2_transition.run(operation, source, db)

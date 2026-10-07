@@ -231,6 +231,21 @@ class WorkOSTransportCandidate:
         async with self._operation():
             return await self._verify(access, subject, allow_expired=allow_expired)
 
+    async def verify_recent(self, access, subject, session_id, *, maximum_age=300):
+        # Security actions require active authentication, never token issuance
+        # or cookie renewal. Ordinary optional-MFA login does not require this
+        # claim. Callers must also check current local account/epoch authority.
+        if (type(maximum_age) is not int or not 1 <= maximum_age <= 300
+                or not bounded_string(session_id, 168, SESSION)):
+            raise ProviderRejected()
+        claims = await self.verify(access, subject)
+        authenticated = claims.get('auth_time')
+        if (type(authenticated) is not int or authenticated < 0
+                or authenticated > claims['iat'] or time.time() - authenticated > maximum_age
+                or claims['sid'] != session_id):
+            raise ProviderRejected()
+        return claims
+
     async def _authenticate(self, body):
         result = await self._json('POST', API + '/user_management/authenticate', {
             **body, 'client_id': self.settings.client_id, 'client_secret': self.settings.client_secret,

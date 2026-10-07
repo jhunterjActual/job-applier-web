@@ -6,7 +6,7 @@ import sqlite3
 from datetime import date
 
 
-ALLOWED_PROVIDERS = frozenset({"greenhouse", "lever", "ashby", "smartrecruiters"})
+ALLOWED_PROVIDERS = frozenset({"greenhouse", "lever", "ashby", "smartrecruiters", "weworkremotely", "jobicy"})
 ALLOWED_CODES = frozenset({
     "url_format_drift",
     "content_format_drift",
@@ -45,6 +45,12 @@ DIRECT_COUNTERS = (
     "source_unusable",
     "source_empty",
     "source_fallbacks",
+    "coverage_pages_read", "coverage_cached_pages", "coverage_http_attempts",
+    "coverage_snapshots_read", "coverage_rows_read", "coverage_queries_with_total",
+    "coverage_advertised_rows", "coverage_unlisted_rows", "coverage_role_excluded",
+    "coverage_location_excluded", "coverage_location_unknown", "coverage_metadata_matches",
+    "coverage_duplicate_candidates", "coverage_detail_cap_excluded",
+    "coverage_complete_boards", "coverage_failed_boards",
 )
 REJECTION_COUNTERS = (
     "stale",
@@ -52,8 +58,11 @@ REJECTION_COUNTERS = (
     "access_challenge",
     "embedded_content",
     "provider_error",
+    "query_mismatch", "eligibility_unknown",
 )
-PARTIAL_COUNTERS = ("oversized_responses", "candidate_limit_hits", "timeouts", "planning_limits")
+PARTIAL_COUNTERS = ("oversized_responses", "candidate_limit_hits", "timeouts", "planning_limits",
+                    "catalog_page_limits", "catalog_request_limits", "catalog_term_limits",
+                    "unknown_location_limit")
 STORED_COUNTERS = DIRECT_COUNTERS + REJECTION_COUNTERS + PARTIAL_COUNTERS + (
     "search_errors",
     "candidate_budget_exhausted",

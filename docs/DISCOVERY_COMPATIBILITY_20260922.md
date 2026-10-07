@@ -1,5 +1,12 @@
 # Interim discovery and recovery compatibility — September 22, 2026
 
+September 23 follow-up: the three-employer `.72` release and cancellation `.73`
+release were deployed to staging. The next candidate expands to fifteen employers
+with bounded pagination and a short-lived public page cache; see
+[catalog expansion](CATALOG_EXPANSION_20260923.md). The historical no-cache and
+undeployed statements below describe the September 22 candidate at the time.
+Schema `0014` and Serper suspension remain unchanged.
+
 The local candidate resolves the database/recovery incompatibility for interim
 direct-feed and key-free discovery by deferring the unused Serper quota migration.
 It does not establish future Serper migration compatibility or beta readiness.

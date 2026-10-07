@@ -31,6 +31,8 @@ SOURCE_CATEGORY_VALUES = frozenset(
         "lever",
         "ashby",
         "smartrecruiters",
+        "weworkremotely",
+        "jobicy",
         "unknown",
         "runtime_verification",
     }

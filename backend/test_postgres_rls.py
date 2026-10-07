@@ -1,7 +1,7 @@
 """PostgreSQL migration and row-level isolation integration tests.
 
 Set CAREERTRELLIS_POSTGRES_TEST_ADMIN_URL to an isolated PostgreSQL 18 server.
-The test creates and removes one dedicated database and five fixed test roles.
+The test creates and removes one dedicated database and seven fixed test roles.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError
@@ -176,9 +177,11 @@ class PostgreSQLConfigurationTests(unittest.TestCase):
 
 
 class PostgreSQLTenantIsolationTests(unittest.TestCase):
-    def test_interim_schema_preserves_recovery_head_without_paid_objects(self):
+    def test_schema_reaches_current_head_without_paid_objects(self):
+        config = Config(str(Path(__file__).with_name("alembic.ini")))
+        expected_head = ScriptDirectory.from_config(config).get_current_head()
         with self.admin_engine.connect() as connection:
-            self.assertEqual("20260907_0014", connection.scalar(text(
+            self.assertEqual(expected_head, connection.scalar(text(
                 "SELECT version_num FROM careertrellis.alembic_version")))
             for name in ("search_api_policy", "search_api_global_usage", "search_api_owner_usage"):
                 self.assertIsNone(connection.scalar(text("SELECT to_regclass(:name)"),
@@ -188,6 +191,18 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        # Several integration classes call this harness directly, so cleanup
+        # cannot rely on unittest invoking this class's registered cleanups.
+        cls._owns_cluster_objects = False
+        cls.admin_server_engine = None
+        try:
+            cls._set_up_class()
+        except BaseException:
+            cls.tearDownClass()
+            raise
+
+    @classmethod
+    def _set_up_class(cls) -> None:
         raw_admin_url = os.environ.get(ADMIN_URL_ENV, "").strip()
         if not raw_admin_url:
             raise unittest.SkipTest(f"{ADMIN_URL_ENV} is not configured")
@@ -199,6 +214,8 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         with cls.admin_server_engine.connect() as connection:
             if connection.scalar(text("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=:name)"), {'name': DATABASE_NAME}) or connection.scalar(text("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname LIKE 'careertrellis_%')")):
                 raise RuntimeError('Fresh dedicated PostgreSQL test server required')
+        # Claim cleanup ownership only after proving this server is fresh.
+        cls._owns_cluster_objects = True
         cls._create_cluster_objects()
 
         cls.admin_database_url = cls.server_url.set(database=DATABASE_NAME)
@@ -216,9 +233,41 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         )
         try:
             alembic_config = Config(str(Path(__file__).with_name("alembic.ini")))
+            command.upgrade(alembic_config, "20260907_0014")
+            # Identity migrations require an actual fence even in an empty,
+            # disposable database. No caller engine has been opened yet.
+            callers = (RUNTIME_ROLE, WORKER_ROLE, ERASURE_WORKER_ROLE,
+                       "careertrellis_admission_broker")
+            with cls.admin_engine.begin() as connection:
+                previous_policy = connection.execute(text(
+                    "SELECT maintenance, signup_open FROM careertrellis_admission.policy"
+                )).one()
+                previous_logins = {
+                    role: connection.scalar(text(
+                        "SELECT rolcanlogin FROM pg_roles WHERE rolname=:role"
+                    ), {"role": role}) for role in callers
+                }
+                connection.exec_driver_sql(
+                    "UPDATE careertrellis_admission.policy "
+                    "SET maintenance=true, signup_open=false"
+                )
+                for role in callers:
+                    connection.exec_driver_sql(f"ALTER ROLE {role} NOLOGIN")
             command.upgrade(alembic_config, "head")
             command.upgrade(alembic_config, "head")
             command.current(alembic_config, check_heads=True)
+            # Restore only after successful migration; failed setup is cleaned
+            # up with the fence intact. Preserve the broker's original NOLOGIN.
+            with cls.admin_engine.begin() as connection:
+                connection.execute(text(
+                    "UPDATE careertrellis_admission.policy "
+                    "SET maintenance=:maintenance, signup_open=:signup_open"
+                ), {"maintenance": previous_policy.maintenance,
+                    "signup_open": previous_policy.signup_open})
+                for role, login in previous_logins.items():
+                    connection.exec_driver_sql(
+                        f"ALTER ROLE {role} " + ("LOGIN" if login else "NOLOGIN")
+                    )
         finally:
             if previous_migration_url is None:
                 os.environ.pop("CAREERTRELLIS_MIGRATION_DATABASE_URL", None)
@@ -639,6 +688,13 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             )
             connection.exec_driver_sql("RESET ROLE")
 
+        # The historical fixture grants above predate identity/TOTP/removal.
+        # Apply the maintained grant contract to restore their exact boundaries.
+        runtime_grants_module.apply_runtime_grants(
+            Path(__file__).resolve().parent.parent / "deploy/postgres/grant-runtime.sql",
+            migration_url=cls.migration_url.render_as_string(hide_password=False),
+        )
+
     @classmethod
     def tearDownClass(cls) -> None:
         for name in (
@@ -651,9 +707,12 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
             if engine is not None:
                 engine.dispose()
         try:
-            cls._drop_cluster_objects()
+            if getattr(cls, "_owns_cluster_objects", False):
+                cls._drop_cluster_objects()
+                cls._owns_cluster_objects = False
         finally:
-            cls.admin_server_engine.dispose()
+            if cls.admin_server_engine is not None:
+                cls.admin_server_engine.dispose()
 
     def setUp(self) -> None:
         with self.admin_engine.begin() as connection:

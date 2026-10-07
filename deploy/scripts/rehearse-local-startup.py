@@ -6,6 +6,7 @@ venv, temporary synthetic data, loopback only and an owned graceful-stop pipe.
 """
 import json
 import os
+import runpy
 from pathlib import Path
 import socket
 import subprocess
@@ -57,11 +58,12 @@ def run():
                     break
                 except OSError: time.sleep(.1)
             else: raise RuntimeError('Synthetic readiness deadline')
-            if version.get('build')!='20260908.71': raise RuntimeError('Build mismatch')
+            expected_build=runpy.run_path(str(ROOT/'backend/version.py'))['APP_BUILD']
+            if version.get('build')!=expected_build: raise RuntimeError('Build mismatch')
             with opener.open(f'http://127.0.0.1:{port}/',timeout=2) as response:
                 if response.status!=200 or b'CareerTrellis' not in response.read(): raise RuntimeError('Dashboard unavailable')
             with opener.open(f'http://127.0.0.1:{port}/api/session',timeout=2) as response:
-                if 'authenticator_setup_available' in json.load(response): raise RuntimeError('Unexpected application feature change')
+                if json.load(response).get('authenticator_setup_available') is not False: raise RuntimeError('Expected default-off')
             ready=True
         finally:
             try:

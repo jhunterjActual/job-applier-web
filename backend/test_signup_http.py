@@ -130,6 +130,80 @@ class SignupHTTPTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(503, (await self.client.get('/auth/login')).status_code)
             legacy.assert_not_called()
 
+    async def test_provider_initiation_is_login_only_with_fresh_pkce_and_closed_signup(self):
+        self.store.availability_status = 'closed'
+        result = await self.client.get('/auth/initiate')
+        self.assertEqual(303, result.status_code)
+        url = urlsplit(result.headers['location'])
+        self.assertEqual(('https', 'api.workos.com', '/user_management/authorize'),
+            (url.scheme, url.netloc, url.path))
+        query = parse_qs(url.query)
+        self.assertEqual(['sign-in'], query['screen_hint'])
+        self.assertEqual(['login'], query['prompt'])
+        self.assertEqual(['0'], query['max_age'])
+        self.assertEqual([ORIGIN + '/auth/callback'], query['redirect_uri'])
+        self.assertEqual(['S256'], query['code_challenge_method'])
+        self.assertEqual(43, len(query['state'][0]))
+        self.assertNotEqual(query['state'], query['code_challenge'])
+        self.assertEqual(1, len(self.store.flows))
+        flow = self.adapter._open_flow(self.client.cookies.get(boundary.FLOW),
+            self.client.cookies.get(boundary.BROWSER))
+        self.assertEqual('login', flow.purpose)
+        self.assertEqual(0, self.http.posts)
+        self.assertIn('no-store', result.headers['cache-control'])
+        self.assertEqual('no-referrer', result.headers['referrer-policy'])
+        self.assertNotIn('invitation_token', query)
+
+    async def test_provider_initiation_rejects_untrusted_parameters_before_reservation(self):
+        for query in ('?token=synthetic', '?invitation_token=synthetic',
+                '?redirect_uri=https://evil.test', '?state=attacker', '?x=a&x=b'):
+            response = await self.client.get('/auth/initiate' + query)
+            self.assertEqual(400, response.status_code)
+            self.assertNotIn('synthetic', response.text)
+        self.assertEqual(405, (await self.client.post('/auth/initiate')).status_code)
+        self.assertEqual(0, len(self.store.flows))
+        self.assertEqual(0, self.http.posts)
+
+    async def test_provider_initiation_preserves_session_and_pending_attempt(self):
+        await self.activate()
+        original = self.client.cookies.get(boundary.COOKIE_NAME)
+        result = await self.client.get('/auth/initiate')
+        self.assertEqual(303, result.status_code)
+        self.assertEqual(original, self.client.cookies.get(boundary.COOKIE_NAME))
+        self.assertFalse(self.store.revoked)
+        flow = self.client.cookies.get(boundary.FLOW)
+        count = len(self.store.flows)
+        repeated = await self.client.get('/auth/initiate')
+        self.assertEqual(409, repeated.status_code)
+        self.assertEqual('same-origin', repeated.headers['referrer-policy'])
+        self.assertEqual(flow, self.client.cookies.get(boundary.FLOW))
+        self.assertEqual(count, len(self.store.flows))
+
+    async def test_provider_initiation_is_rate_limited_and_store_failure_is_closed(self):
+        self.store.limited = True
+        self.assertEqual(429, (await self.client.get('/auth/initiate')).status_code)
+        self.assertEqual(0, len(self.store.flows))
+        self.store.limited = False
+        with patch.object(self.store, 'reserve', side_effect=StoreUnavailable()):
+            self.assertEqual(503, (await self.client.get('/auth/initiate')).status_code)
+        self.assertEqual(0, self.http.posts)
+
+    async def test_failed_initiated_callback_preserves_existing_account_session(self):
+        await self.activate()
+        original = self.client.cookies.get(boundary.COOKIE_NAME)
+        result = await self.client.get('/auth/initiate')
+        state = parse_qs(urlsplit(result.headers['location']).query)['state'][0]
+        wrong = await self.client.post('/auth/complete', json={'csrf': self.csrf,
+            'state': 'x' * 43, 'code': 'synthetic-code', 'error': ''})
+        self.assertEqual(200, wrong.status_code)
+        self.assertEqual(original, self.client.cookies.get(boundary.COOKIE_NAME))
+        cancelled = await self.client.post('/auth/complete', json={'csrf': self.csrf,
+            'state': state, 'code': '', 'error': 'access_denied'})
+        self.assertEqual(200, cancelled.status_code)
+        self.assertEqual(original, self.client.cookies.get(boundary.COOKIE_NAME))
+        self.assertEqual(1, self.http.posts)
+        self.assertFalse(self.store.revoked)
+
     async def test_closed_full_allow_login_but_allocate_no_signup(self):
         for status in ('closed', 'full'):
             self.store.availability_status = status
@@ -160,6 +234,30 @@ class SignupHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.store.limited = True
         self.assertEqual(303, (await self.client.post('/auth/start', data=valid)).status_code)
         self.assertEqual(0, len(self.store.flows)); self.assertEqual(0, self.http.posts)
+
+    async def test_normal_sign_in_does_not_use_recovery_state_namespace(self):
+        with patch('admission_adapter_candidate.secrets.token_urlsafe',
+                   side_effect=['r1_' + 'x' * 40, 'a' * 43, 'v' * 43]):
+            outcome = await self.adapter.begin('b' * 43, 'login')
+        self.assertEqual('reserved', outcome.status)
+        self.assertEqual(['a' * 43], parse_qs(urlsplit(outcome.authorization_url).query)['state'])
+
+    async def test_recovery_callback_displays_without_session_or_provider_exchange(self):
+        state = 'r1_' + 'a' * 40
+        response = await self.client.get('/auth/callback', params={'code': 'private-recovery-code', 'state': state})
+        self.assertEqual(200, response.status_code)
+        self.assertIn('/static/recovery-callback.js', response.text)
+        self.assertNotIn('/static/signup-v2.js', response.text)
+        self.assertNotIn('private-recovery-code', response.text)
+        self.assertNotIn(state, response.text)
+        self.assertEqual([], response.headers.get_list('set-cookie'))
+        self.assertEqual(0, self.http.posts)
+        self.assertEqual(0, len(self.store.flows))
+        self.assertIn('no-store', response.headers['cache-control'])
+        self.assertEqual(200, (await self.client.get('/static/recovery-callback.js')).status_code)
+        malformed = await self.client.get('/auth/callback', params=[('state', state), ('state', state), ('code', 'x')])
+        self.assertEqual(400, malformed.status_code)
+        self.assertEqual(0, self.http.posts)
 
     async def test_callback_clean_result_cookie_and_account_bound_private_route(self):
         response = await self.start()
@@ -232,6 +330,99 @@ class SignupHTTPTests(unittest.IsolatedAsyncioTestCase):
         winner = next(r for r in results if r.cookie)
         self.assertEqual(original.expires, self.codec.open(winner.cookie).expires)
         self.assertEqual(1, len(self.store.claims))
+
+    async def test_budget_ignores_forged_headers_from_untrusted_connection(self):
+        from starlette.requests import Request
+        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+        seen = []
+        async def budget(lane, browser, network):
+            seen.append(network)
+            return True
+        self.store.budget = budget
+        async def endpoint(scope, receive, send):
+            await self.runtime.budget(Request(scope), 'login', 'synthetic-browser')
+        middleware = ProxyHeadersMiddleware(endpoint, trusted_hosts='127.0.0.1')
+        for claimed in (b'192.0.2.11', b'192.0.2.12'):
+            await middleware({'type':'http', 'scheme':'http', 'client':('198.51.100.1',1234),
+                'headers':[(b'x-forwarded-for',claimed),(b'cf-connecting-ip',claimed)]}, None, None)
+        expected = self.runtime.coordination.digest('network', '198.51.100.1')
+        self.assertEqual([expected, expected], seen)
+
+    async def test_trusted_proxy_shared_address_shares_network_budget(self):
+        from starlette.requests import Request
+        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+        seen = []
+        async def budget(lane, browser, network):
+            seen.append((browser, network))
+            return True
+        self.store.budget = budget
+        async def endpoint(scope, receive, send):
+            await self.runtime.budget(Request(scope), 'login', 'synthetic-browser-' + str(len(seen)))
+        middleware = ProxyHeadersMiddleware(endpoint, trusted_hosts='127.0.0.1')
+        for claimed in (b'192.0.2.11', b'192.0.2.12'):
+            await middleware({'type':'http', 'scheme':'http', 'client':('127.0.0.1',1234),
+                'headers':[(b'x-forwarded-for',b'198.51.100.8'),(b'cf-connecting-ip',claimed)]}, None, None)
+        expected = self.runtime.coordination.digest('network', '198.51.100.8')
+        self.assertEqual([expected, expected], [network for _, network in seen])
+        self.assertNotEqual(seen[0][0], seen[1][0])
+
+    async def test_lost_refresh_acknowledgement_consumes_snapshot_without_retry(self):
+        await self.activate()
+        original = self.codec.open(self.client.cookies.get(boundary.COOKIE_NAME))
+        data = self.codec.provider_open(original.provider)
+        data['access_token'] = self.http.token(exp=int(time.time()) - 1)
+        provider_cookie = self.codec._provider_seal.encrypt(__import__('json').dumps(data).encode()).decode()
+        expired = replace(original, provider=provider_cookie)
+        consumed = []
+        async def lose_response(request):
+            if request.method == 'POST':
+                consumed.append(True)
+                self.http.refresh_token = 'synthetic-rotated-token'
+                raise httpx.ReadError('synthetic lost acknowledgement', request=request)
+        self.http.hook = lose_response
+        first = await self.adapter.authenticate(self.codec.pack(expired), refresh=True)
+        self.assertEqual('unavailable', first.status)
+        self.assertFalse(first.cookie); self.assertFalse(first.clear_cookie)
+        self.assertIsNone(first.authorization)
+        self.http.hook = None
+        second = await self.adapter.authenticate(self.codec.pack(expired), refresh=True)
+        self.assertEqual('restart_required', second.status)
+        self.assertFalse(second.cookie); self.assertFalse(second.clear_cookie)
+        self.assertEqual([True], consumed)
+        self.assertEqual(2, self.http.posts)  # Initial exchange and the lost refresh only.
+        self.assertEqual(1, len(self.store.claims))
+        self.assertEqual(original.expires, expired.expires)
+        self.assertEqual('authenticated', (await self.adapter.authenticate(
+            self.client.cookies.get(boundary.COOKIE_NAME))).status)
+
+    async def test_logout_during_refresh_prevents_late_cookie_publication(self):
+        await self.activate()
+        original_cookie = self.client.cookies.get(boundary.COOKIE_NAME)
+        original = self.codec.open(original_cookie)
+        data = self.codec.provider_open(original.provider)
+        data['access_token'] = self.http.token(exp=int(time.time()) - 1)
+        provider_cookie = self.codec._provider_seal.encrypt(__import__('json').dumps(data).encode()).decode()
+        expired = replace(original, provider=provider_cookie)
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def pause_response(request):
+            if request.method == 'POST':
+                entered.set()
+                await release.wait()
+        self.http.hook = pause_response
+        task = asyncio.create_task(self.adapter.authenticate(self.codec.pack(expired), refresh=True))
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            await self.runtime.coordination.revoke(expired)
+            release.set()
+            result = await asyncio.wait_for(task, 3)
+        finally:
+            release.set()
+            if not task.done(): task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual('restart_required', result.status)
+        self.assertFalse(result.cookie); self.assertIsNone(result.authorization)
+        self.assertEqual('unauthenticated', (await self.adapter.authenticate(original_cookie)).status)
+        self.assertEqual(2, self.http.posts)
 
     async def test_replacement_account_clears_and_revokes_old_cookie_even_when_closed(self):
         await self.activate()
@@ -348,6 +539,24 @@ class SignupHTTPTests(unittest.IsolatedAsyncioTestCase):
                     state = parse_qs(urlsplit(url).query)['state'][0]
                     await route.fulfill(status=303, headers={'location': origin + '/auth/callback?' + __import__('urllib.parse', fromlist=['urlencode']).urlencode({'state': state, 'code': 'synthetic-browser-code'})})
                 elif url.startswith(origin + '/'):
+                    if urlsplit(url).path == '/auth/initiate':
+                        # Playwright routes only the first request of a server
+                        # redirect chain. Fetch this local response without
+                        # following it; simulate the provider return while
+                        # retaining the actual browser/flow Set-Cookie headers.
+                        response = await route.fetch(max_redirects=0)
+                        if response.status == 303:
+                            target = urlsplit(response.headers['location'])
+                            self.assertEqual(('https', 'api.workos.com', '/user_management/authorize'),
+                                (target.scheme, target.netloc, target.path))
+                            state = parse_qs(target.query)['state'][0]
+                            headers = {**response.headers, 'location': origin + '/auth/callback?' +
+                                __import__('urllib.parse', fromlist=['urlencode']).urlencode(
+                                    {'state': state, 'code': 'synthetic-initiated-code'})}
+                            await route.fulfill(response=response, headers=headers)
+                        else:
+                            await route.fulfill(response=response)
+                        return
                     if route.request.method == 'POST':
                         observed_origins.append((urlsplit(url).path, (await route.request.all_headers()).get('origin')))
                     if urlsplit(url).path.startswith('/api/') and urlsplit(url).path not in ('/api/version', '/api/session', '/api/maintenance-notice'):
@@ -355,7 +564,7 @@ class SignupHTTPTests(unittest.IsolatedAsyncioTestCase):
                     else:
                         await route.continue_()
                 else:
-                    external.append(True)
+                    external.append(urlsplit(url).hostname)
                     await route.abort()
             try:
                 for _ in range(100):
@@ -363,13 +572,23 @@ class SignupHTTPTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(.05)
                 self.assertTrue(server.started)
                 async with async_playwright() as playwright:
-                    browser = await playwright.chromium.launch(channel='msedge', headless=True)
+                    browser = await playwright.chromium.launch(channel='msedge' if os.name == 'nt' else None, headless=True,
+                        args=['--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost'])
                     try:
-                        context = await browser.new_context(ignore_https_errors=True, viewport={'width': 320, 'height': 700})
+                        context = await browser.new_context(ignore_https_errors=True, service_workers='block',
+                            viewport={'width': 320, 'height': 700})
                         await context.route('**/*', guard)
                         page = await context.new_page()
                         responses = []
                         page.on('response', lambda response: responses.append((urlsplit(response.url).path, response.status)))
+                        recovery_state = 'r1_' + 'a' * 40
+                        await page.goto(origin + '/auth/callback?state=' + recovery_state + '&code=synthetic-recovery-code')
+                        await page.wait_for_function("location.search === ''")
+                        self.assertEqual({'state': recovery_state, 'code': 'synthetic-recovery-code'},
+                            __import__('json').loads(await page.locator('#recovery-response').input_value()))
+                        self.assertEqual([], await context.cookies())
+                        self.assertEqual([], observed_origins)
+                        self.assertEqual(0, self.http.posts)
                         await page.goto(origin + '/auth/sign-in')
                         self.assertFalse(await page.evaluate('document.documentElement.scrollWidth > innerWidth'))
                         self.assertEqual('Create account', await page.get_by_role('button', name='Create account', exact=True).inner_text())
@@ -390,6 +609,21 @@ class SignupHTTPTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual([('/auth/start', origin), ('/auth/complete', origin)], observed_origins)
                         self.assertEqual([], external)
                         self.assertEqual(1, self.http.posts)
+                        await page.goto(origin + '/')
+                        self.assertIn('CareerTrellis', await page.title())
+                        self.assertCountEqual(['fonts.googleapis.com', 'cdnjs.cloudflare.com'], external)
+                        blocked_dashboard_assets = list(external)
+                        self.store.availability_status = 'closed'
+                        await page.goto(origin + '/auth/initiate')
+                        try:
+                            await page.wait_for_url(origin + '/auth/result', timeout=7000)
+                        except Exception:
+                            self.fail(f'Initiation path={urlsplit(page.url).path}; responses={responses}; '
+                                f'text={(await page.locator("body").inner_text())[:300]}')
+                        self.assertIn('You are signed in', await page.locator('body').inner_text())
+                        self.assertNotIn('code=', page.url)
+                        self.assertEqual(2, self.http.posts)
+                        self.assertEqual(blocked_dashboard_assets, external)
                     finally:
                         await browser.close()
             finally:
