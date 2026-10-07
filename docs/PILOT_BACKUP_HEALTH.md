@@ -116,6 +116,16 @@ observations establish a measured baseline only.
 
 ## Failure, scheduling, and alert semantics
 
+The inventory timer uses Thursday 06:00 UTC with up to 30 minutes of jitter,
+after the ordinary daily mirror window. `Persistent=true` catches one missed
+calendar occurrence after downtime. Unlike a seven-day activation-relative
+delay, restarting the timer cannot continually postpone the weekly check.
+The existing inventory service, twelve-hour timeout, repository lock and
+receipt-aware alert handling remain unchanged. Catch-up can encounter a busy
+repository; the helper must fail closed rather than overlap or automatically
+retry another operation. An already stale installation also needs one explicit
+inventory run; installing a new schedule is not fresh verification evidence.
+
 The scheduled evaluator checks both freshness thresholds and terminal unit or
 receipt results. A scheduled operation that fails, is cancelled, times out, has
 no terminal receipt, or does not produce passing evidence before its freshness
@@ -362,11 +372,17 @@ installs the release-bound collector, wrapper,
 and units; validates their owner and modes; requires the established full,
 differential, and independent-mirror timers to remain enabled and active; and
 reloads systemd without changing those established timer states. It enables and
-starts only the new hourly evaluator, inventory, and restore timer units. The
-inventory and restore timers have monotonic first delays of 7 and 30 days
-respectively; activation never starts their service units. Activation
-therefore does not immediately start a remote backup, mirror, inventory, or
-restore operation, and it preserves the existing backup and mirror timer state.
+starts only the hourly evaluator and restore timer units. The inventory timer
+must be inactive with no pending start job before installation; stop only that
+timer, leaving any running verification to reach its terminal state first.
+The installer enables inventory but leaves it inactive and reports
+`inventory_timer_activation_required=true`. After it returns successfully and
+releases the repository lock, explicitly start the inventory timer, accounting
+for a possible immediate missed-calendar catch-up and verifying its next trigger.
+Do not also start a separate inventory service for that catch-up. The restore
+timer retains its monotonic first delay of 30 days. Backup, mirror and restore
+services are not started by installation; their established timer state is
+preserved.
 The database-host installer does not claim web-host coverage.
 Before invitations, a separate reviewed web-host activation must install and
 verify the objects-surface evaluator and host-bound status interface without

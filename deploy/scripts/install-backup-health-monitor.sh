@@ -290,6 +290,31 @@ if ! /usr/bin/env -u SYSTEMD_UNIT_PATH \
     exit 1
 fi
 
+require_inactive_inventory_timer() {
+    local timer_state load_state= active_state= pending_job=unknown key value
+    if ! timer_state=$(systemctl show careertrellis-pgbackrest-inventory.timer \
+        --property=LoadState,ActiveState,Job); then
+        echo "The inventory timer state could not be verified." >&2
+        return 1
+    fi
+    while IFS='=' read -r key value; do
+        case "${key}" in
+            LoadState) load_state=${value} ;;
+            ActiveState) active_state=${value} ;;
+            Job) pending_job=${value} ;;
+        esac
+    done <<<"${timer_state}"
+    case "${load_state}:${active_state}:${pending_job}" in
+        loaded:inactive:|not-found:inactive:) return 0 ;;
+    esac
+    echo "Stop only the inventory timer before installation; activate it separately afterward." >&2
+    return 1
+}
+
+# A persistent calendar timer may launch a missed inventory on activation or
+# daemon-reload. Keep it inactive while this installer owns the repository lock.
+require_inactive_inventory_timer
+
 for service_name in \
     careertrellis-pgbackrest-full.service \
     careertrellis-pgbackrest-differential.service \
@@ -597,12 +622,11 @@ systemctl enable \
     careertrellis-pgbackrest-restore.timer \
     careertrellis-backup-health.timer >/dev/null
 
-# Starting these timer units does not start their services. The inventory and
-# restore timers have explicit future-only monotonic first delays, so installer
-# activation cannot launch either remote traversal. Existing backup and mirror
-# timers retain their current live activation state.
+# Starting these timer units preserves the restore's future-only first delay.
+# Inventory activation is an explicit operator step after this installer exits
+# and releases its repository lock; a missed calendar occurrence may then run.
+# Existing backup and mirror timers retain their current live activation state.
 systemctl start \
-    careertrellis-pgbackrest-inventory.timer \
     careertrellis-pgbackrest-restore.timer \
     careertrellis-backup-health.timer
 
@@ -611,4 +635,4 @@ trap - ERR
 if ! rm -rf --one-file-system -- "${rollback_root}"; then
     echo "Backup-health installation succeeded; temporary rollback cleanup requires operator review." >&2
 fi
-printf '{"operation":"install_backup_health_monitor","result":"ok","surface":"database","remote_operations_started":false}\n'
+printf '{"operation":"install_backup_health_monitor","result":"ok","surface":"database","remote_operations_started":false,"inventory_timer_activation_required":true}\n'
