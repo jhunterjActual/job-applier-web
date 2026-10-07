@@ -23,6 +23,15 @@ def protected_parent(path):
         require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022)
 
 
+def validate_maintenance_lock(descriptor):
+    # This shared root-only-write coordination file contains no credentials.
+    # The maintained host helper creates it as 0644; do not change its mode or
+    # inode merely to provision a separate private credential file.
+    info = os.fstat(descriptor)
+    require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1
+            and not info.st_mode & 0o022)
+
+
 def exclusive_file(path, content, mode, uid=0, gid=0):
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     with os.fdopen(descriptor, 'wb') as output:
@@ -62,8 +71,7 @@ def main():
     lock_path = Path('/run/lock/careertrellis-maintenance.lock')
     lock_fd = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
     try:
-        info = os.fstat(lock_fd)
-        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o600)
+        validate_maintenance_lock(lock_fd)
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         require(all(not p.exists() and not p.is_symlink() for p in (environment, POLICY_PATH, LEDGER_PATH.parent)))
         worker = pwd.getpwnam('careertrellis-worker')

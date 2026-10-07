@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import stat
 import tempfile
 import unittest
 from unittest.mock import MagicMock, Mock, patch
@@ -162,6 +163,28 @@ class WorkerBudgetWiringTests(unittest.TestCase):
 @unittest.skipUnless(os.name == 'posix' and os.environ.get('CT_SERPER_NATIVE_PATHS') == '1',
                      'Requires isolated Linux tmpfs fixture, never host paths')
 class NativePathTests(unittest.TestCase):
+    def test_provisioner_accepts_host_lock_without_changing_it(self):
+        from serper_provision import validate_maintenance_lock
+        with tempfile.TemporaryDirectory(dir='/run/serper-fixture') as folder:
+            path = Path(folder) / 'maintenance.lock'
+            path.touch(mode=0o644)
+            with path.open('r+b') as stream:
+                for mode in (0o600, 0o644):
+                    path.chmod(mode)
+                    before = path.stat()
+                    validate_maintenance_lock(stream.fileno())
+                    self.assertEqual(before.st_ino, path.stat().st_ino)
+                    self.assertEqual(mode, stat.S_IMODE(path.stat().st_mode))
+                for mode in (0o664, 0o666):
+                    path.chmod(mode)
+                    with self.assertRaises(RuntimeError):
+                        validate_maintenance_lock(stream.fileno())
+                path.chmod(0o644)
+                alias = Path(folder) / 'alias'
+                os.link(path, alias)
+                with self.assertRaises(RuntimeError):
+                    validate_maintenance_lock(stream.fileno())
+
     def test_optional_delivery_file_is_strict_and_never_discloses_key(self):
         import subprocess
         import sys
