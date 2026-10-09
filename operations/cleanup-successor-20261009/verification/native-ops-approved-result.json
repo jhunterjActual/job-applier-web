@@ -1,0 +1,1 @@
+{"exit_code": 0, "stdout": "native_count=68\n", "stderr": "....................................................................\n----------------------------------------------------------------------\nRan 68 tests in 27.844s\n\nOK\n", "seconds": 33.68, "temporary_root_removed": true, "manifest_sha256": "938c55d79e0f6a3efe1a9f22bfa1f692ae31a9c209130ccf52d75935920934d3"}

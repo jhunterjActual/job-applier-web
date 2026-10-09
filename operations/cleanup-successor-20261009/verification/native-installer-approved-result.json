@@ -1,0 +1,1 @@
+{"result": "pass", "native_synthetic_cases": ["success", "existing_target", "lock_busy", "lock_symlink", "lock_mode", "low_space", "space_dropped", "changed_policy", "unit_failure"], "host_actions": false, "network": false, "limits": "SQL/systemd/native-suite responses are fixtures; actual Linux filesystem/flock/chroot semantics tested."}

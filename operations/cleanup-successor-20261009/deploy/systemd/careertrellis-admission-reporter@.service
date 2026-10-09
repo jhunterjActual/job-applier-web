@@ -1,0 +1,20 @@
+[Unit]
+Description=Report fresh admission cleanup health to approved email check (%i)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/bin/bash /opt/careertrellis/staging/releases/%i/deploy/scripts/manage-admission-reporter.sh report
+TimeoutStartSec=50s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/careertrellis/admission-purge
+StandardOutput=journal
+StandardError=journal

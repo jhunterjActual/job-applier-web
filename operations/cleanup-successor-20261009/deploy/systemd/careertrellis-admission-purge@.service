@@ -1,0 +1,25 @@
+[Unit]
+Description=Bounded admission record expiry cleanup (%i)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/bin/bash /opt/careertrellis/staging/releases/%i/deploy/scripts/manage-admission-purge.sh run
+TimeoutStartSec=100s
+NoNewPrivileges=true
+PrivateTmp=true
+# Match the previously rehearsed root-to-postgres operational boundary.
+PrivateDevices=false
+DevicePolicy=closed
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SETGID CAP_SETUID
+ProtectHome=true
+ProtectSystem=strict
+ProtectControlGroups=true
+RestrictSUIDSGID=false
+ReadWritePaths=/run/lock
+ReadWritePaths=/var/lib/careertrellis/admission-purge
+StandardOutput=journal
+StandardError=journal

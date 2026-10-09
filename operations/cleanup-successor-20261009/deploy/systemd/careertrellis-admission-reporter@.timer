@@ -1,0 +1,13 @@
+[Unit]
+Description=Five-minute external admission cleanup observation (%i)
+
+[Timer]
+OnCalendar=*-*-* *:03/5:00 UTC
+OnBootSec=3m
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=true
+Unit=careertrellis-admission-reporter@%i.service
+
+[Install]
+WantedBy=timers.target

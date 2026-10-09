@@ -1,0 +1,13 @@
+[Unit]
+Description=Five-minute admission cleanup health evaluation (%i)
+
+[Timer]
+OnCalendar=*-*-* *:02/5:00 UTC
+OnBootSec=2m
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=true
+Unit=careertrellis-admission-purge-monitor@%i.service
+
+[Install]
+WantedBy=timers.target
