@@ -1,0 +1,25 @@
+[Unit]
+Description=Bounded authenticator ciphertext expiry cleanup (%i)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/bin/bash /opt/careertrellis/staging/releases/%i/deploy/scripts/manage-totp-cleanup.sh run
+TimeoutStartSec=40s
+NoNewPrivileges=true
+PrivateTmp=true
+# Match the previously rehearsed root-to-postgres operational boundary.
+PrivateDevices=false
+DevicePolicy=closed
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SETGID CAP_SETUID
+ProtectHome=true
+ProtectSystem=strict
+ProtectControlGroups=true
+RestrictSUIDSGID=false
+ReadWritePaths=/run/lock
+ReadWritePaths=/var/lib/careertrellis/totp-cleanup
+StandardOutput=journal
+StandardError=journal
