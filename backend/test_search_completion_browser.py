@@ -54,6 +54,9 @@ class SearchCompletionBrowserTests(unittest.TestCase):
                         page.set_content('<div id="overlay" hidden><h2 id="title"></h2><div id="subtitle"></div><button id="stop">Stop</button></div>')
                         page.add_script_tag(content="""
                             const API_URL = '';
+                            let searchTitlePlanTimer = null;
+                            async function updateSearchTitlePlan() { return true; }
+                            function usesTitleAlternatives() { return false; }
                             let activeLoadingOperation = null;
                             const stopLoadingBtn = document.getElementById('stop');
                             const loadingTitle = document.getElementById('title');
@@ -95,8 +98,10 @@ class SearchCompletionBrowserTests(unittest.TestCase):
                         """ + stop + search + """
                             stopLoadingBtn.addEventListener('click', () => void stopActiveLoadingOperation());
                             const searchPromise = searchJobs({preventDefault() {}});
-                            const originalOperation = activeLoadingOperation;
+                            let originalOperation;
                         """)
+                        page.wait_for_function('activeLoadingOperation !== null')
+                        page.evaluate('originalOperation = activeLoadingOperation')
                         if case != 'normal_stop':
                             page.locator('#stop').click()
                             self.assertEqual(1, page.evaluate('requests.length'))

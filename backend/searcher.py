@@ -1530,6 +1530,12 @@ def run_job_search_and_matching(
     # 2. Determine search terms
     report_progress("preparing_keywords", 0, 1)
     search_keywords = []
+    from role_queries import execution_titles
+    try:
+        manual_titles = execution_titles(keywords or "")
+    except ValueError as exc:
+        return {"success": False, "failure_code": "keywords_unavailable",
+                "error": str(exc), "jobs_added": 0, "provider_alerts": []}
     stripped_kw = keywords.strip() if keywords else ""
     if not stripped_kw or stripped_kw.lower() == "undefined":
         # Check database cache first
@@ -1553,7 +1559,7 @@ def run_job_search_and_matching(
                 )
             print(json.dumps({"event": "search_keywords_prepared"}), flush=True)
     else:
-        search_keywords = [stripped_kw]
+        search_keywords = manual_titles
     from discovery_sources import bounded_terms, MAX_KEYWORDS, MAX_LOCATIONS
     search_keywords, keywords_limited = bounded_terms(search_keywords, MAX_KEYWORDS)
     if not search_keywords:

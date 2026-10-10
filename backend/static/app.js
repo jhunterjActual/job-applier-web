@@ -392,6 +392,8 @@ document.addEventListener("DOMContentLoaded", () => {
     closeBaseResumeHistoryBtns.forEach(btn => btn.addEventListener("click", hideBaseResumeHistory));
     bindEvent(restoreBaseResumeVersionBtn, "click", restoreSelectedBaseResumeVersion);
     bindEvent(searchForm, "submit", searchJobs);
+    bindEvent(sKeywords, "input", scheduleSearchTitlePlan);
+    bindEvent(document.getElementById("s-title-alternatives"), "change", scheduleSearchTitlePlan);
     bindEvent(refreshJobsBtn, "click", loadJobs);
     bindEvent(cleanupJobsBtn, "click", showCleanupPreview);
     bindEvent(openJobImportBtn, "click", showJobImportModal);
@@ -2762,6 +2764,7 @@ async function loadSavedSearches() {
     searches.forEach(search => {
         const option = new Option(search.name, String(search.id));
         option.dataset.keywords = search.keywords;
+        option.dataset.titleAlternatives = String(!!search.title_alternatives);
         option.dataset.location = search.location;
         option.dataset.frequency = search.schedule_frequency || "none";
         savedSearchSelect.appendChild(option);
@@ -2775,8 +2778,10 @@ function selectSavedSearch() {
     deleteSavedSearchBtn.disabled = !selected;
     if (selected) {
         sKeywords.value = option.dataset.keywords || "";
+        document.getElementById("s-title-alternatives").checked = option.dataset.titleAlternatives === "true";
         sLocation.value = option.dataset.location || "";
         savedSearchFrequency.value = option.dataset.frequency || "none";
+        void updateSearchTitlePlan();
     }
 }
 
@@ -3126,9 +3131,57 @@ function startSearchStatusPolling(observedActive = false) {
     void pollSearchStatus(generation);
 }
 
+let searchTitlePlanGeneration = 0;
+let searchTitlePlanTimer = null;
+
+function scheduleSearchTitlePlan() {
+    searchTitlePlanGeneration += 1;
+    clearTimeout(searchTitlePlanTimer);
+    const output = document.getElementById("search-title-plan");
+    if (output) output.textContent = "Checking title alternatives…";
+    searchTitlePlanTimer = setTimeout(() => void updateSearchTitlePlan(), 200);
+}
+
+function usesTitleAlternatives() {
+    return !!document.getElementById("s-title-alternatives")?.checked;
+}
+
+async function updateSearchTitlePlan() {
+    const generation = ++searchTitlePlanGeneration;
+    const keywords = sKeywords.value.trim();
+    const titleAlternatives = usesTitleAlternatives();
+    const output = document.getElementById("search-title-plan");
+    try {
+        const response = await fetch(`${API_URL}/api/jobs/search/plan`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ keywords, title_alternatives: titleAlternatives })
+        });
+        const plan = await response.json();
+        if (generation !== searchTitlePlanGeneration || keywords !== sKeywords.value.trim() || titleAlternatives !== usesTitleAlternatives()) return false;
+        if (!response.ok) {
+            const detail = Array.isArray(plan.detail) ? plan.detail[0]?.msg : plan.detail;
+            if (output) output.textContent = detail || "Check the title alternatives and try again.";
+            return false;
+        }
+        if (plan.mode === "invalid") {
+            if (output) output.textContent = "Enter a job title within 120 characters.";
+            return false;
+        }
+        if (output) output.textContent = plan.mode === "resume_suggested"
+            ? "Resume-suggested titles will be prepared when the search starts."
+            : `Search title alternatives: ${plan.titles.join(" OR ")}. Geography is unchanged.${plan.software_alias ? " Software Engineer and Software Developer also match each other." : ""}`;
+        return true;
+    } catch (_) {
+        if (generation === searchTitlePlanGeneration && output) output.textContent = "Title preview is unavailable. Try again before searching.";
+        return false;
+    }
+}
+
 // Search for jobs
 async function searchJobs(e) {
     e.preventDefault();
+    clearTimeout(searchTitlePlanTimer);
+    if (!await updateSearchTitlePlan()) return;
     
     const keywords = sKeywords.value.trim();
     const location = sLocation.value.trim();
@@ -3150,6 +3203,7 @@ async function searchJobs(e) {
             headers: operationHeaders(operation, { "Content-Type": "application/json" }),
             body: JSON.stringify({
                 keywords,
+                title_alternatives: usesTitleAlternatives(),
                 location,
                 save_search: !!saveSearchCheckbox?.checked,
                 saved_search_name: savedSearchName?.value.trim() || null,

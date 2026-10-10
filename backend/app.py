@@ -12,7 +12,8 @@ from uuid import uuid4
 from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, BackgroundTasks, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from role_queries import encode_titles, title_plan, display_saved_search
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
@@ -655,11 +656,17 @@ class ProfileSecretsUpdate(BaseModel):
 
 class SearchRequest(BaseModel):
     keywords: str = Field(max_length=500)
+    title_alternatives: bool = False
     location: Optional[str] = Field(default="", max_length=240)
     save_search: bool = False
     saved_search_name: Optional[str] = Field(default=None, max_length=80)
     saved_search_id: Optional[int] = Field(default=None, gt=0)
     schedule_frequency: Literal["none", "daily", "weekly"] = "none"
+
+    @model_validator(mode="after")
+    def validate_title_alternatives(self):
+        encode_titles(self.keywords, self.title_alternatives)
+        return self
 
 
 class ManualJobPreviewRequest(BaseModel):
@@ -2109,16 +2116,16 @@ def clear_source_diagnostic_history() -> dict:
 
 @app.get("/api/saved-searches")
 def get_saved_searches() -> list[dict]:
-    return runtime_discovery_repository(
+    return [display_saved_search(search) for search in runtime_discovery_repository(
         sqlite_connection_factory=get_db_connection
-    ).list_saved_searches()
+    ).list_saved_searches()]
 
 
 @app.get("/api/saved-searches/due")
 def get_due_saved_searches() -> list[dict]:
-    return runtime_discovery_repository(
+    return [display_saved_search(search) for search in runtime_discovery_repository(
         sqlite_connection_factory=get_db_connection
-    ).list_due_saved_searches(datetime.now(timezone.utc))
+    ).list_due_saved_searches(datetime.now(timezone.utc))]
 
 
 @app.delete("/api/saved-searches/{search_id}")
@@ -2183,6 +2190,12 @@ def _verify_job_posting(job_id: int, operation: OperationToken) -> dict:
         raise HTTPException(status_code=404, detail="Job not found.")
     return result
 
+@app.post("/api/jobs/search/plan")
+def preview_search_titles(req: SearchRequest) -> dict:
+    """Interpret explicit titles without profile reads, enqueueing or provider calls."""
+    return title_plan(req.keywords, req.title_alternatives)
+
+
 @app.post("/api/jobs/search")
 def search_jobs(
     req: SearchRequest,
@@ -2210,7 +2223,8 @@ def search_jobs(
         search_run_repository = runtime_search_run_repository(
             sqlite_connection_factory=get_db_connection
         )
-        run_id = search_run_repository.enqueue(operation_id, req.keywords, req.location)
+        stored_keywords = encode_titles(req.keywords, req.title_alternatives)
+        run_id = search_run_repository.enqueue(operation_id, stored_keywords, req.location)
     except SearchRunAlreadyActive:
         return {
             "success": False,
@@ -2222,7 +2236,7 @@ def search_jobs(
             status_code=503,
             detail="The job search could not be queued.",
         ) from exc
-    search_keywords = req.keywords
+    search_keywords = stored_keywords
     search_location = req.location
     try:
         if req.save_search or req.saved_search_id:
@@ -2236,7 +2250,7 @@ def search_jobs(
                 ).strip()
                 saved = saved_search_repository.upsert_saved_search(
                     name=search_name,
-                    keywords=req.keywords,
+                    keywords=stored_keywords,
                     location=req.location or "",
                     schedule_frequency=req.schedule_frequency,
                     run_at=run_at,
