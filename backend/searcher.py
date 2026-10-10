@@ -620,6 +620,8 @@ def provider_alerts_from_health(provider_health: dict) -> list[dict]:
                 causes.append("a search response exceeded the 1 MiB download limit")
             if partial.get("candidate_limit_hits", 0) or health.get("candidate_budget_exhausted"):
                 causes.append(f"the {MAX_PROVIDER_CANDIDATES}-posting processing limit was reached")
+            if partial.get("managed_page_limits", 0):
+                causes.append("the shared search returned its 10-result page limit; additional results may exist")
             if partial.get("timeouts", 0):
                 causes.append(f"a search request exceeded the {SEARCH_HTTP_TIMEOUT_SECONDS}-second timeout")
             if partial.get("planning_limits", 0):
@@ -1620,6 +1622,7 @@ def run_job_search_and_matching(
     source_total = len(search_keywords) * len(locs)
     source_completed = 0
     source_state = {"yahoo_available": True}
+    managed_successes = set()
     report_progress("searching_sources", source_completed, source_total)
     if keywords_limited or locations_limited:
         for item in provider_health.values():
@@ -1636,12 +1639,16 @@ def run_job_search_and_matching(
         from discovery_sources import collect
         for item in collect(search_keywords, locs, provider_health, check_cancelled,
                             api_key=serper_api_key, reserve=reserve_search_request,
-                            feeds_only=not bool(serper_api_key and reserve_search_request)):
+                            feeds_only=not bool(serper_api_key and reserve_search_request),
+                            managed_successes=managed_successes):
             check_cancelled()
             _append_candidate_with_budget(item, results, seen_urls, provider_candidate_counts, provider_health)
     for kw, loc in ((kw, loc) for kw in search_keywords for loc in locs):
         check_cancelled()
-        kw_results = search_yahoo_jobs(
+        # A validated managed response (including empty or a full page) is the
+        # primary discovery result. Legacy search remains the fallback for each
+        # failed or unattempted pair after the managed circuit breaker opens.
+        kw_results = [] if (kw, loc) in managed_successes else search_yahoo_jobs(
             kw,
             loc,
             provider_health,

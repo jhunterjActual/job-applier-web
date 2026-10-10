@@ -1,3 +1,3 @@
 """Application build metadata shared by the web and worker processes."""
 
-APP_BUILD = "20261010.83"
+APP_BUILD = "20261010.85"

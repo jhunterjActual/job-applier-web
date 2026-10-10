@@ -3348,6 +3348,7 @@ const DIAGNOSTIC_COUNTER_LABELS = {
     provider_error: "Provider errors",
     oversized_responses: "Oversized responses",
     candidate_limit_hits: "Candidate limits reached",
+    managed_page_limits: "Shared search pages at the 10-result limit",
     timeouts: "Timeouts",
     search_errors: "Search errors",
     candidate_budget_exhausted: "Run limit reached",

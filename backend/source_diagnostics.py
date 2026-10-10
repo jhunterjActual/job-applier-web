@@ -62,7 +62,7 @@ REJECTION_COUNTERS = (
 )
 PARTIAL_COUNTERS = ("oversized_responses", "candidate_limit_hits", "timeouts", "planning_limits",
                     "catalog_page_limits", "catalog_request_limits", "catalog_term_limits",
-                    "unknown_location_limit")
+                    "unknown_location_limit", "managed_page_limits")
 STORED_COUNTERS = DIRECT_COUNTERS + REJECTION_COUNTERS + PARTIAL_COUNTERS + (
     "search_errors",
     "candidate_budget_exhausted",
