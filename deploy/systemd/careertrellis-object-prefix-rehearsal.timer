@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly bounded object restore rehearsal
+
+[Timer]
+OnCalendar=Wed *-*-* 08:30:00 UTC
+RandomizedDelaySec=5m
+Persistent=true
+Unit=careertrellis-object-prefix-rehearsal.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,24 @@
+[Unit]
+Description=Bounded isolated object ciphertext restore rehearsal
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+StateDirectory=careertrellis/object-prefix-rehearsals
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 -B /usr/local/libexec/careertrellis/object_prefix_rehearsal.py
+ExecStopPost=/usr/bin/systemctl start --no-block careertrellis-generated-object-backup-health.service
+TimeoutStartSec=65min
+KillMode=control-group
+Nice=10
+MemoryMax=384M
+CPUQuota=50%
+TasksMax=64
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=30
+StandardOutput=journal
+StandardError=journal

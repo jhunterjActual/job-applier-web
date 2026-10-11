@@ -379,7 +379,8 @@ def matches(row, keywords, locations):
     return role_matches(row['title'], keywords) and location_matches(row, locations)
 
 
-def collect(keywords, locations, health, check_cancelled, *, api_key=None, reserve=None, feeds_only=False):
+def collect(keywords, locations, health, check_cancelled, *, api_key=None, reserve=None, feeds_only=False,
+            managed_successes=None):
     # Imported at call time to preserve the existing URL-validation boundary.
     from searcher import canonicalize_job_url, is_specific_job_url, provider_for_url
 
@@ -429,7 +430,7 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
         # Reserve part of the same request/time budget for managed search before
         # a slow catalog can consume it all. Failures still allow direct feeds.
         _collect_managed(keywords, locations, health, check_cancelled, budget,
-                         api_key, reserve, admit, record)
+                         api_key, reserve, admit, record, managed_successes)
 
     states = [{"provider": provider, "board": board, "completed": set(),
                "selected": deque(), "unknown": deque(), "attempted": False, "failed": False, "limited": False}
@@ -541,7 +542,7 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
 
 
 def _collect_managed(keywords, locations, health, check_cancelled, budget,
-                     api_key, reserve, admit, record):
+                     api_key, reserve, admit, record, managed_successes=None):
     # One multi-domain query per keyword/location, rather than one per ATS.
     # Coverage equivalence must be established by the live acceptance matrix.
     domains = "(site:greenhouse.io OR site:lever.co OR site:ashbyhq.com OR site:smartrecruiters.com)"
@@ -572,7 +573,10 @@ def _collect_managed(keywords, locations, health, check_cancelled, budget,
                         record(provider, "source_empty")
                 if len(rows) == 10:
                     for item in (health[provider] for provider in providers):
-                        item["partial_results"]["candidate_limit_hits"] += 1
+                        partial = item["partial_results"]
+                        partial["managed_page_limits"] = partial.get("managed_page_limits", 0) + 1
+                if managed_successes is not None:
+                    managed_successes.add((keyword, location))
             except SourceError:
                 for provider in providers:
                     record(provider, "source_failures")

@@ -1,0 +1,377 @@
+{
+  "reference_version": "search-003-section-holdout-v1",
+  "reference_sha256": "24995179627626b80c5e062bc8d7a41c530f6f746e915879b5b1a9f48ce3e093",
+  "before_sha256": "4818453ae994e24c75f87b0edf7381135cb4198c52e30c41601f467335294c04",
+  "candidate_sha256": "be9029e5362ab78fabb84b5dd82d7d4038e267fce98a74ad50065a6c8f7c3091",
+  "evaluator_sha256": "1ad2dcc4b128d96f561a60b0ec37021926b64b0bd29e03075d4ca90a4c85b350",
+  "before": {
+    "cases": 32,
+    "true_positives": 5,
+    "false_positives": [
+      "archive-heading-after-current",
+      "our-opening-then-customer",
+      "duties-negated-later",
+      "subject-supervisor",
+      "customer-duties-followed-our-work"
+    ],
+    "false_negatives": [
+      "current-after-history-paragraph",
+      "benefit-local-negation",
+      "travel-local-negation",
+      "benign-condition-equipment",
+      "benign-condition-interview",
+      "subject-self-with-supervisor",
+      "quoted-manager-current",
+      "implicit-pipeline-ownership",
+      "implicit-code-ownership",
+      "implicit-enterprise-scope",
+      "positive-role-exclusion-other"
+    ],
+    "precision": 0.5,
+    "recall": 0.3125,
+    "results": [
+      {
+        "id": "current-heading-after-archive",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "archive-heading-after-current",
+        "expected": false,
+        "matched": true
+      },
+      {
+        "id": "customer-then-our-opening",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "our-opening-then-customer",
+        "expected": false,
+        "matched": true
+      },
+      {
+        "id": "current-after-history-paragraph",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "history-only-paragraph",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "role-local-negation",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "benefit-local-negation",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "travel-local-negation",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "duties-negated-later",
+        "expected": false,
+        "matched": true
+      },
+      {
+        "id": "conditional-role-promotion",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "benign-condition-equipment",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "role-condition-contract-award",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "benign-condition-interview",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "subject-supervisor",
+        "expected": false,
+        "matched": true
+      },
+      {
+        "id": "subject-self-with-supervisor",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "subject-team-colleague",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "subject-candidate-clear",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "quoted-advice-role",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "quoted-manager-current",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "implicit-pipeline-ownership",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "implicit-data-consumer",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "implicit-code-ownership",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "implicit-software-user",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "implicit-enterprise-scope",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "architecture-construction",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "explicit-duties-followed-customers",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "customer-duties-followed-our-work",
+        "expected": false,
+        "matched": true
+      },
+      {
+        "id": "positive-role-exclusion-other",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "negative-role-affirmation-other",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "scope-resets-back-to-history",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "current-role-with-historical-tools",
+        "expected": true,
+        "matched": true
+      }
+    ]
+  },
+  "after": {
+    "cases": 32,
+    "true_positives": 15,
+    "false_positives": [],
+    "false_negatives": [
+      "quoted-manager-current"
+    ],
+    "precision": 1.0,
+    "recall": 0.9375,
+    "results": [
+      {
+        "id": "current-heading-after-archive",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "archive-heading-after-current",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "customer-then-our-opening",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "our-opening-then-customer",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "current-after-history-paragraph",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "history-only-paragraph",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "role-local-negation",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "benefit-local-negation",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "travel-local-negation",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "duties-negated-later",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "conditional-role-promotion",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "benign-condition-equipment",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "role-condition-contract-award",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "benign-condition-interview",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "subject-supervisor",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "subject-self-with-supervisor",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "subject-team-colleague",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "subject-candidate-clear",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "quoted-advice-role",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "quoted-manager-current",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "implicit-pipeline-ownership",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "implicit-data-consumer",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "implicit-code-ownership",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "implicit-software-user",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "implicit-enterprise-scope",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "architecture-construction",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "explicit-duties-followed-customers",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "customer-duties-followed-our-work",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "positive-role-exclusion-other",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "negative-role-affirmation-other",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "scope-resets-back-to-history",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "current-role-with-historical-tools",
+        "expected": true,
+        "matched": true
+      }
+    ]
+  },
+  "comparison": {
+    "thresholds": {
+      "max_false_positives": 0,
+      "max_recall_drop": 0,
+      "min_recall": 0.8
+    },
+    "accepted": true,
+    "runtime_approved": false,
+    "scope": "synthetic description-only screen"
+  }
+}

@@ -51,11 +51,13 @@ class ObjectEncryptionTests(unittest.TestCase):
 
     def test_wrong_owner_metadata_tamper_and_payload_tamper_are_generic(self):
         staged = object_store.encrypt_object(7, b"private", "text/plain", keyring=keyring())
+        tampered_payload = bytearray(staged.encrypted_payload)
+        tampered_payload[-1] ^= 1
         cases = (
             (staged.metadata, staged.encrypted_payload, 8),
             (replace(staged.metadata, size_bytes=6), staged.encrypted_payload, 7),
             (replace(staged.metadata, sha256="0" * 64), staged.encrypted_payload, 7),
-            (staged.metadata, staged.encrypted_payload[:-1] + b"x", 7),
+            (staged.metadata, bytes(tampered_payload), 7),
         )
         messages = set()
         for metadata, payload, owner in cases:

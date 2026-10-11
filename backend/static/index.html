@@ -502,8 +502,11 @@
                         <form id="search-form" class="search-bar-grid">
                             <div class="form-group">
                                 <label for="s-keywords" data-i18n="search.keywords">Job Title / Keywords</label>
-                                <input type="text" id="s-keywords" aria-describedby="search-keywords-help" placeholder="e.g. Software Engineer (leave blank to auto-suggest)" data-i18n-placeholder="search.keywords.placeholder">
+                                <input type="text" id="s-keywords" maxlength="500" aria-describedby="search-keywords-help search-title-plan" placeholder="e.g. Software Engineer (leave blank to auto-suggest)" data-i18n-placeholder="search.keywords.placeholder">
                                 <small id="search-keywords-help" data-i18n="search.keywords.help">Search job titles by default. Enter a role, such as Software Engineer; terms found only in descriptions or other fields may not match.</small>
+                                <label><input type="checkbox" id="s-title-alternatives"> Use title alternatives</label>
+                                <small>When enabled, separate up to three titles with semicolons (120 characters each). More titles may use more requests within existing caps. Existing saved searches keep their original interpretation.</small>
+                                <small id="search-title-plan" role="status" aria-live="polite">Leave blank to use resume-suggested titles.</small>
                             </div>
                             <div class="form-group">
                                 <label for="s-location" data-i18n="search.location">Location (Optional)</label>

@@ -3691,6 +3691,7 @@ class DependencyLockTests(unittest.TestCase):
             {
                 "careertrellis-generated-object-backup-health-alert@.service",
                 "careertrellis-generated-object-backup-health.service",
+                "careertrellis-generated-object-backup-health.service.d",
                 "careertrellis-generated-object-backup-health.timer",
             },
             {
@@ -3698,6 +3699,21 @@ class DependencyLockTests(unittest.TestCase):
                 for path in (project_dir / "deploy" / "systemd").rglob("*")
                 if "generated-object" in path.name
             },
+        )
+        object_health_unit = (
+            project_dir / "deploy/systemd/careertrellis-generated-object-backup-health.service"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "OnFailure=careertrellis-generated-object-backup-health-alert@%n.service",
+            object_health_unit,
+        )
+        alert_dropin = (
+            project_dir / "deploy/systemd/careertrellis-generated-object-backup-health.service.d"
+            / "60-completed-alert-report.conf"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            ["[Unit]", "OnFailure=careertrellis-object-alert-report.service"],
+            alert_dropin.splitlines(),
         )
         for activation_source in (deploy, rollback):
             self.assertIn(
@@ -4226,15 +4242,15 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn('install -d -o root -g postgres -m 0710 "${restore_root}"', creation)
         self.assertIn("restore_root_created_identity", creation)
 
-        future_timers = {
-            "careertrellis-pgbackrest-restore.timer": "30d",
-        }
-        for timer_name, delay in future_timers.items():
-            timer = (systemd / timer_name).read_text(encoding="utf-8")
-            self.assertIn(f"OnActiveSec={delay}", timer)
-            self.assertIn(f"OnUnitActiveSec={delay}", timer)
-            self.assertNotIn("OnCalendar=", timer)
-            self.assertNotIn("Persistent=true", timer)
+        restore_timer = (systemd / "careertrellis-pgbackrest-restore.timer").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("OnCalendar=Wed *-*-* 08:00:00 UTC", restore_timer)
+        self.assertIn("RandomizedDelaySec=15m", restore_timer)
+        self.assertIn("Persistent=true", restore_timer)
+        self.assertIn("Unit=careertrellis-pgbackrest-restore.service", restore_timer)
+        self.assertNotIn("OnActiveSec=", restore_timer)
+        self.assertNotIn("OnUnitActiveSec=", restore_timer)
 
         inventory_timer = (systemd / "careertrellis-pgbackrest-inventory.timer").read_text(
             encoding="utf-8"

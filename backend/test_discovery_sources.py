@@ -248,6 +248,9 @@ class DiscoverySourceTests(unittest.TestCase):
     def test_enabled_pipeline_passes_key_and_reservation_without_bypassing_save_flow(self):
         self.check_hybrid_pipeline(True, True, enabled=True)
 
+    def test_enabled_pipeline_falls_back_when_managed_discovery_fails(self):
+        self.check_hybrid_pipeline(False, True, enabled=True)
+
     def test_hybrid_saves_legacy_results_when_feed_fails(self):
         self.check_hybrid_pipeline(False, True)
 
@@ -267,11 +270,15 @@ class DiscoverySourceTests(unittest.TestCase):
                 health["lever"]["source_failures"] = health["lever"].get("source_failures", 0) + 1
                 return []
             return [{"title": "Engineer", "url": url, "snippet": ""}]
+        def acquire_feeds(kw, loc, health, cancel, **options):
+            if enabled and feed_ok:
+                options["managed_successes"].add((kw[0], loc[0]))
+            return acquire(health, feed_ok)
         with (
             patch.object(searcher.config, "get_discovery_mode", return_value="hybrid_feeds"),
             patch("public_job_feeds.collect", return_value=[]),
             patch.object(searcher, "settings_from_profile", return_value=AIProviderSettings("gemini", "synthetic", "private-ai")),
-            patch.object(sources, "collect", side_effect=lambda kw, loc, health, cancel, **options: acquire(health, feed_ok)) as feeds,
+            patch.object(sources, "collect", side_effect=acquire_feeds) as feeds,
             patch.object(sources, "fetch_json", side_effect=AssertionError("No paid transport")),
             patch.object(searcher, "inspect_job_posting", return_value={"status": "ok", "details": {
                 "title": "Engineer", "company": "Synthetic", "description": "Synthetic description",
@@ -287,7 +294,10 @@ class DiscoverySourceTests(unittest.TestCase):
         self.assertEqual("matches_saved" if feed_ok and legacy_ok else "partial_results", result["outcome"])
         self.assertEqual(1, result["jobs_added"])
         self.assertEqual(url, repository.create_job_if_available.call_args.kwargs["url"])
-        legacy.assert_called_once()
+        if enabled and feed_ok:
+            legacy.assert_not_called()
+        else:
+            legacy.assert_called_once()
         self.assertEqual(not enabled, feeds.call_args.kwargs["feeds_only"])
         if enabled:
             self.assertEqual("synthetic", feeds.call_args.kwargs["api_key"])
