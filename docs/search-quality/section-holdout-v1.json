@@ -1,0 +1,230 @@
+{
+  "version": "search-003-section-holdout-v1",
+  "date": "2026-10-09",
+  "cases": [
+    {
+      "id": "current-heading-after-archive",
+      "role": "data engineer",
+      "description": "Archived opening: office administrator.\nCURRENT VACANCY\nYou will serve as a data engineer.",
+      "expected": true,
+      "judgment": "The explicit current-vacancy heading resets the historical context."
+    },
+    {
+      "id": "archive-heading-after-current",
+      "role": "data engineer",
+      "description": "CURRENT VACANCY\nYou will serve as an office administrator.\nARCHIVED VACANCY\nYou will serve as a data engineer.",
+      "expected": false,
+      "judgment": "The requested role occurs only in the archived section."
+    },
+    {
+      "id": "customer-then-our-opening",
+      "role": "software engineer",
+      "description": "Customer project staffing: three account managers.\nOUR OPENING\nThis job is a software engineer position.",
+      "expected": true,
+      "judgment": "Our opening clearly assigns the requested role after an unrelated customer section."
+    },
+    {
+      "id": "our-opening-then-customer",
+      "role": "software engineer",
+      "description": "OUR OPENING\nThis job is a sales coordinator position.\nCUSTOMER OPENING\nThis job is a software engineer position.",
+      "expected": false,
+      "judgment": "The requested role belongs to the customer opening."
+    },
+    {
+      "id": "current-after-history-paragraph",
+      "role": "enterprise architect",
+      "description": "The team formerly hired network technicians. Today we are recruiting an enterprise architect to own company-wide technology architecture.",
+      "expected": true,
+      "judgment": "Current recruitment and assigned enterprise-wide duties establish the requested role."
+    },
+    {
+      "id": "history-only-paragraph",
+      "role": "enterprise architect",
+      "description": "Last quarter we recruited an enterprise architect to own company-wide technology architecture. The vacancy advertised here is a payroll assistant.",
+      "expected": false,
+      "judgment": "The requested role is historical and the current vacancy is explicitly different."
+    },
+    {
+      "id": "role-local-negation",
+      "role": "software engineer",
+      "description": "ROLE\nYou will not serve as a software engineer. This opening handles billing enquiries.",
+      "expected": false,
+      "judgment": "Negation directly scopes the requested role assignment."
+    },
+    {
+      "id": "benefit-local-negation",
+      "role": "software engineer",
+      "description": "ROLE\nYou will serve as a software engineer.\nBENEFITS\nThere is no employee contribution for dental cover.",
+      "expected": true,
+      "judgment": "A benefit-related negative does not negate the role."
+    },
+    {
+      "id": "travel-local-negation",
+      "role": "data engineer",
+      "description": "ASSIGNMENT\nDuties include data engineer responsibilities.\nTRAVEL\nTravel is not expected.",
+      "expected": true,
+      "judgment": "Travel restrictions leave the explicit duties intact."
+    },
+    {
+      "id": "duties-negated-later",
+      "role": "data engineer",
+      "description": "DRAFT LABEL\nDuties include data engineer responsibilities.\nFINAL DUTIES\nThe draft label is incorrect: this opening only schedules interviews.",
+      "expected": false,
+      "judgment": "The final section supersedes the draft requested-role statement."
+    },
+    {
+      "id": "conditional-role-promotion",
+      "role": "enterprise architect",
+      "description": "CURRENT ROLE\nYou manage an IT help desk.\nCAREER PATH\nUpon promotion, you will serve as an enterprise architect.",
+      "expected": false,
+      "judgment": "The requested role is conditional on a future promotion."
+    },
+    {
+      "id": "benign-condition-equipment",
+      "role": "enterprise architect",
+      "description": "CURRENT ROLE\nYou will serve as an enterprise architect.\nEQUIPMENT\nIf you work from home, we provide a monitor.",
+      "expected": true,
+      "judgment": "A condition about equipment does not qualify the current role."
+    },
+    {
+      "id": "role-condition-contract-award",
+      "role": "software engineer",
+      "description": "This vacancy is for customer support. Only if a future contract is awarded will you work as a software engineer.",
+      "expected": false,
+      "judgment": "The requested assignment is conditional and does not describe the current vacancy."
+    },
+    {
+      "id": "benign-condition-interview",
+      "role": "data engineer",
+      "description": "This role is a data engineer position. If shortlisted, applicants meet the engineering lead.",
+      "expected": true,
+      "judgment": "The interview condition is unrelated to the role assignment."
+    },
+    {
+      "id": "subject-supervisor",
+      "role": "enterprise architect",
+      "description": "Your supervisor's assignment:\nThis position is an enterprise architect role.\nYour assignment is to administer expense reports.",
+      "expected": false,
+      "judgment": "The affirmative requested-role statement refers to the supervisor."
+    },
+    {
+      "id": "subject-self-with-supervisor",
+      "role": "enterprise architect",
+      "description": "You report to our chief information officer. Your own position is an enterprise architect role, responsible for target-state architecture across the company.",
+      "expected": true,
+      "judgment": "The posting explicitly attributes the requested role to the applicant."
+    },
+    {
+      "id": "subject-team-colleague",
+      "role": "data engineer",
+      "description": "TEAM COMPOSITION\nOne colleague's job is a data engineer position. Your job is a purchasing coordinator position.",
+      "expected": false,
+      "judgment": "The requested role belongs to a colleague, not the applicant."
+    },
+    {
+      "id": "subject-candidate-clear",
+      "role": "data engineer",
+      "description": "TEAM COMPOSITION\nOur team includes purchasing coordinators. YOUR JOB\nYou will work as a data engineer.",
+      "expected": true,
+      "judgment": "The explicit applicant assignment identifies the requested role."
+    },
+    {
+      "id": "quoted-advice-role",
+      "role": "software engineer",
+      "description": "Interview practice example:\n\"You will serve as a software engineer.\"\nThe actual opening is a receptionist role.",
+      "expected": false,
+      "judgment": "The requested role is training text; the real opening is different."
+    },
+    {
+      "id": "quoted-manager-current",
+      "role": "software engineer",
+      "description": "ABOUT THIS VACANCY\nOur hiring manager says, 'Your job is to work as a software engineer.' You will build and maintain our application code.",
+      "expected": true,
+      "judgment": "The quotation directly describes this vacancy and duties corroborate it."
+    },
+    {
+      "id": "implicit-pipeline-ownership",
+      "role": "data engineer",
+      "description": "YOUR RESPONSIBILITIES\nBuild batch and streaming ingestion pipelines, maintain warehouse schemas, and own production data quality checks and pipeline operations.",
+      "expected": true,
+      "judgment": "Core assigned data engineering duties establish the role without the title phrase."
+    },
+    {
+      "id": "implicit-data-consumer",
+      "role": "data engineer",
+      "description": "YOUR RESPONSIBILITIES\nRead dashboards prepared by the analytics team and export the monthly sales report. Pipeline development belongs to another department.",
+      "expected": false,
+      "judgment": "Consuming reports is not data engineering ownership."
+    },
+    {
+      "id": "implicit-code-ownership",
+      "role": "software engineer",
+      "description": "WHAT YOU WILL DO\nDevelop backend services in Python, write unit tests, review application code and support software releases that you implement.",
+      "expected": true,
+      "judgment": "Assigned software development and delivery ownership establish the requested role."
+    },
+    {
+      "id": "implicit-software-user",
+      "role": "software engineer",
+      "description": "WHAT YOU WILL DO\nUse office software to schedule customer appointments and enter invoices. Report application defects to the development team.",
+      "expected": false,
+      "judgment": "Using software and reporting defects do not establish software engineering duties."
+    },
+    {
+      "id": "implicit-enterprise-scope",
+      "role": "enterprise architect",
+      "description": "MANDATE\nDefine enterprise technology roadmaps, govern architecture standards across all business units, and align application and infrastructure portfolios with business strategy.",
+      "expected": true,
+      "judgment": "Enterprise-wide architecture strategy and governance establish the requested role."
+    },
+    {
+      "id": "architecture-construction",
+      "role": "enterprise architect",
+      "description": "MANDATE\nPrepare architectural drawings for residential buildings, specify construction materials and inspect building sites. This is a licensed building architect vacancy.",
+      "expected": false,
+      "judgment": "Building architecture is a different domain from enterprise technology architecture."
+    },
+    {
+      "id": "explicit-duties-followed-customers",
+      "role": "data engineer",
+      "description": "YOUR WORK\nDuties are exclusively data engineer work.\nOUR CUSTOMERS\nRetailers and hospitals use our products.",
+      "expected": true,
+      "judgment": "A separate customer description does not invalidate assigned duties."
+    },
+    {
+      "id": "customer-duties-followed-our-work",
+      "role": "data engineer",
+      "description": "OUR CUSTOMER'S WORK\nDuties are exclusively data engineer work.\nYOUR WORK\nNegotiate subscription renewals and maintain sales forecasts.",
+      "expected": false,
+      "judgment": "Only the customer's section assigns data engineering duties."
+    },
+    {
+      "id": "positive-role-exclusion-other",
+      "role": "software engineer",
+      "description": "You will work as a software engineer, not as a sales representative. You will own implementation of our authentication service.",
+      "expected": true,
+      "judgment": "The negation excludes another role while affirming the requested one."
+    },
+    {
+      "id": "negative-role-affirmation-other",
+      "role": "software engineer",
+      "description": "You will work as a sales representative, not as a software engineer. The engineering team implements the service.",
+      "expected": false,
+      "judgment": "The requested role is explicitly excluded."
+    },
+    {
+      "id": "scope-resets-back-to-history",
+      "role": "enterprise architect",
+      "description": "OPEN POSITION\nExecutive assistant.\nBACKGROUND ON THE DEPARTMENT\nAn earlier recruitment brief stated: this position is an enterprise architect role.",
+      "expected": false,
+      "judgment": "The requested role appears only in department history."
+    },
+    {
+      "id": "current-role-with-historical-tools",
+      "role": "enterprise architect",
+      "description": "OPEN POSITION\nYou will serve as an enterprise architect. Assess our historical technology decisions and set the future-state architecture.",
+      "expected": true,
+      "judgment": "History is an object of current work, not historical attribution of the role."
+    }
+  ]
+}

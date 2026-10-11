@@ -1,0 +1,118 @@
+{
+  "version": "search-003-section-final-holdout-v1",
+  "date": "2026-10-09",
+  "cases": [
+    {
+      "id": "assigned-role-new-business-unit",
+      "role": "data engineer",
+      "description": "The new business unit needs this hire to work as a data engineer. You own its production ingestion pipelines.",
+      "expected": true,
+      "judgment": "The requested role and corroborating duties are explicitly assigned to this hire."
+    },
+    {
+      "id": "negated-historical-label-current-clear",
+      "role": "software engineer",
+      "description": "Ignore the old sales-associate label. We are hiring you as a software engineer to implement our billing application.",
+      "expected": true,
+      "judgment": "The historical label is rejected and the current engineering assignment is clear."
+    },
+    {
+      "id": "benign-might-tools",
+      "role": "data engineer",
+      "description": "You will serve as a data engineer. You might use either Python or Scala depending on the pipeline.",
+      "expected": true,
+      "judgment": "Tool uncertainty does not make the role assignment uncertain."
+    },
+    {
+      "id": "benign-unless-schedule",
+      "role": "enterprise architect",
+      "description": "This position is an enterprise architect role. Unless a planning workshop is scheduled, Fridays are remote.",
+      "expected": true,
+      "judgment": "A scheduling exception does not negate the requested role."
+    },
+    {
+      "id": "contrast-no-longer-other-role",
+      "role": "software engineer",
+      "description": "The opening is no longer for a support analyst; it is now a software engineer role. You will design and implement the support platform.",
+      "expected": true,
+      "judgment": "The contrast replaces the old role with an explicit current engineering role."
+    },
+    {
+      "id": "quoted-current-mandate",
+      "role": "enterprise architect",
+      "description": "The approved mandate for the person hired here reads: 'Own enterprise technology architecture and govern standards across all business divisions.' You are accountable for the company-wide target architecture.",
+      "expected": true,
+      "judgment": "Quoted duties belong to the current hire and establish enterprise architecture ownership."
+    },
+    {
+      "id": "implicit-streaming-engineering",
+      "role": "data engineer",
+      "description": "You are accountable for CDC ingestion, distributed stream processing, warehouse transformations and the reliability of the production data platform. Build and operate these systems.",
+      "expected": true,
+      "judgment": "Assigned ownership of the data platform and pipelines establishes data engineering duties."
+    },
+    {
+      "id": "past-employer-present-assignment",
+      "role": "software engineer",
+      "description": "At your previous employer you may have used Java. Here you will work as a software engineer building our Go services.",
+      "expected": true,
+      "judgment": "Prior experience context is separate from an explicit current software engineering assignment."
+    },
+    {
+      "id": "conditional-client-choice",
+      "role": "data engineer",
+      "description": "Your permanent assignment is account management. A client may later choose to employ you as a data engineer; that arrangement is outside this vacancy.",
+      "expected": false,
+      "judgment": "The requested role is a separate uncertain future client engagement."
+    },
+    {
+      "id": "role-question-unresolved",
+      "role": "software engineer",
+      "description": "This position is a software engineer role? The department has yet to decide whether it needs development or administrative support.",
+      "expected": false,
+      "judgment": "A question and explicit unresolved staffing decision provide no affirmative role assignment."
+    },
+    {
+      "id": "role-retracted-by-update",
+      "role": "enterprise architect",
+      "description": "Initial announcement: this position is an enterprise architect role. Update: the architecture vacancy has been withdrawn; only the receptionist opening remains.",
+      "expected": false,
+      "judgment": "The later update withdraws the requested role."
+    },
+    {
+      "id": "colleague-quoted-duties",
+      "role": "data engineer",
+      "description": "Meet the team. Dana says: 'Duties include data engineer responsibilities.' The person hired through this posting will manage office supplies.",
+      "expected": false,
+      "judgment": "The requested duties belong to an existing colleague rather than the new hire."
+    },
+    {
+      "id": "counterfactual-requested-role",
+      "role": "software engineer",
+      "description": "Imagine this position is a software engineer role. That scenario is used in our training exercise; this vacancy is for the trainer who leads it.",
+      "expected": false,
+      "judgment": "The role statement is a hypothetical training scenario."
+    },
+    {
+      "id": "local-negation-contraction",
+      "role": "enterprise architect",
+      "description": "Your assignment isn't an enterprise architect role. You will arrange meeting rooms for the architecture team.",
+      "expected": false,
+      "judgment": "The requested role is explicitly denied and supporting work is administrative."
+    },
+    {
+      "id": "target-role-negated-only",
+      "role": "data engineer",
+      "description": "This position is a business analyst role and excludes data engineer responsibilities. Engineers on another team build all pipelines.",
+      "expected": false,
+      "judgment": "The requested duties are explicitly excluded from the current role."
+    },
+    {
+      "id": "role-example-in-bullets",
+      "role": "software engineer",
+      "description": "Examples of vacancies our recruiting software can process:\n- This position is a software engineer role.\n- This position is a nurse role.\nWe seek a sales representative for the recruiting software.",
+      "expected": false,
+      "judgment": "The role statements are product examples; the actual opening is sales."
+    }
+  ]
+}

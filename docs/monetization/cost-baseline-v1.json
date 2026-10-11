@@ -1,0 +1,113 @@
+{
+  "inputs_version": "mon-002-illustrative-v1",
+  "workload_provenance": "Synthetic planning assumptions; not telemetry or SEARCH-002 measured workload",
+  "variable_cost_multiplier": "1",
+  "results": {
+    "gemini-2.5-flash": {
+      "light": {
+        "ai_usd": "0.1567125",
+        "discovery_replacement_usd": "0.015",
+        "known_cost_subtotal_usd": "0.1717125",
+        "missing_cost_components": [
+          "maps_and_geocoding",
+          "storage_and_backup",
+          "compute_and_egress",
+          "support_labor",
+          "payment_and_subscription_fees",
+          "refunds_disputes_and_tax_service"
+        ],
+        "total_cost_usd": null,
+        "contribution_margin": null,
+        "remaining_cost_budget_at_target_margin_usd": "5.5282875",
+        "ai_exceeds_proposed_three_dollar_cap": false
+      },
+      "typical": {
+        "ai_usd": "0.823130",
+        "discovery_replacement_usd": "0.080",
+        "known_cost_subtotal_usd": "0.903130",
+        "missing_cost_components": [
+          "maps_and_geocoding",
+          "storage_and_backup",
+          "compute_and_egress",
+          "support_labor",
+          "payment_and_subscription_fees",
+          "refunds_disputes_and_tax_service"
+        ],
+        "total_cost_usd": null,
+        "contribution_margin": null,
+        "remaining_cost_budget_at_target_margin_usd": "4.796870",
+        "ai_exceeds_proposed_three_dollar_cap": false
+      },
+      "heavy": {
+        "ai_usd": "3.134125",
+        "discovery_replacement_usd": "0.300",
+        "known_cost_subtotal_usd": "3.434125",
+        "missing_cost_components": [
+          "maps_and_geocoding",
+          "storage_and_backup",
+          "compute_and_egress",
+          "support_labor",
+          "payment_and_subscription_fees",
+          "refunds_disputes_and_tax_service"
+        ],
+        "total_cost_usd": null,
+        "contribution_margin": null,
+        "remaining_cost_budget_at_target_margin_usd": "2.265875",
+        "ai_exceeds_proposed_three_dollar_cap": true
+      }
+    },
+    "gpt-5-mini": {
+      "light": {
+        "ai_usd": "0.12705",
+        "discovery_replacement_usd": "0.015",
+        "known_cost_subtotal_usd": "0.14205",
+        "missing_cost_components": [
+          "maps_and_geocoding",
+          "storage_and_backup",
+          "compute_and_egress",
+          "support_labor",
+          "payment_and_subscription_fees",
+          "refunds_disputes_and_tax_service"
+        ],
+        "total_cost_usd": null,
+        "contribution_margin": null,
+        "remaining_cost_budget_at_target_margin_usd": "5.55795",
+        "ai_exceeds_proposed_three_dollar_cap": false
+      },
+      "typical": {
+        "ai_usd": "0.66770",
+        "discovery_replacement_usd": "0.080",
+        "known_cost_subtotal_usd": "0.74770",
+        "missing_cost_components": [
+          "maps_and_geocoding",
+          "storage_and_backup",
+          "compute_and_egress",
+          "support_labor",
+          "payment_and_subscription_fees",
+          "refunds_disputes_and_tax_service"
+        ],
+        "total_cost_usd": null,
+        "contribution_margin": null,
+        "remaining_cost_budget_at_target_margin_usd": "4.95230",
+        "ai_exceeds_proposed_three_dollar_cap": false
+      },
+      "heavy": {
+        "ai_usd": "2.54125",
+        "discovery_replacement_usd": "0.300",
+        "known_cost_subtotal_usd": "2.84125",
+        "missing_cost_components": [
+          "maps_and_geocoding",
+          "storage_and_backup",
+          "compute_and_egress",
+          "support_labor",
+          "payment_and_subscription_fees",
+          "refunds_disputes_and_tax_service"
+        ],
+        "total_cost_usd": null,
+        "contribution_margin": null,
+        "remaining_cost_budget_at_target_margin_usd": "2.85875",
+        "ai_exceeds_proposed_three_dollar_cap": false
+      }
+    }
+  }
+}

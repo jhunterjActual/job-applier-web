@@ -185,3 +185,26 @@ Prefer reviewed wrapper-native output such as `--stats 5m --stats-one-line-date`
 ## Completion criteria
 
 Before declaring work complete, inspect `git diff` and `git status`, run the P0 tests and syntax check above, and confirm no protected files are staged. For runtime or UI changes, start the app, verify `/api/version` and `/`, exercise the changed flow, then stop it cleanly. Report any check that could not be run and why.
+
+## Storage stewardship and cleanup
+
+Storage cleanup is part of the scope and completion criteria for work that creates downloads, packages, build caches, container images/volumes, temporary checkouts, deployment uploads, restore rehearsals, logs, or backups. For documentation-only work, mark this check not applicable rather than running unrelated builds or tests.
+
+- Before large builds, uploads, imports, or backups, check destination free space and expected peak usage, including extraction and rollback copies. For authorized OVH work, target at least 5 GiB free after completion; pause growth-producing work below 3 GiB free or when the operation would cross that floor. Do not bypass backup space guards. Other environments should use their documented limits.
+- Track task-created storage by exact path or resource ID, project, purpose, approximate size, and retention/cleanup condition. Use dedicated temporary locations and avoid unnecessary duplicate archives. Build locally where the deployment workflow permits.
+- At completion, clean up disposable task-owned local artifacts within existing authorization. For remote or protected storage, prepare the exact cleanup list and obtain any required approval before deletion. A task is not complete without either verified cleanup or an explicit retained-items handoff stating size, reason, owner, and next review/expiry condition.
+- Before removal, check running and stopped container mounts, the full active Compose override chain, service/timer references, active/concurrent tasks, and rollback requirements. Age, a temporary-looking name, or Docker's unused/reclaimable label is not sufficient proof. Preserve current and approved rollback releases, matched restore-tested backups, source data, uploads, databases, secrets, and evidence. Never delete another project's resources or infer that staging/gate directories are disposable.
+- Do not use blanket Docker system/image/volume pruning, broad directory deletion, or unreviewed retention jobs on a shared host. Select specific owned resources. Build-cache cleanup also needs ownership/concurrency review and applicable host-change approval. Keep MVOC isolation and all existing production/data/backup approval gates in force.
+- For archival, agree the destination and retention first. Prefer direct download/streaming to the personal computer when the VPS is tight; do not create a second large archive on that VPS. Treat database dumps and migration bundles as private, encrypt before third-party storage, and keep recovery keys separate. Verify destination size and SHA-256 against the source, plus readability/restore suitability, before requesting source deletion. A sync operation or successful upload alone is not verification; do not claim an off-host backup exists until checked.
+- Give backups and logs explicit bounded retention that preserves the approved recovery window. Propose changes when retention is undefined; do not silently delete older backups, lower safeguards, buy storage, or enable cloud services. Report disk usage before/after, verified bytes reclaimed, remaining headroom, retained artifacts, and backup/service health when remote cleanup was performed.
+
+The 2026-09-16 OVH audit in `C:\src\hosting-migration\STORAGE_AUDIT_20260916.md` documents the initial pressure and candidate list. Its measurements are a snapshot, not standing deletion authorization; revalidate immediately before action.
+
+## Hidden terminal input compatibility
+
+For hidden credential-entry prompts, support and test ordinary paste and balanced
+terminal bracketed paste: start ESC[200~ and end ESC[201~. A visible ^[[201~ trailer
+is terminal metadata, not part of the secret. Use a real pseudo-terminal regression
+test to verify no echo, signal/terminal restoration, and rejection of malformed,
+multiline, unrelated-control and oversized input. Do not weaken input safeguards,
+log secrets, or reset credential timers/counters to work around paste failures.

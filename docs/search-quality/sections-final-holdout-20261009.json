@@ -1,0 +1,218 @@
+{
+  "reference_version": "search-003-section-final-holdout-v1",
+  "reference_sha256": "1723a9bd5238793282fd42cbc7e037071e9f8208a8ec36014cb67ca387a7d602",
+  "before_sha256": "4818453ae994e24c75f87b0edf7381135cb4198c52e30c41601f467335294c04",
+  "candidate_sha256": "34786dba4cfff389436bcdc39cc42687efaf4f4c258db8a0ce847092a2a62b2a",
+  "evaluator_sha256": "1ad2dcc4b128d96f561a60b0ec37021926b64b0bd29e03075d4ca90a4c85b350",
+  "before": {
+    "cases": 16,
+    "true_positives": 0,
+    "false_positives": [
+      "role-question-unresolved"
+    ],
+    "false_negatives": [
+      "assigned-role-new-business-unit",
+      "negated-historical-label-current-clear",
+      "benign-might-tools",
+      "benign-unless-schedule",
+      "contrast-no-longer-other-role",
+      "quoted-current-mandate",
+      "implicit-streaming-engineering",
+      "past-employer-present-assignment"
+    ],
+    "precision": 0.0,
+    "recall": 0.0,
+    "results": [
+      {
+        "id": "assigned-role-new-business-unit",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "negated-historical-label-current-clear",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "benign-might-tools",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "benign-unless-schedule",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "contrast-no-longer-other-role",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "quoted-current-mandate",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "implicit-streaming-engineering",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "past-employer-present-assignment",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "conditional-client-choice",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "role-question-unresolved",
+        "expected": false,
+        "matched": true
+      },
+      {
+        "id": "role-retracted-by-update",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "colleague-quoted-duties",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "counterfactual-requested-role",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "local-negation-contraction",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "target-role-negated-only",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "role-example-in-bullets",
+        "expected": false,
+        "matched": false
+      }
+    ]
+  },
+  "after": {
+    "cases": 16,
+    "true_positives": 2,
+    "false_positives": [
+      "role-question-unresolved",
+      "role-example-in-bullets"
+    ],
+    "false_negatives": [
+      "assigned-role-new-business-unit",
+      "negated-historical-label-current-clear",
+      "contrast-no-longer-other-role",
+      "quoted-current-mandate",
+      "implicit-streaming-engineering",
+      "past-employer-present-assignment"
+    ],
+    "precision": 0.5,
+    "recall": 0.25,
+    "results": [
+      {
+        "id": "assigned-role-new-business-unit",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "negated-historical-label-current-clear",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "benign-might-tools",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "benign-unless-schedule",
+        "expected": true,
+        "matched": true
+      },
+      {
+        "id": "contrast-no-longer-other-role",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "quoted-current-mandate",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "implicit-streaming-engineering",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "past-employer-present-assignment",
+        "expected": true,
+        "matched": false
+      },
+      {
+        "id": "conditional-client-choice",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "role-question-unresolved",
+        "expected": false,
+        "matched": true
+      },
+      {
+        "id": "role-retracted-by-update",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "colleague-quoted-duties",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "counterfactual-requested-role",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "local-negation-contraction",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "target-role-negated-only",
+        "expected": false,
+        "matched": false
+      },
+      {
+        "id": "role-example-in-bullets",
+        "expected": false,
+        "matched": true
+      }
+    ]
+  },
+  "comparison": {
+    "thresholds": {
+      "max_false_positives": 0,
+      "max_recall_drop": 0,
+      "min_recall": 0.8
+    },
+    "accepted": false,
+    "runtime_approved": false,
+    "scope": "synthetic description-only screen"
+  }
+}

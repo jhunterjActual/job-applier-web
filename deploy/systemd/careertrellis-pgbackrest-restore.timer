@@ -1,10 +1,10 @@
 [Unit]
-Description=Monthly isolated PostgreSQL restore and checksum rehearsal
+Description=Weekly isolated PostgreSQL restore and checksum rehearsal
 
 [Timer]
-OnActiveSec=30d
-OnUnitActiveSec=30d
-RandomizedDelaySec=30m
+OnCalendar=Wed *-*-* 08:00:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
 Unit=careertrellis-pgbackrest-restore.service
 
 [Install]

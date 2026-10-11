@@ -1,0 +1,60 @@
+{
+  "version": "mon-001-proposal-v1",
+  "date": "2026-10-07",
+  "status": "proposal_only_not_runtime_configuration",
+  "activation_authorized": false,
+  "period": "calendar_month_UTC",
+  "rollover": false,
+  "automatic_overages": false,
+  "managed_free_trial_usd": "0",
+  "plans": {
+    "free": {
+      "price_usd_monthly": "0",
+      "search_runs": 10,
+      "discovery_requests": 60,
+      "scored_jobs": 100,
+      "tailoring_actions": 5,
+      "ocr_pages": 12,
+      "interview_actions": 5,
+      "stored_materials_bytes": 104857600,
+      "managed_ai_cost_usd": "0",
+      "ai_payer": "user_BYOK",
+      "scheduled_searches": 0,
+      "concurrent_runs": 1
+    },
+    "pro": {
+      "price_usd_monthly": "19",
+      "search_runs": 50,
+      "discovery_requests": 300,
+      "scored_jobs": 500,
+      "tailoring_actions": 30,
+      "ocr_pages": 48,
+      "interview_actions": 20,
+      "stored_materials_bytes": 1073741824,
+      "managed_ai_cost_usd": "3",
+      "ai_payer": "platform_managed_or_explicit_user_BYOK",
+      "scheduled_searches": 1,
+      "concurrent_runs": 1
+    }
+  },
+  "account_data_access": {
+    "export": "always_available_without_upgrade",
+    "deletion": "always_available_without_upgrade",
+    "existing_materials": "read_and_download_after_downgrade",
+    "storage_over_limit": "block_new_materials_preserve_existing"
+  },
+  "proposed_pilot_platform_caps": {
+    "participants": 5,
+    "managed_ai_usd_monthly": "15",
+    "discovery_requests_monthly": 1500,
+    "maps_budget_usd_monthly": "5"
+  },
+  "approval_dependencies": [
+    "owner_approval_of_prices_allowances_and_policies",
+    "measured_full_pipeline_workloads_and_total_unit_cost",
+    "provider_and_payment_commercial_terms",
+    "durable_entitlements_and_spend_ledger",
+    "existing_credit_only_discovery_authority_or_separate_budget_change",
+    "separate_managed_provider_and_billing_activation"
+  ]
+}

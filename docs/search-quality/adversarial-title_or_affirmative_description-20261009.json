@@ -1,0 +1,294 @@
+{
+  "reference_version": "search-003-adversarial-v1",
+  "kind": "synthetic_filter_replay_fixture_order",
+  "cells": {
+    "software-engineer-dayton": {
+      "precision_at_10": 0.3,
+      "precision_at_returned": 1.0,
+      "precision_all_returned": 1.0,
+      "known_set_recall": 0.75,
+      "unique_eligible_jobs": 3,
+      "unique_eligible_employers": 3,
+      "duplicate_rate": 0.0,
+      "stale_rate": 0.0,
+      "detail_success_rate": null,
+      "latency_ms": null,
+      "http_attempts": null,
+      "requests_per_usable_result": null,
+      "missed_positive_identities": [
+        "implicit"
+      ],
+      "diagnostics": {},
+      "unmeasured_stages": [
+        "discovery",
+        "detail_extraction",
+        "stale_check",
+        "deduplication",
+        "scoring",
+        "network_latency",
+        "request_cost"
+      ]
+    },
+    "software-engineer-us-remote": {
+      "precision_at_10": 0.3,
+      "precision_at_returned": 1.0,
+      "precision_all_returned": 1.0,
+      "known_set_recall": 0.75,
+      "unique_eligible_jobs": 3,
+      "unique_eligible_employers": 3,
+      "duplicate_rate": 0.0,
+      "stale_rate": 0.0,
+      "detail_success_rate": null,
+      "latency_ms": null,
+      "http_attempts": null,
+      "requests_per_usable_result": null,
+      "missed_positive_identities": [
+        "implicit"
+      ],
+      "diagnostics": {},
+      "unmeasured_stages": [
+        "discovery",
+        "detail_extraction",
+        "stale_check",
+        "deduplication",
+        "scoring",
+        "network_latency",
+        "request_cost"
+      ]
+    },
+    "data-engineer-dayton": {
+      "precision_at_10": 0.3,
+      "precision_at_returned": 1.0,
+      "precision_all_returned": 1.0,
+      "known_set_recall": 0.75,
+      "unique_eligible_jobs": 3,
+      "unique_eligible_employers": 3,
+      "duplicate_rate": 0.0,
+      "stale_rate": 0.0,
+      "detail_success_rate": null,
+      "latency_ms": null,
+      "http_attempts": null,
+      "requests_per_usable_result": null,
+      "missed_positive_identities": [
+        "implicit"
+      ],
+      "diagnostics": {},
+      "unmeasured_stages": [
+        "discovery",
+        "detail_extraction",
+        "stale_check",
+        "deduplication",
+        "scoring",
+        "network_latency",
+        "request_cost"
+      ]
+    },
+    "data-engineer-us-remote": {
+      "precision_at_10": 0.3,
+      "precision_at_returned": 1.0,
+      "precision_all_returned": 1.0,
+      "known_set_recall": 0.75,
+      "unique_eligible_jobs": 3,
+      "unique_eligible_employers": 3,
+      "duplicate_rate": 0.0,
+      "stale_rate": 0.0,
+      "detail_success_rate": null,
+      "latency_ms": null,
+      "http_attempts": null,
+      "requests_per_usable_result": null,
+      "missed_positive_identities": [
+        "implicit"
+      ],
+      "diagnostics": {},
+      "unmeasured_stages": [
+        "discovery",
+        "detail_extraction",
+        "stale_check",
+        "deduplication",
+        "scoring",
+        "network_latency",
+        "request_cost"
+      ]
+    },
+    "enterprise-architect-dayton": {
+      "precision_at_10": 0.3,
+      "precision_at_returned": 1.0,
+      "precision_all_returned": 1.0,
+      "known_set_recall": 0.75,
+      "unique_eligible_jobs": 3,
+      "unique_eligible_employers": 3,
+      "duplicate_rate": 0.0,
+      "stale_rate": 0.0,
+      "detail_success_rate": null,
+      "latency_ms": null,
+      "http_attempts": null,
+      "requests_per_usable_result": null,
+      "missed_positive_identities": [
+        "implicit"
+      ],
+      "diagnostics": {},
+      "unmeasured_stages": [
+        "discovery",
+        "detail_extraction",
+        "stale_check",
+        "deduplication",
+        "scoring",
+        "network_latency",
+        "request_cost"
+      ]
+    },
+    "enterprise-architect-us-remote": {
+      "precision_at_10": 0.3,
+      "precision_at_returned": 1.0,
+      "precision_all_returned": 1.0,
+      "known_set_recall": 0.75,
+      "unique_eligible_jobs": 3,
+      "unique_eligible_employers": 3,
+      "duplicate_rate": 0.0,
+      "stale_rate": 0.0,
+      "detail_success_rate": null,
+      "latency_ms": null,
+      "http_attempts": null,
+      "requests_per_usable_result": null,
+      "missed_positive_identities": [
+        "implicit"
+      ],
+      "diagnostics": {},
+      "unmeasured_stages": [
+        "discovery",
+        "detail_extraction",
+        "stale_check",
+        "deduplication",
+        "scoring",
+        "network_latency",
+        "request_cost"
+      ]
+    }
+  },
+  "missing_cells": [],
+  "reference_sha256": "3973571a61978fa9f6d9a5ef113d81ddb602f25a0de75f802595b80d30bccee1",
+  "observations": {
+    "reference_version": "search-003-adversarial-v1",
+    "kind": "synthetic_filter_replay_fixture_order",
+    "filter_sha256": "04c3e76e91d55994eed4bce3a900ce654e67b6b952214d00b02b226cd7717f08",
+    "role_scope": "title_or_affirmative_description",
+    "evaluator_sha256": "0a8caf53a409416af05c5505147001bb7d59708f5153e6a6f6fe028990a209d9",
+    "role_intent_sha256": "4818453ae994e24c75f87b0edf7381135cb4198c52e30c41601f467335294c04",
+    "cells": [
+      {
+        "id": "software-engineer-dayton",
+        "ranked_ids": [
+          "title",
+          "duties",
+          "position"
+        ],
+        "unmeasured_stages": [
+          "discovery",
+          "detail_extraction",
+          "stale_check",
+          "deduplication",
+          "scoring",
+          "network_latency",
+          "request_cost"
+        ]
+      },
+      {
+        "id": "software-engineer-us-remote",
+        "ranked_ids": [
+          "title",
+          "duties",
+          "position"
+        ],
+        "unmeasured_stages": [
+          "discovery",
+          "detail_extraction",
+          "stale_check",
+          "deduplication",
+          "scoring",
+          "network_latency",
+          "request_cost"
+        ]
+      },
+      {
+        "id": "data-engineer-dayton",
+        "ranked_ids": [
+          "title",
+          "duties",
+          "position"
+        ],
+        "unmeasured_stages": [
+          "discovery",
+          "detail_extraction",
+          "stale_check",
+          "deduplication",
+          "scoring",
+          "network_latency",
+          "request_cost"
+        ]
+      },
+      {
+        "id": "data-engineer-us-remote",
+        "ranked_ids": [
+          "title",
+          "duties",
+          "position"
+        ],
+        "unmeasured_stages": [
+          "discovery",
+          "detail_extraction",
+          "stale_check",
+          "deduplication",
+          "scoring",
+          "network_latency",
+          "request_cost"
+        ]
+      },
+      {
+        "id": "enterprise-architect-dayton",
+        "ranked_ids": [
+          "title",
+          "duties",
+          "position"
+        ],
+        "unmeasured_stages": [
+          "discovery",
+          "detail_extraction",
+          "stale_check",
+          "deduplication",
+          "scoring",
+          "network_latency",
+          "request_cost"
+        ]
+      },
+      {
+        "id": "enterprise-architect-us-remote",
+        "ranked_ids": [
+          "title",
+          "duties",
+          "position"
+        ],
+        "unmeasured_stages": [
+          "discovery",
+          "detail_extraction",
+          "stale_check",
+          "deduplication",
+          "scoring",
+          "network_latency",
+          "request_cost"
+        ]
+      }
+    ]
+  },
+  "thresholds": {
+    "max_precision_at_10_drop": 0,
+    "max_known_set_recall_drop": 0,
+    "max_precision_all_returned_drop": 0,
+    "min_one_cell_recall_gain": 0.1
+  },
+  "comparison": {
+    "non_regression_pass": true,
+    "regressions": [],
+    "improvement_pass": true,
+    "accepted": true
+  }
+}

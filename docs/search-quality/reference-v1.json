@@ -1,0 +1,558 @@
+{
+  "version": "search-002-synthetic-v1",
+  "dated": "2026-10-07",
+  "provenance": "Entirely fabricated offline controls; no user telemetry or current vacancies",
+  "thresholds": {
+    "max_precision_at_10_drop": 0,
+    "max_known_set_recall_drop": 0,
+    "min_one_cell_recall_gain": 0.1
+  },
+  "cells": [
+    {
+      "id": "software-engineer-dayton",
+      "role": "software engineer",
+      "location": "Dayton OH",
+      "jobs": [
+        {
+          "id": "exact",
+          "identity": "exact",
+          "employer": "Example Alpha",
+          "title": "Software Engineer",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively software engineer work.",
+          "judgment": "Exact role and eligible worksite"
+        },
+        {
+          "id": "duties",
+          "identity": "duties",
+          "employer": "Example duties",
+          "title": "Software Developer",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively software engineer work.",
+          "judgment": "Synthetic duties explicitly establish the requested role despite alternate title"
+        },
+        {
+          "id": "wrong-role",
+          "identity": "wrong-role",
+          "employer": "Example wrong-role",
+          "title": "Sales Manager",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "open",
+          "relevant": false,
+          "description": "Sell products and manage customer accounts; no engineering or architecture responsibilities.",
+          "judgment": "Wrong role"
+        },
+        {
+          "id": "wrong-location",
+          "identity": "wrong-location",
+          "employer": "Example wrong-location",
+          "title": "Software Engineer",
+          "location": "Daytona, Florida",
+          "remote": false,
+          "status": "open",
+          "relevant": false,
+          "description": "Duties are exclusively software engineer work.",
+          "judgment": "Wrong geography"
+        },
+        {
+          "id": "unknown-location",
+          "identity": "unknown-location",
+          "employer": "Example unknown-location",
+          "title": "Software Engineer",
+          "location": "",
+          "remote": false,
+          "status": "open",
+          "relevant": false,
+          "description": "Duties are exclusively software engineer work.",
+          "judgment": "Unknown location is not affirmative eligibility"
+        },
+        {
+          "id": "closed",
+          "identity": "closed",
+          "employer": "Example closed",
+          "title": "Software Engineer",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "closed",
+          "relevant": false,
+          "description": "Duties are exclusively software engineer work.",
+          "judgment": "Closed posting"
+        },
+        {
+          "id": "duplicate",
+          "identity": "exact",
+          "employer": "Example Alpha",
+          "title": "Software Engineer",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively software engineer work.",
+          "judgment": "Second source for exact requisition"
+        }
+      ]
+    },
+    {
+      "id": "software-engineer-us-remote",
+      "role": "software engineer",
+      "location": "US remote",
+      "jobs": [
+        {
+          "id": "exact",
+          "identity": "exact",
+          "employer": "Example Alpha",
+          "title": "Software Engineer",
+          "location": "United States",
+          "remote": true,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively software engineer work.",
+          "judgment": "Exact role and eligible worksite"
+        },
+        {
+          "id": "duties",
+          "identity": "duties",
+          "employer": "Example duties",
+          "title": "Software Developer",
+          "location": "United States",
+          "remote": true,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively software engineer work.",
+          "judgment": "Synthetic duties explicitly establish the requested role despite alternate title"
+        },
+        {
+          "id": "wrong-role",
+          "identity": "wrong-role",
+          "employer": "Example wrong-role",
+          "title": "Sales Manager",
+          "location": "United States",
+          "remote": true,
+          "status": "open",
+          "relevant": false,
+          "description": "Sell products and manage customer accounts; no engineering or architecture responsibilities.",
+          "judgment": "Wrong role"
+        },
+        {
+          "id": "wrong-location",
+          "identity": "wrong-location",
+          "employer": "Example wrong-location",
+          "title": "Software Engineer",
+          "location": "Canada",
+          "remote": true,
+          "status": "open",
+          "relevant": false,
+          "description": "Duties are exclusively software engineer work.",
+          "judgment": "Wrong geography"
+        },
+        {
+          "id": "unknown-location",
+          "identity": "unknown-location",
+          "employer": "Example unknown-location",
+          "title": "Software Engineer",
+          "location": "",
+          "remote": false,
+          "status": "open",
+          "relevant": false,
+          "description": "Duties are exclusively software engineer work.",
+          "judgment": "Unknown location is not affirmative eligibility"
+        },
+        {
+          "id": "closed",
+          "identity": "closed",
+          "employer": "Example closed",
+          "title": "Software Engineer",
+          "location": "United States",
+          "remote": true,
+          "status": "closed",
+          "relevant": false,
+          "description": "Duties are exclusively software engineer work.",
+          "judgment": "Closed posting"
+        },
+        {
+          "id": "duplicate",
+          "identity": "exact",
+          "employer": "Example Alpha",
+          "title": "Software Engineer",
+          "location": "United States",
+          "remote": true,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively software engineer work.",
+          "judgment": "Second source for exact requisition"
+        }
+      ]
+    },
+    {
+      "id": "data-engineer-dayton",
+      "role": "data engineer",
+      "location": "Dayton OH",
+      "jobs": [
+        {
+          "id": "exact",
+          "identity": "exact",
+          "employer": "Example Alpha",
+          "title": "Data Engineer",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively data engineer work.",
+          "judgment": "Exact role and eligible worksite"
+        },
+        {
+          "id": "duties",
+          "identity": "duties",
+          "employer": "Example duties",
+          "title": "Software Engineer - Data",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively data engineer work.",
+          "judgment": "Synthetic duties explicitly establish the requested role despite alternate title"
+        },
+        {
+          "id": "wrong-role",
+          "identity": "wrong-role",
+          "employer": "Example wrong-role",
+          "title": "Sales Manager",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "open",
+          "relevant": false,
+          "description": "Sell products and manage customer accounts; no engineering or architecture responsibilities.",
+          "judgment": "Wrong role"
+        },
+        {
+          "id": "wrong-location",
+          "identity": "wrong-location",
+          "employer": "Example wrong-location",
+          "title": "Data Engineer",
+          "location": "Daytona, Florida",
+          "remote": false,
+          "status": "open",
+          "relevant": false,
+          "description": "Duties are exclusively data engineer work.",
+          "judgment": "Wrong geography"
+        },
+        {
+          "id": "unknown-location",
+          "identity": "unknown-location",
+          "employer": "Example unknown-location",
+          "title": "Data Engineer",
+          "location": "",
+          "remote": false,
+          "status": "open",
+          "relevant": false,
+          "description": "Duties are exclusively data engineer work.",
+          "judgment": "Unknown location is not affirmative eligibility"
+        },
+        {
+          "id": "closed",
+          "identity": "closed",
+          "employer": "Example closed",
+          "title": "Data Engineer",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "closed",
+          "relevant": false,
+          "description": "Duties are exclusively data engineer work.",
+          "judgment": "Closed posting"
+        },
+        {
+          "id": "duplicate",
+          "identity": "exact",
+          "employer": "Example Alpha",
+          "title": "Data Engineer",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively data engineer work.",
+          "judgment": "Second source for exact requisition"
+        }
+      ]
+    },
+    {
+      "id": "data-engineer-us-remote",
+      "role": "data engineer",
+      "location": "US remote",
+      "jobs": [
+        {
+          "id": "exact",
+          "identity": "exact",
+          "employer": "Example Alpha",
+          "title": "Data Engineer",
+          "location": "United States",
+          "remote": true,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively data engineer work.",
+          "judgment": "Exact role and eligible worksite"
+        },
+        {
+          "id": "duties",
+          "identity": "duties",
+          "employer": "Example duties",
+          "title": "Software Engineer - Data",
+          "location": "United States",
+          "remote": true,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively data engineer work.",
+          "judgment": "Synthetic duties explicitly establish the requested role despite alternate title"
+        },
+        {
+          "id": "wrong-role",
+          "identity": "wrong-role",
+          "employer": "Example wrong-role",
+          "title": "Sales Manager",
+          "location": "United States",
+          "remote": true,
+          "status": "open",
+          "relevant": false,
+          "description": "Sell products and manage customer accounts; no engineering or architecture responsibilities.",
+          "judgment": "Wrong role"
+        },
+        {
+          "id": "wrong-location",
+          "identity": "wrong-location",
+          "employer": "Example wrong-location",
+          "title": "Data Engineer",
+          "location": "Canada",
+          "remote": true,
+          "status": "open",
+          "relevant": false,
+          "description": "Duties are exclusively data engineer work.",
+          "judgment": "Wrong geography"
+        },
+        {
+          "id": "unknown-location",
+          "identity": "unknown-location",
+          "employer": "Example unknown-location",
+          "title": "Data Engineer",
+          "location": "",
+          "remote": false,
+          "status": "open",
+          "relevant": false,
+          "description": "Duties are exclusively data engineer work.",
+          "judgment": "Unknown location is not affirmative eligibility"
+        },
+        {
+          "id": "closed",
+          "identity": "closed",
+          "employer": "Example closed",
+          "title": "Data Engineer",
+          "location": "United States",
+          "remote": true,
+          "status": "closed",
+          "relevant": false,
+          "description": "Duties are exclusively data engineer work.",
+          "judgment": "Closed posting"
+        },
+        {
+          "id": "duplicate",
+          "identity": "exact",
+          "employer": "Example Alpha",
+          "title": "Data Engineer",
+          "location": "United States",
+          "remote": true,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively data engineer work.",
+          "judgment": "Second source for exact requisition"
+        }
+      ]
+    },
+    {
+      "id": "enterprise-architect-dayton",
+      "role": "enterprise architect",
+      "location": "Dayton OH",
+      "jobs": [
+        {
+          "id": "exact",
+          "identity": "exact",
+          "employer": "Example Alpha",
+          "title": "Enterprise Architect",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively enterprise architect work.",
+          "judgment": "Exact role and eligible worksite"
+        },
+        {
+          "id": "duties",
+          "identity": "duties",
+          "employer": "Example duties",
+          "title": "Principal Architecture Lead",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively enterprise architect work.",
+          "judgment": "Synthetic duties explicitly establish the requested role despite alternate title"
+        },
+        {
+          "id": "wrong-role",
+          "identity": "wrong-role",
+          "employer": "Example wrong-role",
+          "title": "Sales Manager",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "open",
+          "relevant": false,
+          "description": "Sell products and manage customer accounts; no engineering or architecture responsibilities.",
+          "judgment": "Wrong role"
+        },
+        {
+          "id": "wrong-location",
+          "identity": "wrong-location",
+          "employer": "Example wrong-location",
+          "title": "Enterprise Architect",
+          "location": "Daytona, Florida",
+          "remote": false,
+          "status": "open",
+          "relevant": false,
+          "description": "Duties are exclusively enterprise architect work.",
+          "judgment": "Wrong geography"
+        },
+        {
+          "id": "unknown-location",
+          "identity": "unknown-location",
+          "employer": "Example unknown-location",
+          "title": "Enterprise Architect",
+          "location": "",
+          "remote": false,
+          "status": "open",
+          "relevant": false,
+          "description": "Duties are exclusively enterprise architect work.",
+          "judgment": "Unknown location is not affirmative eligibility"
+        },
+        {
+          "id": "closed",
+          "identity": "closed",
+          "employer": "Example closed",
+          "title": "Enterprise Architect",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "closed",
+          "relevant": false,
+          "description": "Duties are exclusively enterprise architect work.",
+          "judgment": "Closed posting"
+        },
+        {
+          "id": "duplicate",
+          "identity": "exact",
+          "employer": "Example Alpha",
+          "title": "Enterprise Architect",
+          "location": "Dayton, Ohio",
+          "remote": false,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively enterprise architect work.",
+          "judgment": "Second source for exact requisition"
+        }
+      ]
+    },
+    {
+      "id": "enterprise-architect-us-remote",
+      "role": "enterprise architect",
+      "location": "US remote",
+      "jobs": [
+        {
+          "id": "exact",
+          "identity": "exact",
+          "employer": "Example Alpha",
+          "title": "Enterprise Architect",
+          "location": "United States",
+          "remote": true,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively enterprise architect work.",
+          "judgment": "Exact role and eligible worksite"
+        },
+        {
+          "id": "duties",
+          "identity": "duties",
+          "employer": "Example duties",
+          "title": "Principal Architecture Lead",
+          "location": "United States",
+          "remote": true,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively enterprise architect work.",
+          "judgment": "Synthetic duties explicitly establish the requested role despite alternate title"
+        },
+        {
+          "id": "wrong-role",
+          "identity": "wrong-role",
+          "employer": "Example wrong-role",
+          "title": "Sales Manager",
+          "location": "United States",
+          "remote": true,
+          "status": "open",
+          "relevant": false,
+          "description": "Sell products and manage customer accounts; no engineering or architecture responsibilities.",
+          "judgment": "Wrong role"
+        },
+        {
+          "id": "wrong-location",
+          "identity": "wrong-location",
+          "employer": "Example wrong-location",
+          "title": "Enterprise Architect",
+          "location": "Canada",
+          "remote": true,
+          "status": "open",
+          "relevant": false,
+          "description": "Duties are exclusively enterprise architect work.",
+          "judgment": "Wrong geography"
+        },
+        {
+          "id": "unknown-location",
+          "identity": "unknown-location",
+          "employer": "Example unknown-location",
+          "title": "Enterprise Architect",
+          "location": "",
+          "remote": false,
+          "status": "open",
+          "relevant": false,
+          "description": "Duties are exclusively enterprise architect work.",
+          "judgment": "Unknown location is not affirmative eligibility"
+        },
+        {
+          "id": "closed",
+          "identity": "closed",
+          "employer": "Example closed",
+          "title": "Enterprise Architect",
+          "location": "United States",
+          "remote": true,
+          "status": "closed",
+          "relevant": false,
+          "description": "Duties are exclusively enterprise architect work.",
+          "judgment": "Closed posting"
+        },
+        {
+          "id": "duplicate",
+          "identity": "exact",
+          "employer": "Example Alpha",
+          "title": "Enterprise Architect",
+          "location": "United States",
+          "remote": true,
+          "status": "open",
+          "relevant": true,
+          "description": "Duties are exclusively enterprise architect work.",
+          "judgment": "Second source for exact requisition"
+        }
+      ]
+    }
+  ]
+}
