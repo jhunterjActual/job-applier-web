@@ -8,6 +8,7 @@ both synthetic owners, and skips without that explicit test URL.
 from __future__ import annotations
 
 import base64
+from contextlib import ExitStack
 import json
 import os
 import unittest
@@ -65,6 +66,7 @@ SHARED_ROUTE_POLICIES: dict[str, set[tuple[str, str]]] = {
         ("POST", "/api/operations/{operation_id}/cancel"),
         ("GET", "/api/jobs/status"),
         ("POST", "/api/jobs/search"),
+        ("POST", "/api/jobs/search/plan"),
         ("POST", "/api/jobs/search/cancel"),
     },
     "discovery": {
@@ -139,6 +141,76 @@ class SharedRoutePolicyInventoryTests(unittest.TestCase):
         }
         self.assertEqual(actual, set(classified))
 
+
+class SearchPlanRoutePolicyTests(unittest.TestCase):
+    """Exercise HTTP authentication and pure planning without a database fixture."""
+
+    def setUp(self) -> None:
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch.object(app_module.signup_http, "enabled", return_value=False))
+        self.stack.enter_context(patch.object(app_module, "get_auth_configuration", return_value=Mock()))
+        self.stack.enter_context(patch.object(app_module, "check_postgres_ready"))
+        self.stack.enter_context(patch.object(app_module, "data_store_kind", return_value=app_module.SHARED_DATA_STORE))
+        self.authentication = self.stack.enter_context(patch.object(
+            app_module, "authenticate_session", return_value=SessionAuthentication(status="unauthenticated")
+        ))
+        self.authorization = self.stack.enter_context(patch.object(app_module, "authorized_local_user"))
+        self.forbidden = []
+        for name in ("get_db_connection", "runtime_profile_repository",
+                     "runtime_search_run_repository", "runtime_discovery_repository",
+                     "settings_from_profile", "current_provider_secret_configured"):
+            self.forbidden.append(self.stack.enter_context(patch.object(
+                app_module, name, side_effect=AssertionError(f"Planning must not call {name}")
+            )))
+        for target in ("discovery_sources.collect", "searcher.run_job_search_and_matching",
+                       "searcher.extract_search_keywords_from_resume"):
+            self.forbidden.append(self.stack.enter_context(patch(
+                target, side_effect=AssertionError(f"Planning must not call {target}")
+            )))
+        self.client = TestClient(app_module.app, base_url="http://localhost")
+        self.addCleanup(self.client.close)
+        self.payload = {"keywords": "Data Engineer; Software Engineer - Data",
+                        "title_alternatives": True, "location": "US remote"}
+
+    def assert_no_work(self) -> None:
+        for forbidden in self.forbidden:
+            forbidden.assert_not_called()
+
+    def authenticate(self, owner: int) -> None:
+        self.authentication.return_value = SessionAuthentication(
+            status="authenticated", workos_user_id=f"synthetic-{owner}", session_id=f"session-{owner}"
+        )
+        self.authorization.return_value = AuthorizedLocalUser(id=owner, role="user")
+
+    def test_missing_session_rejected_before_planning_or_stores(self) -> None:
+        with patch.object(app_module, "title_plan", side_effect=AssertionError("No unauthenticated plan")) as plan:
+            response = self.client.post("/api/jobs/search/plan", json=self.payload)
+        self.assertEqual(401, response.status_code, response.text)
+        plan.assert_not_called()
+        self.authorization.assert_not_called()
+        self.assert_no_work()
+
+    def test_two_authenticated_owners_get_only_submitted_plan_without_work(self) -> None:
+        expected = {"mode": "manual", "titles": ["Data Engineer", "Software Engineer - Data"],
+                    "max_titles": 3, "software_alias": False}
+        for owner in (101, 202):
+            with self.subTest(owner=owner):
+                self.authenticate(owner)
+                response = self.client.post("/api/jobs/search/plan", json={
+                    **self.payload, "save_search": True, "saved_search_id": 7,
+                })
+                self.assertEqual(200, response.status_code, response.text)
+                self.assertEqual(expected, response.json())
+        self.assert_no_work()
+
+    def test_invalid_alternatives_rejected_without_work(self) -> None:
+        self.authenticate(101)
+        response = self.client.post("/api/jobs/search/plan", json={
+            **self.payload, "keywords": "A;B;C;D",
+        })
+        self.assertEqual(422, response.status_code, response.text)
+        self.assert_no_work()
 
 class PostgreSQLCutoverRouteQualificationTests(unittest.TestCase):
     """Read-only route qualification; destructive flows retain focused suites."""

@@ -1385,4 +1385,6 @@ Read-only diagnosis and exact evidence (local-only evidence: `artifacts/HEALTHCH
 
 SEARCH-003 full provider acceptance, recurring mirror capture, complete recovery policy and key/plaintext verification remain open. This closeout does not promote partial search acceptance or ciphertext-only rehearsal into broader completion. The user explicitly authorized commit, push and a draft PR without a new deployment on October 11; preserve the previous live evidence and identify later source-only packaging changes separately.
 
+PR #85 CI follow-up (October 11): both Web foundation jobs caught the same omitted policy inventory entry for POST /api/jobs/search/plan. Classify the pure, authenticated preview explicitly and retain exact route coverage; add HTTP boundary coverage and run the four title/discovery contract modules in Linux CI. This test/CI correction does not change application behavior or require deployment. Local and hosted results remain separate; hosted acceptance requires the corrected commit's checks to pass.
+
 Publication note: local-only evidence paths identify retained operator records; those private/generated artifacts are intentionally excluded from this repository. Maintained source and portable synthetic fixtures are included.
