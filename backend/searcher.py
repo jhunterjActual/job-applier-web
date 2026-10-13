@@ -18,6 +18,7 @@ from ai_providers import (
     default_model,
     generate_structured,
     normalize_provider,
+    claude_workflow_key,
     settings_from_profile,
 )
 import config
@@ -39,6 +40,7 @@ MATCH_PROVIDER_RETRYABLE_ERRORS = frozenset({
     "empty_response",
     "invalid_response",
     "network",
+    "overloaded",
     "oversized_response",
     "provider_error",
     "rate_limit",
@@ -50,6 +52,15 @@ MATCH_PROVIDER_FAILURE_CODES = MATCH_PROVIDER_RETRYABLE_ERRORS | frozenset({
     "model_unavailable",
     "permission",
     "unsupported_request",
+    "refusal",
+    "truncated",
+    "invalid_input",
+    "redirect_rejected",
+    "unsupported_provider",
+    "unsupported_operation",
+    "unsupported_storage",
+    "invalid_rate",
+    "receipt_limit",
 })
 TRACKING_QUERY_KEYS = {
     "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "referrer", "source",
@@ -1039,7 +1050,10 @@ def extract_search_keywords_from_resume(
     provider = normalize_provider(ai_provider)
     key = (api_key or "").strip()
     if not key:
-        key = config.get_openai_api_key() if provider == "openai" else config.get_gemini_api_key()
+        if provider == 'anthropic':
+            key = claude_workflow_key()
+        else:
+            key = config.get_openai_api_key() if provider == "openai" else config.get_gemini_api_key()
     if not key:
         return []
 

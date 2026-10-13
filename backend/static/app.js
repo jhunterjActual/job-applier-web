@@ -20,6 +20,8 @@ let lifecycleOpenedFromMaterials = false;
 let lifecycleSaveInFlight = false;
 let geminiKeyConfigured = false;
 let openAIKeyConfigured = false;
+let anthropicKeyConfigured = false;
+let anthropicAvailable = false;
 let googleMapsKeyConfigured = false;
 let aiProviderSettingsSaved = false;
 let mapsProviderSettingsSaved = false;
@@ -76,6 +78,10 @@ const pAiProvider = document.getElementById("p-ai-provider");
 const pAiModel = document.getElementById("p-ai-model");
 const pApiKey = document.getElementById("p-apikey");
 const pOpenAIApiKey = document.getElementById("p-openai-apikey");
+const pAnthropicApiKey = document.getElementById("p-anthropic-apikey");
+const pAnthropicKeyStatus = document.getElementById("p-anthropic-key-status");
+const pAnthropicKeyHelp = document.getElementById("p-anthropic-key-help");
+const anthropicAvailabilityHelp = document.getElementById("anthropic-availability-help");
 const pMapsProvider = document.getElementById("p-maps-provider");
 const pGoogleApiKey = document.getElementById("p-google-apikey");
 const googleMapsKeyGroup = document.getElementById("google-maps-key-group");
@@ -110,6 +116,7 @@ const resumeFileUpload = document.getElementById("resume-file-upload");
 const resumeOcrConsent = document.getElementById("resume-ocr-consent");
 const toggleApiVisibilityBtn = document.getElementById("toggle-api-visibility");
 const toggleOpenAIApiVisibilityBtn = document.getElementById("toggle-openai-api-visibility");
+const toggleAnthropicApiVisibilityBtn = document.getElementById("toggle-anthropic-api-visibility");
 const toggleGoogleApiVisibilityBtn = document.getElementById("toggle-google-api-visibility");
 const testAIProviderBtn = document.getElementById("test-ai-provider-btn");
 const aiProviderTestStatus = document.getElementById("ai-provider-test-status");
@@ -120,7 +127,8 @@ const providerSecretSaveStatus = document.getElementById("provider-secret-save-s
 
 const AI_PROVIDERS = {
     gemini: { label: "Google Gemini", defaultModel: "gemini-2.5-flash" },
-    openai: { label: "OpenAI", defaultModel: "gpt-5-mini" }
+    openai: { label: "OpenAI", defaultModel: "gpt-5-mini" },
+    anthropic: { label: "Anthropic Claude", defaultModel: "claude-sonnet-5-5" }
 };
 
 const MAPS_PROVIDERS = {
@@ -139,6 +147,11 @@ const PROVIDER_CREDENTIAL_LINKS = Object.freeze({
     openai: Object.freeze({
         label: "Manage OpenAI API keys",
         url: "https://platform.openai.com/api-keys"
+    }),
+    // Verified against Claude's official key setup documentation on 2026-10-12.
+    anthropic: Object.freeze({
+        label: "Manage Claude API keys",
+        url: "https://platform.claude.com/settings/keys"
     }),
     google_maps: Object.freeze({
         label: "Manage Google Places API keys",
@@ -376,6 +389,7 @@ document.addEventListener("DOMContentLoaded", () => {
     bindEvent(pAiModel, "input", markAIProviderSettingsDirty);
     bindEvent(pApiKey, "input", handleProviderSecretInput);
     bindEvent(pOpenAIApiKey, "input", handleProviderSecretInput);
+    bindEvent(pAnthropicApiKey, "input", handleProviderSecretInput);
     bindEvent(testAIProviderBtn, "click", testSavedAIProvider);
     bindEvent(pMapsProvider, "change", handleMapsProviderChange);
     bindEvent(pGoogleApiKey, "input", handleProviderSecretInput);
@@ -954,6 +968,7 @@ function setupPasswordToggle() {
     [
         [toggleApiVisibilityBtn, pApiKey, "Gemini API key"],
         [toggleOpenAIApiVisibilityBtn, pOpenAIApiKey, "OpenAI API key"],
+        [toggleAnthropicApiVisibilityBtn, pAnthropicApiKey, "Claude API key"],
         [toggleGoogleApiVisibilityBtn, pGoogleApiKey, "Google Places API key"]
     ].forEach(([button, input, label]) => {
         if (!button || !input) return;
@@ -1701,20 +1716,27 @@ function setupCredentialManagementLinks() {
 }
 
 function selectedAIProvider() {
-    return AI_PROVIDERS[pAiProvider?.value] ? pAiProvider.value : "gemini";
+    return pAiProvider?.value || "";
 }
 
 function selectedAIProviderMeta() {
-    return AI_PROVIDERS[selectedAIProvider()];
+    return AI_PROVIDERS[selectedAIProvider()] || { label: "Unsupported AI provider", defaultModel: "" };
+}
+
+function selectedAIProviderAvailable() {
+    return Object.hasOwn(AI_PROVIDERS, selectedAIProvider())
+        && (selectedAIProvider() !== "anthropic" || anthropicAvailable);
 }
 
 function selectedAIKeyConfigured() {
+    if (!selectedAIProviderAvailable()) return false;
+    if (selectedAIProvider() === "anthropic") return anthropicAvailable && anthropicKeyConfigured;
     return selectedAIProvider() === "openai" ? openAIKeyConfigured : geminiKeyConfigured;
 }
 
 function handleAIProviderChange() {
     const knownDefaults = new Set(Object.values(AI_PROVIDERS).map(provider => provider.defaultModel));
-    if (!pAiModel.value.trim() || knownDefaults.has(pAiModel.value.trim())) {
+    if (selectedAIProvider() === "anthropic" || !pAiModel.value.trim() || knownDefaults.has(pAiModel.value.trim())) {
         pAiModel.value = selectedAIProviderMeta().defaultModel;
     }
     markAIProviderSettingsDirty();
@@ -1727,6 +1749,7 @@ function markAIProviderSettingsDirty() {
 }
 
 function selectedAIKeyPending() {
+    if (selectedAIProvider() === "anthropic") return !!pAnthropicApiKey?.value.trim();
     const input = selectedAIProvider() === "openai" ? pOpenAIApiKey : pApiKey;
     return !!input?.value.trim();
 }
@@ -1761,8 +1784,8 @@ function handleProviderSecretInput() {
 
 function updateSecretSaveAvailability() {
     if (!saveProviderSecretsBtn) return;
-    saveProviderSecretsBtn.disabled = ![pApiKey, pOpenAIApiKey, pGoogleApiKey]
-        .some(input => input?.value.trim());
+    saveProviderSecretsBtn.disabled = ![pApiKey, pOpenAIApiKey, pAnthropicApiKey, pGoogleApiKey]
+        .some(input => !input?.disabled && input?.value.trim());
 }
 
 function updateMapsProviderControls() {
@@ -1797,9 +1820,14 @@ function updateProviderTestAvailability() {
     const provider = selectedAIProviderMeta();
     const hasKey = selectedAIKeyConfigured();
     const keyPending = selectedAIKeyPending();
-    testAIProviderBtn.disabled = !aiProviderSettingsSaved || !hasKey || keyPending;
+    const unavailable = !selectedAIProviderAvailable();
+    testAIProviderBtn.disabled = unavailable || !aiProviderSettingsSaved || !hasKey || keyPending;
     aiProviderTestStatus.className = "form-help full-width provider-test-status";
-    if (!aiProviderSettingsSaved) {
+    if (unavailable) {
+        aiProviderTestStatus.textContent = selectedAIProvider() === "anthropic"
+            ? "Claude is currently unavailable here. Encrypted key support is required; your saved selection and key are preserved."
+            : "The saved AI provider is unsupported. Select an available provider and save your settings.";
+    } else if (!aiProviderSettingsSaved) {
         aiProviderTestStatus.textContent = "Save AI provider and model changes before testing.";
     } else if (keyPending) {
         aiProviderTestStatus.textContent = `Save the ${provider.label} API key change before testing.`;
@@ -1833,6 +1861,25 @@ function updateSecretFieldStatus(input, status, help, configured, providerName, 
 }
 
 function updateSecretStatuses() {
+    const claudeOption = pAiProvider.querySelector('option[value="anthropic"]');
+    if (claudeOption) claudeOption.disabled = !anthropicAvailable;
+    pAnthropicApiKey.disabled = !anthropicAvailable;
+    toggleAnthropicApiVisibilityBtn.disabled = !anthropicAvailable;
+    pAiModel.readOnly = selectedAIProvider() === "anthropic";
+    document.getElementById("save-profile-btn").disabled = !selectedAIProviderAvailable();
+    anthropicAvailabilityHelp.textContent = anthropicAvailable
+        ? "Claude uses Claude Sonnet 5.5. Save your Claude API key below, then save these settings."
+        : "Claude is currently unavailable here. Encrypted key support is required; your saved selection and key are preserved.";
+    updateSecretFieldStatus(
+        pAnthropicApiKey, pAnthropicKeyStatus, pAnthropicKeyHelp, anthropicKeyConfigured, "Claude",
+        "Saved securely. The key is never returned to your browser; leave this field blank to keep it or enter a replacement.",
+        "Required when Anthropic Claude is selected. A saved key is never returned to your browser.",
+    );
+    if (!anthropicAvailable) {
+        pAnthropicKeyStatus.className = "secret-key-status unavailable";
+        pAnthropicKeyStatus.textContent = "Unavailable here";
+        pAnthropicKeyHelp.textContent = "Claude key changes are unavailable until encrypted key support is ready. Any saved key is preserved.";
+    }
     updateSecretFieldStatus(
         pApiKey,
         pGeminiKeyStatus,
@@ -1867,7 +1914,16 @@ function updateSecretStatuses() {
 }
 
 function markSecretStatusesUnavailable() {
-    [pGeminiKeyStatus, pOpenAIKeyStatus, pGoogleKeyStatus].forEach(status => {
+    anthropicAvailable = false;
+    pAnthropicApiKey.disabled = true;
+    toggleAnthropicApiVisibilityBtn.disabled = true;
+    const claudeOption = pAiProvider.querySelector('option[value="anthropic"]');
+    if (claudeOption) claudeOption.disabled = true;
+    anthropicAvailabilityHelp.textContent = "Claude availability could not be checked. Reload the page to try again.";
+    if (!selectedAIProviderAvailable()) document.getElementById("save-profile-btn").disabled = true;
+    updateSecretSaveAvailability();
+    updateProviderTestAvailability();
+    [pGeminiKeyStatus, pOpenAIKeyStatus, pAnthropicKeyStatus, pGoogleKeyStatus].forEach(status => {
         status.className = "secret-key-status unavailable";
         status.textContent = "Status unavailable";
     });
@@ -1911,14 +1967,28 @@ async function loadProfile() {
             pGithub.value = profile.github || "";
             pLinkedin.value = profile.linkedin || "";
             pWebsite.value = profile.website || "";
-            pAiProvider.value = profile.ai_provider || "gemini";
+            const savedProvider = profile.ai_provider ?? "gemini";
+            if (!Object.hasOwn(AI_PROVIDERS, savedProvider)) {
+                const unavailableOption = document.createElement("option");
+                unavailableOption.value = savedProvider;
+                unavailableOption.textContent = "Unsupported saved AI provider";
+                unavailableOption.disabled = true;
+                pAiProvider.appendChild(unavailableOption);
+            }
+            pAiProvider.value = savedProvider;
             pAiModel.value = profile.ai_model || selectedAIProviderMeta().defaultModel;
             pApiKey.value = "";
             pOpenAIApiKey.value = "";
+            pAnthropicApiKey.value = "";
+            pAnthropicApiKey.type = "password";
+            toggleAnthropicApiVisibilityBtn.setAttribute("aria-label", "Show Claude API key");
+            toggleAnthropicApiVisibilityBtn.querySelector("i").className = "fa-solid fa-eye";
             pMapsProvider.value = profile.maps_provider || "openstreetmap";
             pGoogleApiKey.value = "";
             geminiKeyConfigured = !!profile.gemini_api_key_configured;
             openAIKeyConfigured = !!profile.openai_api_key_configured;
+            anthropicKeyConfigured = !!profile.anthropic_api_key_configured;
+            anthropicAvailable = profile.anthropic_available === true;
             googleMapsKeyConfigured = !!profile.google_maps_api_key_configured;
             aiProviderSettingsSaved = true;
             mapsProviderSettingsSaved = true;
@@ -1978,6 +2048,7 @@ async function saveProviderSecrets(e) {
     const secretPayload = {};
     if (pApiKey.value.trim()) secretPayload.gemini_api_key = pApiKey.value.trim();
     if (pOpenAIApiKey.value.trim()) secretPayload.openai_api_key = pOpenAIApiKey.value.trim();
+    if (anthropicAvailable && pAnthropicApiKey.value.trim()) secretPayload.anthropic_api_key = pAnthropicApiKey.value.trim();
     if (pGoogleApiKey.value.trim()) secretPayload.google_maps_api_key = pGoogleApiKey.value.trim();
     if (!Object.keys(secretPayload).length) return;
 
@@ -1996,9 +2067,14 @@ async function saveProviderSecrets(e) {
 
         geminiKeyConfigured = !!result.gemini_api_key_configured;
         openAIKeyConfigured = !!result.openai_api_key_configured;
+        anthropicKeyConfigured = !!result.anthropic_api_key_configured;
         googleMapsKeyConfigured = !!result.google_maps_api_key_configured;
         pApiKey.value = "";
         pOpenAIApiKey.value = "";
+        pAnthropicApiKey.value = "";
+        pAnthropicApiKey.type = "password";
+        toggleAnthropicApiVisibilityBtn.setAttribute("aria-label", "Show Claude API key");
+        toggleAnthropicApiVisibilityBtn.querySelector("i").className = "fa-solid fa-eye";
         pGoogleApiKey.value = "";
         updateSecretStatuses();
         updateStartupActivity(loadedProfile);
@@ -2029,6 +2105,10 @@ function professionalEvidencePreview(evidence = {}) {
 // Save Candidate Profile
 async function saveProfile(e) {
     e.preventDefault();
+    if (!selectedAIProviderAvailable()) {
+        alert("Select an available AI provider before saving your settings.");
+        return;
+    }
     if (pResume.value.trim() && !pResumeName.value.trim()) {
         alert(t("profile.resume_name.required"));
         pResumeName.focus();
@@ -2323,6 +2403,7 @@ async function testSavedMapsProvider() {
 }
 
 async function testSavedAIProvider() {
+    if (!selectedAIProviderAvailable()) return;
     const provider = selectedAIProviderMeta();
     const operation = showCancellableLoading(
         `Testing ${provider.label}...`,

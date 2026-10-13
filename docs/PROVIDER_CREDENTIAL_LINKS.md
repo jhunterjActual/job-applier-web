@@ -10,6 +10,7 @@ Verified against the providers' official documentation on 2026-09-02.
 | --- | --- | --- |
 | Google Gemini | AI matching and material generation | `https://aistudio.google.com/app/apikey` |
 | OpenAI | AI matching and material generation | `https://platform.openai.com/api-keys` |
+| Anthropic Claude | AI matching, material generation and resume OCR; added and verified 2026-10-12 against https://platform.claude.com/docs/en/get-api-key | `https://platform.claude.com/settings/keys` |
 | Google Places | Employer-headquarters lookup | `https://console.cloud.google.com/apis/credentials` |
 
 The browser opens each destination with `noopener`, `noreferrer`, and a `no-referrer` policy. CareerTrellis never adds query parameters or sends a credential, profile field, or provider selection to these links.

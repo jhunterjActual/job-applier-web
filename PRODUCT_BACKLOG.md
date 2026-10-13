@@ -233,6 +233,16 @@ Existing backlog reordering:
   records the isolated Gemini/OpenAI contract candidate, synthetic usage/cancellation
   parity and remaining hosted/integration acceptance. Defaults remain unchanged;
   current official model-availability caveats are recorded for AI-003/004.
+  October 12 integration: [provider contract and caller compatibility](docs/AI_PROVIDER_CONTRACT.md#october-12-integration)
+  brings that candidate into the current workspace on `aedc188`, preserving its
+  original worktree. Review corrected prompt byte caps to accommodate accepted
+  maximum-size Unicode resumes, job descriptions and interview contexts. Both
+  provider adapters pass real-caller synthetic checks; the combined suite ran
+  392 tests with two skips, source compilation and loopback version/dashboard
+  checks passed, and preview/data cleanup was verified. Local-only evidence:
+  `artifacts/ai001-integration-final-20261012.json`. No live provider call,
+  deployment, commit or PR; workflow persistence, setup and hosted acceptance
+  remain open. Next provider slice can build AI-002 on this integrated contract.
 - [ ] **AI-002 (P1): Add an Anthropic Claude adapter.** Build on AI-001 with
   provider-specific authentication, schema handling and model capability checks,
   encrypted BYOK storage and no secret readback. Cover structured output, refusal,
@@ -241,6 +251,29 @@ Existing backlog reordering:
   Acceptance: mocked workflow parity and migration tests, then a separately
   authorized bounded hosted smoke before claiming live support. Model selection
   and prices must be refreshed at implementation time.
+  October 12: [isolated Claude transport candidate](docs/AI_PROVIDER_CONTRACT.md#ai-002-claude-transport-candidate--october-12)
+  implements structured output/OCR, safe errors, cancellation and conservative
+  usage receipts against refreshed official model/API/pricing documentation.
+  Combined regression run: 399 tests, two platform skips; final focused run: 26
+  tests passed. Compilation and disposable local preview passed. Not selectable
+  in the application; no credentials, migration or live-provider call. Next:
+  encrypted BYOK admission and additive profile/schema migration, followed by
+  selection/UI and real-caller acceptance. AI-002 remains open.
+  Backend follow-up October 12: [encrypted hosted integration](docs/AI_PROVIDER_CONTRACT.md#ai-002-hosted-backend-integration--october-12)
+  adds Claude credential/profile admission and explicit workflow dispatch. Existing
+  text columns require no migration; no plaintext key column was added. Local
+  Claude writes fail before mutation. Final isolated suite: 414 tests with two
+  skips; compilation, preview and cleanup passed. UI selection, queued/browser
+  flows, rollback and live PostgreSQL/provider acceptance remain open; this
+  uncommitted candidate is not release-ready. No real credentials or deployment.
+  Application completion October 12: [Claude setup and workflow integration](docs/AI_PROVIDER_CONTRACT.md#ai-002-application-integration-completion--october-12)
+  adds hosted-only selection/model/key controls and safe saved-state handling,
+  browser persistence/mobile coverage, rendered OCR and real-caller/claim tests.
+  Terminal provider failures no longer become retryable search errors. Combined
+  suite: 427 tests, two skips; syntax and disposable startup/shutdown passed.
+  Local implementation is complete. AI-002 stays open only for exact-release
+  encrypted-store/RLS, live queue and bounded provider acceptance, with a
+  Claude-compatible forward correction. No paid call, credential or deployment.
 - [ ] **AI-003 (P1): Make provider setup understandable.** Combine the existing
   official credential links and password-manager fixes with capability-aware
   model selection, masked saved-key status and actionable quota/authentication

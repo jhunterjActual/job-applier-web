@@ -9,6 +9,7 @@ from ai_providers import (
     default_model,
     generate_structured,
     normalize_provider,
+    claude_workflow_key,
     provider_label,
 )
 from operations import OperationCancelled
@@ -58,7 +59,10 @@ def _provider_settings(api_key: str | None, ai_provider: str, ai_model: str | No
     provider = normalize_provider(ai_provider)
     key = (api_key or "").strip()
     if not key:
-        key = config.get_openai_api_key() if provider == "openai" else config.get_gemini_api_key()
+        if provider == 'anthropic':
+            key = claude_workflow_key()
+        else:
+            key = config.get_openai_api_key() if provider == "openai" else config.get_gemini_api_key()
     return AIProviderSettings(provider, (ai_model or default_model(provider)).strip(), key)
 
 RESUME_MODE_GUIDANCE = {

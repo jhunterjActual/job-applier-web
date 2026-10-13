@@ -3411,29 +3411,50 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 return_value=self.runtime_engine,
             ),
         ):
-            provider_secrets_module.save_provider_secret(
-                self.user_one,
-                "gemini",
-                "synthetic-provider-secret",
-            )
-            self.assertEqual(
-                "synthetic-provider-secret",
-                provider_secrets_module.load_provider_secret(self.user_one, "gemini"),
-            )
-            self.assertEqual(
-                "",
-                provider_secrets_module.load_provider_secret(self.user_two, "gemini"),
-            )
+            providers = ("gemini", "anthropic")
+            secrets = {
+                (owner, provider): f"synthetic-{owner}-{provider}-secret"
+                for owner in (self.user_one, self.user_two) for provider in providers
+            }
+            for provider in providers:
+                provider_secrets_module.save_provider_secret(
+                    self.user_one, provider, secrets[self.user_one, provider]
+                )
+                self.assertEqual(
+                    "", provider_secrets_module.load_provider_secret(self.user_two, provider)
+                )
+                provider_secrets_module.save_provider_secret(
+                    self.user_two, provider, secrets[self.user_two, provider]
+                )
+            for (owner, provider), plaintext in secrets.items():
+                self.assertEqual(plaintext, provider_secrets_module.load_provider_secret(owner, provider))
             with self.admin_engine.begin() as connection:
                 stored = connection.execute(
                     text(
-                        "SELECT key_id, ciphertext FROM careertrellis.provider_secrets "
-                        "WHERE owner_user_id = :owner"
-                    ),
-                    {"owner": self.user_one},
-                ).one()
-            self.assertEqual("kek-test-a", stored.key_id)
-            self.assertNotIn(b"synthetic-provider-secret", bytes(stored.ciphertext))
+                        "SELECT owner_user_id, provider, key_id, ciphertext "
+                        "FROM careertrellis.provider_secrets ORDER BY owner_user_id, provider"
+                    )
+                ).mappings().all()
+            self.assertEqual(4, len(stored))
+            for row in stored:
+                owner, provider = row["owner_user_id"], row["provider"]
+                self.assertEqual("kek-test-a", row["key_id"])
+                self.assertNotIn(secrets[owner, provider].encode(), bytes(row["ciphertext"]))
+                other_owner = self.user_two if owner == self.user_one else self.user_one
+                other_provider = "anthropic" if provider == "gemini" else "gemini"
+                for wrong_owner, wrong_provider in ((other_owner, provider), (owner, other_provider)):
+                    with self.assertRaises(provider_secrets_module.ProviderSecretIntegrityError):
+                        provider_secrets_module.decrypt_provider_secret(
+                            wrong_owner, wrong_provider, row["key_id"], row["ciphertext"]
+                        )
+            for owner, other in ((self.user_one, self.user_two), (self.user_two, self.user_one)):
+                with tenant_transaction(self.runtime_engine, owner) as connection:
+                    self.assertEqual(
+                        2, connection.scalar(text("SELECT COUNT(*) FROM careertrellis.provider_secrets"))
+                    )
+                    self.assertEqual(0, connection.scalar(text(
+                        "SELECT COUNT(*) FROM careertrellis.provider_secrets WHERE owner_user_id = :other"
+                    ), {"other": other}))
 
             with patch.dict(
                 os.environ,
@@ -3441,30 +3462,75 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
                 clear=False,
             ):
                 self.assertEqual(
-                    1,
+                    2,
                     provider_secrets_module.rotate_provider_secrets(self.user_one),
                 )
-                self.assertEqual(
-                    "synthetic-provider-secret",
-                    provider_secrets_module.load_provider_secret(self.user_one, "gemini"),
-                )
+                for (owner, provider), plaintext in secrets.items():
+                    self.assertEqual(plaintext, provider_secrets_module.load_provider_secret(owner, provider))
                 with self.admin_engine.begin() as connection:
-                    self.assertEqual(
-                        "kek-test-b",
-                        connection.scalar(
-                            text(
-                                "SELECT key_id FROM careertrellis.provider_secrets "
-                                "WHERE owner_user_id = :owner"
-                            ),
-                            {"owner": self.user_one},
-                        ),
-                    )
+                    for owner, expected_key in ((self.user_one, "kek-test-b"), (self.user_two, "kek-test-a")):
+                        self.assertEqual([expected_key, expected_key], connection.execute(text(
+                            "SELECT key_id FROM careertrellis.provider_secrets "
+                            "WHERE owner_user_id = :owner ORDER BY provider"
+                        ), {"owner": owner}).scalars().all())
 
             provider_secrets_module.revoke_provider_secret(self.user_one, "gemini")
             self.assertEqual(
                 "",
                 provider_secrets_module.load_provider_secret(self.user_one, "gemini"),
             )
+            self.assertEqual(secrets[self.user_one, "anthropic"],
+                             provider_secrets_module.load_provider_secret(self.user_one, "anthropic"))
+            provider_secrets_module.revoke_provider_secret(self.user_one, "anthropic")
+            self.assertEqual("", provider_secrets_module.load_provider_secret(self.user_one, "anthropic"))
+            for provider in providers:
+                self.assertEqual(secrets[self.user_two, provider],
+                                 provider_secrets_module.load_provider_secret(self.user_two, provider))
+
+    def test_claude_disabled_adapter_preserves_postgres_profile_and_encrypted_key(self) -> None:
+        import ai_providers
+        import claude_adapter
+
+        repository = PostgreSQLProfileRepository(self.user_one, engine=self.runtime_engine)
+        with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+            connection.execute(text(
+                "UPDATE careertrellis.profiles SET ai_provider = 'anthropic', ai_model = :model "
+                "WHERE owner_user_id = :owner"
+            ), {"owner": self.user_one, "model": claude_adapter.MODEL})
+        with (
+            patch.dict(os.environ, _provider_secret_environment(), clear=False),
+            patch.object(provider_secrets_module, "runtime_postgres_engine", return_value=self.runtime_engine),
+            patch.object(ai_providers, "provider_secret_store_kind", return_value=provider_secrets_module.SHARED_SECRET_STORE),
+            provider_secrets_module.owner_user_scope(self.user_one),
+        ):
+            provider_secrets_module.save_provider_secret(self.user_one, "anthropic", "synthetic-claude-key")
+            before_profile = repository.get_profile()
+            with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+                before_secret = connection.execute(text(
+                    "SELECT key_id, ciphertext, revoked_at, updated_at FROM careertrellis.provider_secrets "
+                    "WHERE owner_user_id = :owner AND provider = 'anthropic'"
+                ), {"owner": self.user_one}).one()
+            with (
+                patch.object(claude_adapter, "CLAUDE_ENABLED", False),
+                patch.object(claude_adapter.urllib.request, "build_opener") as transport,
+            ):
+                settings = ai_providers.settings_from_profile(before_profile)
+                self.assertEqual("anthropic", settings.provider)
+                with self.assertRaises(ai_providers.AIProviderError) as failure:
+                    ai_providers.validate_provider_capability(settings)
+                self.assertEqual("anthropic", failure.exception.provider)
+                self.assertEqual("model_unavailable", failure.exception.code)
+                transport.assert_not_called()
+                self.assertEqual(before_profile, repository.get_profile())
+                self.assertEqual("synthetic-claude-key",
+                                 provider_secrets_module.load_provider_secret(self.user_one, "anthropic"))
+            with tenant_transaction(self.runtime_engine, self.user_one) as connection:
+                after_secret = connection.execute(text(
+                    "SELECT key_id, ciphertext, revoked_at, updated_at FROM careertrellis.provider_secrets "
+                    "WHERE owner_user_id = :owner AND provider = 'anthropic'"
+                ), {"owner": self.user_one}).one()
+            self.assertEqual(before_secret, after_secret)
+            self.assertEqual("", provider_secrets_module.load_provider_secret(self.user_two, "anthropic"))
 
     def test_all_protected_tables_force_rls_and_runtime_roles_cannot_bypass_it(self) -> None:
         with self.admin_engine.begin() as connection:
