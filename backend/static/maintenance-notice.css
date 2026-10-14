@@ -34,6 +34,8 @@
 .sign-in-secondary { background: #25334b; color: #f8fafc; }
 .sign-in-button:focus-visible { outline: 3px solid #ffd16d; outline-offset: 4px; }
 .sign-in-note { font-size: .9rem; }
+.sign-in-card a[href^="/feedback"] { display: inline-flex; align-items: center; min-height: 44px; color: #9ac7ff; text-underline-offset: 3px; }
+.sign-in-card a[href^="/feedback"]:focus-visible { outline: 3px solid #ffd16d; outline-offset: 3px; }
 @media (max-width: 480px) {
     .maintenance-notice { padding: 12px; }
     .sign-in-card { margin-top: 24px; }

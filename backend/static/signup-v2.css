@@ -10,4 +10,5 @@ a { color: #9ac7ff; } :focus-visible { outline: 3px solid #ffcd67; outline-offse
 .timer { white-space: nowrap; font-variant-numeric: tabular-nums; min-height: 1.5em; }
 #auth-elapsed { display: inline-block; min-width: 5ch; }
 footer { margin-top: 2rem; font-size: .85rem; color: #bdc8db; }
+a[href^="/feedback"] { display: inline-flex; align-items: center; min-height: 44px; text-underline-offset: 3px; }
 @media (max-width: 400px) { main { margin: 0 auto; padding: 1rem; } }

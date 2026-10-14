@@ -200,6 +200,10 @@ class SignupHTTP:
         if not complete and status == 'pending':
             actions += ('<form action="/auth/cancel" method="post">'
                 f'<input type="hidden" name="csrf" value="{csrf}"><button type="submit">Cancel this attempt</button></form>')
+        feedback = ('<p><a href="/feedback?from=access">Questions about access? Contact us.</a></p>'
+            if status in {'full', 'closed'} else
+            '<p><a href="/feedback?from=sign-in">Help &amp; feedback</a><br>'
+            'Trouble signing in? You can contact us without an account.</p>')
         response = HTMLResponse('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<meta name="csrf-token" content="{csrf}">'
@@ -212,7 +216,7 @@ class SignupHTTP:
             '<h2>Sign in or create account</h2>'
             '<div id="maintenance-announcer" role="status" aria-live="polite" aria-atomic="true"></div>'
             '<section id="maintenance-notice" class="maintenance-notice" aria-label="Maintenance announcement" hidden></section>'
-            f'<p id="auth-message" role="status">{MESSAGES[status]}</p>{actions}'
+            f'<p id="auth-message" role="status">{MESSAGES[status]}</p>{actions}{feedback}'
             '<p>Signing out here does not sign you out of Google or other identity providers.</p>'
             '<footer>CareerTrellis is owned by J. Hunter Johnson LLC.</footer></main></body></html>',
             headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' if complete else 'same-origin',
@@ -251,7 +255,7 @@ class SignupHTTP:
 
     async def logout(self, request):
         request.state.suppress_refreshed_session = True
-        response = HTMLResponse('<p>The browser session was cleared, but provider sign-out could not be confirmed.</p><a href="/auth/sign-in">Sign in</a>', 503)
+        response = HTMLResponse('<p>The browser session was cleared, but provider sign-out could not be confirmed.</p><a href="/auth/sign-in">Sign in</a><p><a href="/feedback?from=sign-in">Get help</a> — no CareerTrellis account needed.</p>', 503)
         try:
             value = cookie(request, COOKIE_NAME, 3500)
             legacy = not bool(value)

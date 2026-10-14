@@ -1,5 +1,22 @@
 # Product Backlog
 
+## October 14 — referrer-policy regression maintenance
+
+- [ ] **MAINT-REFERRER-001 (P1): Keep authentication referrer checks compatible with public feedback.**
+  Owner: CareerTrellis engineering. The older blanket assertion protected
+  same-origin referrers used by authenticated form-origin checks, but rejected
+  the intentionally stricter policy on public feedback. Preserve that original
+  authentication protection while allowing `no-referrer` only on `/feedback`,
+  `/static/feedback.css`, and `/static/feedback.js`; every other serving-host
+  path must retain `same-origin`, and the retired host remains `no-referrer`.
+  PR #88 exposed the stale assertion after the separately installed ingress
+  correction; application-release tests alone did not cover the combined tree.
+  Acceptance: exact complementary matcher/header assertions, existing auth/log
+  privacy guards retained, feedback API/browser/ingress modules included in both
+  explicit CI suites, and all GitHub checks passing on the corrected PR head.
+  Current slice: test and CI correction prepared; hosted CI acceptance pending.
+  This does not close the separate historical access-log privacy audit.
+
 ## October 7 — current product priorities and delivery order
 
 Owner: Hunter / CareerTrellis product and engineering. Review after each delivery

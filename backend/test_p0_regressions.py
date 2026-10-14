@@ -4713,8 +4713,27 @@ class DependencyLockTests(unittest.TestCase):
         self.assertNotIn("log_credentials", caddy_source)
         self.assertNotIn("{http.auth.user.id}", caddy_source)
         serving_source, retired_source = caddy_source.split("staging-app.jhunterj.com {", 1)
-        self.assertIn('Referrer-Policy "same-origin"', serving_source)
-        self.assertNotIn('Referrer-Policy "no-referrer"', serving_source)
+        # Same-origin referrers support the authenticated form-origin guard.
+        # Public feedback is the exact, disjoint exception (MAINT-REFERRER-001).
+        feedback_paths = "/feedback /static/feedback.css /static/feedback.js"
+        self.assertRegex(
+            serving_source,
+            r"(?m)^\s*@feedbackReferrer path " + re.escape(feedback_paths) + r"\s*$",
+        )
+        self.assertRegex(
+            serving_source,
+            r"@otherReferrer\s*\{\s*not path "
+            + re.escape(feedback_paths)
+            + r"\s*\}",
+        )
+        referrer_directives = [
+            line.strip() for line in serving_source.splitlines()
+            if "Referrer-Policy" in line and not line.lstrip().startswith("#")
+        ]
+        self.assertCountEqual(referrer_directives, [
+            'header @feedbackReferrer >Referrer-Policy "no-referrer"',
+            'header @otherReferrer >Referrer-Policy "same-origin"',
+        ])
         self.assertIn('Referrer-Policy "no-referrer"', retired_source)
         self.assertIn('response.headers["Referrer-Policy"] = "no-referrer"', app_source)
         self.assertIn("--no-access-log", service_source)
