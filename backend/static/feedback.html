@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Help &amp; feedback | CareerTrellis</title>
+    <link rel="stylesheet" href="/static/feedback.css?v=1">
+    <script src="/static/feedback.js?v=1" defer></script>
+</head>
+<body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="page-header">
+        <span class="brand">CareerTrellis</span>
+        <nav aria-label="Return navigation">
+            <a href="/auth/sign-in">Sign in</a>
+            <a href="/">Go to workspace</a>
+        </nav>
+    </header>
+    <main id="main" tabindex="-1">
+        <h1>Help &amp; feedback</h1>
+        <p class="intro">Having trouble with CareerTrellis or have an idea to improve it? Choose how you’d like to contact us. You don’t need a CareerTrellis account.</p>
+        <div class="contact-options">
+            <section class="contact-card" aria-labelledby="email-heading">
+                <p class="eyebrow">Private contact</p>
+                <h2 id="email-heading">Email feedback</h2>
+                <p>Best for sign-in trouble, account questions, or feedback you don’t want to post publicly. No GitHub account needed.</p>
+                <a id="email-draft" class="button primary" href="mailto:feedback@jhunterj.com?subject=CareerTrellis%20%E2%80%94%20Feedback&amp;body=What%20were%20you%20trying%20to%20do%3F%0D%0A%0D%0AWhat%20happened%3F%0D%0A%0D%0AWhat%20did%20you%20expect%3F%0D%0A%0D%0AIf%20relevant%2C%20what%20steps%20reproduce%20the%20problem%3F%0D%0A" aria-describedby="email-help">Open email draft</a>
+                <p class="note" id="email-help">Opens your email app. Review and send the message there.</p>
+                <p class="email-address"><a href="mailto:feedback@jhunterj.com">feedback@jhunterj.com</a></p>
+                <button type="button" id="copy-address" class="text-button" hidden>Copy email address</button>
+                <details>
+                    <summary>Using webmail? Copy a suggested message</summary>
+                    <p class="note">Use any prompts that help explain the problem. Select the text below to copy it manually.</p>
+                    <label for="suggested-message">Suggested message</label>
+                    <textarea id="suggested-message" rows="9" readonly>What were you trying to do?
+
+What happened?
+
+What did you expect?
+
+If relevant, what steps reproduce the problem?</textarea>
+                    <button type="button" id="copy-message" class="text-button" hidden>Copy suggested message</button>
+                </details>
+                <p id="copy-status" class="note copy-status" role="status" aria-live="polite" aria-atomic="true"></p>
+            </section>
+            <section class="contact-card" aria-labelledby="github-heading">
+                <p class="eyebrow">Public · GitHub account required</p>
+                <h2 id="github-heading">Report on GitHub</h2>
+                <p>Best for reproducible bugs and feature suggestions. Your report and any attachments will be public.</p>
+                <a class="button secondary" href="https://github.com/jhunterjActual/job-applier-web/issues/new/choose" target="_blank" rel="noopener noreferrer" aria-describedby="github-help">Create GitHub issue</a>
+                <p class="note" id="github-help">Opens GitHub in a new tab. Review your report before submitting it.</p>
+                <a class="browse-link" href="https://github.com/jhunterjActual/job-applier-web/issues" target="_blank" rel="noopener noreferrer">Browse existing issues <span class="note">(new tab)</span></a>
+            </section>
+        </div>
+        <aside class="privacy-note" aria-labelledby="privacy-heading">
+            <h2 id="privacy-heading">Keep sensitive information private</h2>
+            <p>Please don’t include passwords, API keys, sign-in links, resumes, or other sensitive information in either channel. Remove personal details from screenshots. This page does not automatically attach account details or diagnostic data.</p>
+        </aside>
+    </main>
+</body>
+</html>

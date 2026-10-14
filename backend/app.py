@@ -212,6 +212,11 @@ MAX_RESUME_DOCUMENT_UPLOAD_BYTES = 10 * 1024 * 1024
 SAFE_HTTP_METHODS = {"GET", "HEAD", "OPTIONS"}
 BACKUP_RESTORE_LOCK = Lock()
 TRUSTED_PROXY_TOKEN_HEADER = "x-careertrellis-proxy-token"
+PUBLIC_FEEDBACK_FILES = {
+    "/feedback": "feedback.html",
+    "/static/feedback.css": "feedback.css",
+    "/static/feedback.js": "feedback.js",
+}
 PUBLIC_SHARED_HOST_PATHS = frozenset(
     {"/health/live", "/health/ready", "/auth/login", "/auth/callback",
      "/auth/sign-in", "/api/maintenance-notice",
@@ -337,6 +342,7 @@ def _secured_response(request: Request, response: Response) -> Response:
     """Apply browser security headers consistently to normal and auth-boundary responses."""
     if (
         request.url.path == "/"
+        or request.url.path == "/feedback"
         or request.url.path.startswith("/static/")
         or request.url.path.startswith("/auth/")
         or request.url.path == "/api/session"
@@ -344,7 +350,9 @@ def _secured_response(request: Request, response: Response) -> Response:
         or request.url.path == "/api/account/erasure"
     ):
         response.headers["Cache-Control"] = "no-store, max-age=0"
-    if request.url.path == '/account/security' or request.url.path.startswith('/account/security/'):
+    if request.url.path in PUBLIC_FEEDBACK_FILES:
+        response.headers['Referrer-Policy'] = 'no-referrer'
+    elif request.url.path == '/account/security' or request.url.path.startswith('/account/security/'):
         response.headers['Referrer-Policy'] = 'no-referrer'
         response.headers['Cache-Control'] = 'no-store, max-age=0'
     elif request.url.path.startswith("/auth/"):
@@ -404,12 +412,13 @@ def _authentication_unavailable_response(request: Request) -> Response:
         response: Response = Response(
             """<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Sign-in needs attention</title></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign-in needs attention</title></head>
 <body>
 <main>
 <h1>Sign-in needs attention</h1>
 <p>Your current browser session could not be verified.</p>
 <p><a href="/auth/login">Restart sign-in in this browser</a></p>
+<p><a href="/feedback?from=sign-in">Get help</a> — no CareerTrellis account needed.</p>
 </main>
 </body>
 </html>
@@ -463,6 +472,16 @@ async def protect_local_browser_boundary(request: Request, call_next):
         if source and not _same_origin(source, request_authority, request.url.scheme):
             return JSONResponse({"detail": "Request origin does not match this app."}, status_code=403)
 
+    # Keep these exact, read-only help resources available even when identity
+    # configuration, sessions, or the account store are unavailable. Host,
+    # reverse-proxy and request-origin checks above still apply.
+    if request.url.path in PUBLIC_FEEDBACK_FILES:
+        if request.method not in {"GET", "HEAD"}:
+            return _secured_response(request, Response(status_code=405, headers={"Allow": "GET, HEAD"}))
+        response = FileResponse(config.BASE_DIR / "static" / PUBLIC_FEEDBACK_FILES[request.url.path],
+            headers={"Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"})
+        return _secured_response(request, response)
+
     # Record the selected storage policy before any route/body handling, but
     # preserve the normal private-route authentication boundary below.
     shared_backup_restore_requested = (
@@ -478,6 +497,8 @@ async def protect_local_browser_boundary(request: Request, call_next):
         except AuthenticationConfigurationError:
             if request.method == "POST" and request.url.path == "/auth/logout":
                 return _logout_incomplete_response(request)
+            if request.method == "GET" and (request.url.path == "/" or "text/html" in request.headers.get("accept", "").lower()):
+                return _authentication_unavailable_response(request)
             return _secured_response(
                 request,
                 JSONResponse({"detail": "Authentication is not configured."}, status_code=503),
@@ -762,9 +783,7 @@ async def auth_login(request: Request) -> Response:
             begin_login, settings, different_account=account_choices == ["different"],
         )
     except Exception:
-        response = JSONResponse(
-            {"detail": "Authentication is temporarily unavailable."}, status_code=503,
-        )
+        response = _authentication_unavailable_response(request)
         _delete_auth_cookie(response, SESSION_COOKIE_NAME)
         _delete_auth_cookie(response, LOGIN_FLOW_COOKIE_NAME)
         return response

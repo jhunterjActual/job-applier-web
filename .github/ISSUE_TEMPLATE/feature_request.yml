@@ -1,0 +1,20 @@
+name: Feature suggestion
+description: Suggest an improvement to CareerTrellis.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This suggestion and its attachments will be public. For private feedback, email feedback@jhunterj.com instead.
+        Do not include passwords, API keys, sign-in links, resumes, or other sensitive information. Remove personal details from screenshots.
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: What would you like to improve?
+      description: Describe your idea and the problem it would help you solve.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or additional context (optional)
+      description: Include only non-sensitive details or screenshots with personal information removed.

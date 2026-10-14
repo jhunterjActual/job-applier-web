@@ -1,0 +1,34 @@
+name: Bug report
+description: Report a reproducible problem with CareerTrellis.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This report and its attachments will be public. For sign-in help or account questions, email feedback@jhunterj.com instead.
+        Do not include passwords, API keys, sign-in links, resumes, or other sensitive information. Remove personal details from screenshots.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Briefly describe the problem and what you were trying to do.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: If you can reproduce the problem, describe the steps.
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+  - type: input
+    id: environment
+    attributes:
+      label: Browser and device (optional)
+      placeholder: For example, Firefox on Windows or Safari on iPhone
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context (optional)
+      description: Include only non-sensitive details or screenshots with personal information removed.
