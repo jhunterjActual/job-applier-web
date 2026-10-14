@@ -23,11 +23,17 @@ careertrellis.jhunterj.com {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
-		# Preserve a concrete Origin for same-origin form POSTs such as logout.
-		# The application still applies no-referrer to /auth/* responses, and the
-		# callback query string remains excluded from access logs below.
-		Referrer-Policy "same-origin"
 	}
+
+	# Exact public feedback resources require no referrer, including same-origin.
+	# Disjoint matchers avoid competing deferred writes from security headers.
+	@feedbackReferrer path /feedback /static/feedback.css /static/feedback.js
+	header @feedbackReferrer >Referrer-Policy "no-referrer"
+	# Preserve existing same-origin form behavior on all other paths.
+	@otherReferrer {
+		not path /feedback /static/feedback.css /static/feedback.js
+	}
+	header @otherReferrer >Referrer-Policy "same-origin"
 
 	reverse_proxy 127.0.0.1:8001 {
 		# Overwrite any client-supplied value with the root-owned origin secret.

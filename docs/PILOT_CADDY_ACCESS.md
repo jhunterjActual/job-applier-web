@@ -119,6 +119,30 @@ inventory that changes during the scan:
 sudo /opt/careertrellis/staging/current/deploy/scripts/check-caddy-access-log-privacy.sh
 ```
 
+For the separately installed feedback ingress ops revision, use its audit
+entrypoint instead of the current-release command above:
+
+```bash
+sudo /opt/careertrellis/ops/<exact-reviewed-ops-commit>/deploy/scripts/check-caddy-access-log-privacy-ops.sh
+```
+
+This new ops-only wrapper and root-owned mode-0600 `ops-manifest.json` bind the
+exact ops source commit, wrapper/config/parser hashes, active application commit,
+runtime parser, and resolved interpreter bytes. The installer must verify the
+complete manifest digest before publication and retain that digest with installed
+byte evidence. The manifest contains no secrets. It is generated after committing
+the ops source, avoiding circular source/self hashes. The ops wrapper preserves
+the existing v7 log inventory, ownership, mode, before/after snapshot and full
+representative-record requirements. It compares the active Caddyfile with the
+reviewed ops artifact instead of the immutable application's older config.
+
+The original current-release wrapper keeps its original contract and is expected
+to refuse while this ops config differs. Do not modify the frozen application or
+weaken that equality guard. A future application release incorporating the exact
+ops Caddy source may resume the current-release command after verified byte
+equality; retire the separate entrypoint only through explicit ops supersession.
+Application pointers, workers and build remain unchanged by this ops installation.
+
 It emits only bounded counts and fixed result codes, never source records,
 values, or locations. Missing representative evidence is a failure; do not use
 `--allow-no-representative` for acceptance. Existing URI, encoded sensitive-value,
