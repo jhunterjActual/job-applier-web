@@ -4,6 +4,37 @@ Original candidate: October 7, 2026, based on application commit
 `1ab61bb99df55db08aa6043aaf071d447e6912cb`, recorded build `20261007.82`.
 No release, model default, credential, provider budget or billing change is activated.
 
+## AI-004 offline exact-fact controls
+
+October 14, 2026: the [evaluator](../scripts/evaluate_ai_facts.py),
+[authored synthetic inputs](ai-facts-synthetic-v1.json) and
+[expected report](ai-facts-result-v1.json) test evaluation mechanics without
+calling providers. Run from the repository root with a new output path:
+
+```powershell
+backend/venv/Scripts/python.exe -B scripts/evaluate_ai_facts.py --input docs/ai-facts-synthetic-v1.json --output NEW_REPORT.json
+backend/venv/Scripts/python.exe -B -m unittest discover -s scripts -p test_ai_fact_evaluation.py
+```
+
+The fixture uses two small fact sets, not full resume/job workflows or real model
+responses. A final successful output must contain only a unique list of exact
+facts, include every required fact and invent none. Paraphrases fail this exact
+comparison; semantic factuality and relevance require a separate reviewed rubric.
+Every candidate covers the same cases. Earlier attempts contribute to total
+cost and summed attempt latency, including errors; only the final output is
+scored. Summed latency is not wall-clock workflow time. The cost denominator is
+passing cases, not all calls; zero passing cases gives no per-pass cost claim.
+Any unknown attempt measurement leaves its total null and exposes the known
+subtotal. Inputs must describe complete attempt histories: omitted attempts
+cannot be detected by this evaluator. Costs and timing here are invented controls,
+not current prices, observed performance or billing evidence.
+
+Twelve tests cover scoring, malformed schemas, cancellation, complete coverage,
+retry/unknown metrics, invalid values, duplicate JSON fields and output retention.
+The report never grants routing approval. No runtime code loads this benchmark;
+model allowlist, agreed quality floors, full workflow evaluation and any provider
+calls remain future AI-004 work. Claude live verification stays deferred.
+
 ## Entry-point inventory
 
 | Workflow | Current source | AI operation / representation |

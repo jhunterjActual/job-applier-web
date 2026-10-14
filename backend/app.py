@@ -1189,7 +1189,19 @@ def validate_ai_provider(
         except OperationCancelled:
             return {"success": False, "cancelled": True, "message": "AI provider test stopped."}
         except AIProviderError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            next_steps = {
+                "authentication": "Use Manage API keys to check or replace this provider's key, then save it before testing again.",
+                "permission": "Check this API key's permissions and model access in your provider account.",
+                "rate_limit": "Check your provider's API usage, quota and billing limits. A temporary rate limit may clear after waiting; exhausted quota may need an account change. CareerTrellis will not retry or switch providers automatically.",
+                "model_unavailable": "Check model access in your provider account, then save an available supported model before testing again.",
+                "unsupported_request": "Choose a model that supports the required structured output and save the selection before testing again.",
+                "timeout": "The provider may still have processed this request. Check API usage before choosing to run another test.",
+                "network": "The outcome may be unknown. Check your connection and provider API usage before choosing to run another test.",
+            }
+            guidance = next_steps.get(exc.code, "")
+            if exc.provider == "anthropic" and exc.code in ("model_unavailable", "unsupported_request"):
+                guidance = "Claude uses a fixed model here. Check access to that model in your Claude API account. Test again only after the issue is resolved, or explicitly select and save another available provider."
+            raise HTTPException(status_code=422, detail=f"{exc} {guidance}".strip()) from exc
 
 
 @app.post("/api/profile/maps-provider/validate")

@@ -26,6 +26,11 @@ class ClaudeBrowserTests(unittest.TestCase):
         self.writes = []
         self.secret_failure = False
         self.profile_failure = False
+        self.validation_status = 200
+        self.validation_result = {'success':True, 'provider':'anthropic',
+            'model':'claude-sonnet-5-5', 'message':'Configuration works.'}
+        self.validation_deferred = False
+        self.validation_routes = []
         self.page = self.browser.new_page()
         self.addCleanup(self.page.close)
         self.page.on('dialog', lambda dialog: dialog.dismiss())
@@ -62,7 +67,11 @@ class ClaudeBrowserTests(unittest.TestCase):
                 'success':True, 'anthropic_api_key_configured':True,
                 'gemini_api_key_configured':True, 'openai_api_key_configured':True}
         elif url.path == '/api/profile/ai-provider/validate':
-            response = {'success':True, 'provider':'anthropic', 'model':'claude-sonnet-5-5', 'message':'Configuration works.'}
+            if self.validation_deferred:
+                self.validation_routes.append(route)
+                return
+            status = self.validation_status
+            response = self.validation_result
         elif url.path == '/api/session':
             response = {'authentication':'local', 'authenticated':False}
         elif url.path == '/api/version':
@@ -161,3 +170,105 @@ class ClaudeBrowserTests(unittest.TestCase):
         expect(key).to_have_attribute('type', 'password')
         self.assertTrue(self.page.locator('#provider-secrets-form').evaluate(
             'el => el.scrollWidth <= el.clientWidth && el.getBoundingClientRect().right <= window.innerWidth'))
+
+    def test_cost_disclosure_and_provider_specific_model_suggestions(self):
+        self.open_profile()
+        expect(self.page.locator('#ai-provider-cost-help')).to_contain_text('may charge your API account')
+        expect(self.page.locator('#test-ai-provider-btn')).to_have_attribute(
+            'aria-describedby', 'ai-provider-cost-help')
+        expect(self.page.locator('#ai-model-capability-help')).to_contain_text('separate image support')
+        self.assertFalse(self.writes)
+        for provider, model in [('gemini', 'gemini-2.5-flash'), ('openai', 'gpt-5-mini'),
+                                ('anthropic', 'claude-sonnet-5-5')]:
+            self.page.locator('#p-ai-provider').select_option(provider)
+            self.assertEqual([model], self.page.locator('#ai-model-suggestions option').evaluate_all(
+                'options => options.map(option => option.value)'))
+            expect(self.page.locator('#p-ai-model')).to_have_value(model)
+            for key in ('gemini', 'openai', 'anthropic'):
+                expect(self.page.locator(f'#p-{key}-key-status')).to_have_text('Saved')
+        self.assertFalse(self.writes)
+
+    def test_validation_guard_blocks_unsaved_missing_and_pending_keys(self):
+        self.open_profile()
+        self.page.locator('#p-ai-provider').select_option('openai')
+        self.page.evaluate('testSavedAIProvider()')
+        self.assertFalse(self.writes)
+        self.page.reload()
+        self.page.get_by_role('tab', name='Profile & Resume', exact=True).click()
+        expect(self.page.locator('#test-ai-provider-btn')).to_be_enabled()
+        self.page.locator('#p-anthropic-apikey').fill('synthetic-pending-key')
+        self.page.evaluate('testSavedAIProvider()')
+        self.assertFalse(self.writes)
+        self.profile['anthropic_api_key_configured'] = False
+        self.page.reload()
+        self.page.get_by_role('tab', name='Profile & Resume', exact=True).click()
+        expect(self.page.locator('#test-ai-provider-btn')).to_be_disabled()
+        self.page.evaluate('testSavedAIProvider()')
+        self.assertFalse(self.writes)
+
+    def test_duplicate_validation_dispatch_is_blocked_and_button_recovers(self):
+        self.open_profile()
+        self.page.evaluate('Promise.all([testSavedAIProvider(), testSavedAIProvider()])')
+        requests = [path for path, _ in self.writes if path == '/api/profile/ai-provider/validate']
+        self.assertEqual(1, len(requests))
+        expect(self.page.locator('#test-ai-provider-btn')).to_be_enabled()
+        expect(self.page.locator('#ai-provider-test-status')).to_contain_text('Configuration works')
+
+    def test_keyboard_focus_returns_after_provider_test(self):
+        for result, status in [({'success': True, 'provider': 'anthropic',
+                                'model': 'synthetic', 'message': 'Configuration works.'}, 200),
+                               ({'detail': 'Synthetic provider failure.'}, 422),
+                               ({'cancelled': True, 'message': 'AI provider test stopped.'}, 200)]:
+            with self.subTest(status=status, result=result):
+                self.validation_result = result
+                self.validation_status = status
+                self.open_profile()
+                button = self.page.locator('#test-ai-provider-btn')
+                button.focus()
+                button.press('Enter')
+                expect(self.page.locator('#loading-modal')).not_to_have_class('modal modal-sm active')
+                expect(button).to_be_enabled()
+                expect(button).to_be_focused()
+
+    def test_model_guidance_is_accessible_on_desktop_and_mobile(self):
+        for width, height in [(1280, 900), (900, 900), (390, 844), (320, 800)]:
+            with self.subTest(width=width):
+                self.page.set_viewport_size({'width': width, 'height': height})
+                self.open_profile()
+                model = self.page.locator('#p-ai-model')
+                expect(model).to_have_attribute('aria-describedby',
+                    'ai-model-general-help ai-model-capability-help')
+                expect(model).to_have_accessible_description(
+                    'Use a model available to your key that supports structured JSON output. '
+                    'Claude uses the fixed model shown above. The test checks structured output; '
+                    'scanned-PDF OCR needs separate image support and consent.')
+                model.focus()
+                expect(model).to_be_focused()
+                self.assertTrue(model.evaluate(
+                    'el => el.getBoundingClientRect().left >= 0 && el.getBoundingClientRect().right <= window.innerWidth'))
+                if width <= 900:
+                    self.assertGreaterEqual(self.page.locator('#profile-form').evaluate(
+                        'el => el.getBoundingClientRect().width'), width - 120)
+                    cards = self.page.locator('#tab-profile .settings-grid > .card')
+                    first, second = cards.nth(0).bounding_box(), cards.nth(1).bounding_box()
+                    self.assertGreaterEqual(second['y'], first['y'] + first['height'])
+                self.assertFalse(self.writes)
+
+    def test_keyboard_stays_in_provider_test_dialog_until_completion(self):
+        self.validation_deferred = True
+        self.open_profile()
+        button = self.page.locator('#test-ai-provider-btn')
+        button.focus()
+        button.press('Enter')
+        stop = self.page.locator('#stop-loading-btn')
+        expect(stop).to_be_focused()
+        self.page.keyboard.press('Tab')
+        expect(stop).to_be_focused()
+        self.page.keyboard.press('Shift+Tab')
+        expect(stop).to_be_focused()
+        expect(button).to_be_disabled()
+        self.assertEqual(1, len(self.validation_routes))
+        self.validation_routes[0].fulfill(status=200, content_type='application/json',
+            body=json.dumps(self.validation_result))
+        expect(button).to_be_enabled()
+        expect(button).to_be_focused()

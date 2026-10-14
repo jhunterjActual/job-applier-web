@@ -1,0 +1,77 @@
+{
+  "version": "ai-usage-observations-v1",
+  "provenance": "synthetic",
+  "capture_complete": true,
+  "attempts": 5,
+  "unknown_cost_attempts": 2,
+  "in_progress_attempts": 0,
+  "known_estimated_cost_subtotal_usd": "0.02",
+  "estimated_ai_cost_total_usd": null,
+  "groups": [
+    {
+      "provider": "anthropic",
+      "model": "synthetic-model",
+      "operation": "resume_ocr",
+      "attempts": 1,
+      "dispatched_attempts": 1,
+      "successful_attempts": 1,
+      "in_progress_attempts": 0,
+      "unknown_cost_attempts": 1,
+      "unknown_usage_attempts": 0,
+      "known_estimated_cost_subtotal_usd": "0",
+      "known_input_token_subtotal": 100,
+      "known_output_token_subtotal": 20,
+      "outcomes": {
+        "success": 1
+      },
+      "rate_versions": [],
+      "estimated_cost_total_usd": null
+    },
+    {
+      "provider": "gemini",
+      "model": "synthetic-model",
+      "operation": "tailoring",
+      "attempts": 2,
+      "dispatched_attempts": 1,
+      "successful_attempts": 0,
+      "in_progress_attempts": 0,
+      "unknown_cost_attempts": 1,
+      "unknown_usage_attempts": 1,
+      "known_estimated_cost_subtotal_usd": "0",
+      "known_input_token_subtotal": 0,
+      "known_output_token_subtotal": 0,
+      "outcomes": {
+        "timeout": 1,
+        "cancelled": 1
+      },
+      "rate_versions": [],
+      "estimated_cost_total_usd": null
+    },
+    {
+      "provider": "openai",
+      "model": "synthetic-model",
+      "operation": "scoring",
+      "attempts": 2,
+      "dispatched_attempts": 2,
+      "successful_attempts": 1,
+      "in_progress_attempts": 0,
+      "unknown_cost_attempts": 0,
+      "unknown_usage_attempts": 0,
+      "known_estimated_cost_subtotal_usd": "0.02",
+      "known_input_token_subtotal": 200,
+      "known_output_token_subtotal": 40,
+      "outcomes": {
+        "rate_limit": 1,
+        "success": 1
+      },
+      "rate_versions": [
+        "synthetic-not-a-quote-v1"
+      ],
+      "estimated_cost_total_usd": "0.02"
+    }
+  ],
+  "completed_workflows": null,
+  "monthly_cost_usd": null,
+  "contribution_margin": null,
+  "limits": "Supplied receipt estimates only, not provider invoices or a spend ledger. Attempts include retries; they are not job, page or completed-workflow counts. Missing requests cannot be detected from receipts. Capture completeness is caller-declared. Non-AI costs and monthly workload remain unmeasured."
+}

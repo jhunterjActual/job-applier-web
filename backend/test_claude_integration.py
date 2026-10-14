@@ -15,6 +15,33 @@ from test_ai_contracts import HTTPResponse
 
 
 class ClaudeIntegrationTests(unittest.TestCase):
+    def test_setup_failure_guidance_preserves_error_contract_and_never_retries(self):
+        cases = {
+            'authentication': 'Manage API keys',
+            'permission': 'permissions and model access',
+            'rate_limit': 'API usage, quota and billing limits',
+            'model_unavailable': 'available supported model',
+            'unsupported_request': 'required structured output',
+            'timeout': 'may still have processed',
+            'network': 'outcome may be unknown',
+        }
+        for provider in ('gemini', 'openai', 'anthropic'):
+            for code, guidance in cases.items():
+                with self.subTest(provider=provider, code=code), \
+                        patch.object(app, 'runtime_profile_repository') as repository, \
+                        patch.object(app, 'settings_from_profile'), \
+                        patch.object(app, 'validate_provider_capability', side_effect=
+                            providers.AIProviderError(provider, code, 'Safe failure.')) as validate:
+                    repository.return_value.get_profile.return_value = {}
+                    with self.assertRaises(app.HTTPException) as caught:
+                        app.validate_ai_provider(operation_id=None)
+                    self.assertEqual(422, caught.exception.status_code)
+                    self.assertTrue(caught.exception.detail.startswith('Safe failure.'))
+                    expected = 'Claude uses a fixed model' if provider == 'anthropic' and code in (
+                        'model_unavailable', 'unsupported_request') else guidance
+                    self.assertIn(expected, caught.exception.detail)
+                    validate.assert_called_once()
+
     def profile(self, **extra):
         return app.ProfileUpdate(name='Synthetic', email='', phone='', github='', linkedin='', website='',
                                  base_resume_text='Synthetic resume', ai_provider='anthropic',

@@ -1,0 +1,68 @@
+{
+  "version": "ai-fact-evaluation-v1",
+  "provenance": "synthetic",
+  "runtime_routing_approved": false,
+  "scope": "Exact fact preservation only; no semantic relevance or live model quality claim",
+  "candidates": [
+    {
+      "candidate_id": "synthetic-faithful",
+      "cases": [
+        {
+          "case_id": "skills",
+          "schema_valid": true,
+          "unsupported_fact_count": 0,
+          "missing_required_fact_count": 0,
+          "passed": true
+        },
+        {
+          "case_id": "experience",
+          "schema_valid": true,
+          "unsupported_fact_count": 0,
+          "missing_required_fact_count": 0,
+          "passed": true
+        }
+      ],
+      "passed_cases": 2,
+      "case_count": 2,
+      "all_cases_passed": true,
+      "attempts": 3,
+      "unknown_cost_attempts": 0,
+      "unknown_latency_attempts": 0,
+      "known_cost_subtotal_usd": "0.006",
+      "estimated_cost_total_usd": "0.006",
+      "estimated_cost_per_passed_case_usd": "0.003",
+      "known_latency_subtotal_ms": 600,
+      "total_latency_ms": 600
+    },
+    {
+      "candidate_id": "synthetic-invented-and-incomplete",
+      "cases": [
+        {
+          "case_id": "skills",
+          "schema_valid": true,
+          "unsupported_fact_count": 1,
+          "missing_required_fact_count": 0,
+          "passed": false
+        },
+        {
+          "case_id": "experience",
+          "schema_valid": true,
+          "unsupported_fact_count": 0,
+          "missing_required_fact_count": 1,
+          "passed": false
+        }
+      ],
+      "passed_cases": 0,
+      "case_count": 2,
+      "all_cases_passed": false,
+      "attempts": 2,
+      "unknown_cost_attempts": 0,
+      "unknown_latency_attempts": 0,
+      "known_cost_subtotal_usd": "0.002",
+      "estimated_cost_total_usd": "0.002",
+      "estimated_cost_per_passed_case_usd": null,
+      "known_latency_subtotal_ms": 100,
+      "total_latency_ms": 100
+    }
+  ]
+}

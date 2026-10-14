@@ -268,6 +268,26 @@ def _job_posting_json_ld(page) -> dict:
     return {}
 
 
+def _structured_posting_expired(posting: dict, url: str, now: datetime | None = None) -> bool:
+    """Reject only explicit, timezone-aware expiry bound to this exact posting."""
+    posting_url = posting.get("url")
+    expiry = posting.get("validThrough")
+    target = canonicalize_job_url(url)
+    if (not isinstance(posting_url, str) or len(posting_url) > 4096
+            or not target or canonicalize_job_url(posting_url) != target
+            or not isinstance(expiry, str) or len(expiry) > 40):
+        return False
+    # Date-only and local timestamps have no unambiguous expiry instant.
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)", expiry):
+        return False
+    try:
+        deadline = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+        current = now if now is not None else datetime.now(timezone.utc)
+        return deadline < current
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
 def _job_location_from_json_ld(posting: dict) -> str:
     def address_part(value: object) -> str:
         if isinstance(value, str):
@@ -1278,6 +1298,10 @@ def _scrape_job_details_browser(url: str, allow_partial: bool = False, diagnosti
 
             else:
                 scope, posting, has_embedded_frames = _select_job_content_scope(page)
+                if _structured_posting_expired(posting, details["url"]):
+                    return _reject_job_fetch(
+                        diagnostic, "stale", "The posting's explicit expiration timestamp has passed.",
+                    )
                 organization = posting.get("hiringOrganization") or {}
                 title_element = scope.query_selector("h1")
                 description = _plain_text(posting.get("description"))
@@ -1684,6 +1708,25 @@ def run_job_search_and_matching(
     known_urls = catalog_context["known_status_by_url"]
     suppressed_fingerprints = catalog_context["suppressed_fingerprints"]
     from job_suppressions import job_url_fingerprint
+    scoring_urls = set()
+
+    def skip_catalog_or_scoring_url(candidate_url: str, provider: str) -> bool:
+        # Recheck the resolved URL too: discovery aliases may converge on a
+        # saved, deleted or already queued posting after detail extraction.
+        candidate_url = canonicalize_job_url(candidate_url)
+        if job_url_fingerprint(candidate_url) in suppressed_fingerprints:
+            counter = 'skipped_suppressed'
+        elif candidate_url in known_urls:
+            counter = 'skipped_archived' if known_urls[candidate_url] == 'archived' else 'skipped_active'
+        elif candidate_url in scoring_urls:
+            counter = 'coverage_duplicate_candidates'
+        else:
+            return False
+        if provider in provider_health:
+            health = provider_health[provider]
+            health[counter] = health.get(counter, 0) + 1
+        return True
+
     inspected_count = 0
     analyzed_count = 0
     scored_count = 0
@@ -1827,14 +1870,7 @@ def run_job_search_and_matching(
         url = item["url"]
         provider = provider_for_url(url)
         accepted = False
-        if job_url_fingerprint(url) in suppressed_fingerprints:
-            if provider in provider_health:
-                provider_health[provider]["skipped_suppressed"] += 1
-        elif url in known_urls:
-            key = "skipped_archived" if known_urls[url] == "archived" else "skipped_active"
-            if provider in provider_health:
-                provider_health[provider][key] += 1
-        else:
+        if not skip_catalog_or_scoring_url(url, provider):
             if provider in provider_health:
                 provider_health[provider]["new_candidates"] += 1
             outcome = inspect_job_posting(url, cancel_check=check_cancelled)
@@ -1848,6 +1884,8 @@ def run_job_search_and_matching(
                     reason = outcome.get("status", "provider_error")
                     reason = reason if reason in provider_health[provider]["rejection_reasons"] else "provider_error"
                     provider_health[provider]["rejection_reasons"][reason] += 1
+            elif skip_catalog_or_scoring_url(job_details.get('url', url), provider):
+                pass
             else:
                 job_details = _supplement_feed_metadata(job_details, item)
                 from candidate_filters import role_matches, detail_location_matches
@@ -1855,6 +1893,7 @@ def run_job_search_and_matching(
                 place_ok = not item.get('verify_query') or detail_location_matches(job_details, locs)
                 if role_ok and place_ok:
                     pending_jobs.append(_bounded_job_details(job_details))
+                    scoring_urls.add(canonicalize_job_url(job_details.get('url', url)))
                     accepted = True
                     if provider in provider_health:
                         provider_health[provider]["accepted"] += 1

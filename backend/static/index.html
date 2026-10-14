@@ -279,13 +279,14 @@
                                 </div>
                                 <div class="form-group full-width">
                                     <label for="p-ai-model" data-i18n="profile.ai_model">AI model</label>
-                                    <input type="text" id="p-ai-model" name="ai_model" list="ai-model-suggestions" maxlength="120" autocomplete="off" spellcheck="false" required pattern="[A-Za-z0-9._:/-]+" placeholder="gemini-2.5-flash">
+                                    <input type="text" id="p-ai-model" name="ai_model" list="ai-model-suggestions" aria-describedby="ai-model-general-help ai-model-capability-help" maxlength="120" autocomplete="off" spellcheck="false" required pattern="[A-Za-z0-9._:/-]+" placeholder="gemini-2.5-flash">
                                     <datalist id="ai-model-suggestions">
                                         <option value="gemini-2.5-flash"></option>
                                         <option value="gpt-5-mini"></option>
                                         <option value="claude-sonnet-5-5"></option>
                                     </datalist>
-                                    <small class="form-help" data-i18n="profile.ai_model.help">Use a model available to your key that supports structured JSON output.</small>
+                                    <small class="form-help" id="ai-model-general-help" data-i18n="profile.ai_model.help">Use a model available to your key that supports structured JSON output.</small>
+                                    <small class="form-help" id="ai-model-capability-help"></small>
                                 </div>
                                 <div class="form-group full-width">
                                     <label for="p-maps-provider">Headquarters address provider</label>
@@ -308,7 +309,7 @@
                                     <small class="form-help">Useful when documenting U.S. unemployment work-search activity. Unverified addresses are shown as Unknown.</small>
                                 </div>
                                 <div class="form-actions full-width">
-                                    <button type="button" class="btn btn-secondary" id="test-ai-provider-btn" disabled>
+                                    <button type="button" class="btn btn-secondary" id="test-ai-provider-btn" aria-describedby="ai-provider-cost-help" disabled>
                                         <i class="fa-solid fa-plug-circle-check"></i> Test Saved AI Provider
                                     </button>
                                     <button type="button" class="btn btn-secondary" id="test-maps-provider-btn" disabled>
@@ -318,6 +319,7 @@
                                         <i class="fa-solid fa-floppy-disk"></i> <span data-i18n="profile.save">Save Settings</span>
                                     </button>
                                 </div>
+                                <p class="form-help full-width" id="ai-provider-cost-help">Testing sends a small sample request using your saved API key. Your provider may charge your API account; the exact cost is unknown until usage is reported. No resume or job content is sent. A chatbot subscription may not include API access or credits. Saving settings or keys does not run a test.</p>
                                 <p class="form-help full-width provider-test-status" id="ai-provider-test-status" role="status" aria-live="polite">Save AI provider and model changes before testing.</p>
                                 <p class="form-help full-width provider-test-status" id="maps-provider-test-status" role="status" aria-live="polite">Save maps-provider changes before testing.</p>
                             </form>

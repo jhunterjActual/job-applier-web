@@ -211,6 +211,23 @@ Existing backlog reordering:
   tombstones. Depends on SEARCH-002. Acceptance: cross-source duplicates are
   scored once; timeout is not mistaken for closure; history survives merging;
   metadata propagation regressions cover source location and employment type.
+  October 13 bounded runtime candidate: post-redirect canonical URL checks avoid
+  rescoring the same resolved posting within a run and preserve saved/archived
+  jobs and deletion fingerprints. Different URLs/repostings remain distinct;
+  timeout is not closure. See docs/search-quality/README.md. Cross-URL requisition
+  identity, persistent provenance/history and broader stale checks remain open.
+  Local synthetic verification only; no live provider request or deployment.
+  Full isolated run: 446 tests, two skips, no failures/errors; syntax, loopback
+  version/dashboard and clean shutdown passed. Independent review found no
+  blocking issue. Receipt: artifacts/search005-postredirect-20261013/verification.json.
+  October 14 bounded stale check: generic browser extraction now rejects a
+  JobPosting whose explicit timezone-aware expiration is in the past and whose
+  URL matches the resolved posting. Missing, malformed, date-only, timezone-free
+  and other-posting timestamps do not establish closure. The partial-import path
+  respects the same check. No stored job is closed, merged or deleted by it.
+  Coverage remains limited to the selected generic structured posting; named ATS
+  adapters and cached-feed expiry need separate work. See the search-quality
+  notes and local receipt `artifacts/search005-expiration-20261014/verification.json`.
 - [ ] **SEARCH-006 (P2): Add useful feedback and zero-result recovery.** Let users
   mark irrelevant, duplicate or closed results with an undo path and scoped reason
   codes. Show whether zero results came from coverage, filters, known jobs or
@@ -274,6 +291,19 @@ Existing backlog reordering:
   Local implementation is complete. AI-002 stays open only for exact-release
   encrypted-store/RLS, live queue and bounded provider acceptance, with a
   Claude-compatible forward correction. No paid call, credential or deployment.
+  Deployment October 12 (02:30 UTC October 13): build `20261012.88`, commit
+  `5094df231a85195ac6e94085b53ade8cd107ceb0`, is active. Compatible correction
+  `20261012.89` (`803787bd86a7bf79970b72f679bf5656fd48f164`) is installed inactive
+  for recovery. Full installed source/runtime readback, live readiness, both
+  workers, authority and zero-work pre-switch audits passed; configuration was
+  unchanged. Disposable PostgreSQL 18.4 encryption/RLS checks also passed.
+  Authenticated browser verification passed October 13: Claude selection/fixed
+  model, masked empty key fields, no-key test guard, setup guidance and Manage
+  link passed; original provider remained unchanged after reload. No settings
+  or keys were saved. Paid Claude acceptance remains explicitly skipped by the
+  operator, so AI-002 retains that live-provider acceptance gap. Evidence:
+  `artifacts/claude-deploy-20261012/` and
+  `artifacts/claude-browser-verification-20261013/receipt.json`.
 - [ ] **AI-003 (P1): Make provider setup understandable.** Combine the existing
   official credential links and password-manager fixes with capability-aware
   model selection, masked saved-key status and actionable quota/authentication
@@ -281,6 +311,17 @@ Existing backlog reordering:
   Acceptance: switching providers preserves other saved credentials, validation
   discloses any request cost, and paid managed-AI users are not asked for a key.
   BYOK and managed billing responsibility must remain explicit.
+  October 13 bounded setup slice: provider-specific model suggestions, explicit
+  API-account test-cost disclosure, structured-output versus OCR guidance,
+  actionable authentication/quota/model-access failures and duplicate-test
+  prevention are implemented locally. Existing saved credentials are preserved.
+  Claude paid live verification remains deferred by the operator; it does not
+  block this independent roadmap slice. Full AI-003 acceptance remains open for
+  managed billing/keyless setup (MON-003/004/005) and exact-release hosted checks.
+  Verification: 435 synthetic tests ran with two skips and no failures/errors;
+  Python/JavaScript syntax, loopback version/dashboard and clean shutdown passed.
+  Local receipt: artifacts/ai003-setup-20261013/verification-final.json.
+  No live provider call, deployment, commit, push or PR in this slice.
 - [ ] **AI-004 (P1): Evaluate models and constrain task routing.** Use synthetic
   resumes/jobs to compare factual fidelity, schema success, relevance, latency
   and cost per completed workflow, including retries. Depends on AI-001 and
@@ -288,6 +329,15 @@ Existing backlog reordering:
   results and model allowlist; choose a lower-cost model only where quality meets
   the agreed floor. Failover is bounded and disclosed; never send data to another
   provider, use a personal key or spend platform funds without the selected policy.
+  October 14 local slice: [offline exact-fact evaluator](scripts/evaluate_ai_facts.py)
+  and [synthetic controls](docs/ai-facts-synthetic-v1.json) establish a reproducible
+  schema/fact-preservation check. The faithful fixture passes 2/2 cases; invented
+  and omitted facts fail 0/2. Retry costs/latency count, unknown totals remain null,
+  and every candidate must cover the same cases. These are authored controls,
+  not outputs from real models or measured provider prices/performance.
+  See [scope and reproduction](docs/AI_PROVIDER_CONTRACT.md#ai-004-offline-exact-fact-controls).
+  Full resumes/jobs, semantic relevance, real-model comparisons, agreed quality
+  floors and routing allowlist decisions remain open. Claude live checks deferred.
 - [ ] **AI-005 (P2): Evaluate Mistral as the next adapter, then gateway demand.**
   After AI-002 parity, assess Mistral's incremental value using AI-004; review
   schema, image/OCR support, data handling and total cost before choosing models.
@@ -338,6 +388,16 @@ block personal-data export/deletion or access to existing materials on downgrade
   includes official dated AI/discovery prices, three synthetic scenarios and
   doubled-cost sensitivity. Missing operating/payment costs keep total cost and
   margin unknown; workload measurement and complete economics remain open.
+  October 13: the offline receipt summary in docs/monetization/README.md connects
+  AI-001 receipt exports to cost review. It includes failed/retried attempt costs,
+  explicit unknown-cost coverage, incomplete-capture guards and provider/model/
+  operation groups. The reproducible five-attempt fixture is entirely synthetic;
+  monthly workload, non-AI costs and margins remain unknown. No provider calls,
+  telemetry, billing or plan decisions; Claude live verification remains deferred.
+  Verification: 17 offline cost tests passed; 435 existing regressions ran with
+  two skips and no failures/errors. Syntax, exact fixture replay, 35 local links
+  and disposable loopback startup/shutdown passed. Local evidence:
+  artifacts/mon002-usage-summary-20261013/completion.json.
 - [ ] **MON-003 (P1): Enforce server-side entitlements.** Depends on MON-001.
   Add versioned plan state and additive migration for existing users; authorize
   features at API admission and worker execution, including scheduled jobs.
@@ -421,6 +481,15 @@ UX slice. These items do not add launch gates or override existing deferrals.
   exception; prefer roughly 44-pixel touch targets where practical. Sources:
   [WCAG 2.2](https://www.w3.org/TR/WCAG22/) and
   [target-size guidance](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum).
+  October 13 local slice: saved-provider tests restore keyboard focus after
+  success, failure and cancellation; model guidance is associated with its input.
+  Profile settings stack at widths up to 900 pixels, fixing the narrow two-column
+  phone layout. Synthetic browser checks cover 320, 390, 900 and 1280 pixels,
+  dialog focus containment and duplicate-request prevention. All 449 tests pass
+  with two skips; temporary app startup and cleanup pass. Before/after screenshots
+  and receipts are retained locally in `artifacts/ux002-provider-focus-20261013/`.
+  Broader UX-002, physical-device/assistive-technology and hosted acceptance remain
+  open; this is not a WCAG conformance claim. Claude live verification is deferred.
 - [ ] **UX-003 (P1): Enter the workspace automatically after successful sign-in.**
   Remove the routine **Continue to workspace** step. Once the application session
   and authorization are established, navigate directly to the workspace (or a

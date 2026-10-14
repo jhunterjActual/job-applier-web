@@ -38,7 +38,8 @@ with tempfile.TemporaryDirectory(prefix='ct-ai001-') as temporary:
             raise RuntimeError('Recovery verification requires Claude disabled in source')
         names = ['test_claude_recovery']
     if not args.focused:
-        names += ['test_p0_regressions', 'test_object_store', 'test_object_import', 'test_stored_objects']
+        names += ['test_p0_regressions', 'test_object_store', 'test_object_import', 'test_stored_objects',
+                  'test_search_postredirect', 'test_feed_metadata', 'test_search_expiration']
     result = unittest.TextTestRunner(verbosity=1).run(unittest.defaultTestLoader.loadTestsFromNames(names))
     syntax = compileall.compile_dir(str(backend), quiet=1, rx=re.compile(r'[/\\]venv[/\\]'))
     receipt = dict(tests=result.testsRun, failures=len(result.failures), errors=len(result.errors),

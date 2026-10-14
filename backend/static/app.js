@@ -124,6 +124,7 @@ const testMapsProviderBtn = document.getElementById("test-maps-provider-btn");
 const mapsProviderTestStatus = document.getElementById("maps-provider-test-status");
 const saveProviderSecretsBtn = document.getElementById("save-provider-secrets-btn");
 const providerSecretSaveStatus = document.getElementById("provider-secret-save-status");
+let aiProviderTestRunning = false;
 
 const AI_PROVIDERS = {
     gemini: { label: "Google Gemini", defaultModel: "gemini-2.5-flash" },
@@ -1821,7 +1822,8 @@ function updateProviderTestAvailability() {
     const hasKey = selectedAIKeyConfigured();
     const keyPending = selectedAIKeyPending();
     const unavailable = !selectedAIProviderAvailable();
-    testAIProviderBtn.disabled = unavailable || !aiProviderSettingsSaved || !hasKey || keyPending;
+    testAIProviderBtn.disabled = aiProviderTestRunning || unavailable || !aiProviderSettingsSaved || !hasKey || keyPending;
+    if (aiProviderTestRunning) return;
     aiProviderTestStatus.className = "form-help full-width provider-test-status";
     if (unavailable) {
         aiProviderTestStatus.textContent = selectedAIProvider() === "anthropic"
@@ -1834,7 +1836,7 @@ function updateProviderTestAvailability() {
     } else if (!hasKey) {
         aiProviderTestStatus.textContent = `Save a ${provider.label} API key before testing.`;
     } else {
-        aiProviderTestStatus.textContent = `Ready to test the saved ${provider.label} model and key.`;
+        aiProviderTestStatus.textContent = `Ready to test the saved ${provider.label} model and key. This request may charge your provider account.`;
     }
 }
 
@@ -1866,6 +1868,16 @@ function updateSecretStatuses() {
     pAnthropicApiKey.disabled = !anthropicAvailable;
     toggleAnthropicApiVisibilityBtn.disabled = !anthropicAvailable;
     pAiModel.readOnly = selectedAIProvider() === "anthropic";
+    const modelSuggestions = document.getElementById("ai-model-suggestions");
+    modelSuggestions.replaceChildren();
+    if (selectedAIProviderAvailable()) {
+        const option = document.createElement("option");
+        option.value = selectedAIProviderMeta().defaultModel;
+        modelSuggestions.appendChild(option);
+    }
+    document.getElementById("ai-model-capability-help").textContent = selectedAIProvider() === "anthropic"
+        ? "Claude uses the fixed model shown above. The test checks structured output; scanned-PDF OCR needs separate image support and consent."
+        : "Suggestions apply to the selected provider and do not guarantee access for your API account. Custom models must support structured output; scanned-PDF OCR also needs image support. The test checks structured output only.";
     document.getElementById("save-profile-btn").disabled = !selectedAIProviderAvailable();
     anthropicAvailabilityHelp.textContent = anthropicAvailable
         ? "Claude uses Claude Sonnet 5.5. Save your Claude API key below, then save these settings."
@@ -2403,12 +2415,16 @@ async function testSavedMapsProvider() {
 }
 
 async function testSavedAIProvider() {
-    if (!selectedAIProviderAvailable()) return;
+    if (aiProviderTestRunning || !selectedAIProviderAvailable() || !aiProviderSettingsSaved
+        || !selectedAIKeyConfigured() || selectedAIKeyPending()) return;
+    aiProviderTestRunning = true;
     const provider = selectedAIProviderMeta();
     const operation = showCancellableLoading(
         `Testing ${provider.label}...`,
         "Validating the saved key, selected model, and structured-output capability."
     );
+    // The modal must capture its keyboard opener before disabling it blurs it.
+    testAIProviderBtn.disabled = true;
     aiProviderTestStatus.className = "form-help full-width provider-test-status";
     aiProviderTestStatus.textContent = `Testing the saved ${provider.label} configuration…`;
     try {
@@ -2431,6 +2447,10 @@ async function testSavedAIProvider() {
         aiProviderTestStatus.className = "form-help full-width provider-test-status error";
         aiProviderTestStatus.textContent = error.message || "The AI provider test failed.";
         logActivity("AI Provider Test Failed", aiProviderTestStatus.textContent, "error");
+    } finally {
+        aiProviderTestRunning = false;
+        testAIProviderBtn.disabled = !selectedAIProviderAvailable() || !aiProviderSettingsSaved
+            || !selectedAIKeyConfigured() || selectedAIKeyPending();
     }
 }
 

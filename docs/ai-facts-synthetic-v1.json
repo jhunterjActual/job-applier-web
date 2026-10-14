@@ -1,0 +1,27 @@
+{
+  "version": "ai-fact-evaluation-v1",
+  "provenance": "synthetic",
+  "cases": [
+    {"id": "skills", "supported_facts": ["SQL", "Python"], "required_facts": ["SQL"]},
+    {"id": "experience", "supported_facts": ["Led a two-person project", "Built a reporting tool"], "required_facts": ["Led a two-person project"]}
+  ],
+  "candidates": [
+    {"id": "synthetic-faithful", "runs": [
+      {"case_id": "skills", "attempts": [
+        {"outcome": "error", "output": null, "latency_ms": 100, "estimated_cost_usd": "0.001"},
+        {"outcome": "success", "output": {"facts": ["SQL", "Python"]}, "latency_ms": 200, "estimated_cost_usd": "0.002"}
+      ]},
+      {"case_id": "experience", "attempts": [
+        {"outcome": "success", "output": {"facts": ["Led a two-person project"]}, "latency_ms": 300, "estimated_cost_usd": "0.003"}
+      ]}
+    ]},
+    {"id": "synthetic-invented-and-incomplete", "runs": [
+      {"case_id": "skills", "attempts": [
+        {"outcome": "success", "output": {"facts": ["SQL", "AWS certification"]}, "latency_ms": 50, "estimated_cost_usd": "0.001"}
+      ]},
+      {"case_id": "experience", "attempts": [
+        {"outcome": "success", "output": {"facts": ["Built a reporting tool"]}, "latency_ms": 50, "estimated_cost_usd": "0.001"}
+      ]}
+    ]}
+  ]
+}

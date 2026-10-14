@@ -133,6 +133,47 @@ These dated quotes require refresh and account eligibility/terms review before a
 provider/model/processor commitment. The contract's optional RateCard is supplied
 by trusted caller code; no production pricing table or billing settlement is added.
 
+## October 13 receipt observations
+
+The [offline receipt summarizer](../../scripts/summarize_ai_usage.py) accepts the
+AI-001 Receipt/Usage shape through `receipt_document(records, provenance=...,
+capture_complete=...)`. Call it only after the caller-owned capture has finished;
+this is an explicit export, not automatic telemetry. Provenance is `synthetic` or
+`supplied_observations`; the latter is a caller assertion, not verified live evidence.
+Use only reviewed model/rate identifiers and aggregate receipt metadata. Do not
+supply keys, account IDs, prompts, resumes, job text or raw provider errors.
+
+The [synthetic input](usage-observations-synthetic-v1.json) and
+[expected report](usage-summary-synthetic-v1.json) exercise five attempts,
+including a failed attempt, success, timeout, unpriced Claude usage and cancellation
+before dispatch. All models, tokens and costs are fabricated; no current quote,
+provider comparison or full-workflow measurement is implied. Reproduce into a
+new output file:
+
+```powershell
+backend/venv/Scripts/python.exe -B scripts/summarize_ai_usage.py --input docs/monetization/usage-observations-synthetic-v1.json --output NEW_USAGE_REPORT.json
+```
+
+Known estimated spend includes failed and cancelled dispatched attempts. Missing
+usage or rates never become a zero total: this fixture has a $0.02 known subtotal,
+two unknown-cost dispatched attempts and a null total. In-progress captures and
+caller-declared incomplete captures also block totals. Provider/model/operation
+groups retain rate versions and outcome counts. Unknown extra fields, raw error
+text, contradictory usage, duplicate JSON fields and oversized inputs are refused.
+Existing output files are never overwritten. Limits: 1 MiB input, 1,000 receipts.
+
+Each receipt represents an attempt, not a completed workflow or a distinct job.
+Do not deduplicate identical receipts: a retry can look identical and still cost
+money. Callers must supply one reviewed capture without overlapping exports;
+this format cannot detect missing or duplicate requests. Batch job/page counts,
+workflow correlation and monthly workload sampling remain separate work.
+
+The summarizer does not change the illustrative monthly worksheet. Use its
+observations to review those assumptions after separately authorized representative
+workflows. Non-AI costs, monthly cost and contribution margin remain unknown.
+There is no runtime capture, price refresh, ledger, billing, quota or payer change.
+Claude live-provider verification remains deferred.
+
 ## Next decisions and verification
 
 MON-001 remains open for owner acceptance of the matrix and transition policies.
