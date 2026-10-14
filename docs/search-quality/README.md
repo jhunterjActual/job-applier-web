@@ -121,3 +121,60 @@ is indexed for later shared-log consolidation.
 SEARCH-002 remains open for the explicitly missing full-pipeline measurements.
 Per the balanced backlog order, AI-001 and MON-001/002 are the next independent
 baseline slices before another cycle solely on search.
+
+## SEARCH-005 post-redirect duplicate check - October 13
+
+The local runtime candidate repeats the owner's saved-job and deletion-fingerprint
+checks after detail extraction resolves a posting URL. Two discovery aliases that
+resolve to the same canonical URL now enter scoring only once in that search,
+including across scoring batches. The existing canonicalizer removes tracking
+variants; matching titles or employer names alone do not establish identity.
+
+Archived, active and deleted destinations skip scoring and insertion without
+modifying existing jobs, user edits or deletion records. A rejected or timed-out
+inspection does not reserve an identity or mark a listing closed. Different URLs,
+including repostings, remain distinct. The in-memory set is local to the run and
+owner context; repository admission still controls concurrent inserts.
+
+Existing provider counters report post-resolution known/suppressed skips and
+`coverage_duplicate_candidates` includes repeated resolved URLs. Inspection
+progress advances for each candidate. This does not eliminate the detail request
+needed to discover a redirect, or bypass existing provider retry policy.
+
+Synthetic tests are in [test_search_postredirect.py](../../backend/test_search_postredirect.py).
+The isolated [verification runner](../../scripts/verify_ai_contracts.py) includes
+those tests and feed-metadata regressions in its full run. No live provider call
+is needed; this candidate has not been deployed. Claude live verification remains
+deferred.
+
+SEARCH-005 remains open for employer/requisition identity across different URLs,
+persistent cross-source provenance, first/last-seen history and bounded stale
+checks. This slice does not merge stored records or claim full duplicate/stale
+acceptance. Owner: CareerTrellis engineering; review before hosted release.
+
+## SEARCH-005 explicit expiration - October 14
+
+Generic browser extraction now checks the selected JobPosting's
+[`validThrough`](https://schema.org/validThrough) before accepting its contents.
+Only a full timestamp with seconds and an explicit timezone, on metadata whose
+canonical URL matches the resolved posting, can establish expiration. The current
+instant must be strictly later than the deadline. Optional fractional seconds
+are supported. A date-only or local timestamp, malformed value, absent URL or
+metadata for another posting leaves this check inconclusive. Existing extraction
+and eligibility checks still apply; this does not certify that a job is open.
+
+This is a conservative subset of the schema's Date/DateTime values: date-only
+values have no timezone-bound instant here. The named ATS branches and cached
+public feeds retain their existing behavior. This check uses metadata already
+read during extraction, without extra requests. It also runs for partial imports.
+Expired results use the existing stale diagnostic and skip scoring/insertion;
+no existing saved job, user edit, history or deletion record is mutated. HTTP
+access failures, server errors and timeouts do not become closure evidence.
+
+[Synthetic expiration tests](../../backend/test_search_expiration.py) cover the
+parser, generic extraction and partial-import behavior; the post-redirect suite
+also asserts that stale results never reach scoring or insertion. These checks
+are included in the isolated verifier. Local receipt:
+`artifacts/search005-expiration-20261014/verification.json`.
+This remains undeployed. Broader provider coverage, persistent provenance/history
+and exact-release hosted acceptance remain open; Claude live checks stay deferred.

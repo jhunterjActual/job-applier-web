@@ -21,6 +21,7 @@ from typing import Literal, Optional
 from datetime import date, datetime, timedelta, timezone
 
 import config
+from claude_adapter import claude_available
 from ai_providers import (
     AIProviderError,
     default_model,
@@ -642,7 +643,7 @@ class ProfileUpdate(BaseModel):
     base_resume_text: str = Field(max_length=MAX_BASE_RESUME_CHARS)
     professional_evidence: Optional[ProfessionalEvidenceUpdate] = None
     resume_mode: Literal["it", "technical_executive", "general_professional", "federal", "healthcare", "education", "sales", "trades_operations", "academic_cv", "cover_letter"] = "general_professional"
-    ai_provider: Literal["gemini", "openai"] = "gemini"
+    ai_provider: Literal["gemini", "openai", "anthropic"] = "gemini"
     ai_model: str = Field(default="gemini-2.5-flash", min_length=1, max_length=120, pattern=r"^[A-Za-z0-9._:/-]+$")
     maps_provider: Literal["google", "openstreetmap"] = "openstreetmap"
     prefer_us_headquarters: bool = True
@@ -652,6 +653,7 @@ class ProfileUpdate(BaseModel):
 class ProfileSecretsUpdate(BaseModel):
     gemini_api_key: Optional[str] = Field(default=None, max_length=512)
     openai_api_key: Optional[str] = Field(default=None, max_length=512)
+    anthropic_api_key: Optional[str] = Field(default=None, max_length=512, repr=False)
     google_maps_api_key: Optional[str] = Field(default=None, max_length=512)
 
 class SearchRequest(BaseModel):
@@ -990,8 +992,11 @@ def get_profile() -> dict:
         result = dict(row)
         result["gemini_api_key_configured"] = provider_key_configured(row, "gemini")
         result["openai_api_key_configured"] = provider_key_configured(row, "openai")
+        result["anthropic_api_key_configured"] = provider_key_configured(row, "anthropic")
+        result["anthropic_available"] = claude_available() and provider_secret_store_kind() == SHARED_SECRET_STORE
         result.pop("gemini_api_key", None)
         result.pop("openai_api_key", None)
+        result.pop("anthropic_api_key", None)
         local_google_key = result.pop("google_maps_api_key", "")
         result["google_maps_api_key_configured"] = (
             current_provider_secret_configured("google_maps")
@@ -1019,6 +1024,13 @@ def update_profile(profile: ProfileUpdate) -> dict:
     Returns:
         dict: Success status and feedback message.
     """
+    if profile.ai_provider == 'anthropic':
+        if not claude_available():
+            raise HTTPException(status_code=422, detail='Claude is temporarily unavailable. Existing settings and keys are preserved.')
+        if provider_secret_store_kind() != SHARED_SECRET_STORE:
+            raise HTTPException(status_code=422, detail='Claude requires encrypted hosted credential storage.')
+        if profile.ai_model != default_model('anthropic'):
+            raise HTTPException(status_code=422, detail='The selected Claude model is not supported.')
     try:
         result = runtime_profile_repository(
             sqlite_connection_factory=get_db_connection
@@ -1096,9 +1108,12 @@ def delete_base_resume_endpoint(resume_id: int) -> dict:
 @app.put("/api/profile/secrets")
 def update_profile_secrets(secrets: ProfileSecretsUpdate, request: Request = None) -> dict:
     """Update explicitly supplied secrets without ever returning their values."""
+    if secrets.anthropic_api_key is not None and not claude_available():
+        raise HTTPException(status_code=422, detail='Claude is temporarily unavailable. Existing settings and keys are preserved.')
     supplied = {
         "gemini": secrets.gemini_api_key,
         "openai": secrets.openai_api_key,
+        "anthropic": secrets.anthropic_api_key,
         "google_maps": secrets.google_maps_api_key,
     }
     if provider_secret_store_kind() == SHARED_SECRET_STORE:
@@ -1113,9 +1128,12 @@ def update_profile_secrets(secrets: ProfileSecretsUpdate, request: Request = Non
             "success": True,
             "gemini_api_key_configured": current_provider_secret_configured("gemini"),
             "openai_api_key_configured": current_provider_secret_configured("openai"),
+            "anthropic_api_key_configured": current_provider_secret_configured("anthropic"),
             "google_maps_api_key_configured": current_provider_secret_configured("google_maps"),
         }
 
+    if secrets.anthropic_api_key is not None:
+        raise HTTPException(status_code=422, detail='Claude requires encrypted hosted credential storage.')
     updates = []
     values = []
     if secrets.gemini_api_key is not None:
@@ -1171,7 +1189,19 @@ def validate_ai_provider(
         except OperationCancelled:
             return {"success": False, "cancelled": True, "message": "AI provider test stopped."}
         except AIProviderError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            next_steps = {
+                "authentication": "Use Manage API keys to check or replace this provider's key, then save it before testing again.",
+                "permission": "Check this API key's permissions and model access in your provider account.",
+                "rate_limit": "Check your provider's API usage, quota and billing limits. A temporary rate limit may clear after waiting; exhausted quota may need an account change. CareerTrellis will not retry or switch providers automatically.",
+                "model_unavailable": "Check model access in your provider account, then save an available supported model before testing again.",
+                "unsupported_request": "Choose a model that supports the required structured output and save the selection before testing again.",
+                "timeout": "The provider may still have processed this request. Check API usage before choosing to run another test.",
+                "network": "The outcome may be unknown. Check your connection and provider API usage before choosing to run another test.",
+            }
+            guidance = next_steps.get(exc.code, "")
+            if exc.provider == "anthropic" and exc.code in ("model_unavailable", "unsupported_request"):
+                guidance = "Claude uses a fixed model here. Check access to that model in your Claude API account. Test again only after the issue is resolved, or explicitly select and save another available provider."
+            raise HTTPException(status_code=422, detail=f"{exc} {guidance}".strip()) from exc
 
 
 @app.post("/api/profile/maps-provider/validate")

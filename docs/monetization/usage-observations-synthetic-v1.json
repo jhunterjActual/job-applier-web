@@ -1,0 +1,42 @@
+{
+  "version": "ai-usage-observations-v1",
+  "provenance": "synthetic",
+  "capture_complete": true,
+  "receipts": [
+    {
+      "provider": "openai", "model": "synthetic-model", "operation": "scoring",
+      "outcome": "rate_limit", "dispatched": true,
+      "usage": {"input_tokens": 100, "output_tokens": 20, "cached_input_tokens": 0,
+        "reasoning_tokens": 0, "total_tokens": 120, "cache_creation_input_tokens": null},
+      "estimated_cost_usd": "0.01", "rate_version": "synthetic-not-a-quote-v1"
+    },
+    {
+      "provider": "openai", "model": "synthetic-model", "operation": "scoring",
+      "outcome": "success", "dispatched": true,
+      "usage": {"input_tokens": 100, "output_tokens": 20, "cached_input_tokens": 0,
+        "reasoning_tokens": 0, "total_tokens": 120, "cache_creation_input_tokens": null},
+      "estimated_cost_usd": "0.01", "rate_version": "synthetic-not-a-quote-v1"
+    },
+    {
+      "provider": "gemini", "model": "synthetic-model", "operation": "tailoring",
+      "outcome": "timeout", "dispatched": true,
+      "usage": {"input_tokens": null, "output_tokens": null, "cached_input_tokens": null,
+        "reasoning_tokens": null, "total_tokens": null, "cache_creation_input_tokens": null},
+      "estimated_cost_usd": null, "rate_version": null
+    },
+    {
+      "provider": "anthropic", "model": "synthetic-model", "operation": "resume_ocr",
+      "outcome": "success", "dispatched": true,
+      "usage": {"input_tokens": 100, "output_tokens": 20, "cached_input_tokens": 0,
+        "reasoning_tokens": null, "total_tokens": 120, "cache_creation_input_tokens": 0},
+      "estimated_cost_usd": null, "rate_version": null
+    },
+    {
+      "provider": "gemini", "model": "synthetic-model", "operation": "tailoring",
+      "outcome": "cancelled", "dispatched": false,
+      "usage": {"input_tokens": null, "output_tokens": null, "cached_input_tokens": null,
+        "reasoning_tokens": null, "total_tokens": null, "cache_creation_input_tokens": null},
+      "estimated_cost_usd": null, "rate_version": null
+    }
+  ]
+}

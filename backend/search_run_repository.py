@@ -48,6 +48,16 @@ MATCH_PROVIDER_FAILURE_MESSAGES = {
     "provider_error": "The AI match provider could not score the discovered postings after bounded retries. Source diagnostics and any earlier saved match batches were kept.",
     "timeout": "The AI match provider timed out after bounded retries. Source diagnostics and any earlier saved match batches were kept.",
     "unsupported_request": "The AI match provider rejected the scoring request. Check the selected provider and model, then try again.",
+    "overloaded": "The AI match provider remained busy after bounded retries. Any earlier saved matches were kept; try again later.",
+    "refusal": "The AI match provider declined the scoring request. Any earlier saved matches were kept.",
+    "truncated": "The AI scoring result exceeded the selected model's output or context limit. Any earlier saved matches were kept.",
+    "invalid_input": "The scoring request exceeds the selected AI provider's supported limits. Review the resume and job input before trying again.",
+    "redirect_rejected": "The AI provider returned an unexpected redirect. The request was stopped without following it.",
+    "unsupported_provider": "The selected AI provider is not supported. Review the selection in Profile & Resume.",
+    "unsupported_operation": "The selected AI provider does not support this scoring operation.",
+    "unsupported_storage": "The selected AI provider requires supported encrypted credential storage.",
+    "invalid_rate": "The scoring cost configuration does not support the selected AI provider and model.",
+    "receipt_limit": "The scoring request limit was reached. Any earlier saved matches were kept.",
 }
 MATCH_PROVIDER_FAILURE_CODES = frozenset(MATCH_PROVIDER_FAILURE_MESSAGES)
 ERROR_CODES = frozenset({"search_failed", "provider_search_failed", "attempts_exhausted"})

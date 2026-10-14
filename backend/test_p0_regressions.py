@@ -1636,7 +1636,7 @@ class FrontendStartupTests(unittest.TestCase):
                 self.assertIn(f'id="{element_id}"', html_source)
         self.assertIn("Checking AI Provider", html_source)
         self.assertIn("i18n.js?v=20260812-1", html_source)
-        self.assertIn("app.js?v=20260916-1", html_source)
+        self.assertIn("app.js?v=20261012-claude", html_source)
         self.assertIn("index.css?v=20260916-1", html_source)
 
     def test_profile_and_provider_secrets_use_separate_form_boundaries(self) -> None:
@@ -1664,7 +1664,7 @@ class FrontendStartupTests(unittest.TestCase):
             self.assertEqual(autocomplete, attributes.get("autocomplete"))
             self.assertTrue(attributes.get("name"))
 
-        secret_ids = {"p-apikey", "p-openai-apikey", "p-google-apikey"}
+        secret_ids = {"p-apikey", "p-openai-apikey", "p-anthropic-apikey", "p-google-apikey"}
         parsed_secret_ids = {
             element_id
             for element_id, (form_id, attributes) in parser.controls.items()
@@ -1691,6 +1691,7 @@ class FrontendStartupTests(unittest.TestCase):
         expected_destinations = {
             "gemini": "https://aistudio.google.com/app/apikey",
             "openai": "https://platform.openai.com/api-keys",
+            "anthropic": "https://platform.claude.com/settings/keys",
             "google_maps": "https://console.cloud.google.com/apis/credentials",
         }
 

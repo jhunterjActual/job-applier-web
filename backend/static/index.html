@@ -272,17 +272,21 @@
                                     <select id="p-ai-provider" name="ai_provider">
                                         <option value="gemini">Google Gemini</option>
                                         <option value="openai">OpenAI</option>
+                                        <option value="anthropic" disabled>Anthropic Claude</option>
                                     </select>
                                     <small class="form-help" data-i18n="profile.ai_provider.help">Matching, keyword suggestions, and material tailoring use the selected provider.</small>
+                                    <small class="form-help" id="anthropic-availability-help">Checking Claude availability…</small>
                                 </div>
                                 <div class="form-group full-width">
                                     <label for="p-ai-model" data-i18n="profile.ai_model">AI model</label>
-                                    <input type="text" id="p-ai-model" name="ai_model" list="ai-model-suggestions" maxlength="120" autocomplete="off" spellcheck="false" required pattern="[A-Za-z0-9._:/-]+" placeholder="gemini-2.5-flash">
+                                    <input type="text" id="p-ai-model" name="ai_model" list="ai-model-suggestions" aria-describedby="ai-model-general-help ai-model-capability-help" maxlength="120" autocomplete="off" spellcheck="false" required pattern="[A-Za-z0-9._:/-]+" placeholder="gemini-2.5-flash">
                                     <datalist id="ai-model-suggestions">
                                         <option value="gemini-2.5-flash"></option>
                                         <option value="gpt-5-mini"></option>
+                                        <option value="claude-sonnet-5-5"></option>
                                     </datalist>
-                                    <small class="form-help" data-i18n="profile.ai_model.help">Use a model available to your key that supports structured JSON output.</small>
+                                    <small class="form-help" id="ai-model-general-help" data-i18n="profile.ai_model.help">Use a model available to your key that supports structured JSON output.</small>
+                                    <small class="form-help" id="ai-model-capability-help"></small>
                                 </div>
                                 <div class="form-group full-width">
                                     <label for="p-maps-provider">Headquarters address provider</label>
@@ -305,7 +309,7 @@
                                     <small class="form-help">Useful when documenting U.S. unemployment work-search activity. Unverified addresses are shown as Unknown.</small>
                                 </div>
                                 <div class="form-actions full-width">
-                                    <button type="button" class="btn btn-secondary" id="test-ai-provider-btn" disabled>
+                                    <button type="button" class="btn btn-secondary" id="test-ai-provider-btn" aria-describedby="ai-provider-cost-help" disabled>
                                         <i class="fa-solid fa-plug-circle-check"></i> Test Saved AI Provider
                                     </button>
                                     <button type="button" class="btn btn-secondary" id="test-maps-provider-btn" disabled>
@@ -315,6 +319,7 @@
                                         <i class="fa-solid fa-floppy-disk"></i> <span data-i18n="profile.save">Save Settings</span>
                                     </button>
                                 </div>
+                                <p class="form-help full-width" id="ai-provider-cost-help">Testing sends a small sample request using your saved API key. Your provider may charge your API account; the exact cost is unknown until usage is reported. No resume or job content is sent. A chatbot subscription may not include API access or credits. Saving settings or keys does not run a test.</p>
                                 <p class="form-help full-width provider-test-status" id="ai-provider-test-status" role="status" aria-live="polite">Save AI provider and model changes before testing.</p>
                                 <p class="form-help full-width provider-test-status" id="maps-provider-test-status" role="status" aria-live="polite">Save maps-provider changes before testing.</p>
                             </form>
@@ -322,7 +327,8 @@
                             <form id="provider-secrets-form" class="form-grid provider-secrets-form" autocomplete="off" aria-labelledby="provider-secrets-heading">
                                 <div class="form-group full-width provider-secrets-heading">
                                     <h3 id="provider-secrets-heading">Provider API Keys</h3>
-                                    <p class="form-help">API keys are saved separately from your contact details. Saved values are never returned to the browser.</p>
+                                    <p class="form-help">You only need a key for one AI provider. An API key is a code that lets CareerTrellis use that provider for you. Follow your chosen provider’s <strong>Manage API keys</strong> link below to create an account if needed and get a key. Paste it into the matching field, then select <strong>Save API Keys</strong>.</p>
+                                    <p class="form-help">Your keys are saved separately from your contact details. Once saved, they are never sent back to your browser or shown here again.</p>
                                 </div>
                                 <div class="form-group full-width">
                                     <label for="p-apikey">Google Gemini API Key</label>
@@ -350,6 +356,20 @@
                                         <span class="secret-key-status checking" id="p-openai-key-status" role="status" aria-live="polite">Checking saved status…</span>
                                         <small class="form-help" id="p-openai-key-help">The saved key is never returned to your browser.</small>
                                         <a class="credential-management-link" data-credential-provider="openai" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Manage OpenAI API keys</a>
+                                    </div>
+                                </div>
+                                <div class="form-group full-width">
+                                    <label for="p-anthropic-apikey">Anthropic Claude API Key</label>
+                                    <div class="password-input-container">
+                                        <input type="password" id="p-anthropic-apikey" name="anthropic_api_key" maxlength="512" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-bwignore="true" data-lpignore="true" placeholder="Enter Claude API key" aria-describedby="p-anthropic-key-status p-anthropic-key-help" disabled>
+                                        <button type="button" class="toggle-password" id="toggle-anthropic-api-visibility" aria-label="Show or hide Claude API key" disabled>
+                                            <i class="fa-solid fa-eye"></i>
+                                        </button>
+                                    </div>
+                                    <div class="secret-key-meta">
+                                        <span class="secret-key-status checking" id="p-anthropic-key-status" role="status" aria-live="polite">Checking saved status…</span>
+                                        <small class="form-help" id="p-anthropic-key-help">The saved key is never returned to your browser.</small>
+                                        <a class="credential-management-link" data-credential-provider="anthropic" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Manage Claude API keys</a>
                                     </div>
                                 </div>
                                 <div class="form-group full-width" id="google-maps-key-group" hidden>
@@ -1410,6 +1430,6 @@
     <!-- Custom JS -->
     <script src="/static/maintenance-notice.js?v=1"></script>
     <script src="/static/i18n.js?v=20260812-1"></script>
-    <script src="/static/app.js?v=20260916-1"></script>
+    <script src="/static/app.js?v=20261012-claude"></script>
 </body>
 </html>
