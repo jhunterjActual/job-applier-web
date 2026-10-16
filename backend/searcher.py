@@ -1086,6 +1086,7 @@ def extract_search_keywords_from_resume(
         1. Keep each title keyword simple and generic for search engines, e.g. "Data Engineer", "Python Developer", "React Developer", "Machine Learning Engineer".
         2. Do not include locations.
         3. Do not include too specific tech stacks unless they are primary, e.g. use "Data Engineer" rather than "PostgreSQL Snowflake PySpark Data Engineer".
+        4. These titles are acquisition filters before resume scoring, not ideal exact job titles. Prefer common role families: "Data Architect" instead of "Enterprise Data Architect", and "AI Architect" instead of "Generative AI Architect". Omit seniority and specialization modifiers that unnecessarily exclude related postings, but preserve distinct occupations and executive or management scope (for example, "Chief Data Officer").
         
         Candidate's Resume:
         \"\"\"{resume_text}\"\"\"
@@ -1605,7 +1606,13 @@ def run_job_search_and_matching(
     else:
         search_keywords = manual_titles
     from discovery_sources import bounded_terms, MAX_KEYWORDS, MAX_LOCATIONS
+    suggestions_limited = False
+    if not stripped_kw or stripped_kw.lower() == "undefined":
+        from candidate_filters import resume_search_titles
+        _, suggestions_limited = bounded_terms(search_keywords, MAX_KEYWORDS)
+        search_keywords = resume_search_titles(search_keywords)
     search_keywords, keywords_limited = bounded_terms(search_keywords, MAX_KEYWORDS)
+    keywords_limited = keywords_limited or suggestions_limited
     if not search_keywords:
         return {"success": False, "failure_code": "keywords_unavailable",
                 "error": "Search keywords could not be prepared. Enter a job title and try again.",

@@ -2256,8 +2256,8 @@ def preview_search_titles(req: SearchRequest) -> dict:
     if plan['mode'] == 'resume_suggested':
         profile = runtime_profile_repository(sqlite_connection_factory=get_db_connection).get_profile()
         cached = profile['suggested_keywords'] if profile else ''
-        from discovery_sources import bounded_terms, MAX_KEYWORDS
-        plan['titles'], _ = bounded_terms([part.strip() for part in (cached or '').split(',') if part.strip()], MAX_KEYWORDS)
+        from candidate_filters import resume_search_titles
+        plan['titles'] = resume_search_titles((cached or '').split(','))
         plan['software_alias'] = any(title.casefold() in ('software engineer', 'software developer') for title in plan['titles'])
     return plan
 

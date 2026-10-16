@@ -16,6 +16,61 @@ from role_queries import (parse_manual_titles, title_plan, encode_titles, execut
 
 
 class RoleQueryTests(unittest.TestCase):
+    def test_resume_families_keep_related_titles_and_reject_other_occupations(self):
+        from candidate_filters import resume_search_titles
+        titles = resume_search_titles(['Enterprise Data Architect', 'Chief Data Officer', 'Generative AI Architect'])
+        self.assertEqual(['Data Architect', 'Chief Data Officer', 'AI Architect'], titles)
+        for title in ('Lead, Data Architect', 'Senior Data Architect (Req #1427)',
+                      'Data Architect', 'AI Architect', 'AI Technical Architect',
+                      'Lead AI Architect/Strategist', 'Architect, GenAI',
+                      'Artificial Intelligence Architect'):
+            with self.subTest(title=title):
+                self.assertTrue(role_matches(title, titles))
+        for title in ('Chief Digital Officer', 'Chief Development Officer',
+                      'Deputy Chief Compliance Officer', 'Solutions Architect',
+                      'Enterprise Architect', 'AI Trainer', 'Data Engineer',
+                      'Senior Product Marketing Manager, Data Intelligence'):
+            with self.subTest(title=title):
+                self.assertFalse(role_matches(title, titles))
+        self.assertFalse(role_matches('Data Architect', ['Enterprise Data Architect']))
+        self.assertFalse(role_matches('AI Architect', ['Generative AI Architect']))
+        self.assertFalse(detail_location_matches({'title': 'AI Architect', 'location': 'Canada',
+                                                  'description': 'No remote work.'}, ['Dayton OH', 'remote']))
+
+    def test_suggested_normalization_is_bounded_idempotent_and_preserves_scope(self):
+        from candidate_filters import resume_search_titles
+        self.assertEqual(['Data Architect', 'AI Architect', 'Chief Data Officer'], resume_search_titles([
+            'Senior Enterprise Data Architect', 'Data Architect', 'GenAI Architect', 'Chief Data Officer']))
+        unchanged = ['Chief Data Officer', 'Director of Data Architecture', 'Security Architect']
+        self.assertEqual(unchanged, resume_search_titles(unchanged))
+        self.assertEqual([], resume_search_titles([None, '', '!', 'x' * 1000]))
+        titles = resume_search_titles(['Principal Data Architect', 'Artificial Intelligence Architect'])
+        self.assertEqual(titles, resume_search_titles(titles))
+
+    def test_cached_and_new_suggestions_use_same_preview_and_execution_plan(self):
+        class StopAfterPlan(Exception):
+            pass
+        suggested = ['Enterprise Data Architect', 'Chief Data Officer', 'Generative AI Architect']
+        expected = ['Data Architect', 'Chief Data Officer', 'AI Architect']
+        profile = Mock()
+        for cached in (','.join(suggested), ''):
+            profile.get_profile.return_value = {'base_resume_text': 'Synthetic resume', 'suggested_keywords': cached}
+            with patch.object(searcher, 'settings_from_profile', return_value=AIProviderSettings('gemini', 'synthetic', '')), \
+                 patch.object(searcher.config, 'get_discovery_mode', return_value='hybrid_feeds'), \
+                 patch('additional_sources.collect', return_value=[]), \
+                 patch('public_job_feeds.collect', return_value=[]), \
+                 patch('discovery_sources.collect', side_effect=StopAfterPlan) as collect, \
+                 patch.object(searcher, 'extract_search_keywords_from_resume', return_value=suggested) as generate:
+                with self.assertRaises(StopAfterPlan):
+                    searcher.run_job_search_and_matching('', 'dayton, oh; remote',
+                                                        profile_repository=profile, job_repository=Mock())
+                self.assertEqual(expected, collect.call_args.args[0])
+                self.assertEqual(['dayton, oh', 'remote'], collect.call_args.args[1])
+                self.assertEqual(0 if cached else 1, generate.call_count)
+        profile.get_profile.return_value['suggested_keywords'] = ','.join(suggested)
+        with patch.object(app_module, 'runtime_profile_repository', return_value=profile):
+            self.assertEqual(expected, app_module.preview_search_titles(app_module.SearchRequest(keywords=''))['titles'])
+
     def test_explicit_list_normalization_and_legacy_fallback(self):
         self.assertEqual(['Data Engineer', 'Software Engineer - Data'],
                          parse_manual_titles(' Data  Engineer ; Software Engineer - Data; data engineer '))
