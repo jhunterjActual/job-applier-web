@@ -24,6 +24,7 @@ class ClaudeBrowserTests(unittest.TestCase):
             anthropic_available=True, anthropic_api_key_configured=True,
             gemini_api_key_configured=True, openai_api_key_configured=True)
         self.writes = []
+        self.title_previews = []
         self.secret_failure = False
         self.profile_failure = False
         self.validation_status = 200
@@ -49,6 +50,12 @@ class ClaudeBrowserTests(unittest.TestCase):
             mime = {'.html':'text/html', '.js':'application/javascript', '.css':'text/css'}.get(path.suffix, 'application/octet-stream')
             return route.fulfill(body=path.read_bytes(), content_type=mime)
         payload = request.post_data_json if request.method in ('PUT', 'POST') else None
+        if request.method == 'POST' and url.path == '/api/jobs/search/plan':
+            # This endpoint reads cached titles; it neither saves nor starts a search.
+            self.title_previews.append(payload)
+            response = {'mode':'resume_suggested', 'titles':[],
+                'max_titles':3, 'software_alias':False}
+            return route.fulfill(content_type='application/json', body=json.dumps(response))
         if request.method in ('PUT', 'POST'):
             self.writes.append((url.path, payload))
         response = []
@@ -89,6 +96,9 @@ class ClaudeBrowserTests(unittest.TestCase):
     def test_hosted_selection_saved_status_and_profile_reload(self):
         self.profile.update(ai_provider='openai', ai_model='gpt-5-mini')
         self.open_profile()
+        expect(self.page.locator('#search-title-plan')).to_contain_text('Resume-suggested titles will be prepared')
+        self.assertEqual([{'keywords':'', 'title_alternatives':False}], self.title_previews)
+        self.assertFalse(self.writes)
         self.page.locator('#p-ai-provider').select_option('anthropic')
         expect(self.page.locator('#test-ai-provider-btn')).to_be_disabled()
         expect(self.page.locator('#p-anthropic-apikey')).to_have_value('')
