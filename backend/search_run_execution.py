@@ -121,7 +121,7 @@ class _LeaseHeartbeat:
 
 def _save_source_diagnostic_history(search_result: dict) -> None:
     """Best-effort minimized diagnostics must never alter a search outcome."""
-    if not search_result.get("provider_alerts"):
+    if not search_result.get("provider_alerts") and not search_result.get('role_filter'):
         return
     try:
         runtime_discovery_repository(

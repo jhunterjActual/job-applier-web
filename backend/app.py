@@ -348,6 +348,7 @@ def _secured_response(request: Request, response: Response) -> Response:
         or request.url.path == "/api/session"
         or request.url.path == "/api/maintenance-notice"
         or request.url.path == "/api/account/erasure"
+        or request.url.path == "/api/jobs/search/plan"
     ):
         response.headers["Cache-Control"] = "no-store, max-age=0"
     if request.url.path in PUBLIC_FEEDBACK_FILES:
@@ -2104,15 +2105,24 @@ async def restore_full_backup(
 
 @app.get("/api/source-diagnostics/export")
 def export_source_diagnostic_history() -> JSONResponse:
-    """Download the bounded local history without searches, URLs, or job data."""
+    """Download owner-private counters, role filters and bounded rejection samples."""
+    from search_review import REASON_LABELS, MAX_REJECTIONS_PER_STAGE
     history = runtime_discovery_repository(
         sqlite_connection_factory=get_db_connection
     ).list_source_diagnostics(500)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "exported_at": datetime.now().isoformat(timespec="seconds"),
         "record_count": history["count"],
         "diagnostics": history["items"],
+        "rejection_reason_labels": REASON_LABELS,
+        "review_notes": {
+            "max_rejections_per_provider_per_stage": MAX_REJECTIONS_PER_STAGE,
+            "stages": {"discovery": "Listing metadata before candidate inspection; may include repeated listings.",
+                       "inspection": "Candidate posting checks before AI scoring."},
+            "missing_title": "A null title means no usable title was available.",
+            "history": "Older searches have no role-filter or rejected-title records; they cannot be reconstructed.",
+        },
     }
     filename = f"career-trellis-source-diagnostics-{date.today().isoformat()}.json"
     return JSONResponse(
@@ -2241,8 +2251,15 @@ def _verify_job_posting(job_id: int, operation: OperationToken) -> dict:
 
 @app.post("/api/jobs/search/plan")
 def preview_search_titles(req: SearchRequest) -> dict:
-    """Interpret explicit titles without profile reads, enqueueing or provider calls."""
-    return title_plan(req.keywords, req.title_alternatives)
+    """Preview explicit or cached resume titles without enqueueing or AI calls."""
+    plan = title_plan(req.keywords, req.title_alternatives)
+    if plan['mode'] == 'resume_suggested':
+        profile = runtime_profile_repository(sqlite_connection_factory=get_db_connection).get_profile()
+        cached = profile['suggested_keywords'] if profile else ''
+        from discovery_sources import bounded_terms, MAX_KEYWORDS
+        plan['titles'], _ = bounded_terms([part.strip() for part in (cached or '').split(',') if part.strip()], MAX_KEYWORDS)
+        plan['software_alias'] = any(title.casefold() in ('software engineer', 'software developer') for title in plan['titles'])
+    return plan
 
 
 @app.post("/api/jobs/search")

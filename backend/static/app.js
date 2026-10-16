@@ -485,6 +485,7 @@ document.addEventListener("DOMContentLoaded", () => {
     configureSessionControls();
     loadProfile();
     loadSavedSearches();
+    void updateSearchTitlePlan();
     checkDueSavedSearches();
     loadJobs();
     loadLogs();
@@ -3269,7 +3270,9 @@ async function updateSearchTitlePlan() {
             return false;
         }
         if (output) output.textContent = plan.mode === "resume_suggested"
-            ? "Resume-suggested titles will be prepared when the search starts."
+            ? (plan.titles.length
+                ? `Resume-suggested role filter: ${plan.titles.join(" OR ")}. Posting titles must match before AI scoring.${plan.software_alias ? " Software Engineer and Software Developer also match each other." : ""}`
+                : "Resume-suggested titles will be prepared when the search starts and shown in its result. Posting titles must match before AI scoring.")
             : `Search title alternatives: ${plan.titles.join(" OR ")}. Geography is unchanged.${plan.software_alias ? " Software Engineer and Software Developer also match each other." : ""}`;
         return true;
     } catch (_) {
@@ -3356,7 +3359,7 @@ function renderProviderAlerts(searchResult) {
     providerAlerts.replaceChildren();
     const alerts = searchResult?.provider_alerts || [];
     const completionMessage = searchResult?.error || searchResult?.message;
-    if (!alerts.length && !completionMessage) {
+    if (!alerts.length && !completionMessage && !searchResult?.role_filter?.titles?.length) {
         providerAlerts.hidden = true;
         return;
     }
@@ -3375,6 +3378,11 @@ function renderProviderAlerts(searchResult) {
     header.appendChild(actions);
     providerAlerts.appendChild(header);
     if (completionMessage) providerAlerts.appendChild(createElement("p", "", completionMessage));
+    const roleFilter = searchResult?.role_filter;
+    if (roleFilter && Array.isArray(roleFilter.titles) && roleFilter.titles.length) {
+        providerAlerts.appendChild(createElement("p", "search-role-filter",
+            `${roleFilter.mode === "resume_suggested" ? "Resume-suggested" : "Manual"} role filter used: ${roleFilter.titles.join(" OR ")}. Posting titles were checked before AI scoring.`));
+    }
     const counts = searchResult?.counts;
     const validCount = value => Number.isInteger(value) && value >= 0 && value <= 100000;
     if (counts && validCount(counts.discovered)) {
@@ -3424,7 +3432,8 @@ const DIAGNOSTIC_CODE_LABELS = {
     access_challenge: "Automated reading blocked",
     provider_error: "Provider request error",
     stale_postings: "Stale postings skipped",
-    partial_results: "Partial search results"
+    partial_results: "Partial search results",
+    search_review: "Role filter and rejection review"
 };
 
 const DIAGNOSTIC_COUNTER_LABELS = {
@@ -3577,6 +3586,9 @@ async function loadSourceDiagnostics() {
         });
         details.appendChild(counters);
         row.appendChild(details);
+        if (item.search_review?.role_filter?.titles?.length) {
+            row.appendChild(createElement("p", "", `Role filter used: ${item.search_review.role_filter.titles.join(" OR ")}. Export JSON includes bounded rejected-title samples and reasons.`));
+        }
         sourceDiagnosticsList.appendChild(row);
     });
 }

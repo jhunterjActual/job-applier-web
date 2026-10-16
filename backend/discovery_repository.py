@@ -33,7 +33,9 @@ from source_diagnostics import (
     list_source_diagnostics,
     persist_source_diagnostics,
     safe_provider_counters,
+    diagnostic_records,
 )
+from search_review import sanitize_review
 
 
 def acquire_owner_job_catalog_lock(connection: Any, owner_user_id: int) -> None:
@@ -375,6 +377,9 @@ def _diagnostic_history(count: int, rows: list[Mapping[str, Any]]) -> dict[str, 
                 "counters": counters,
             }
         )
+        review = sanitize_review(stored.get('search_review'))
+        if code == 'search_review' and review is not None:
+            items[-1]['search_review'] = review
     return {"count": int(count), "items": items}
 
 
@@ -1189,14 +1194,7 @@ class PostgreSQLDiscoveryRepository:
                 },
             )
             inserted = 0
-            for alert in alerts[:MAX_ALERTS_PER_RUN]:
-                if not isinstance(alert, dict):
-                    continue
-                provider = str(alert.get("provider") or "").lower()
-                code = str(alert.get("code") or "").lower()
-                if provider not in ALLOWED_PROVIDERS or code not in ALLOWED_CODES:
-                    continue
-                counters = safe_provider_counters(health_by_provider.get(provider))
+            for provider, code, counters in diagnostic_records(search_result):
                 connection.execute(
                     text(
                         """

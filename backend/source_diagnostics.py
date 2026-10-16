@@ -3,6 +3,7 @@
 import json
 import re
 import sqlite3
+from search_review import review_from_health, sanitize_review
 from datetime import date
 
 
@@ -14,8 +15,9 @@ ALLOWED_CODES = frozenset({
     "provider_error",
     "stale_postings",
     "partial_results",
+    "search_review",
 })
-INFORMATIONAL_CODES = frozenset({"stale_postings", "partial_results"})
+INFORMATIONAL_CODES = frozenset({"stale_postings", "partial_results", "search_review"})
 MAX_COUNTER_VALUE = 1_000_000
 MAX_ALERTS_PER_RUN = 20
 MAX_HISTORY_RECORDS = 500
@@ -112,6 +114,31 @@ def safe_provider_counters(health: dict | None) -> dict[str, int]:
     return counters
 
 
+def diagnostic_records(search_result):
+    """Keep review records separate from aggregate-only maintainer notices."""
+    alerts = search_result.get('provider_alerts', [])
+    health = search_result.get('provider_health', {})
+    if not isinstance(alerts, list) or not isinstance(health, dict):
+        return []
+    records = []
+    for alert in alerts[:MAX_ALERTS_PER_RUN]:
+        if not isinstance(alert, dict):
+            continue
+        provider, code = alert.get('provider'), alert.get('code')
+        if not isinstance(provider, str) or not isinstance(code, str):
+            continue
+        provider, code = provider.lower(), code.lower()
+        if provider in ALLOWED_PROVIDERS and code in ALLOWED_CODES and code != 'search_review':
+            records.append((provider, code, safe_provider_counters(health.get(provider))))
+    for provider in sorted(ALLOWED_PROVIDERS):
+        review = review_from_health(health.get(provider))
+        if review is not None:
+            counters = safe_provider_counters(health.get(provider))
+            counters['search_review'] = review
+            records.append((provider, 'search_review', counters))
+    return records
+
+
 def persist_source_diagnostics(
     connection: sqlite3.Connection,
     search_result: dict | None,
@@ -126,14 +153,7 @@ def persist_source_diagnostics(
         return 0
 
     inserted = 0
-    for alert in alerts[:MAX_ALERTS_PER_RUN]:
-        if not isinstance(alert, dict):
-            continue
-        provider = str(alert.get("provider") or "").lower()
-        code = str(alert.get("code") or "").lower()
-        if provider not in ALLOWED_PROVIDERS or code not in ALLOWED_CODES:
-            continue
-        counters = safe_provider_counters(health_by_provider.get(provider))
+    for provider, code, counters in diagnostic_records(search_result):
         connection.execute(
             """
             INSERT INTO source_diagnostics (recorded_at, provider, diagnostic_code, counters_json)
@@ -188,6 +208,9 @@ def list_source_diagnostics(connection: sqlite3.Connection, limit: int = DEFAULT
             "level": "note" if row["diagnostic_code"] in INFORMATIONAL_CODES else "attention",
             "counters": counters,
         })
+        review = sanitize_review(stored.get('search_review'))
+        if row['diagnostic_code'] == 'search_review' and review is not None:
+            items[-1]['search_review'] = review
     return {"count": count, "items": items}
 
 

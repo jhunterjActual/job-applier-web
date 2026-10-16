@@ -1513,6 +1513,10 @@ def _search_completion(
         result["minimum_match_score"] = MIN_MATCH_SCORE
     if outcome is not None:
         result["outcome"] = outcome
+    for health in provider_health.values():
+        if '_role_filter' in health:
+            result['role_filter'] = health['_role_filter']
+            break
     return result
 
 
@@ -1654,6 +1658,10 @@ def run_job_search_and_matching(
     }
 
     # 4. Search Yahoo for matching Greenhouse/Lever postings
+    from search_review import role_filter, record_rejection
+    effective_filter = role_filter(search_keywords, 'resume_suggested' if not stripped_kw or stripped_kw.lower() == 'undefined' else 'manual')
+    for health in provider_health.values():
+        health['_role_filter'] = effective_filter
     results = []
     seen_urls = set()
     provider_candidate_counts = {provider: 0 for provider in search_providers}
@@ -1884,6 +1892,7 @@ def run_job_search_and_matching(
                     reason = outcome.get("status", "provider_error")
                     reason = reason if reason in provider_health[provider]["rejection_reasons"] else "provider_error"
                     provider_health[provider]["rejection_reasons"][reason] += 1
+                    record_rejection(provider_health[provider], item.get('title'), reason)
             elif skip_catalog_or_scoring_url(job_details.get('url', url), provider):
                 pass
             else:
@@ -1902,6 +1911,7 @@ def run_job_search_and_matching(
                     reasons = provider_health[provider]['rejection_reasons']
                     code = 'query_mismatch' if not role_ok else 'eligibility_unknown'
                     reasons[code] = reasons.get(code, 0) + 1
+                    record_rejection(provider_health[provider], job_details.get('title'), code)
         inspected_count += 1
         report_progress("inspecting_postings", inspected_count, len(results))
         if accepted and len(pending_jobs) >= MATCH_BATCH_SIZE and not process_pending_jobs():

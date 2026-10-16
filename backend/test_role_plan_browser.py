@@ -160,6 +160,16 @@ class RolePlanBrowserTests(unittest.TestCase):
         self.assertFalse(self.page.evaluate('window.injected === true'))
         self.assert_no_enqueue()
 
+    def test_resume_suggested_preview_displays_actual_titles_safely(self):
+        self.page.evaluate("() => { sKeywords.value = ''; window.preview = updateSearchTitlePlan(); }")
+        self.settle(0, {'mode': 'resume_suggested', 'titles': ['Data Engineer', '<img src=x>'], 'software_alias': False})
+        self.assertTrue(self.page.evaluate('preview'))
+        text = self.page.locator('#search-title-plan').inner_text()
+        self.assertIn('Resume-suggested role filter: Data Engineer OR <img src=x>', text)
+        self.assertIn('before AI scoring', text)
+        self.assertEqual(0, self.page.locator('#search-title-plan img').count())
+        self.assert_no_enqueue()
+
 
 if __name__ == '__main__':
     unittest.main()

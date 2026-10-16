@@ -326,8 +326,12 @@ def collect(keywords, locations, health, check_cancelled):
                 count('coverage_rows_read')
                 if not role_matches(row['title'], keywords):
                     count('coverage_role_excluded')
+                    from search_review import record_rejection
+                    record_rejection(health.get(provider), row['title'], 'query_mismatch', 'discovery')
                 elif not detail_location_matches(row, locations or ['']):
                     count('coverage_location_excluded')
+                    from search_review import record_rejection
+                    record_rejection(health.get(provider), row['title'], 'location_mismatch', 'discovery')
                 else:
                     count('coverage_metadata_matches')
                     selected.append(row)
