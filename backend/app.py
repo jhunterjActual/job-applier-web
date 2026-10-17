@@ -2258,6 +2258,8 @@ def preview_search_titles(req: SearchRequest) -> dict:
         cached = profile['suggested_keywords'] if profile else ''
         from candidate_filters import resume_search_titles
         plan['titles'] = resume_search_titles((cached or '').split(','))
+        from discovery_sources import MAX_KEYWORDS
+        plan['max_titles'] = MAX_KEYWORDS
         plan['software_alias'] = any(title.casefold() in ('software engineer', 'software developer') for title in plan['titles'])
     return plan
 

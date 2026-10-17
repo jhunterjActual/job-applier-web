@@ -25,8 +25,11 @@ def bounded_text(value, limit=180):
 
 
 def role_filter(titles, mode):
+    from discovery_sources import MAX_KEYWORDS
+    from role_queries import MAX_TITLE_ALTERNATIVES
+    maximum = MAX_KEYWORDS if mode == 'resume_suggested' else MAX_TITLE_ALTERNATIVES
     return {'mode': mode if mode in ('manual', 'resume_suggested') else 'manual',
-            'titles': [bounded_text(title, 120) for title in titles[:3]
+            'titles': [bounded_text(title, 120) for title in titles[:maximum]
                        if isinstance(title, str) and title.strip()] if isinstance(titles, list) else []}
 
 

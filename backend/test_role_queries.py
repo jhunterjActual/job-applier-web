@@ -16,6 +16,105 @@ from role_queries import (parse_manual_titles, title_plan, encode_titles, execut
 
 
 class RoleQueryTests(unittest.TestCase):
+    def test_generated_core_families_survive_adjacent_roles(self):
+        evidence = 'Led enterprise data governance and responsible AI governance programs.'
+        core = ['Enterprise Data Architect', 'Chief Data Officer', 'Enterprise Architect', 'AI Architect']
+        response = {'titles': core, 'adjacent_titles': [
+            {'title': 'Data Governance Manager', 'resume_evidence': evidence},
+            {'title': 'AI Governance Manager', 'resume_evidence': evidence}]}
+        with patch.object(searcher, 'generate_structured', return_value=response):
+            titles = searcher.extract_search_keywords_from_resume(evidence, 'synthetic')
+        self.assertEqual(['Data Architect', *core[1:], 'Data Governance Manager', 'AI Governance Manager'], titles)
+        self.assertTrue(role_matches('Senior Manager - Data & AI Governance', titles))
+        self.assertTrue(role_matches('Senior Data Architect', titles))
+        self.assertFalse(role_matches('Chief Digital Officer', titles))
+        self.assertFalse(role_matches('Marketing Manager', titles))
+
+    def test_adjacent_roles_require_resume_evidence_across_occupations(self):
+        for core, evidence, adjacent in (
+            (['Registered Nurse', 'Nurse Educator'], 'Developed clinical training programs and supervised nursing staff.', 'Clinical Education Manager'),
+            (['Accountant', 'Financial Analyst'], 'Led internal audit reviews and implemented financial controls.', 'Internal Auditor'),
+        ):
+            with self.subTest(core=core), patch.object(searcher, 'generate_structured', return_value={
+                'titles': core, 'adjacent_titles': [
+                    {'title': adjacent, 'resume_evidence': evidence},
+                    {'title': 'Security Architect', 'resume_evidence': 'Designed secure cloud architecture for regulated systems.'}]}):
+                self.assertEqual(core + [adjacent], searcher.extract_search_keywords_from_resume(evidence, 'synthetic'))
+        with patch.object(searcher, 'generate_structured', return_value={
+            'titles': ['Registered Nurse'], 'adjacent_titles': [{'title': 'Surgeon', 'resume_evidence': 'Nurse'}]}):
+            self.assertEqual(['Registered Nurse'], searcher.extract_search_keywords_from_resume('Nurse', 'synthetic'))
+
+    def test_core_priority_dedup_and_six_title_bound(self):
+        core = ['Enterprise Data Architect', 'Data Architect', 'Chief Data Officer',
+                'Enterprise Architect', 'AI Architect', 'Data Engineer', 'Analytics Engineer']
+        evidence = 'Led enterprise data governance and responsible AI governance programs.'
+        with patch.object(searcher, 'generate_structured', return_value={
+            'titles': core, 'adjacent_titles': [{'title': 'Data Governance Manager', 'resume_evidence': evidence}]}):
+            titles = searcher.extract_search_keywords_from_resume(evidence, 'synthetic')
+        self.assertEqual(['Data Architect', *core[2:]], titles)
+        self.assertEqual(6, len(titles))
+        with self.assertRaises(ValueError):
+            parse_manual_titles(';'.join(titles))
+
+    def test_generated_plan_round_trips_within_cache_character_bound(self):
+        from candidate_filters import resume_search_titles, MAX_SUGGESTED_KEYWORDS_CHARS
+        from profile_repository import _suggested_keywords, MAX_SUGGESTED_KEYWORDS_CHARS as cache_limit
+        self.assertEqual(cache_limit, MAX_SUGGESTED_KEYWORDS_CHARS)
+        long_titles = ['Role ' + str(i) + ' ' + 'a' * 100 for i in range(6)]
+        with patch.object(searcher, 'generate_structured', return_value={
+            'titles': long_titles, 'adjacent_titles': []}):
+            titles = searcher.extract_search_keywords_from_resume('Synthetic', 'synthetic')
+        self.assertEqual(long_titles[:4], titles)
+        cached = _suggested_keywords(','.join(titles))
+        self.assertEqual(titles, resume_search_titles(cached.split(',')))
+        self.assertEqual(['Data Architect'], resume_search_titles(['Lead, Data Architect', 'Data Architect']))
+
+    def test_six_roles_survive_cache_preview_execution_and_report(self):
+        from search_review import role_filter, sanitize_review
+        titles = ['Data Architect', 'Chief Data Officer', 'Enterprise Architect',
+                  'AI Architect', 'Data Governance Manager', 'AI Governance Manager']
+        class StopAfterPlan(Exception):
+            pass
+        profile = Mock()
+        profile.get_profile.return_value = {'base_resume_text': 'Synthetic resume', 'suggested_keywords': ','.join(titles)}
+        with patch.object(app_module, 'runtime_profile_repository', return_value=profile):
+            plan = app_module.preview_search_titles(app_module.SearchRequest(keywords=''))
+        self.assertEqual(titles, plan['titles'])
+        self.assertEqual(6, plan['max_titles'])
+        review = sanitize_review({'role_filter': role_filter(titles, 'resume_suggested')})
+        self.assertEqual(titles, review['role_filter']['titles'])
+        with patch.object(searcher, 'settings_from_profile', return_value=AIProviderSettings('gemini', 'synthetic', '')), \
+             patch.object(searcher.config, 'get_discovery_mode', return_value='hybrid_feeds'), \
+             patch('public_job_feeds.collect', return_value=[]) as public, \
+             patch('additional_sources.collect', return_value=[]) as additional, \
+             patch('discovery_sources.collect', side_effect=StopAfterPlan) as collect:
+            with self.assertRaises(StopAfterPlan):
+                searcher.run_job_search_and_matching('', 'dayton, oh; remote', profile_repository=profile, job_repository=Mock())
+        for call in (public, additional, collect):
+            self.assertEqual(titles, call.call_args.args[0])
+
+    def test_catalog_and_snapshot_filters_include_the_sixth_role(self):
+        import discovery_sources as sources
+        import public_job_feeds as feeds
+        import additional_sources as additional
+        titles = ['Data Architect', 'Chief Data Officer', 'Enterprise Architect',
+                  'AI Architect', 'Data Governance Manager', 'AI Governance Manager']
+        row = {'title': 'Senior AI Governance Manager', 'location': 'Remote',
+               'work_arrangement': 'remote', 'source': 'jobicy',
+               'url': 'https://jobicy.com/jobs/123-synthetic'}
+        with patch.object(feeds, 'PROVIDERS', ('jobicy',)), patch.object(feeds, '_snapshot', return_value=[row]):
+            self.assertEqual(1, len(feeds.collect(titles, ['remote'], {}, lambda: None)))
+        with patch.object(sources, 'CATALOG', (('lever', 'synthetic'),)), \
+             patch.object(sources, 'feed_rows', return_value=sources.FeedRows([
+                 {**row, 'url': 'https://jobs.lever.co/synthetic/12345678-1234-1234-1234-123456789abc',
+                  'employment_type': 'Full-time'}], complete=True)), \
+             patch.object(sources, 'feed_candidate', side_effect=lambda provider, board, value: value):
+            self.assertEqual(1, len(sources.collect(titles, ['remote'], {'lever': {}}, lambda: None, feeds_only=True)))
+        with patch.object(additional, 'ENABLED', ('udayton',)), \
+             patch.object(additional, '_request', return_value=b'synthetic'), \
+             patch.object(additional, 'parse_ud_listing', return_value=([row], True)):
+            self.assertEqual(1, len(additional.collect(titles, ['remote'], {'udayton': {}}, lambda: None)))
+
     def test_resume_families_keep_related_titles_and_reject_other_occupations(self):
         from candidate_filters import resume_search_titles
         titles = resume_search_titles(['Enterprise Data Architect', 'Chief Data Officer', 'Generative AI Architect'])
@@ -184,7 +283,8 @@ class RoleQueryTests(unittest.TestCase):
         self.assertTrue(role_matches('Senior Software Engineer - Data', titles))
         self.assertFalse(role_matches('Sales Manager', titles))
         self.assertFalse(detail_location_matches({'location': 'Canada', 'remote': True}, ['US remote']))
-        self.assertEqual(discovery_sources.MAX_KEYWORDS, MAX_TITLE_ALTERNATIVES)
+        self.assertEqual(3, MAX_TITLE_ALTERNATIVES)
+        self.assertEqual(6, discovery_sources.MAX_KEYWORDS)
         self.assertEqual(discovery_sources.MAX_TERM_CHARS, MAX_TITLE_CHARS)
 
 

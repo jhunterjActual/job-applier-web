@@ -138,7 +138,7 @@ class ClaudeTests(unittest.TestCase):
         from searcher import SearchKeywordResponse
         from interview_prep import InterviewPrepAIResponse
         from maps_providers import HeadquartersAIResponse
-        cases = [(SearchKeywordResponse, {'titles': ['Data Engineer']}, 'query_preparation'),
+        cases = [(SearchKeywordResponse, {'titles': ['Data Engineer'], 'adjacent_titles': []}, 'query_preparation'),
                  (JobMatchResponse, {'match_score': 70, 'match_analysis': 'Synthetic'}, 'scoring'),
                  (BatchMatchResponse, {'matches': [{'index': 0, 'match_score': 70,
                                                    'match_analysis': 'Synthetic'}]}, 'scoring'),

@@ -302,7 +302,8 @@ def _snapshot(provider, check_cancelled, refresh=True):
 
 
 def collect(keywords, locations, health, check_cancelled):
-    keywords, keyword_limit = bounded_terms(keywords, 3)
+    from discovery_sources import MAX_KEYWORDS
+    keywords, keyword_limit = bounded_terms(keywords, MAX_KEYWORDS)
     locations, location_limit = bounded_terms(locations, 2)
     if not keywords:
         return []

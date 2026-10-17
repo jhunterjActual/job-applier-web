@@ -102,6 +102,17 @@ class RolePlanBrowserTests(unittest.TestCase):
         self.assertIn('Enterprise Architect', newest)
         self.assert_no_enqueue()
 
+    def test_resume_preview_renders_every_core_and_adjacent_title(self):
+        titles = ['Data Architect', 'Chief Data Officer', 'Enterprise Architect',
+                  'AI Architect', 'Data Governance Manager', 'AI Governance Manager']
+        self.page.evaluate("() => { sKeywords.value = ''; window.plan = updateSearchTitlePlan(); }")
+        self.settle(0, {'mode': 'resume_suggested', 'titles': titles, 'max_titles': 6, 'software_alias': False})
+        self.assertTrue(self.page.evaluate('plan'))
+        visible = self.page.locator('#search-title-plan').inner_text()
+        for title in titles:
+            self.assertIn(title, visible)
+        self.assert_no_enqueue()
+
     def test_http_preview_failure_blocks_enqueue(self):
         self.submit()
         self.settle(0, {'detail': [{'msg': 'Use at most three different title alternatives.'}]}, False)

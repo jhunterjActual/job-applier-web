@@ -1,6 +1,10 @@
 """Deterministic acquisition filters; unknown location is not affirmative eligibility."""
 import re
 
+# Kept equal to profile_repository.MAX_SUGGESTED_KEYWORDS_CHARS by regression
+# tests without importing repositories (and opening data stores) in pure filters.
+MAX_SUGGESTED_KEYWORDS_CHARS = 500
+
 
 def words(value):
     return re.findall(r'\w+', str(value or '').casefold())
@@ -25,8 +29,9 @@ def resume_search_titles(values):
     }
     normalized = []
     for value in values:
-        if not isinstance(value, str):
-            normalized.append(value)
+        # The existing cache uses commas as delimiters. Reject ambiguous model
+        # output instead of changing the plan when it is saved and replayed.
+        if not isinstance(value, str) or ',' in value:
             continue
         # Validate the original before simplifying; malformed/oversized input
         # must not become an admissible search term through normalization.
@@ -37,7 +42,13 @@ def resume_search_titles(values):
         key = ' '.join(words(title))
         key = re.sub(r'^(?:(?:senior|sr|lead|principal|staff) )+', '', key)
         normalized.append(families.get(key, title))
-    return bounded_terms(normalized, MAX_KEYWORDS)[0]
+    bounded = bounded_terms(normalized, MAX_KEYWORDS)[0]
+    result = []
+    for title in bounded:
+        if len(','.join(result + [title])) > MAX_SUGGESTED_KEYWORDS_CHARS:
+            break  # Keep a whole-title prefix; never displace a core role.
+        result.append(title)
+    return result
 
 
 def role_matches(title, keywords):
