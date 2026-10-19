@@ -3,6 +3,8 @@
 *Find, tailor, track, and prepare—on your terms.*
 
 See [PRODUCT_BACKLOG.md](PRODUCT_BACKLOG.md) for the consolidated implementation and product roadmap.
+See [ROADMAP.md](ROADMAP.md) for the current delivery sequence and continuation decision criteria.
+See [the ai-job-search assessment](docs/AI_JOB_SEARCH_ASSESSMENT_20261019.md) for the comparison, selective reuse recommendations, and evaluation plan.
 See [BRAND_NAMING.md](BRAND_NAMING.md) for the working-name rationale, voice guardrails, and pre-launch clearance checklist.
 See [PROVIDER_FAILURE_REPORTING.md](PROVIDER_FAILURE_REPORTING.md) for the review-before-sharing diagnostic-report contract and privacy boundary.
 See [docs/STAGE_1_DEPLOYMENT.md](docs/STAGE_1_DEPLOYMENT.md) for the access-restricted `staging-app.jhunterj.com` Linux deployment foundation in the web edition.
