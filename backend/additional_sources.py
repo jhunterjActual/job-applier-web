@@ -188,7 +188,8 @@ def parse_zip_response(raw, request_id):
 def collect(keywords, locations, health, check_cancelled):
     if not ENABLED:
         return []
-    terms, term_limited = bounded_terms(keywords, 3)
+    from discovery_sources import MAX_KEYWORDS
+    terms, term_limited = bounded_terms(keywords, MAX_KEYWORDS)
     places, place_limited = bounded_terms(locations, 2)
     places = places or ['']
     budget, found, seen = Budget(check_cancelled), [], set()

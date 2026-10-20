@@ -224,7 +224,7 @@ def _minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
             provider, code = alert.get("provider"), alert.get("code")
             if not isinstance(provider, str) or not isinstance(code, str):
                 continue
-            if provider not in ALLOWED_PROVIDERS or code not in ALLOWED_CODES or (provider, code) in seen:
+            if provider not in ALLOWED_PROVIDERS or code not in notice_messages or (provider, code) in seen:
                 continue
             seen.add((provider, code))
             payload["provider_alerts"].append({
@@ -278,6 +278,10 @@ def _minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
 def minimized_search_result(result: Mapping[str, object]) -> dict[str, object]:
     """Retain measured aggregates on failures too, without filling old history."""
     payload = _minimized_search_result(result)
+    from search_review import role_filter
+    plan = result.get('role_filter')
+    if isinstance(plan, dict):
+        payload['role_filter'] = role_filter(plan.get('titles'), plan.get('mode'))
     counts = result.get("counts")
     if isinstance(counts, Mapping):
         safe_counts = payload.setdefault("counts", {})

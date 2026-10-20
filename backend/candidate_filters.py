@@ -1,9 +1,54 @@
 """Deterministic acquisition filters; unknown location is not affirmative eligibility."""
 import re
 
+# Kept equal to profile_repository.MAX_SUGGESTED_KEYWORDS_CHARS by regression
+# tests without importing repositories (and opening data stores) in pure filters.
+MAX_SUGGESTED_KEYWORDS_CHARS = 500
+
 
 def words(value):
     return re.findall(r'\w+', str(value or '').casefold())
+
+
+def resume_search_titles(values):
+    """Use bounded role families for suggested searches, including old caches.
+
+    Only reviewed families are generalized. Never erase executive/management
+    scope or turn an arbitrary specialist title into a generic occupation.
+    Stored suggestions and explicit manual titles remain unchanged.
+    """
+    from discovery_sources import bounded_terms, MAX_KEYWORDS
+    families = {
+        'data architect': 'Data Architect',
+        'enterprise data architect': 'Data Architect',
+        'ai architect': 'AI Architect',
+        'generative ai architect': 'AI Architect',
+        'genai architect': 'AI Architect',
+        'artificial intelligence architect': 'AI Architect',
+        'ai technical architect': 'AI Architect',
+    }
+    normalized = []
+    for value in values:
+        # The existing cache uses commas as delimiters. Reject ambiguous model
+        # output instead of changing the plan when it is saved and replayed.
+        if not isinstance(value, str) or ',' in value:
+            continue
+        # Validate the original before simplifying; malformed/oversized input
+        # must not become an admissible search term through normalization.
+        valid, _ = bounded_terms([value], 1)
+        if not valid:
+            continue
+        title = valid[0]
+        key = ' '.join(words(title))
+        key = re.sub(r'^(?:(?:senior|sr|lead|principal|staff) )+', '', key)
+        normalized.append(families.get(key, title))
+    bounded = bounded_terms(normalized, MAX_KEYWORDS)[0]
+    result = []
+    for title in bounded:
+        if len(','.join(result + [title])) > MAX_SUGGESTED_KEYWORDS_CHARS:
+            break  # Keep a whole-title prefix; never displace a core role.
+        result.append(title)
+    return result
 
 
 def role_matches(title, keywords):
@@ -18,6 +63,10 @@ def role_matches(title, keywords):
             variants.append(['software', 'developer'])
         elif wanted == ['software', 'developer']:
             variants.append(['software', 'engineer'])
+        elif wanted == ['ai', 'architect']:
+            # A broad AI role includes generative AI and the spelled-out name;
+            # explicit specialized queries still retain their required words.
+            variants.extend((['genai', 'architect'], ['artificial', 'intelligence', 'architect']))
         exact_role = wanted in (['software', 'engineer'], ['software', 'developer'],
                                 ['data', 'engineer'], ['enterprise', 'architect'])
         if any((any(tokens[index:index + len(variant)] == variant

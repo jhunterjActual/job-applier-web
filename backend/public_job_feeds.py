@@ -302,7 +302,8 @@ def _snapshot(provider, check_cancelled, refresh=True):
 
 
 def collect(keywords, locations, health, check_cancelled):
-    keywords, keyword_limit = bounded_terms(keywords, 3)
+    from discovery_sources import MAX_KEYWORDS
+    keywords, keyword_limit = bounded_terms(keywords, MAX_KEYWORDS)
     locations, location_limit = bounded_terms(locations, 2)
     if not keywords:
         return []
@@ -326,8 +327,12 @@ def collect(keywords, locations, health, check_cancelled):
                 count('coverage_rows_read')
                 if not role_matches(row['title'], keywords):
                     count('coverage_role_excluded')
+                    from search_review import record_rejection
+                    record_rejection(health.get(provider), row['title'], 'query_mismatch', 'discovery')
                 elif not detail_location_matches(row, locations or ['']):
                     count('coverage_location_excluded')
+                    from search_review import record_rejection
+                    record_rejection(health.get(provider), row['title'], 'location_mismatch', 'discovery')
                 else:
                     count('coverage_metadata_matches')
                     selected.append(row)

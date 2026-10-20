@@ -2083,6 +2083,21 @@ class PostgreSQLTenantIsolationTests(unittest.TestCase):
         self.assertEqual(1, owner_one.clear_source_diagnostics())
         self.assertEqual(1, owner_two.list_source_diagnostics()["count"])
 
+    def test_search_review_titles_remain_owner_scoped(self) -> None:
+        from search_review import role_filter, record_rejection
+        owner_one = PostgreSQLDiscoveryRepository(self.user_one, engine=self.runtime_engine)
+        owner_two = PostgreSQLDiscoveryRepository(self.user_two, engine=self.runtime_engine)
+        health = {'_role_filter': role_filter(['Synthetic owner-one role'], 'resume_suggested')}
+        record_rejection(health, 'Synthetic rejected title', 'query_mismatch')
+        result = {'provider_alerts': [], 'provider_health': {'lever': health}}
+        owner_one.persist_source_diagnostics(result, datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc))
+        own_history = json.dumps(owner_one.list_source_diagnostics())
+        other_history = json.dumps(owner_two.list_source_diagnostics())
+        self.assertIn('Synthetic owner-one role', own_history)
+        self.assertIn('Synthetic rejected title', own_history)
+        self.assertNotIn('Synthetic owner-one role', other_history)
+        self.assertNotIn('Synthetic rejected title', other_history)
+
     def test_job_catalog_creation_is_suppression_aware_owner_scoped_and_atomic(self) -> None:
         owner_one = PostgreSQLDiscoveryRepository(self.user_one, engine=self.runtime_engine)
         owner_two = PostgreSQLDiscoveryRepository(self.user_two, engine=self.runtime_engine)

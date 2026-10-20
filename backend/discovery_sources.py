@@ -37,7 +37,7 @@ _CACHE_LOCK = threading.Lock()
 MAX_SERPER_REQUESTS = 6
 MAX_SECONDS = 90
 HTTP_TIMEOUT = 12
-MAX_KEYWORDS = 3
+MAX_KEYWORDS = 6  # Core resume families plus supported adjacent roles; request budgets stay fixed.
 MAX_LOCATIONS = 2
 MAX_TERM_CHARS = 120
 SERPER_ENABLED = True  # Runtime still requires worker key and durable reservation.
@@ -481,6 +481,8 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
                         record(provider, 'coverage_unlisted_rows')
                     elif not role_matches(row['title'], keywords):
                         record(provider, 'coverage_role_excluded')
+                        from search_review import record_rejection
+                        record_rejection(health.get(provider), row['title'], 'query_mismatch', 'discovery')
                     elif matches(row, keywords, locations):
                         record(provider, 'coverage_metadata_matches')
                         state['selected'].append(row)
@@ -493,6 +495,8 @@ def collect(keywords, locations, health, check_cancelled, *, api_key=None, reser
                             partial(provider, 'unknown_location_limit')
                     else:
                         record(provider, 'coverage_location_excluded')
+                        from search_review import record_rejection
+                        record_rejection(health.get(provider), row['title'], 'location_mismatch', 'discovery')
                 if getattr(page, "complete", True):
                     state["completed"].add(query_index)
             except SourceError as error:

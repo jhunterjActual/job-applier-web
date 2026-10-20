@@ -102,6 +102,17 @@ class RolePlanBrowserTests(unittest.TestCase):
         self.assertIn('Enterprise Architect', newest)
         self.assert_no_enqueue()
 
+    def test_resume_preview_renders_every_core_and_adjacent_title(self):
+        titles = ['Data Architect', 'Chief Data Officer', 'Enterprise Architect',
+                  'AI Architect', 'Data Governance Manager', 'AI Governance Manager']
+        self.page.evaluate("() => { sKeywords.value = ''; window.plan = updateSearchTitlePlan(); }")
+        self.settle(0, {'mode': 'resume_suggested', 'titles': titles, 'max_titles': 6, 'software_alias': False})
+        self.assertTrue(self.page.evaluate('plan'))
+        visible = self.page.locator('#search-title-plan').inner_text()
+        for title in titles:
+            self.assertIn(title, visible)
+        self.assert_no_enqueue()
+
     def test_http_preview_failure_blocks_enqueue(self):
         self.submit()
         self.settle(0, {'detail': [{'msg': 'Use at most three different title alternatives.'}]}, False)
@@ -158,6 +169,16 @@ class RolePlanBrowserTests(unittest.TestCase):
         self.assertIn(title, self.page.locator('#search-title-plan').inner_text())
         self.assertEqual(0, self.page.locator('#search-title-plan img').count())
         self.assertFalse(self.page.evaluate('window.injected === true'))
+        self.assert_no_enqueue()
+
+    def test_resume_suggested_preview_displays_actual_titles_safely(self):
+        self.page.evaluate("() => { sKeywords.value = ''; window.preview = updateSearchTitlePlan(); }")
+        self.settle(0, {'mode': 'resume_suggested', 'titles': ['Data Engineer', '<img src=x>'], 'software_alias': False})
+        self.assertTrue(self.page.evaluate('preview'))
+        text = self.page.locator('#search-title-plan').inner_text()
+        self.assertIn('Resume-suggested role filter: Data Engineer OR <img src=x>', text)
+        self.assertIn('before AI scoring', text)
+        self.assertEqual(0, self.page.locator('#search-title-plan img').count())
         self.assert_no_enqueue()
 
 
