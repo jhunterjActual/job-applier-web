@@ -36,6 +36,15 @@ class BatchMatchResponse(BaseModel):
     matches: list[BatchJobMatch]
 
 
+FACTUAL_EVIDENCE_CONTRACT = """Factual evidence contract for candidate claims:
+- Use the candidate's resume and any supplied professional evidence as the sources of candidate facts. A job posting describes the employer's requirements, not the candidate's experience.
+- Omitted skills, certifications, licenses and work authorization are unknown, not confirmed absent. Say "not documented" or "requires confirmation" when relevant; do not say the candidate has none or lacks experience unless the candidate evidence explicitly establishes that absence.
+- Preserve explicit positive and negative candidate statements. If candidate sources conflict, identify the conflict as requiring confirmation rather than resolving it by guessing.
+- Preserve each employer, role, date, task and metric attribution. Separate facts do not establish a relationship: API maintenance is not API development; automated tests are not necessarily API tests; dashboards are not necessarily connected to a separately mentioned reporting pipeline.
+- Preferred requirements do not become mandatory requirements or candidate credentials. Do not invent responsibilities, production scope, qualifications or causal relationships to improve the fit.
+"""
+
+
 def format_cover_letter_date(value: date) -> str:
     """Format dates without platform-specific strftime day directives."""
     return f"{value.strftime('%B')} {value.day}, {value.year}"
@@ -190,6 +199,8 @@ def tailor_resume_and_cover_letter(
     1. Tailor their base resume to match the job requirements, emphasizing only relevant, evidenced skills, projects, and work experience. Maintain absolute factual accuracy: DO NOT invent jobs, dates, degrees, credentials, technologies, metrics, or companies.
     2. Write a customized, compelling, and professional cover letter (under 350 words, 3-4 paragraphs) addressed to the hiring team at {company_name}.
 
+    {FACTUAL_EVIDENCE_CONTRACT}
+
     Cover-letter contract:
     - Use the concrete date "{formatted_letter_date}" in the letter heading.
     - Never emit [Date], {{Date}}, <Date>, or any other placeholder token.
@@ -285,6 +296,8 @@ def analyze_job_match(
 
     prompt = f"""
     You are an AI Job Matching Assistant. Analyze the match between the candidate's resume and a job description.
+
+    {FACTUAL_EVIDENCE_CONTRACT}
     
     Job Title: {job_title}
     Company: {company_name}
@@ -359,6 +372,8 @@ def analyze_job_matches_batch(
         
     prompt = f"""
     You are an AI Job Matching Assistant. Analyze the match between the candidate's resume and a list of job postings.
+
+    {FACTUAL_EVIDENCE_CONTRACT}
     
     Candidate's Resume:
     \"\"\"{base_resume_text}\"\"\"

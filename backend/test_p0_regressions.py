@@ -1335,6 +1335,69 @@ class ResumeDocumentInteroperabilityTests(unittest.TestCase):
 
 
 class ResumeRenderingTests(unittest.TestCase):
+    def test_candidate_evidence_contract_reaches_generation_and_matching_wire_requests(self) -> None:
+        import tailor as tailoring
+
+        candidate = "Maintained REST APIs. Wrote automated tests. Certification status is unknown."
+        evidence = "AWS certification: not held. dbt certification: held, issued in 2025."
+        posting = "AWS and dbt preferred. Require API development."
+        outputs = [
+            {"tailored_resume": "# Candidate\n\n## Experience\n\nMaintained REST APIs.",
+             "cover_letter": "Dear Hiring Team,\n\nCertification status requires confirmation."},
+            {"match_score": 60, "match_analysis": "API development is not documented."},
+            {"matches": [{"index": 0, "match_score": 60, "match_analysis": "API development is not documented."}]},
+        ]
+
+        class FakeResponse:
+            def __init__(self, output):
+                self.output = output
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps({"output": [{"type": "message", "content": [
+                    {"type": "output_text", "text": json.dumps(self.output)},
+                ]}]}).encode("utf-8")
+
+        with patch.object(ai_providers_module.urllib.request, "urlopen",
+                          side_effect=[FakeResponse(value) for value in outputs]) as provider:
+            material = tailoring.tailor_resume_and_cover_letter(
+                candidate, "Developer", "Synthetic Company", posting,
+                api_key="fake-not-a-credential", ai_provider="openai", ai_model="gpt-5-mini",
+                professional_evidence=evidence,
+            )
+            single = tailoring.analyze_job_match(
+                candidate, "Developer", "Synthetic Company", posting,
+                api_key="fake-not-a-credential", ai_provider="openai", ai_model="gpt-5-mini",
+            )
+            batch = tailoring.analyze_job_matches_batch(
+                candidate, [{"title": "Developer", "company": "Synthetic Company", "description": posting}],
+                api_key="fake-not-a-credential", ai_provider="openai", ai_model="gpt-5-mini",
+            )
+
+        self.assertTrue(material["success"] and single["success"] and batch["success"])
+        self.assertEqual(provider.call_count, 3)  # One original request per operation, no critique/retry call.
+        for call in provider.call_args_list:
+            request = call.args[0]
+            payload = json.loads(request.data)
+            prompt = payload["input"]
+            self.assertEqual(request.full_url, "https://api.openai.com/v1/responses")
+            self.assertEqual(payload["model"], "gpt-5-mini")
+            self.assertIn(tailoring.FACTUAL_EVIDENCE_CONTRACT, prompt)
+            self.assertIn(candidate, prompt)
+            self.assertIn(posting, prompt)
+            self.assertNotIn("fake-not-a-credential", prompt)
+            self.assertTrue(payload["text"]["format"]["strict"])
+        generation_prompt = json.loads(provider.call_args_list[0].args[0].data)["input"]
+        self.assertIn(evidence, generation_prompt)  # Do not erase explicit positive/negative facts as "unknown".
+        self.assertEqual(single["match_analysis"], outputs[1]["match_analysis"])
+        self.assertEqual(batch["matches"], outputs[2]["matches"])
+        self.assertEqual(material["cover_letter"], outputs[0]["cover_letter"])
+
     def test_tailoring_uses_validated_structured_response(self) -> None:
         generated = {
             "tailored_resume": "# Candidate\n\n## Professional Summary\n\nEvidence-based summary.",
