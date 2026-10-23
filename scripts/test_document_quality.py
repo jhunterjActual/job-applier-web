@@ -43,6 +43,17 @@ class DocumentQualityTests(unittest.TestCase):
         self.assertEqual(check(report, "text_extraction")["status"], "failed")
         self.assertEqual(report["outcome"], "failed")
 
+    def test_stock_uppercase_heading_counts_as_name_presence(self):
+        raw = pdf(text="ALEX EXAMPLE alex@example.invalid Software Engineer Python REST APIs")
+        before = hashlib.sha256(raw).hexdigest()
+        report = inspect_pdf(raw, expected_text={"name": "Alex Example", "email": "ALEX@EXAMPLE.INVALID"})
+        result = check(report, "expected_text")
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["comparison"], "unicode_casefold_whitespace_normalized_presence")
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), before)
+        absent = inspect_pdf(raw, expected_text={"name": "Alex Different"})
+        self.assertEqual(check(absent, "expected_text")["status"], "failed")
+
     def test_blank_second_page_cannot_hide_in_aggregate_text(self):
         with pymupdf.open(stream=pdf(), filetype="pdf") as document:
             document.new_page()

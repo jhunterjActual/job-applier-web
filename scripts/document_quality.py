@@ -18,7 +18,7 @@ def _check(name, status, reason, **measurements):
 
 
 def _normalized(text):
-    return " ".join(unicodedata.normalize("NFC", text).split())
+    return " ".join(unicodedata.normalize("NFC", text).casefold().split())
 
 
 def _finish(report):
@@ -129,7 +129,8 @@ def inspect_pdf(pdf_bytes, *, document_kind="ordinary_resume", expected_text=Non
                 missing = sorted(label for label, fact in expected.items() if _normalized(fact) not in normalized)
                 checks.append(_check("expected_text", "failed" if missing else "passed",
                                      "missing_expected_text" if missing else "expected_text_present",
-                                     expected_count=len(expected), missing_labels=missing))
+                                     expected_count=len(expected), missing_labels=missing,
+                                     comparison="unicode_casefold_whitespace_normalized_presence"))
             else:
                 checks.append(_check("expected_text", "skipped", "no_expected_text_supplied"))
             checks.append(_check("page_boundary_text", "failed" if boundary_pages else "passed",

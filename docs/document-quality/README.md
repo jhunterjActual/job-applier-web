@@ -17,6 +17,12 @@ required contact fields or other expected text. Reports contain labels, counts,
 page numbers, source SHA-256 and fixed diagnostic codes; they omit document text,
 metadata and source paths. Missing expectations are skipped rather than passed.
 
+Expected-text presence uses Unicode NFC, case folding, and collapsed whitespace.
+This accommodates stock CSS uppercase name headings without flagging a visible
+name as missing. It is case-insensitive presence only, not exact text fidelity,
+email deliverability, preserved capitalization, or a substitute for visual review.
+The report names this comparison policy; original PDF bytes remain unchanged.
+
 Measured checks are PDF decoding, document-specific page count, nonempty text on
 every page, a configurable total extraction floor, required text presence, and
 text span bounds crossing a page edge. Ordinary resumes default to two pages,
