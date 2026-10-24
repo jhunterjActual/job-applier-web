@@ -248,6 +248,7 @@ def generate_pdf_from_html(
             margin: 0;
             padding: 0;
             font-size: 10.5pt;
+            overflow-wrap: anywhere;
         }
         h1 {
             font-size: 20pt;

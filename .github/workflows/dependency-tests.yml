@@ -57,5 +57,7 @@ jobs:
         run: python -B -m unittest discover -s scripts -p test_value_evidence.py
       - name: Run search review regressions
         run: python -m unittest test_search_review.py test_role_plan_browser.py test_coverage_diagnostics.py test_search_completion_browser.py
+      - name: Run final PDF wrapping regressions
+        run: python -m unittest -v test_pdf_wrapping.py
       - name: Check Python syntax
         run: python -m compileall -q .
