@@ -44,6 +44,8 @@ jobs:
       - name: Verify native comparison cost arithmetic
         working-directory: ${{ github.workspace }}/scripts/value_evaluation
         run: python -B -m unittest -v test_native_cost_envelope
+      - name: Run job import dialog browser regressions
+        run: python -m unittest -v test_job_import_browser.py
       - name: Check Python syntax
         run: python -m compileall -q .
       - name: Verify identity-withheld packet preparation

@@ -71,5 +71,7 @@ jobs:
       - name: Verify CT normal-route controller seam
         working-directory: ${{ github.workspace }}/scripts/value_evaluation
         run: python -B -m unittest -v test_study_ct
+      - name: Run job import dialog browser regressions
+        run: python -m unittest -v test_job_import_browser.py
       - name: Check Python syntax
         run: python -m compileall -q .
