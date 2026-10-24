@@ -73,5 +73,7 @@ jobs:
         run: python -B -m unittest -v test_study_ct
       - name: Run job import dialog browser regressions
         run: python -m unittest -v test_job_import_browser.py
+      - name: Run final PDF wrapping regressions
+        run: python -m unittest -v test_pdf_wrapping.py
       - name: Check Python syntax
         run: python -m compileall -q .
