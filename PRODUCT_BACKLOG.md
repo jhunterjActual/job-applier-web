@@ -1228,6 +1228,7 @@ coverage acceptance and the independent reference benchmark remain open.
 - [ ] Separate legacy Yahoo/Bing failures from direct-feed status, retain catalog limit/per-board error diagnostics, and deduplicate history notices. See artifacts/SEARCH_1099_DIAGNOSIS_20260923.md (confirmed live zero-candidate report).
 
 - [ ] Preserve validated employer-feed location and employment metadata through posting inspection/import, or reliably extract it from structured posting data. Confirmed Bosch Enterprise Architect posting advertises Stuttgart, Germany and is not remote, but the saved job shows Location not listed. Keep remote filtering strict; do not label unknown locations remote. See artifacts/LOCAL_SEARCH_COVERAGE_20260923.md.
+  - Reviewed candidate scope (2026-10-24): the SmartRecruiters browser/manual-import fallback fills missing location and employment fields from one unambiguous, URL-bound structured posting. Existing visible fields win; unknown location does not imply remote. Synthetic extraction and preview/save verification are required before publication. The Bosch posting has not been revisited live; broader employer-feed acceptance remains open.
 
 ## Hosted discovery cache
 
