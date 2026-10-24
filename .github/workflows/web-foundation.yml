@@ -44,6 +44,9 @@ jobs:
       - name: Run evaluation evidence checks
         working-directory: ${{ github.workspace }}
         run: python -B -m unittest discover -s scripts -p test_value_evidence.py
+      - name: Run study freeze readiness checks
+        working-directory: ${{ github.workspace }}
+        run: python -B -m unittest discover -s scripts -p test_study_readiness.py
       - name: Exercise staging worker entrypoint
         env:
           CAREERTRELLIS_ENVIRONMENT: staging
