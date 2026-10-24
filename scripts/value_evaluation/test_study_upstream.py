@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 from urllib.request import Request, urlopen
@@ -222,12 +223,37 @@ class NativeBrokerTests(unittest.TestCase):
         process = Mock(pid=54321)
         process.poll.return_value = None
         process.kill.side_effect = lambda: setattr(process.poll, "return_value", 0)
-        with patch("study_upstream.subprocess.run", side_effect=OSError("synthetic tree stop failure")):
+        with (patch("study_upstream.subprocess.run", side_effect=OSError("synthetic tree stop failure")),
+              patch("study_upstream.os.killpg", side_effect=OSError("synthetic tree stop failure"), create=True)):
             result = stop_owned_process(process)
         self.assertEqual(54321, result["owned_pid"])
         self.assertTrue(result["direct_child_terminal"])
         self.assertTrue(result["process_tree_requires_independent_verification"])
         self.assertEqual("OSError", result["cleanup_failure_class"])
+
+    def test_both_platform_tree_stop_paths_are_fully_mocked(self):
+        for platform in ("nt", "posix"):
+            with self.subTest(platform=platform):
+                process = Mock(pid=54321)
+                process.poll.return_value = None
+                process.kill.side_effect = lambda: setattr(process.poll, "return_value", 0)
+                kill_group = Mock(side_effect=OSError("synthetic group stop failure"))
+                fake_os = SimpleNamespace(name=platform, environ={"SystemRoot": "/synthetic/systemroot"}, killpg=kill_group)
+                with (patch("study_upstream.os", fake_os),
+                      patch("study_upstream.subprocess.run", side_effect=OSError("synthetic tree stop failure")) as run,
+                      patch("signal.SIGKILL", 9, create=True)):
+                    result = stop_owned_process(process)
+                self.assertEqual("OSError", result["cleanup_failure_class"])
+                self.assertTrue(result["direct_child_terminal"])
+                process.kill.assert_called_once_with()
+                process.wait.assert_called_once_with(timeout=5)
+                if platform == "nt":
+                    kill_group.assert_not_called()
+                    run.assert_called_once()
+                    self.assertEqual(["/PID", "54321", "/T", "/F"], run.call_args.args[0][1:])
+                else:
+                    run.assert_not_called()
+                    kill_group.assert_called_once_with(54321, 9)
 
     def test_incomplete_direct_cleanup_never_finishes_stage(self):
         agents = self.workspace / ".claude/agents"
