@@ -129,7 +129,11 @@ These additions extend those items rather than replacing their open acceptance.
   Acceptance: exact complementary matcher/header assertions, existing auth/log
   privacy guards retained, feedback API/browser/ingress modules included in both
   explicit CI suites, and all GitHub checks passing on the corrected PR head.
-  Current slice: test and CI correction prepared; hosted CI acceptance pending.
+  PR #88 delivered the core P0 matcher assertions and feedback modules in both
+  explicit CI suites. The separate hostname-privacy module still contained a
+  stale blanket assertion and was omitted from those lists. A bounded test-only
+  correction now checks the exact complementary policies and includes that
+  module in both suites; corrected-head hosted CI acceptance remains pending.
   This does not close the separate historical access-log privacy audit.
 
 ## October 7 — current product priorities and delivery order
