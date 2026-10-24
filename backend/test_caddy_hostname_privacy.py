@@ -1,6 +1,7 @@
 """Hostname transitions preserve the exact active v7 privacy boundary."""
 
 from pathlib import Path
+import re
 import unittest
 
 import caddy_log_privacy as privacy
@@ -34,9 +35,28 @@ class HostnamePrivacyTests(unittest.TestCase):
     def test_canonical_beta_has_no_basic_auth_and_scoped_referrer_policy(self):
         serving, retired = self.candidate.split("staging-app.jhunterj.com {", 1)
         self.assertNotIn("basic_auth", self.candidate)
-        self.assertIn('Referrer-Policy "same-origin"', serving)
-        self.assertNotIn('Referrer-Policy "no-referrer"', serving)
-        self.assertIn('Referrer-Policy "no-referrer"', retired)
+        feedback_paths = "/feedback /static/feedback.css /static/feedback.js"
+        self.assertRegex(
+            serving,
+            r"(?m)^\s*@feedbackReferrer path " + re.escape(feedback_paths) + r"\s*$",
+        )
+        self.assertRegex(
+            serving,
+            r"(?m)^\s*@otherReferrer\s*\{\s*not path " + re.escape(feedback_paths) + r"\s*\}",
+        )
+        serving_referrers = [
+            line.strip() for line in serving.splitlines()
+            if "Referrer-Policy" in line and not line.lstrip().startswith("#")
+        ]
+        self.assertCountEqual(serving_referrers, [
+            'header @feedbackReferrer >Referrer-Policy "no-referrer"',
+            'header @otherReferrer >Referrer-Policy "same-origin"',
+        ])
+        retired_referrers = [
+            line.strip() for line in retired.splitlines()
+            if "Referrer-Policy" in line and not line.lstrip().startswith("#")
+        ]
+        self.assertEqual(retired_referrers, ['Referrer-Policy "no-referrer"'])
 
     def test_unreviewed_host_and_extra_sites_are_rejected(self):
         self.assertRejected(self.legacy.replace("staging-app.jhunterj.com {", "other.invalid {"))
