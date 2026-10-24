@@ -84,7 +84,9 @@ def _bound(root, value):
 
 
 def _pages(document):
-    if document.needs_pass or not 1 <= len(document) <= 12 or document.is_form_pdf:
+    if (document.needs_pass or document.metadata.get("encryption")
+            or document.xref_get_key(-1, "Encrypt")[0] != "null"
+            or not 1 <= len(document) <= 12 or document.is_form_pdf):
         raise PackagingRefused("unsupported_pdf_structure")
     result = []
     for page in document:

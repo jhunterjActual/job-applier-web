@@ -135,6 +135,16 @@ class BlindPacketTests(unittest.TestCase):
             subject.package(self.source, self.manifest, self.root / "unused" / ".." / "source" / "output")
         self.assertFalse((self.source / "output").exists())
 
+    def test_encrypted_pdf_cannot_be_decrypted_into_review(self):
+        for user_password in ("", "synthetic-user-password"):
+            with self.subTest(empty_user_password=not user_password):
+                with pymupdf.open() as pdf:
+                    pdf.new_page().insert_text((40, 40), "Synthetic encrypted control")
+                    raw = pdf.tobytes(encryption=pymupdf.PDF_ENCRYPT_AES_256,
+                        owner_pw="synthetic-owner-password", user_pw=user_password)
+                with self.assertRaisesRegex(subject.PackagingRefused, "unsupported_pdf_structure"):
+                    subject._derivative(raw)
+
 
 if __name__ == "__main__":
     unittest.main()
