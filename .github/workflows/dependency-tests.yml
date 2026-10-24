@@ -47,6 +47,8 @@ jobs:
         run: python -B -m unittest -v test_budget_guard test_ct_budget_transport
       - name: Run analytics regressions
         run: python -m unittest test_analytics.py
+      - name: Verify credential-link browser privacy
+        run: python -B -m unittest -v test_provider_credential_links_browser
       - name: Run final PDF byte diagnostics
         working-directory: ${{ github.workspace }}
         run: python -B -m unittest discover -s scripts -p test_document_quality.py
