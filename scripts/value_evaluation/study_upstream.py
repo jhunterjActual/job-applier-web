@@ -145,15 +145,46 @@ def sse(tool, number, text="SYNTHETIC_MECHANICS_COMPLETE"):
     return "".join("event: " + event["type"] + "\ndata: " + json.dumps(event) + "\n\n" for event in events).encode("utf-8")
 
 
+def sse_group(tools, number):
+    # Retain the legacy event envelope/usage and replace only content blocks.
+    events = [json.loads(item.split("\ndata: ", 1)[1]) for item in sse(None, number).decode().strip().split("\n\n")]
+    output = [events[0]]
+    for index, (tool_id, name, args) in enumerate(tools):
+        output.extend([
+            {"type": "content_block_start", "index": index, "content_block": {"type": "tool_use", "id": tool_id, "name": name, "input": {}}},
+            {"type": "content_block_delta", "index": index, "delta": {"type": "input_json_delta", "partial_json": json.dumps(args)}},
+            {"type": "content_block_stop", "index": index}])
+    output.extend(events[-2:])
+    output[-2]["delta"]["stop_reason"] = "tool_use"
+    return "".join("event: " + event["type"] + "\ndata: " + json.dumps(event) + "\n\n" for event in output).encode()
+
+
 class ScriptedBroker:
     """Serve frozen mechanical responses; no outbound HTTP implementation exists."""
-    def __init__(self, campaign, prefix, directory, policy, actions):
+    def __init__(self, campaign, prefix, directory, policy, actions, correction_policy=None, prior_phase_directory=None, phase_context=None):
         if campaign.policy["mode"] != "offline":
             raise RehearsalRefused("Scripted broker accepts offline campaign only")
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,50}", prefix):
             raise RehearsalRefused("Invalid request prefix")
         self.campaign, self.prefix, self.directory, self.policy = campaign, prefix, Path(directory), policy
-        self.actions = tuple((name, json.loads(json.dumps(args))) for name, args in actions)
+        self.groups, self.bindings, self.correction = None, None, None
+        self.prior_history, self.prior_results = None, {}
+        if prior_phase_directory is not None:
+            from study_native_corrections import load_prior_fit
+            if correction_policy is None or type(phase_context) is not dict or Path(prior_phase_directory).absolute() != self.directory.parent / "fit":
+                raise RehearsalRefused("Explicit same-proof completed-fit evidence required")
+            self.prior_history = load_prior_fit(prior_phase_directory, phase_context, policy)
+            self.prior_results = dict(self.prior_history["results"])
+        self.group_index, self.ingress = 0, 0
+        if correction_policy is not None:
+            from study_native_corrections import ResultBindings, parse_groups, validate_policy
+            validate_policy(correction_policy)
+            self.groups = parse_groups(actions, policy)
+            self.bindings = ResultBindings()
+            self.actions = tuple((tool["name"], tool["input"]) for group in self.groups for tool in group["tools"])
+        else:
+            self.actions = tuple((name, json.loads(json.dumps(args))) for name, args in actions)
+        self.action_document = json.loads(json.dumps(actions)) if self.groups is not None else self.actions
         for name, args in self.actions:
             policy.validate(name, args)
         self.index, self.requests, self.reviewer_requests, self.count_requests = 0, [], 0, 0
@@ -163,6 +194,14 @@ class ScriptedBroker:
         self.refusals = []
 
     def dispatch(self, raw):
+        try:
+            return self._dispatch(raw)
+        except BaseException:
+            if self.groups is not None:
+                self.failed = True
+            raise
+
+    def _dispatch(self, raw):
         # Snapshot exact bytes before either admission or response selection.
         raw = bytes(raw)
         if not 0 < len(raw) <= MAX_BODY:
@@ -170,6 +209,9 @@ class ScriptedBroker:
         if self.failed:
             raise RehearsalRefused("First failure retained; no automatic retry")
         self.response_settled.clear()
+        if self.groups is not None:
+            self.ingress += 1
+            write_once(self.directory / f"received-{self.ingress:03d}.json", raw)
         value = json.loads(raw, object_pairs_hook=unique_object,
             parse_constant=lambda _: (_ for _ in ()).throw(RehearsalRefused("Nonfinite native JSON")))
         envelope_fields = {"model", "messages", "system", "max_tokens", "stream", "thinking",
@@ -197,7 +239,7 @@ class ScriptedBroker:
         if not tools.issubset({"Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent", "DeferredToolPlaceholder"}):
             raise RehearsalRefused("Unsupported native tool definitions")
         reviewer = "Agent" not in tools and "Write" not in tools
-        def inspect(node, permitted_visual=False):
+        def inspect(node, permitted_visual=False, pointer=""):
             if isinstance(node, dict):
                 if "cache_control" in node:
                     raise RehearsalRefused("Native cache setting changed")
@@ -206,20 +248,41 @@ class ScriptedBroker:
                     tool_id = node.get("tool_use_id")
                     if not isinstance(tool_id, str):
                         raise RehearsalRefused("Invalid native tool result")
+                    imported = tool_id in self.prior_results
+                    if imported:
+                        from study_native_corrections import canonical, sha
+                        if sha(canonical(node)) != self.prior_results[tool_id]:
+                            raise RehearsalRefused("Conflicting completed-fit history")
+                        first = False
+                    else:
+                        first = self.bindings.observe(node, raw, pointer) if self.bindings is not None else True
                     if node.get("is_error") is True:
-                        raise RehearsalRefused("Native tool failed; retain first failure")
-                    self.tool_results[tool_id] = False
+                        if self.correction is None:
+                            raise RehearsalRefused("Native tool failed; retain first failure")
+                        if first:
+                            self.correction.corroborate(tool_id, node)
+                    if not imported:
+                        self.tool_results[tool_id] = False
                     permitted_visual = tool_id in self.read_ids
                 if isinstance(kind, str) and kind in {"image", "document"} and not permitted_visual:
                     raise RehearsalRefused("Visual input without owned native Read")
                 if isinstance(kind, str) and (kind in {"server_tool_use", "web_search_tool_result"} or kind.startswith(("web_search_", "web_fetch_", "computer_"))):
                     raise RehearsalRefused("External/server tools refused")
-                for item in node.values():
-                    inspect(item, permitted_visual)
+                for key, item in node.items():
+                    inspect(item, permitted_visual, pointer + "/" + key.replace("~", "~0").replace("/", "~1"))
             elif isinstance(node, list):
-                for item in node:
-                    inspect(item, permitted_visual)
+                for index, item in enumerate(node):
+                    inspect(item, permitted_visual, pointer + "/" + str(index))
         inspect(value)
+        if self.bindings is not None:
+            outstanding = self.expected_tool_ids - set(self.bindings.observed)
+            if reviewer:
+                if not any(self.bindings.emitted[tool_id][0] == "Agent" for tool_id in outstanding):
+                    raise RehearsalRefused("Reviewer without outstanding native Agent")
+            elif outstanding:
+                raise RehearsalRefused("Prior group has unobserved tool results")
+            if self.correction is None or self.correction.cleanup_unknown:
+                raise RehearsalRefused("Correction runtime absent or observer unknown")
         number = len(self.requests) + 1
         request_path = self.directory / f"request-{number:03d}.json"
         write_once(request_path, raw)
@@ -230,6 +293,20 @@ class ScriptedBroker:
         action = None
         if reviewer:
             self.reviewer_requests += 1
+        elif self.groups is not None and self.group_index < len(self.groups):
+            group = self.groups[self.group_index]
+            emitted = [(f"toolu_fixture_{number}_{group['id']}_{tool['slot']}", tool["name"], tool["input"]) for tool in group["tools"]]
+            self.correction.before_group(emitted, number)
+            for tool_id, name, args in emitted:
+                if tool_id in self.prior_results:
+                    raise RehearsalRefused("Prior/current tool ID collision")
+                self.bindings.emit(tool_id, name, args)
+                self.expected_tool_ids.add(tool_id)
+                if name == "Read":
+                    self.read_ids.add(tool_id)
+            self.group_index += 1
+            self.index += len(emitted)
+            action = emitted
         elif self.index < len(self.actions):
             action = self.actions[self.index]
             self.policy.validate(*action)
@@ -237,7 +314,7 @@ class ScriptedBroker:
             self.expected_tool_ids.add(f"toolu_fixture_{number}")
             if action[0] == "Read":
                 self.read_ids.add(f"toolu_fixture_{number}")
-        response = sse(action, number)
+        response = sse_group(action, number) if self.groups is not None and action else sse(action, number)
         write_once(self.directory / f"response-{number:03d}.sse", response)
         self.requests.append({"call_id": call_id, "request_sha256": digest(raw), "response_sha256": digest(response), "reviewer": reviewer})
         return call_id, response
@@ -405,7 +482,7 @@ def verify_runtime(workspace, commit, source_hashes, executables, executable_has
 
 def run_phase(campaign, product, case, stage, workspace, commit, source_hashes,
               executables, executable_hashes, directory, session_id, prompt, actions,
-              runtime_environment=None, timeout_seconds=240):
+              runtime_environment=None, timeout_seconds=240, correction_policy=None, witness_tree_observer=None, prior_phase_directory=None):
     """Run one explicit offline native phase; never forwards provider traffic."""
     if campaign.policy["mode"] != "offline" or stage not in {"fit", "materials"} or (stage == "materials" and case not in {f"V{i:02d}" for i in range(1, 7)}):
         raise RehearsalRefused("Offline eligible native phase required")
@@ -420,16 +497,34 @@ def run_phase(campaign, product, case, stage, workspace, commit, source_hashes,
     workspace = workspace.resolve(strict=True)
     if directory.exists() or not directory.parent.is_dir():
         raise RehearsalRefused("New explicit rehearsal directory required")
+    if correction_policy is not None:
+        from study_native_corrections import validate_policy, validate_runtime_pins
+        validate_policy(correction_policy)
+        validate_runtime_pins(commit, source_hashes, executable_hashes)
     verify_runtime(workspace, commit, source_hashes, executables, executable_hashes)
     policy = ToolPolicy(workspace, source_hashes)
-    broker = ScriptedBroker(campaign, f"{product}_{case}_{stage}", directory, policy, actions)
+    framework = {path.name: digest(path.read_bytes()) for path in
+        (Path(__file__), Path(__file__).with_name("study_native_corrections.py")) if path.is_file()}
+    phase_binding = {"schema": "offline-native-phase-binding-v1", "product": product, "case": case,
+        "stage": stage, "session_id": session_id, "workspace": str(workspace), "commit": commit,
+        "source_inventory_sha256": digest(json_bytes(source_hashes)),
+        "executables_sha256": digest(json_bytes(executable_hashes)),
+        "campaign_policy_sha256": digest(json_bytes(campaign.policy)),
+        "frozen_content_sha256": campaign.policy["frozen_content_sha256"], "framework_sha256": framework}
+    if correction_policy is not None and stage == "materials":
+        if prior_phase_directory is None or Path(prior_phase_directory).absolute() != directory.parent / "fit":
+            raise RehearsalRefused("Same owned proof fit directory required")
+    elif prior_phase_directory is not None:
+        raise RehearsalRefused("Prior history only supported for correction materials")
+    broker = ScriptedBroker(campaign, f"{product}_{case}_{stage}", directory, policy, actions, correction_policy, prior_phase_directory, phase_binding)
     reviewer = (workspace / ".claude/agents/application-reviewer.md").read_text(encoding="utf-8").split("---", 2)[-1].strip()
     directory.mkdir(exist_ok=False)
+    write_once(directory / "phase-binding.json", json_bytes(phase_binding))
     agents = {"application-reviewer": {"description": "Native application reviewer", "prompt": reviewer, "tools": ["Read", "Glob", "Grep"], "model": MODEL}}
     agents_path = directory / "agents.json"
     write_once(agents_path, json_bytes(agents))
     write_once(directory / "prompt.txt", prompt)
-    write_once(directory / "actions.json", json_bytes(broker.actions))
+    write_once(directory / "actions.json", json_bytes(broker.action_document))
     command = [str(executables["cli"]), "--model", MODEL, "--strict-mcp-config", "--setting-sources", "",
         "--agents", str(agents_path), "--append-system-prompt-file", str(workspace / "CLAUDE.md"),
         "--tools", "Read,Write,Edit,Glob,Grep,Bash,Agent", "--allowedTools", "Read,Write,Edit,Glob,Grep,Bash,Agent(application-reviewer)",
@@ -439,13 +534,18 @@ def run_phase(campaign, product, case, stage, workspace, commit, source_hashes,
         "product": product, "case": case, "stage": stage, "commit": commit,
         "started_utc": datetime.now(timezone.utc).isoformat(), "status": "incomplete", "native_terminal": False,
         "source_inventory_sha256": digest(json_bytes(source_hashes)), "executables_sha256": digest(json_bytes(executable_hashes)),
-        "prompt_sha256": digest(prompt), "actions_sha256": digest(json_bytes(broker.actions))}
+        "phase_binding_sha256": digest(json_bytes(phase_binding)),
+        "prompt_sha256": digest(prompt), "actions_sha256": digest(json_bytes(broker.action_document))}
     started = time.monotonic()
     server, thread, process, env = None, None, None, None
     try:
         server = broker.server()
         receipt["loopback_port"] = server.server_port
         env = child_environment(directory, server.server_port, executables) if runtime_environment is None else reused_environment(runtime_environment, directory, server.server_port, executables)
+        if correction_policy is not None:
+            from study_native_corrections import LayoutCorrectionSession
+            broker.correction = LayoutCorrectionSession(policy, executables, executable_hashes,
+                directory / "corrections", env, witness_tree_observer)
         campaign.begin_stage(product, case, stage)
         receipt["stage_admitted"] = True
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -455,12 +555,14 @@ def run_phase(campaign, product, case, stage, workspace, commit, source_hashes,
         receipt["native_pid"] = process.pid
         stdout, stderr = process.communicate(input=prompt, timeout=timeout_seconds)
         write_once(directory / "stdout.json", stdout)
+        receipt["stdout_sha256"] = digest(stdout)
         write_once(directory / "stderr.txt", stderr)
         value = json.loads(stdout)
         settled = broker.response_settled.wait(timeout=5) if broker.requests else False
         success = (process.returncode == 0 and value.get("type") == "result" and value.get("subtype") == "success"
             and value.get("is_error") is False and not value.get("permission_denials") and not broker.failed
             and settled and broker.index == len(broker.actions) and broker.expected_tool_ids.issubset(broker.tool_results)
+            and (broker.correction is None or not broker.correction.cleanup_unknown)
             and (not any(name == "Agent" for name, _ in broker.actions) or broker.reviewer_requests >= 1))
         verify_runtime(workspace, commit, source_hashes, executables, executable_hashes)
         receipt.update(native_terminal=True, exit_code=process.returncode, source_unchanged=True)
@@ -492,8 +594,17 @@ def run_phase(campaign, product, case, stage, workspace, commit, source_hashes,
             requests=broker.requests, reviewer_requests=broker.reviewer_requests, token_count_requests=broker.count_requests,
             actions_completed=broker.index, expected_actions=len(broker.actions),
             broker_stopped=thread is None or not thread.is_alive(), tool_results=len(broker.tool_results), refusals=broker.refusals)
+        if broker.correction is not None:
+            try:
+                broker.correction.inventory()
+            except BaseException as error:
+                broker.correction.cleanup_unknown = True
+                receipt["correction_binding_failure_class"] = type(error).__name__
+            receipt["corrections"] = {"cleanup_unknown": broker.correction.cleanup_unknown,
+                "verdicts": broker.correction.verdicts, "archives": broker.correction.archives,
+                "result_bindings": broker.bindings.bindings, "prior_fit_history": broker.prior_history, "groups_emitted": broker.group_index}
         if receipt["status"] in {"native_succeeded_pending_cleanup", "native_failed_pending_cleanup"}:
-            terminal = (receipt["broker_stopped"] and receipt.get("broker_shutdown_returned", True)
+            terminal = ((broker.correction is None or not broker.correction.cleanup_unknown) and receipt["broker_stopped"] and receipt.get("broker_shutdown_returned", True)
                 and "broker_close_failure_class" not in receipt and receipt.get("process_cleanup", {}).get("direct_child_terminal") is True)
             if terminal:
                 try:
