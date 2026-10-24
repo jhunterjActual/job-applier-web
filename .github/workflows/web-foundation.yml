@@ -55,6 +55,9 @@ jobs:
           CAREERTRELLIS_DATA_DIR: ${{ runner.temp }}/careertrellis-account-erasure
           CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED: "false"
         run: python account_erasure_worker.py --once
+      - name: Verify CT normal-route controller seam
+        working-directory: ${{ github.workspace }}/scripts/value_evaluation
+        run: python -B -m unittest -v test_study_ct
       - name: Check deployment shell syntax
         working-directory: ${{ github.workspace }}
         run: bash -n deploy/scripts/*.sh
