@@ -34,12 +34,12 @@ Run these commands from the repository root:
 - Create hosted pull requests only in `job-applier-web`, with base `main` and the exact pushed `web` branch as compare. Before submission, verify the GitHub repository breadcrumb, expected commit count, expected changed-file count, and branch names. An unexpectedly large comparison or a `job-applier` breadcrumb is a hard stop: do not submit the PR or allow checks to run.
 - If a branch is mistakenly pushed to `origin`, do not create a PR there. First verify that the exact commit remains locally and has been pushed to `web`, confirm no legacy-repository PR was created, then remove only the exact mistaken remote branch under separately confirmed cleanup authority. Do not delete or rewrite any other branch.
 
-## Deployment-first pull-request workflow
+## Review-first pull-request workflow
 
-- A successful deployment and live verification of the exact change set must occur before opening a draft pull request for it.
-- Local commits may be created before deployment, but do not publish them as a new pull request or add them to an existing pull request until that exact commit has been successfully deployed and live-verified.
-- After a pull request exists, keep any later commits local until each has passed the same deployment and live-verification gate. Do not push those commits to the pull-request branch beforehand.
-- Deviate from this ordering only when the user explicitly authorizes the specific exception.
+- Deployment is not a prerequisite for creating or updating a draft pull request. Run applicable local checks and code reviews before pushing a focused change for review.
+- State the exact validated commit, local results, review findings, and any unperformed deployment or live checks in the pull-request description. Do not present local or CI results as live acceptance.
+- Deployment, activation, migration, and merge remain separate actions subject to their existing authorization and verification gates. Opening a draft pull request does not authorize any of them.
+- Later commits may be pushed after applicable local checks and review of the changed scope. Diagnose failures before pushing corrections, and preserve the existing requirement to conserve GitHub Actions.
 
 ## Interactive secret prompts
 
