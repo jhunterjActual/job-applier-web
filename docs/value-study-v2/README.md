@@ -160,3 +160,22 @@ Sources read: October 24 interview; October 19 PRODUCT_BACKLOG.md/ROADMAP.md;
 v1 protocol and synthetic source; October 23 architect-comparison-synthesis.md,
 architect-fit-review-rules.md, architect-up-v5.md, cost-final-checkpoint.json,
 paid-run ledgers, upstream-setup.json and conservative-cost-policy.json.
+
+## Funding proposal revision v3
+
+`COST_WORKSHEET_V3_NATIVE_HQ.md` explicitly supersedes the earlier v2 CT two-request/
+$2 full-packet proposal after identifying the normal uncached headquarters AI
+fallback. New proposal: CT full packet $3/three requests, 192 total maximum
+requests, $15.264 expected provider usage and unchanged $200 shared ceiling with
+$8 unassigned headroom. V2 remains retained unchanged. Neither version approves
+spending; obtain a new funding response bound to the revised reviewed freeze.
+
+## Owner funding decision v4
+
+`FUNDING_DECISION_V4.md` supersedes the proposed $200 allocation: the owner
+authorized only remaining existing credits, with the exact ceiling/evidence kept
+in the private freeze. V2/v3 are retained unchanged planning history. The broad
+v3 conservative envelope exceeds that private ceiling; actual complete-batch
+request arithmetic and final candidate/readiness/funding freeze approval remain
+required before any paid dispatch. Notify the owner at the cap; no automatic
+credit purchase or silent partial-study substitution is authorized.
