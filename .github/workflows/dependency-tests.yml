@@ -39,7 +39,7 @@ jobs:
       - name: Verify packages
         run: python -m pip check
       - name: Run P0 regressions
-        run: python -m unittest test_p0_regressions.py test_feedback.py test_feedback_browser.py test_caddy_feedback_ops.py test_backup_health.py test_pilot_acceptance.py test_pilot_acceptance_receipts.py test_search_runs.py test_scheduled_search_dispatch.py
+        run: python -m unittest test_p0_regressions.py test_smartrecruiters_metadata.py test_feedback.py test_feedback_browser.py test_caddy_feedback_ops.py test_backup_health.py test_pilot_acceptance.py test_pilot_acceptance_receipts.py test_search_runs.py test_scheduled_search_dispatch.py
       - name: Run private object-storage regressions
         run: python -m unittest test_object_store.py test_object_import.py test_stored_objects.py
       - name: Run evaluation budget controls
