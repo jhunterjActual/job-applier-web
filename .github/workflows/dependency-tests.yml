@@ -52,6 +52,9 @@ jobs:
         run: python -B -m unittest discover -s scripts -p test_document_quality.py
       - name: Run observability regressions
         run: python -m unittest test_observability.py
+      - name: Run evaluation evidence checks
+        working-directory: ${{ github.workspace }}
+        run: python -B -m unittest discover -s scripts -p test_value_evidence.py
       - name: Run search review regressions
         run: python -m unittest test_search_review.py test_role_plan_browser.py test_coverage_diagnostics.py test_search_completion_browser.py
       - name: Check Python syntax
