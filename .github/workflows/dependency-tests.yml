@@ -68,5 +68,8 @@ jobs:
         run: python -B -m unittest discover -s scripts -p test_study_readiness.py
       - name: Run search review regressions
         run: python -m unittest test_search_review.py test_role_plan_browser.py test_coverage_diagnostics.py test_search_completion_browser.py
+      - name: Verify CT normal-route controller seam
+        working-directory: ${{ github.workspace }}/scripts/value_evaluation
+        run: python -B -m unittest -v test_study_ct
       - name: Check Python syntax
         run: python -m compileall -q .
