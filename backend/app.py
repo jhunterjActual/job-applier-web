@@ -144,7 +144,7 @@ from searcher import (
     provider_for_url,
     validate_public_http_url,
 )
-from utils import generate_resume_pdf, resume_pdf_metadata
+from utils import PdfPageLimitError, generate_cover_letter_pdf, generate_resume_pdf, resume_pdf_metadata
 from lifecycle_repository import MAX_LIFECYCLE_NOTES_CHARS, runtime_lifecycle_repository
 from verification_repository import (
     VerificationTargetChanged,
@@ -2661,6 +2661,7 @@ def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
         "resume_download_url": f"/api/jobs/{job_id}/materials/resume",
         "resume_docx_download_url": f"/api/jobs/{job_id}/materials/resume.docx",
         "cover_letter_download_url": f"/api/jobs/{job_id}/materials/cover-letter",
+        "cover_letter_pdf_download_url": f"/api/jobs/{job_id}/materials/cover-letter.pdf",
         "manual_application_url": f"/api/jobs/{job_id}/apply-manually",
         "pdf_page_count": pdf_result["page_count"],
         "pdf_compact": pdf_result["compact"],
@@ -2706,6 +2707,7 @@ def get_tailored_details(job_id: int) -> dict:
             "resume_download_url": f"/api/jobs/{job_id}/materials/resume",
             "resume_docx_download_url": f"/api/jobs/{job_id}/materials/resume.docx",
             "cover_letter_download_url": f"/api/jobs/{job_id}/materials/cover-letter",
+            "cover_letter_pdf_download_url": f"/api/jobs/{job_id}/materials/cover-letter.pdf",
             "manual_application_url": f"/api/jobs/{job_id}/apply-manually",
         }
 
@@ -2743,6 +2745,7 @@ def get_tailored_details(job_id: int) -> dict:
             "resume_download_url": f"/api/jobs/{job_id}/materials/resume",
             "resume_docx_download_url": f"/api/jobs/{job_id}/materials/resume.docx",
             "cover_letter_download_url": f"/api/jobs/{job_id}/materials/cover-letter",
+            "cover_letter_pdf_download_url": f"/api/jobs/{job_id}/materials/cover-letter.pdf",
             "manual_application_url": f"/api/jobs/{job_id}/apply-manually",
         }
     return {"success": False, "message": "No tailored details found for this job."}
@@ -2912,6 +2915,7 @@ def _update_tailored_details(job_id: int, req: MaterialsUpdateRequest, operation
         "resume_download_url": f"/api/jobs/{job_id}/materials/resume",
         "resume_docx_download_url": f"/api/jobs/{job_id}/materials/resume.docx",
         "cover_letter_download_url": f"/api/jobs/{job_id}/materials/cover-letter",
+        "cover_letter_pdf_download_url": f"/api/jobs/{job_id}/materials/cover-letter.pdf",
     }
 
 def _application_materials(job_id: int):
@@ -3047,6 +3051,72 @@ def download_tailored_resume_docx(job_id: int) -> Response:
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/jobs/{job_id}/materials/cover-letter.pdf")
+def download_cover_letter_pdf(job_id: int) -> Response:
+    """Render the owner's saved cover letter as a real downloadable PDF."""
+    material = _application_materials(job_id)
+    shared = data_store_kind() == SHARED_DATA_STORE
+    if shared:
+        object_id = material["cover_letter_object_id"]
+        if not object_id:
+            raise HTTPException(status_code=404, detail="The generated cover letter is unavailable.")
+        try:
+            download = download_stored_object(current_owner_user_id(), object_id)
+            if download.content_type.split(";", 1)[0].strip() != "text/plain":
+                raise ValueError("Unexpected cover-letter object type.")
+            letter_text = download.content.decode("utf-8")
+        except StoredObjectNotFound as exc:
+            raise HTTPException(status_code=404, detail="The generated cover letter is unavailable.") from exc
+        except (
+            ObjectStoreBackendError, ObjectStoreConfigurationError,
+            ObjectStoreIntegrityError, SQLAlchemyError, ValueError,
+        ) as exc:
+            raise HTTPException(status_code=503, detail="The generated cover letter is temporarily unavailable.") from exc
+    else:
+        # The saved text is also used by the TXT download. Rendering never
+        # overwrites that source or changes application/submission state.
+        try:
+            path = resolve_output_file(material["cover_letter_path"], ".txt")
+        except (ValueError, FileNotFoundError):
+            letter_text = material["cover_letter"] or ""
+        else:
+            try:
+                letter_text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise HTTPException(status_code=503, detail="The generated cover letter is temporarily unavailable.") from exc
+    if not letter_text.strip():
+        raise HTTPException(status_code=404, detail="The generated cover letter is unavailable.")
+    company = material["company"] if shared else material["job_company"]
+    position = material["position"] if shared else material["job_title"]
+    filename = material_download_name(
+        company, position, "cover-letter", ".pdf", candidate_name=material["candidate_name"],
+    )
+    try:
+        with tempfile.TemporaryDirectory(prefix="careertrellis-cover-pdf-") as temporary_directory:
+            output_path = Path(temporary_directory) / "cover-letter.pdf"
+            generate_cover_letter_pdf(letter_text, str(output_path))
+            content = output_path.read_bytes()
+    except PdfPageLimitError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="The cover letter exceeds the one-page PDF limit. Shorten it, save your edits, and download again.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="The cover letter PDF is temporarily unavailable.") from exc
+    capture_event(
+        "material_downloaded",
+        {"result": "success", "source_category": source_category(material["job_source"]), "material_type": "cover_letter"},
+    )
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Cache-Control": "private, no-store, max-age=0",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
     )
 
 
