@@ -47,6 +47,9 @@ jobs:
         run: python -B -m unittest -v test_budget_guard test_ct_budget_transport
       - name: Run analytics regressions
         run: python -m unittest test_analytics.py
+      - name: Run final PDF byte diagnostics
+        working-directory: ${{ github.workspace }}
+        run: python -B -m unittest discover -s scripts -p test_document_quality.py
       - name: Run observability regressions
         run: python -m unittest test_observability.py
       - name: Run search review regressions
