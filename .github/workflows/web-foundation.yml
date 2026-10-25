@@ -31,7 +31,7 @@ jobs:
         run: python -m pip check
       - name: Run evaluation budget controls
         working-directory: ${{ github.workspace }}/scripts/value_evaluation
-        run: python -B -m unittest -v test_budget_guard test_ct_budget_transport test_campaign_state test_campaign_v2
+        run: python -B -m unittest -v test_budget_guard test_ct_budget_transport test_campaign_state test_campaign_v2 test_native_cost_envelope test_campaign_transport test_ct_campaign_opener
       - name: Run regressions
         run: python -m unittest test_p0_regressions.py test_feedback.py test_feedback_browser.py test_caddy_feedback_ops.py test_account_choice.py test_backup_health.py test_pilot_acceptance.py test_pilot_acceptance_receipts.py test_search_runs.py test_scheduled_search_dispatch.py test_role_queries.py test_title_compatibility_audit.py test_managed_search_reporting.py test_discovery_sources.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_generated_materials.py test_dependent_job_deletion.py test_dependent_bulk_cleanup.py test_postgres_cutover_routes.py test_cutover_rehearsal.py test_final_cutover_coordinator.py test_generated_object_recovery.py test_generated_object_capture.py test_generated_object_phases.py test_analytics.py test_observability.py
       - name: Run search review regressions
