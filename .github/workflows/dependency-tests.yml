@@ -44,7 +44,7 @@ jobs:
         run: python -m unittest test_object_store.py test_object_import.py test_stored_objects.py
       - name: Run evaluation budget controls
         working-directory: ${{ github.workspace }}/scripts/value_evaluation
-        run: python -B -m unittest -v test_budget_guard test_ct_budget_transport test_campaign_state test_study_upstream test_study_native_corrections test_campaign_v2
+        run: python -B -m unittest -v test_budget_guard test_ct_budget_transport test_campaign_state test_study_upstream test_study_native_corrections test_campaign_v2 test_native_cost_envelope test_campaign_transport test_ct_campaign_opener
       - name: Run analytics regressions
         run: python -m unittest test_analytics.py
       - name: Verify credential-link browser privacy
