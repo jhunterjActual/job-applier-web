@@ -4,7 +4,8 @@ One fsynced journal event admits a request and its dollar reservation together.
 Unknown outcomes freeze the campaign. Existing budget_guard ledgers are untouched.
 The private evidence directory must exclude untrusted/concurrent noncooperating writers.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from threading import RLock
 import hashlib
 import json
 import os
@@ -71,9 +72,15 @@ def _stage(value):
 
 
 def validate_policy(value):
-    _fields(value, "schema run_id frozen_content_sha256 mode approval_reference accounting_basis total_limit_usd packet_limits_usd stage_limits_usd request_limits order")
-    if value["schema"] != "study-campaign-policy-v1":
+    schema = value.get("schema") if isinstance(value, dict) else None
+    names = "schema run_id frozen_content_sha256 mode approval_reference accounting_basis total_limit_usd packet_limits_usd stage_limits_usd request_limits order"
+    if schema == "study-campaign-policy-v2":
+        names += " max_inflight_requests"
+    _fields(value, names)
+    if schema not in ("study-campaign-policy-v1", "study-campaign-policy-v2"):
         raise CampaignRefused("Unsupported campaign policy")
+    if schema == "study-campaign-policy-v2" and (type(value["max_inflight_requests"]) is not int or not 1 <= value["max_inflight_requests"] <= 4):
+        raise CampaignRefused("Explicit bounded concurrent request capacity required")
     _label(value["run_id"])
     if not isinstance(value["frozen_content_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["frozen_content_sha256"]):
         raise CampaignRefused("Frozen content digest required")
@@ -134,6 +141,9 @@ class Campaign:
         self.head = self.path.with_name(self.path.name + ".head")
         self.pending_head = self.path.with_name(self.path.name + ".head.pending")
         self.policy = validate_policy(policy)
+        self._concurrent = self.policy["schema"] == "study-campaign-policy-v2"
+        self._live_reservations = set()
+        self._thread_lock = RLock() if self._concurrent else nullcontext()
         if not self.path.parent.is_dir():
             raise CampaignRefused("Existing private evidence directory required")
         _regular(self.path)
@@ -142,32 +152,33 @@ class Campaign:
 
     @contextmanager
     def _lock(self):
-        _regular(self.path)
-        _regular(self.head)
-        _regular(self.pending_head)
-        if self.pending_head.exists():
-            raise CampaignRefused("Interrupted head update; preserve and reconcile")
-        lock = self.path.with_name(self.path.name + ".lock")
-        _regular(lock)
-        token = _canonical({"pid": os.getpid(), "owner": uuid4().hex})
-        try:
-            fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            raise CampaignRefused("Campaign lock exists; inspect owner, never clear by age") from None
-        identity = os.fstat(fd)
-        try:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(token)
-                stream.flush()
-                os.fsync(stream.fileno())
+        with self._thread_lock:
             _regular(self.path)
-            yield
-        finally:
+            _regular(self.head)
+            _regular(self.pending_head)
+            if self.pending_head.exists():
+                raise CampaignRefused("Interrupted head update; preserve and reconcile")
+            lock = self.path.with_name(self.path.name + ".lock")
             _regular(lock)
-            current = lock.stat()
-            if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino) or lock.read_bytes() != token:
-                raise CampaignRefused("Campaign lock owner changed; preserve for inspection")
-            lock.unlink()
+            token = _canonical({"pid": os.getpid(), "owner": uuid4().hex})
+            try:
+                fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                raise CampaignRefused("Campaign lock exists; inspect owner, never clear by age") from None
+            identity = os.fstat(fd)
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(token)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                _regular(self.path)
+                yield
+            finally:
+                _regular(lock)
+                current = lock.stat()
+                if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino) or lock.read_bytes() != token:
+                    raise CampaignRefused("Campaign lock owner changed; preserve for inspection")
+                lock.unlink()
 
     @classmethod
     def create(cls, path, policy):
@@ -265,7 +276,9 @@ class Campaign:
             _label(value["call_id"])
             _reference(value["evidence"])
             amount = _money(value["amount_usd"])
-            if state["halted"] or self._pending(state) or value["call_id"] in state["calls"] or amount <= 0:
+            capacity = self.policy["max_inflight_requests"] if self._concurrent else 1
+            pending = sum(call["status"] != "settled" for call in state["calls"].values())
+            if state["halted"] or pending >= capacity or value["call_id"] in state["calls"] or amount <= 0:
                 raise CampaignRefused("Dispatch reservation refused")
             if stage["stage"] == "materials" and state["completed"].get((stage["product"], stage["case"], "fit")) != "succeeded":
                 raise CampaignRefused("Materials require successful fit")
@@ -310,6 +323,12 @@ class Campaign:
     def _append(self, event, payload):
         with self._lock():
             state, sequence, previous = self._read()
+            # Admission-only liveness guard: historical replay never reconstructs it.
+            if self._concurrent and event == "reserve" and any(
+                call["status"] != "settled" and call_id not in self._live_reservations
+                for call_id, call in state["calls"].items()
+            ):
+                raise CampaignRefused("Unresolved reservation belongs to another or reopened handle")
             self._apply(state, event, payload)
             if sequence >= MAX_EVENTS:
                 raise CampaignRefused("Campaign event bound exceeded")
@@ -319,6 +338,8 @@ class Campaign:
             with self.path.open("ab") as stream:
                 self._write(stream, sequence, previous, event, payload)
             self._write_head(sequence + 1, hashlib.sha256(encoded).hexdigest())
+            if self._concurrent and event == "reserve":
+                self._live_reservations.add(payload["call_id"])
 
     def snapshot(self):
         with self._lock():
