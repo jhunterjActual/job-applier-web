@@ -208,6 +208,97 @@ class NativeLifecycleTests(unittest.TestCase):
         spawn.assert_not_called()
 
 
+class ReconciliationTests(unittest.TestCase):
+    def evidence(self):
+        current = plans.plan(LABEL, 'a' * 64, 'b' * 64, 'c' * 32, 20000000, attempt=2)
+        old = prepared()
+        # A historical immutable plan is not reconstructed against new code.
+        # Model the accepted old shape and different original startup settings.
+        for field in ('attempt', 'owner_unit', 'native_plan_path', 'web_preflight_path',
+                      'native_intent_path', 'prior_reconciliation_path'):
+            old.pop(field)
+        old['start'] = old['start'] + ['historical-public-plan-byte-binding']
+        owner = {'pid': 222, 'start_ticks': 333, 'process_group': 222,
+                 'boot_id': '01234567-89ab-cdef-0123-456789abcdef'}
+        ownership = {'schema': 'careertrellis.native-local-restore-ownership/v1',
+                     'owner': owner, 'plan': old, 'plan_sha256': plans.digest(old),
+                     'root_identity': [1, 2], 'download_receipt_sha256': 'd' * 64,
+                     'web_preflight_sha256': 'e' * 64}
+        intent = {'schema': 'careertrellis.native-local-restore-intent/v1', 'owner': owner,
+                  'plan_sha256': plans.digest(old), 'observed_at': '2026-10-26T22:30:00Z'}
+        ownership_raw, intent_raw = plans.canonical(ownership), plans.canonical(intent)
+        proof = {'schema': 'careertrellis.onedrive-native-reconciliation/v1',
+                 'transaction': current['transaction'], 'prior_attempt': 1, 'next_attempt': 2,
+                 'archive_sha256': current['archive_sha256'], 'prior_plan_sha256': plans.digest(old),
+                 'prior_owner': owner, 'prior_ownership_sha256': hashlib.sha256(ownership_raw).hexdigest(),
+                 'prior_intent_sha256': hashlib.sha256(intent_raw).hexdigest(),
+                 'prior_terminal': True, 'prior_cgroup_empty': True,
+                 'no_restore_dispatch': True, 'no_postmaster': True,
+                 'observed_at': '2026-10-26T22:59:00Z'}
+        return current, proof, ownership_raw, intent_raw
+
+    def test_fresh_proof_binds_historical_bytes_without_reconstructing_them(self):
+        current, proof, ownership, intent = self.evidence()
+        checked = native.validate_reconciliation(plans.canonical(proof), ownership, intent,
+            current, dt.datetime(2026, 10, 26, 23, tzinfo=dt.timezone.utc))
+        self.assertEqual(checked['proof_sha256'], hashlib.sha256(plans.canonical(proof)).hexdigest())
+        self.assertEqual(checked['prior_root_identity'], [1, 2])
+
+    def test_false_missing_stale_mismatched_or_unbound_proof_refuses(self):
+        mutations = [lambda p: p.update(prior_terminal=False),
+                     lambda p: p.update(prior_cgroup_empty=False),
+                     lambda p: p.update(no_restore_dispatch=False),
+                     lambda p: p.update(no_postmaster=False),
+                     lambda p: p.update(no_postmaster=1),
+                     lambda p: p.pop('no_restore_dispatch'),
+                     lambda p: p.update(next_attempt=3),
+                     lambda p: p.update(prior_attempt=True),
+                     lambda p: p.update(archive_sha256='f' * 64),
+                     lambda p: p.update(prior_plan_sha256='f' * 64),
+                     lambda p: p.update(prior_intent_sha256='f' * 64),
+                     lambda p: p.update(prior_ownership_sha256='f' * 64),
+                     lambda p: p.update(prior_owner=dict(p['prior_owner'], start_ticks=1)),
+                     lambda p: p.update(observed_at='2026-10-26T22:44:59Z'),
+                     lambda p: p.update(observed_at='2026-10-26T23:00:01Z')]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                current, proof, ownership, intent = self.evidence(); mutate(proof)
+                with self.assertRaises(native.NativeRefused):
+                    native.validate_reconciliation(plans.canonical(proof), ownership, intent,
+                        current, dt.datetime(2026, 10, 26, 23, tzinfo=dt.timezone.utc))
+
+    def test_missing_proof_performs_no_command_or_new_attempt_write(self):
+        current, _proof, _ownership, _intent = self.evidence()
+        instance = native.Native.__new__(native.Native); instance.plan = current
+        instance.capture = unittest.mock.Mock(); instance.event = unittest.mock.Mock()
+        with patch.object(native, 'protected', side_effect=FileNotFoundError):
+            with self.assertRaises(FileNotFoundError): instance.reconcile_prior_attempt()
+        instance.capture.assert_not_called(); instance.event.assert_not_called()
+
+    def test_prior_unit_activity_refuses_despite_claimed_terminal_proof(self):
+        current, proof, ownership, intent = self.evidence()
+        proof['observed_at'] = dt.datetime.now(dt.timezone.utc).isoformat()
+        instance = native.Native.__new__(native.Native); instance.plan = current
+        instance.owner = {'boot_id': proof['prior_owner']['boot_id']}
+        instance.account = SimpleNamespace(pw_uid=1000)
+        instance.capture = unittest.mock.Mock(return_value=(
+            b'ActiveState=active\nMainPID=222\nControlPID=0\nJob=\nControlGroup=\n'))
+        instance.event = unittest.mock.Mock()
+        old_root, _unit, intent_path = native.prior_paths(current)
+        values = {Path(current['prior_reconciliation_path']): plans.canonical(proof),
+                  old_root / 'ownership.json': ownership, intent_path: intent}
+        with patch.object(native, 'protected', side_effect=lambda path, **_: values[Path(path)]), \
+                patch.object(Path, 'lstat', return_value=SimpleNamespace(st_dev=1, st_ino=2)), \
+                patch.object(Path, 'iterdir', return_value=iter(())), \
+                patch.object(native, 'directory'), \
+                patch.object(native.os.path, 'lexists', return_value=False), \
+                patch.object(native, 'process_identity', side_effect=FileNotFoundError):
+            with self.assertRaisesRegex(native.NativeRefused, '^prior_unit_not_terminal$'):
+                instance.reconcile_prior_attempt()
+        instance.event.assert_not_called()
+        self.assertEqual(instance.capture.call_count, 1)
+
+
 ROOT_POSIX = hasattr(os, 'geteuid') and os.geteuid() == 0 and hasattr(os, 'O_NOFOLLOW')
 
 

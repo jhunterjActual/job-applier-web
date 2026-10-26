@@ -192,6 +192,76 @@ def validate_control(fields):
          and int(fields['Database system identifier']) > 0, 'restored_control_refused')
 
 
+def prior_paths(plan):
+    prior = plan['attempt'] - 1
+    suffix = '' if prior == 1 else '-%02d' % prior
+    root = Path(plans.RESTORE_ROOT) / (plan['transaction'] + suffix)
+    return root, ('careertrellis-onedrive-bundle-restore-' + plan['transaction'] + suffix + '.service'), \
+        Path(plan['transaction_root']) / ('native-restore' + suffix + '-intent.json')
+
+
+def validate_reconciliation(raw, ownership_raw, intent_raw, plan, now=None):
+    """Bind a fresh, terminal pre-restore attempt; never authorize a replay.
+
+    Historical plans are hashed exactly as recorded, not reconstructed using a
+    newer command set. Only failures before any restore dispatch qualify here.
+    Failures after restore/start need a separately reviewed recovery contract.
+    """
+    plans.validate_plan(plan)
+    need(plan['attempt'] > 1, 'reconciliation_not_applicable')
+    proof = decode(raw); ownership = decode(ownership_raw); intent = decode(intent_raw)
+    expected = {'schema', 'transaction', 'prior_attempt', 'next_attempt', 'archive_sha256',
+                'prior_plan_sha256', 'prior_owner', 'prior_ownership_sha256', 'prior_intent_sha256',
+                'prior_terminal', 'prior_cgroup_empty', 'no_restore_dispatch', 'no_postmaster', 'observed_at'}
+    need(type(proof) is dict and set(proof) == expected, 'prior_reconciliation_refused')
+    need(proof['schema'] == 'careertrellis.onedrive-native-reconciliation/v1'
+         and proof['transaction'] == plan['transaction'] and type(proof['prior_attempt']) is int
+         and proof['prior_attempt'] == plan['attempt'] - 1 and type(proof['next_attempt']) is int
+         and proof['next_attempt'] == plan['attempt'] and proof['archive_sha256'] == plan['archive_sha256'],
+         'prior_reconciliation_binding_mismatch')
+    for field in ('prior_terminal', 'prior_cgroup_empty', 'no_restore_dispatch', 'no_postmaster'):
+        need(proof[field] is True, 'prior_attempt_not_terminal')
+    need(proof['prior_ownership_sha256'] == hashlib.sha256(ownership_raw).hexdigest()
+         and proof['prior_intent_sha256'] == hashlib.sha256(intent_raw).hexdigest(),
+         'prior_evidence_digest_mismatch')
+    need(type(ownership) is dict and set(ownership) == {'schema', 'owner', 'plan', 'plan_sha256',
+         'root_identity', 'download_receipt_sha256', 'web_preflight_sha256'}, 'prior_ownership_refused')
+    need(ownership['schema'] == 'careertrellis.native-local-restore-ownership/v1')
+    old_plan = ownership['plan']; old_owner = ownership['owner']
+    need(type(old_plan) is dict and old_plan.get('execution_authorized') is False
+         and old_plan.get('attempt', 1) == proof['prior_attempt'])
+    old_root, _unit, _intent = prior_paths(plan)
+    need(old_plan.get('attempt_root') == old_root.as_posix()
+         and old_plan.get('data_root') == (old_root / 'data').as_posix())
+    for field in ('transaction', 'archive_sha256', 'generation_sha256', 'backup_label', 'transaction_root'):
+        need(old_plan.get(field) == plan[field], 'prior_plan_binding_mismatch')
+    need(proof['prior_plan_sha256'] == ownership['plan_sha256'] == plans.digest(old_plan),
+         'prior_plan_digest_mismatch')
+    need(type(old_owner) is dict and set(old_owner) == {'pid', 'start_ticks', 'process_group', 'boot_id'}
+         and old_owner == proof['prior_owner'], 'prior_owner_binding_mismatch')
+    need(all(type(old_owner[field]) is int and old_owner[field] > 0
+             for field in ('pid', 'start_ticks', 'process_group'))
+         and type(old_owner['boot_id']) is str and re.fullmatch(
+             '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', old_owner['boot_id']))
+    need(type(intent) is dict and set(intent) in (
+        {'schema', 'owner', 'plan_sha256', 'observed_at'},
+        {'schema', 'owner', 'plan_sha256', 'observed_at', 'attempt'}))
+    need(intent['schema'] == 'careertrellis.native-local-restore-intent/v1'
+         and intent['owner'] == old_owner and intent.get('attempt', 1) == proof['prior_attempt']
+         and intent['plan_sha256'] == proof['prior_plan_sha256'], 'prior_intent_binding_mismatch')
+    need(type(ownership['root_identity']) is list and len(ownership['root_identity']) >= 2
+         and all(type(item) is int for item in ownership['root_identity'][:2]))
+    try:
+        observed = dt.datetime.fromisoformat(proof['observed_at'].replace('Z', '+00:00'))
+        current = now if now is not None else dt.datetime.now(dt.timezone.utc)
+        need(observed.utcoffset() == dt.timedelta(0)
+             and 0 <= (current - observed).total_seconds() <= 900, 'prior_reconciliation_stale')
+    except (ValueError, TypeError, AttributeError):
+        raise NativeRefused('prior_reconciliation_stale') from None
+    return {'proof_sha256': hashlib.sha256(raw).hexdigest(), 'prior_owner': old_owner,
+            'prior_root_identity': ownership['root_identity'][:2]}
+
+
 class Native:
     def __init__(self, plan, web_preflight):
         plans.validate_plan(plan)
@@ -207,9 +277,10 @@ class Native:
         self.account = postgres_account(); self.started = time.monotonic()
         self.owner = process_identity(os.getpid())
         self.web_path = Path(web_preflight)
-        need(self.web_path == self.transaction / 'web-preflight.json', 'web_preflight_path_refused')
-        self.unit = 'careertrellis-onedrive-bundle-restore-' + plan['transaction'] + '.service'
+        need(self.web_path == Path(plan['web_preflight_path']), 'web_preflight_path_refused')
+        self.unit = plan['owner_unit']
         self.group = '/system.slice/' + self.unit
+        self.reconciliation = None
 
     def event(self, name, value):
         need(re.fullmatch('[a-z0-9-]+', name))
@@ -360,6 +431,8 @@ class Native:
         directory(self.transaction)
         need(stat.S_IMODE(self.transaction.lstat().st_mode) == 0o700, 'transaction_not_private')
         need(not os.path.lexists(self.root), 'restore_attempt_already_exists')
+        need(protected(Path(self.plan['native_plan_path']), maximum=131072) == plans.canonical(self.plan),
+             'native_plan_file_mismatch')
         directory(self.root.parent.parent)
         if os.path.lexists(self.root.parent):
             directory(self.root.parent)
@@ -375,6 +448,7 @@ class Native:
         config_path = Path(plans.CONFIG)
         self.config = protected(config_path, maximum=131072, modes=(0o640,), gids=(self.account.pw_gid,))
         configuration(self.config)
+        self.reconcile_prior_attempt()
         includes = Path('/etc/pgbackrest/conf.d')
         if os.path.lexists(includes): directory(includes); need(not list(includes.iterdir()), 'configuration_includes_present')
         self.web_raw = protected(self.web_path, maximum=16384)
@@ -398,6 +472,40 @@ class Native:
         self.download_raw = protected(self.transaction / 'downloaded-receipt.json', maximum=16384)
         validate_download(decode(self.download_raw), self.manifest, self.plan)
         self.verify_repository()
+
+    def reconcile_prior_attempt(self):
+        if self.plan['attempt'] == 1: return
+        old_root, old_unit, old_intent = prior_paths(self.plan)
+        proof = protected(Path(self.plan['prior_reconciliation_path']), maximum=16384)
+        ownership = protected(old_root / 'ownership.json', maximum=131072)
+        intent = protected(old_intent, maximum=16384)
+        checked = validate_reconciliation(proof, ownership, intent, self.plan)
+        meta = old_root.lstat()
+        need([meta.st_dev, meta.st_ino] == checked['prior_root_identity'], 'prior_root_identity_changed')
+        prior_owner = checked['prior_owner']
+        if prior_owner['boot_id'] == self.owner['boot_id']:
+            try:
+                current = process_identity(prior_owner['pid'])
+                need(current['start_ticks'] != prior_owner['start_ticks'], 'prior_owner_still_alive')
+            except (FileNotFoundError, ProcessLookupError):
+                pass
+        for name in ('restore-intent.json', 'restore-dispatch.json', 'restore-terminal.json',
+                     'start-intent.json', 'start-dispatch.json', 'postmaster.json', 'data/postmaster.pid'):
+            need(not os.path.lexists(old_root / name), 'prior_restore_requires_separate_recovery')
+        old_data = old_root / 'data'; directory(old_data, task_root=old_root, postgres_uid=self.account.pw_uid)
+        need(not list(itertools.islice(old_data.iterdir(), 1)), 'prior_data_not_empty')
+        raw = self.capture(['/usr/bin/systemctl', 'show', old_unit,
+                            '--property=ActiveState,MainPID,ControlPID,Job,ControlGroup'])
+        state = dict(line.split('=', 1) for line in raw.decode().splitlines())
+        need(state.get('ActiveState') in ('inactive', 'failed') and state.get('MainPID') == '0'
+             and state.get('ControlPID') == '0' and state.get('Job') == '', 'prior_unit_not_terminal')
+        group = '/system.slice/' + old_unit
+        need(state.get('ControlGroup') in ('', group), 'prior_cgroup_mismatch')
+        cgroup = Path('/sys/fs/cgroup') / group.lstrip('/')
+        if cgroup.exists():
+            files = list(itertools.islice(cgroup.rglob('cgroup.procs'), 65)); need(len(files) <= 64)
+            need(all(not path.read_text().strip() for path in files), 'prior_cgroup_not_empty')
+        self.reconciliation = checked['proof_sha256']
 
     def verify_repository(self):
         need(protected(self.transaction / 'downloaded-manifest.json', maximum=bundle.MAX_MANIFEST) == self.manifest_raw)
@@ -428,9 +536,10 @@ class Native:
     def prepare_permissions(self):
         # A new, separately owned acceptance root receives a verified encrypted
         # copy. Never widen the existing private hydration/download namespace.
-        exclusive(self.transaction / 'native-restore-intent.json', plans.canonical({
+        exclusive(Path(self.plan['native_intent_path']), plans.canonical({
             'schema': 'careertrellis.native-local-restore-intent/v1', 'owner': self.owner,
-            'plan_sha256': plans.digest(self.plan), 'observed_at': dt.datetime.now(dt.timezone.utc).isoformat()}))
+            'plan_sha256': plans.digest(self.plan), 'attempt': self.plan['attempt'],
+            'observed_at': dt.datetime.now(dt.timezone.utc).isoformat()}))
         if not os.path.lexists(self.root.parent):
             self.root.parent.mkdir(mode=0o700)
             os.chown(self.root.parent, 0, self.account.pw_gid); os.chmod(self.root.parent, 0o710)
@@ -448,6 +557,9 @@ class Native:
             'root_identity': list(identity(self.root.lstat())),
             'download_receipt_sha256': hashlib.sha256(self.download_raw).hexdigest(),
             'web_preflight_sha256': hashlib.sha256(self.web_raw).hexdigest()})
+        if self.reconciliation is not None:
+            self.event('prior-reconciliation', {'schema': 'careertrellis.native-local-restore-prior-proof/v1',
+                'attempt': self.plan['attempt'], 'proof_sha256': self.reconciliation})
         root = Path(self.plan['repository_root']); root.mkdir(mode=0o700)
         fsync_directory(root)
         fsync_directory(self.root)
@@ -616,6 +728,7 @@ class Native:
 
     def restore(self):
         self.preflight(); self.lock(); self.observe(); self.verify_repository()
+        self.reconcile_prior_attempt()
         self.old_umask = os.umask(0o077)
         self.prepare_permissions(); self.verify_repository()
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -637,9 +750,11 @@ class Native:
         self.verify_repository()
         self.configuration_unchanged()
         receipt = {'schema': 'careertrellis.onedrive-native-local-restore/v1', 'result': 'verified',
-            'transaction': self.plan['transaction'], 'archive_sha256': self.plan['archive_sha256'],
+            'transaction': self.plan['transaction'], 'attempt': self.plan['attempt'],
+            'archive_sha256': self.plan['archive_sha256'],
             'generation_sha256': self.plan['generation_sha256'], 'backup_label': self.plan['backup_label'],
             'plan_sha256': plans.digest(self.plan), 'download_receipt_sha256': hashlib.sha256(self.download_raw).hexdigest(),
+            'prior_reconciliation_sha256': self.reconciliation,
             'native_restore_accepted': True, 'postmaster_terminal': True, 'checksums_verified': True,
             'cleanup_performed': False, 'elapsed_seconds': round(time.monotonic() - self.started, 3),
             'completed_at': dt.datetime.now(dt.timezone.utc).isoformat()}
