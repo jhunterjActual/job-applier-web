@@ -37,6 +37,29 @@ class Fake:
 
 
 class PublishTests(unittest.TestCase):
+    def test_collected_hydrator_requires_complete_journal_and_independent_terminal_proof(self):
+        state = {"LoadState": "not-found", "ActiveState": "inactive", "MainPID": "0",
+            "ControlPID": "0", "Job": "", "Result": "success", "ExecMainStatus": "0",
+            "ExecMainPID": "0", "ControlGroup": ""}
+        intent = {"pid": 123, "process_start_ticks": 456, "boot_id": "synthetic-boot"}
+        args = dict(journal_complete=True, current_boot="synthetic-boot",
+                    original_pid=None, original_cgroup_empty=True)
+        self.assertTrue(publish.hydrator_terminal(state, intent, **args))
+        for change in ({"journal_complete": False}, {"current_boot": "new-boot"},
+                       {"original_pid": {"pid": 123, "process_start_ticks": 456}},
+                       {"original_pid": {"pid": 123, "process_start_ticks": 999}},
+                       {"original_cgroup_empty": False}):
+            with self.subTest(change=change), self.assertRaises(publish.PublishError):
+                publish.hydrator_terminal(state, intent, **dict(args, **change))
+        for change in ({"Result": "failed"}, {"ActiveState": "failed"},
+                       {"ExecMainPID": "123"}, {"ControlGroup": "/nonempty"}):
+            with self.subTest(change=change), self.assertRaises(publish.PublishError):
+                publish.hydrator_terminal(dict(state, **change), intent, **args)
+        loaded = dict(state, LoadState="loaded", ExecMainPID="123")
+        self.assertTrue(publish.hydrator_terminal(loaded, intent, **args))
+        with self.assertRaises(publish.PublishError):
+            publish.hydrator_terminal(dict(loaded, ExecMainPID="124"), intent, **args)
+
     def test_success_requires_download_and_never_claims_native_restore(self):
         backend = Fake(); value = publish.publish("a"*32, backend)
         self.assertFalse(value["native_restore_accepted"])

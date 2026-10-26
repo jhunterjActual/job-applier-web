@@ -106,6 +106,30 @@ def private_json(path):
     return value
 
 
+def hydrator_terminal(state, intent, *, journal_complete, current_boot,
+                      original_pid, original_cgroup_empty):
+    """Accept collected transient units only with independent durable proof.
+
+    `original_pid` is None only when /proc proves that PID absent. Any live or
+    reused PID refuses. The original exact cgroup must independently be empty or
+    absent; an empty systemd property alone is never process-absence evidence.
+    """
+    need(journal_complete is True and original_cgroup_empty is True)
+    need(type(intent.get("pid")) is int and intent["pid"] > 0
+         and type(intent.get("process_start_ticks")) is int and intent["process_start_ticks"] > 0
+         and intent.get("boot_id") == current_boot and original_pid is None)
+    need(state.get("LoadState") in ("loaded", "not-found")
+         and state.get("ActiveState") == "inactive"
+         and state.get("MainPID") == state.get("ControlPID") == "0"
+         and state.get("Job") == "" and state.get("Result") == "success"
+         and state.get("ExecMainStatus") == "0")
+    if state["LoadState"] == "loaded":
+        need(state.get("ExecMainPID") == str(intent["pid"]))
+    else:
+        need(state.get("ExecMainPID") == "0" and state.get("ControlGroup") == "")
+    return True
+
+
 def pg_config():
     """Fixed protected PG config permits its reviewed root:postgres 0640 mode."""
     import grp
@@ -199,20 +223,30 @@ class Native(hydrate.Native):
                  and status["process_start_ticks"] == intent["process_start_ticks"])
             unit = "careertrellis-onedrive-bundle-hydrate-" + transaction + ".service"
             raw = hydrate.command(["/usr/bin/systemctl", "show", unit,
-                "--property=ActiveState,MainPID,ControlPID,Job,Result,ExecMainStatus,ExecMainPID,ControlGroup"],
+                "--property=LoadState,ActiveState,MainPID,ControlPID,Job,Result,ExecMainStatus,ExecMainPID,ControlGroup"],
                 output=True, timeout=10)
             state = dict(line.split("=", 1) for line in raw.decode().splitlines())
-            need(state["ActiveState"] == "inactive" and state["MainPID"] == state["ControlPID"] == "0"
-                 and state["Job"] == "" and state["Result"] == "success" and state["ExecMainStatus"] == "0"
-                 and state["ExecMainPID"] == str(intent["pid"]))
             group = state["ControlGroup"]
-            if group:
-                need(group == "/system.slice/" + unit)
-                cgroup = Path("/sys/fs/cgroup") / group.lstrip("/")
-                if cgroup.exists():
-                    import itertools
-                    groups = list(itertools.islice(cgroup.rglob("cgroup.procs"), 65))
-                    need(len(groups) <= 64 and all(not p.read_text().strip() for p in groups))
+            need(group in ("", "/system.slice/" + unit))
+            cgroup = Path("/sys/fs/cgroup/system.slice") / unit
+            cgroup_empty = True
+            if os.path.lexists(cgroup):
+                need(stat.S_ISDIR(cgroup.lstat().st_mode))
+                import itertools
+                groups = list(itertools.islice(cgroup.rglob("cgroup.procs"), 65))
+                need(0 < len(groups) <= 64 and cgroup / "cgroup.procs" in groups)
+                cgroup_empty = all(not p.read_text().strip() for p in groups)
+            need(type(intent.get("pid")) is int and intent["pid"] > 0)
+            process = Path("/proc") / str(intent["pid"])
+            original_pid = None
+            if os.path.lexists(process):
+                # Both the original invocation and a recycled PID refuse.
+                raw = (process / "stat").read_text()
+                original_pid = {"pid": intent["pid"],
+                    "process_start_ticks": int(raw.rsplit(") ", 1)[1].split()[19])}
+            hydrator_terminal(state, intent, journal_complete=True,
+                current_boot=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                original_pid=original_pid, original_cgroup_empty=cgroup_empty)
             result = status["result"]
             generation = private_json(root / "generation.json"); plan.validate_generation(generation)
             need(result["generation_sha256"] == hashlib.sha256(bundle.canonical(generation)).hexdigest()
