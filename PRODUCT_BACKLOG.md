@@ -1,86 +1,5 @@
 # Product Backlog
 
-## October 19 — product value and selective upstream adoption
-
-Owner: Hunter / CareerTrellis product and engineering. The
-[ai-job-search assessment](docs/AI_JOB_SEARCH_ASSESSMENT_20261019.md) recommends
-continuing CareerTrellis as a browser product, subject to evidence of useful search
-and application quality. A personal-use-only objective would favor trialing the
-upstream workflow instead. This is a product recommendation, not proof of market
-demand or a completed comparative trial.
-
-This section and [ROADMAP.md](ROADMAP.md) supersede the October 7 percentage
-allocations, balanced-track cadence, and next-selection order below. Preserve
-their historical evidence and all safety, recovery, and acceptance requirements.
-Active service/security/data/spend defects still preempt product work. Existing
-free-beta access is unchanged. Broad provider expansion (AI-005), billing and
-keyless-pilot implementation (MON-003 through MON-007), new portal campaigns,
-email synchronization and upskilling expansion wait for the product-value review.
-MON-001/002 cost planning and AI-001 usage evidence may support that review without
-activating spending. Finish narrowly necessary fixes and acceptance work rather
-than reopening completed slices.
-
-Task status remains canonical here; the roadmap is a sequencing view.
-
-- [ ] **VALUE-001 (P1): Compare usefulness before broad expansion.** Owner:
-  product/engineering. Reuse SEARCH-002 fixtures and AI-004 fact controls. Prepare
-  a common synthetic profile and 10–15 representative postings; compare factual
-  errors, relevance, PDF usability, human editing time, total latency and cost,
-  including failed/retried attempts. Evaluate discovery separately for identical
-  role/location/date windows, counting unique relevant active jobs, duplicates,
-  stale results and misses from an independently assembled reference. Observe a
-  small consenting target-user group completing setup through material download.
-  Fix the rubric and decision thresholds before execution; unknowns stay unknown.
-  Acceptance: versioned input/rubric, exact upstream revision and CareerTrellis
-  commit/configuration, comparable results with denominators, limitations, and an
-  owner-recorded continue/revise/stop decision. Real profiles, participant activity,
-  provider spending and live operations require their applicable authorization.
-  See the assessment for the protocol; no trial has been run.
-- [ ] **QUALITY-001 (P1): Add bounded application-material critique.** Owner:
-  AI/application engineering. Build on AI-001/004 and existing tailoring; provide
-  an optional review step with proposed edits and accept/reject controls. Check
-  factual claims against candidate evidence, separate style from factual issues,
-  preserve originals, bound cost/retries, and support cancellation. Acceptance:
-  synthetic altered dates, employers, credentials and metrics are flagged;
-  unsupported edits cannot silently enter approved materials; dismissal preserves
-  the original; total review cost/latency is measured. Model agreement is not
-  evidence. Begin with offline evaluation, not automatic extra provider calls.
-- [ ] **QUALITY-002 (P1): Verify final downloadable documents.** Owner:
-  document/application engineering. Inventory existing rendering/page-limit checks
-  first, then add missing extraction/layout checks on final output bytes. Assess
-  readable contact fields, text integrity/order, clipping, stranded headings and
-  excessive gaps. Preserve profession-specific and academic-CV rules. Acceptance:
-  synthetic broken/valid documents distinguish failures from skipped checks;
-  thresholds fit CareerTrellis templates; user-visible results never imply an ATS
-  guarantee. Compare upstream verify_pdf.py/verify_layout.py for selective reuse,
-  with pinned revision, tests and license notices before copying.
-- [ ] **QUALITY-003 (P2): Preserve application and interview continuity.** Owner:
-  application engineering. Extend existing tracking/interview preparation, using
-  exact submitted material versions and previous-round notes for stage-specific
-  preparation and optional follow-up drafts. Acceptance: later edits do not alter
-  the submission snapshot; suggestions cite their application context, remain
-  editable, and never send messages or infer outcomes automatically. Do not create
-  a competing tracker or require email integration.
-- [ ] **QUALITY-004 (P2): Add candidate-controlled writing preferences.** Owner:
-  product/AI engineering. Store a short editable voice guide and approved examples
-  separately from factual evidence. Acceptance: conflicting style guidance cannot
-  invent facts, preferences can be reset, and saved/reviewed documents remain
-  unchanged until explicit regeneration and approval. Avoid inferred personality
-  scoring and sensitive behavioral profiling.
-- [ ] **DOC-001 (P1, bounded): Reconcile current product documentation.** Owner:
-  maintainer. README mixes standalone-only data claims with hosted documentation;
-  root build metadata and recent release worktrees also differ. Acceptance:
-  clearly distinguish local and hosted storage/features, preserve historical
-  receipts, and bind any current deployed claim to fresh exact-release evidence.
-  Do not change version metadata or rewrite historical records to make them agree.
-
-SEARCH-004 should adopt evidence-backed fit dimensions and visible unknowns from
-the comparison, preserving the existing distinction between eligibility and
-preferences. Do not import speculative culture scores or generalized legal/work
-eligibility assumptions as automatic rejection rules. SEARCH-002/003/005 remain
-the search-quality foundation; AI-004 remains the model-quality evaluation owner.
-These additions extend those items rather than replacing their open acceptance.
-
 ## October 14 — referrer-policy regression maintenance
 
 - [ ] **MAINT-REFERRER-001 (P1): Keep authentication referrer checks compatible with public feedback.**
@@ -102,8 +21,7 @@ These additions extend those items rather than replacing their open acceptance.
 
 Owner: Hunter / CareerTrellis product and engineering. Review after each delivery
 cycle using search-quality, provider-reliability and activation/cost evidence.
-The October 19 section supersedes this section's delivery order and allocations.
-This section records the October 7 ordering of unfinished work; it superseded older
+This section is the current ordering of unfinished work; it supersedes older
 P0–P3 placement and launch-blocker wording below, while preserving their evidence,
 acceptance limits and explicit deferrals. Items remain unchecked until their full
 acceptance is met; completed slices are recorded separately. Planning does not

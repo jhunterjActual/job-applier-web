@@ -3,9 +3,6 @@
 *Find, tailor, track, and prepare—on your terms.*
 
 See [PRODUCT_BACKLOG.md](PRODUCT_BACKLOG.md) for the consolidated implementation and product roadmap.
-See [Product storage boundaries](docs/PRODUCT_STORAGE_BOUNDARIES.md) for the difference between standalone local storage and the hosted service, provider data transfers, and recovery responsibilities.
-See [ROADMAP.md](ROADMAP.md) for the current delivery sequence and continuation decision criteria.
-See [the ai-job-search assessment](docs/AI_JOB_SEARCH_ASSESSMENT_20261019.md) for the comparison, selective reuse recommendations, and evaluation plan.
 See [BRAND_NAMING.md](BRAND_NAMING.md) for the working-name rationale, voice guardrails, and pre-launch clearance checklist.
 See [PROVIDER_FAILURE_REPORTING.md](PROVIDER_FAILURE_REPORTING.md) for the review-before-sharing diagnostic-report contract and privacy boundary.
 See [docs/STAGE_1_DEPLOYMENT.md](docs/STAGE_1_DEPLOYMENT.md) for the access-restricted `staging-app.jhunterj.com` Linux deployment foundation in the web edition.
@@ -77,10 +74,8 @@ The application features a **FastAPI backend** that doubles as a static file ser
    - Provides explicit, recruiter-friendly Resume PDF and Cover Letter TXT downloads.
    - Opens the verified employer posting in a new tab; you complete the employer's form and then confirm the lifecycle state with **Mark Applied**.
 
-6. **Storage and Privacy**:
-   - Standalone local installations store profile details and saved API keys in SQLite (`data/jobapplier.db` by default), with generated files in the local output directory. Protect that workspace and its backups as private data.
-   - Shared-host installations use owner-scoped PostgreSQL records, encrypted provider credentials, and private encrypted object storage for generated materials. Hosted storage is on the service's infrastructure.
-   - AI and discovery features send their required inputs to the selected external providers. See [Product storage boundaries](docs/PRODUCT_STORAGE_BOUNDARIES.md) for those transfers and the separate local/hosted recovery contracts.
+6. **Local Security**:
+   - Stored completely on your local machine. Profile details and private API keys stay in local SQLite (`data/jobapplier.db`), while generated PDF and TXT artifacts remain in the ignored local output directory.
 
 7. **Practical Job Filters**:
    - Narrows the saved-job list by pay or contract rate, employment type, remote/hybrid/on-site arrangement, shift and on-call expectations, travel, sponsorship, clearance, professional license, and physical/outdoor work signals.
@@ -90,18 +85,18 @@ The application features a **FastAPI backend** that doubles as a static file ser
    - Stores skills, projects, portfolio links, licenses, certifications, and work samples with each named base resume, including its non-destructive version history.
    - Provides guidance for each resume mode and sends only the candidate's entered evidence to the selected AI provider during user-triggered tailoring. Missing issuers, dates, outcomes, metrics, or credential status must not be inferred.
 
-9. **Application Effectiveness Insights**:
+9. **Local Application Effectiveness Insights**:
    - Summarizes confirmed applications, employer responses, interviews, offers, rejections, response rates, and recorded response timing directly on the dashboard.
    - Breaks outcomes down by job source, role, location, source resume version, and application method without sending application history to an analytics or AI provider. Percentages from small samples are explicitly presented as directional rather than predictive.
 
 10. **Interview Preparation Workspace**:
-   - Opens an editable preparation plan from Application Logs with company-research prompts, likely questions, truthful STAR-story planning, questions for the hiring team, logistics, and follow-up notes.
+   - Opens a local, editable preparation plan from Application Logs with company-research prompts, likely questions, truthful STAR-story planning, questions for the hiring team, logistics, and follow-up notes.
    - Provides a useful local starter without an AI call. An explicit **Generate with AI** action can replace it with a grounded draft using the selected provider and saved job/application context, with a Stop action before the generated draft is committed.
-   - Saves reviewed notes in the selected installation's data store and supports safely named text downloads and print-friendly output.
+   - Saves reviewed notes locally and supports safely named text downloads and print-friendly output.
 
 11. **People & Application-Step Tracking**:
    - Tracks recruiters, hiring managers, referrals, networking contacts, and assessments beside each saved application without requiring email or calendar access.
-   - Records status, contact or reference details, activity and next-action dates, and notes. Records appear in the human-readable data export. Local installations include them in encrypted workspace backups; hosted recovery follows the operator-managed PostgreSQL/object-store policy.
+   - Records status, contact or reference details, activity and next-action dates, and notes. Records stay local, appear in the human-readable data export, and are preserved by encrypted full backups.
 
 12. **Accessible, Responsive Workspace**:
    - Supports skip navigation, keyboard-operated workspace and material tabs, visible focus, focus-trapped dialogs with opener restoration, screen-reader status announcements, labeled tables, and reduced-motion preferences.
@@ -116,15 +111,11 @@ The application features a **FastAPI backend** that doubles as a static file ser
 ## 🛠️ Architecture
 
 * **Frontend**: Vanilla HTML5, Vanilla CSS3 (custom dark-mode grid design, glassmorphic cards, transition glows), and Vanilla ES6+ JavaScript.
-* **Backend**: FastAPI (Python), SQLite for standalone local workspaces or PostgreSQL with owner-scoped repositories for shared-host deployments, Playwright (scraping and browser control), Cryptography for local backups and hosted secret/object encryption, and provider adapters for AI requests. See [Product storage boundaries](docs/PRODUCT_STORAGE_BOUNDARIES.md) for the mode-specific contracts.
+* **Backend**: FastAPI (Python), SQLite (database), Playwright (scraping and browser control), Cryptography for authenticated local backups, the `google-genai` SDK, and the OpenAI Responses REST API.
 
 ---
 
 ## 🚀 Getting Started
-
-These launch instructions start a standalone local installation. Hosted operators
-should use the deployment and authentication runbooks linked above; launching a
-local copy does not connect it to or restore the hosted service.
 
 ### Prerequisites
 * Python 3.10.2 or higher.
