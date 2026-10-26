@@ -38,6 +38,19 @@ jobs:
         run: python -m playwright install chromium
       - name: Verify packages
         run: python -m pip check
+      - name: Run offline Claude cache contracts
+        env:
+          CAREERTRELLIS_DATA_DIR: ${{ runner.temp }}/careertrellis-cache-tests
+          CAREERTRELLIS_ENVIRONMENT: local
+          CAREERTRELLIS_DATA_STORE: sqlite
+        run: python -B -m unittest test_ai_contracts test_claude_adapter test_claude_cache
+      - name: Run offline Claude cache receipt summaries
+        working-directory: ${{ github.workspace }}/scripts
+        env:
+          CAREERTRELLIS_DATA_DIR: ${{ runner.temp }}/careertrellis-cache-tests
+          CAREERTRELLIS_ENVIRONMENT: local
+          CAREERTRELLIS_DATA_STORE: sqlite
+        run: python -B -m unittest test_ai_usage_summary test_claude_cache_summary
       - name: Run P0 regressions
         run: python -m unittest test_p0_regressions.py test_smartrecruiters_metadata.py test_feedback.py test_feedback_browser.py test_caddy_feedback_ops.py test_caddy_hostname_privacy.py test_backup_health.py test_pilot_acceptance.py test_pilot_acceptance_receipts.py test_search_runs.py test_scheduled_search_dispatch.py
       - name: Run private object-storage regressions

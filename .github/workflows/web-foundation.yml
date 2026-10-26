@@ -29,6 +29,19 @@ jobs:
         run: python -m playwright install --with-deps chromium
       - name: Verify packages
         run: python -m pip check
+      - name: Run offline Claude cache contracts
+        env:
+          CAREERTRELLIS_DATA_DIR: ${{ runner.temp }}/careertrellis-cache-tests
+          CAREERTRELLIS_ENVIRONMENT: local
+          CAREERTRELLIS_DATA_STORE: sqlite
+        run: python -B -m unittest test_ai_contracts test_claude_adapter test_claude_cache
+      - name: Run offline Claude cache receipt summaries
+        working-directory: ${{ github.workspace }}/scripts
+        env:
+          CAREERTRELLIS_DATA_DIR: ${{ runner.temp }}/careertrellis-cache-tests
+          CAREERTRELLIS_ENVIRONMENT: local
+          CAREERTRELLIS_DATA_STORE: sqlite
+        run: python -B -m unittest test_ai_usage_summary test_claude_cache_summary
       - name: Run evaluation budget controls
         working-directory: ${{ github.workspace }}/scripts/value_evaluation
         run: python -B -m unittest -v test_budget_guard test_ct_budget_transport test_campaign_state test_study_upstream test_study_native_corrections test_campaign_v2 test_native_cost_envelope test_campaign_transport test_ct_campaign_opener
