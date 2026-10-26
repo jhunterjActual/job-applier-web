@@ -139,6 +139,7 @@ class Native:
         self.config = None
         self.fd = None
         self.sequence = 0
+        self.binary_identity = None
 
     def idle(self):
         listing = command(["/usr/bin/systemctl", "list-units", "--all", "--no-legend",
@@ -198,7 +199,9 @@ class Native:
 
     def preflight(self):
         os.umask(0o077)
-        need(hashlib.sha256(protected(plan.BINARY, limit=256 * 1024**2)[0]).hexdigest() == plan.BINARY_SHA256)
+        binary, observed = protected(plan.BINARY, limit=256 * 1024**2)
+        need(hashlib.sha256(binary).hexdigest() == plan.BINARY_SHA256)
+        self.binary_identity = observed
         self.config = protected(plan.CONFIG, 0o600)
         parser = configparser.ConfigParser(interpolation=None, strict=True)
         parser.read_string(self.config[0].decode("utf-8"))
@@ -239,6 +242,11 @@ class Native:
              and stat.S_IMODE(meta.st_mode) == 0o700)
         root = parent / transaction
         root.mkdir(mode=0o700)  # O_EXCL equivalent; existing attempts refuse.
+        parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
         self.root = root
         self.base = {"schema": "careertrellis.repository-hydration/v1",
             "transaction": transaction, "pid": os.getpid(),
@@ -262,7 +270,7 @@ class Native:
             def run(self, *args):
                 need(args[0] in ("lsjson", "cat") and args[1].startswith(plan.SOURCE)
                      and (args[1] == plan.SOURCE or args[1].startswith(plan.SOURCE + "/")))
-                owner.check_lock()
+                owner.unchanged()
                 return command([plan.BINARY, *args, "--config", "/proc/self/fd/" + str(owner.fd),
                     "--log-level", "ERROR"], descriptor=owner.fd,
                     lock_descriptor=owner.lock_fd, output=True, timeout=7200)
@@ -297,9 +305,14 @@ class Native:
         need(shutil.disk_usage(self.root).free >= needed)
 
     def copy_source(self, generation):
-        self.check_lock()
+        self.unchanged()
+        maximum = max(generation["files"].values())
+        total = sum(generation["files"].values())
         command([plan.BINARY, "copy", plan.SOURCE, str(self.root / "source"), "--immutable",
             "--files-from-raw", str(self.root / "files.txt"), "--config", "/proc/self/fd/" + str(self.fd),
+            "--max-size", str(maximum) + "B", "--max-transfer", str(total) + "B", "--cutoff-mode", "HARD",
+            "--transfers", "2", "--checkers", "4", "--retries", "1", "--low-level-retries", "1",
+            "--contimeout", "15s", "--timeout", "45s",
             "--log-level", "ERROR", "--stats", "0"], descriptor=self.fd,
             lock_descriptor=self.lock_fd, timeout=14400)
 
@@ -324,6 +337,10 @@ class Native:
 
     def unchanged(self):
         need(protected(plan.CONFIG, 0o600) == self.config)
+        if self.binary_identity is not None:
+            meta = Path(plan.BINARY).lstat()
+            need((meta.st_dev, meta.st_ino, meta.st_mode, meta.st_uid, meta.st_gid,
+                  meta.st_nlink, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns) == self.binary_identity)
         self.check_lock()
 
 

@@ -44,12 +44,15 @@ class LocalRestorePlanTests(unittest.TestCase):
 
     def test_info_restore_and_recovery_wal_explicitly_use_local_repository(self):
         value = plan()
-        repository = restore.ROOT + "/" + TX + "/downloaded-repository"
+        repository = restore.RESTORE_ROOT + "/" + TX + "/repository"
+        self.assertEqual(value["repository_input_root"], restore.ROOT + "/" + TX + "/downloaded-repository")
         for command in (value["info"], value["restore"], value["archive_get_template"]):
             self.assertIn("--repo=1", command)
             self.assertIn("--repo1-type=posix", command)
             self.assertIn("--repo1-path=" + repository, command)
             self.assertIn("--config=" + restore.CONFIG, command)
+            self.assertIn("--no-archive-async", command)
+            self.assertIn("--config-include-path=" + value["include_root"], command)
             self.assertEqual(command[:7], ["/usr/bin/setpriv", "--reuid=postgres",
                 "--regid=postgres", "--init-groups", "--reset-env", "--", "/usr/bin/pgbackrest"])
         options = next(item for item in value["start"] if item.startswith("--options="))
@@ -60,11 +63,11 @@ class LocalRestorePlanTests(unittest.TestCase):
 
     def test_fixed_paths_private_socket_and_isolation(self):
         value = plan()
-        attempt = restore.ROOT + "/" + TX + "/restore"
+        attempt = restore.RESTORE_ROOT + "/" + TX
         self.assertEqual(value["attempt_root"], attempt)
         self.assertEqual(value["socket_root"], attempt + "/socket")
         self.assertEqual(value["locks_in_order"], list(restore.LOCKS))
-        self.assertEqual(value["minimum_free_bytes"], 64 * 1024 ** 2 + 5 * 1024 ** 3)
+        self.assertEqual(value["minimum_free_bytes"], 576 * 1024 ** 2 + 5 * 1024 ** 3)
         options = next(item for item in value["start"] if item.startswith("--options="))
         for expected in ("-c listen_addresses= ", "-c port=55432 ",
                          "-c unix_socket_permissions=0700", "-c ssl=off",

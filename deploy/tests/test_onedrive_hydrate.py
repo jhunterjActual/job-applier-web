@@ -82,6 +82,7 @@ class HydrateTests(unittest.TestCase):
         native = hydrate.Native()
         native.pgbackrest_inventory = types.SimpleNamespace(Remote=object)
         native.fd = 8; native.lock_fd = 9; native.check_lock = lambda: None
+        native.unchanged = lambda: None
         remote = native.remote()
         with patch.object(hydrate, "command", return_value=b"[]") as call:
             remote.run("lsjson", hydrate.plan.SOURCE)
@@ -92,6 +93,29 @@ class HydrateTests(unittest.TestCase):
                          ("lsjson", hydrate.plan.SOURCE + "-other")):
                 with self.assertRaises(hydrate.HydrateError): remote.run(*args)
             self.assertEqual(call.call_count, 1)
+
+    def test_copy_source_limits_size_and_transfer_and_retries(self):
+        native = hydrate.Native(); native.root = Path("/fixed/task")
+        native.fd = 8; native.lock_fd = 9; native.unchanged = lambda: None
+        value = generation()
+        with patch.object(hydrate, "command") as call:
+            native.copy_source(value)
+        args = call.call_args.args[0]
+        for option, expected in (("--max-size", "1B"),
+                ("--max-transfer", str(sum(value["files"].values())) + "B"),
+                ("--cutoff-mode", "HARD"), ("--transfers", "2"), ("--checkers", "4"),
+                ("--retries", "1"), ("--low-level-retries", "1"),
+                ("--contimeout", "15s"), ("--timeout", "45s")):
+            self.assertEqual(args[args.index(option)+1], expected)
+
+    def test_binary_identity_drift_refuses_without_secret_hashing(self):
+        native = hydrate.Native(); native.config = (b"synthetic", (1,))
+        native.binary_identity = (0,)*9; native.check_lock = lambda: None
+        with patch.object(hydrate, "protected", return_value=native.config), \
+                patch.object(hydrate.Path, "lstat", return_value=types.SimpleNamespace(
+                    st_dev=1, st_ino=0, st_mode=0, st_uid=0, st_gid=0, st_nlink=0,
+                    st_size=0, st_mtime_ns=0, st_ctime_ns=0)):
+            with self.assertRaises(hydrate.HydrateError): native.unchanged()
 
     def test_native_latest_receipt_failure_or_label_drift_refuses(self):
         native = hydrate.Native()
