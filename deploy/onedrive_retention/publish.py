@@ -169,8 +169,40 @@ def require_encryption(raw):
 
 
 class Native(hydrate.Native):
-    def __init__(self):
+    def __init__(self, attempt=1):
         super().__init__(); self.pg_snapshot = None; self.pg_includes = None; self.publish_started = False
+        need(type(attempt) is int and 1 <= attempt <= 9)
+        self.attempt = attempt
+        self.prefix = "publish" if attempt == 1 else "publish-%02d" % attempt
+
+    def reconciliation(self, candidate):
+        if self.attempt == 1: return
+        previous = self.attempt - 1
+        receipt = private_json(self.root / ("publish-reconciliation-%02d.json" % previous))
+        need(set(receipt) == {"schema", "transaction", "archive_sha256", "prior_attempt",
+            "next_attempt", "prior_intent_sha256", "prior_terminal", "prior_cgroup_empty",
+            "candidate_archive_absent", "observed_at"})
+        need(receipt["schema"] == "careertrellis.onedrive-publication-reconciliation/v1"
+             and receipt["transaction"] == self.transaction
+             and receipt["archive_sha256"] == candidate["archive_sha256"]
+             and type(receipt["prior_attempt"]) is int and receipt["prior_attempt"] == previous
+             and type(receipt["next_attempt"]) is int and receipt["next_attempt"] == self.attempt
+             and receipt["prior_terminal"] is True and receipt["prior_cgroup_empty"] is True
+             and receipt["candidate_archive_absent"] is True)
+        stamp = receipt["observed_at"]
+        need(type(stamp) is str)
+        observed = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        need(observed.utcoffset() == dt.timedelta(0)
+             and 0 <= (dt.datetime.now(dt.timezone.utc) - observed).total_seconds() <= 900)
+        prefix = "publish" if previous == 1 else "publish-%02d" % previous
+        raw = hydrate.protected(self.root / (prefix + "-intent.json"), 0o600)[0]
+        prior = private_json(self.root / (prefix + "-intent.json"))
+        need(receipt["prior_intent_sha256"] == hashlib.sha256(raw).hexdigest()
+             and prior["transaction"] == self.transaction
+             and prior["archive_sha256"] == candidate["archive_sha256"])
+        need(not any(os.path.lexists(self.root / name) for name in
+            ("downloaded-repository.tar", "downloaded-repository", "downloaded-manifest.json",
+             "downloaded-receipt.json")))
 
     def includes(self):
         path = Path("/etc/pgbackrest/conf.d")
@@ -261,11 +293,12 @@ class Native(hydrate.Native):
                 "generation_sha256": result["generation_sha256"], "backup_label": result["backup_label"]}
 
     def begin_publish(self, candidate):
+        self.reconciliation(candidate)
         self.base = {"schema": "careertrellis.onedrive-publication/v1", "transaction": self.transaction,
             "pid": os.getpid(), "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
             "process_start_ticks": int(Path("/proc/self/stat").read_text().rsplit(") ", 1)[1].split()[19]),
-            "started_at": dt.datetime.now(dt.timezone.utc).isoformat(), **candidate}
-        hydrate.exclusive(self.root / "publish-intent.json", bundle.canonical(self.base))
+            "started_at": dt.datetime.now(dt.timezone.utc).isoformat(), "attempt": self.attempt, **candidate}
+        hydrate.exclusive(self.root / (self.prefix + "-intent.json"), bundle.canonical(self.base))
         self.publish_started = True
 
     def status(self, phase, result=None):
@@ -273,7 +306,7 @@ class Native(hydrate.Native):
         self.sequence += 1
         value = dict(self.base, phase=phase, observed_at=dt.datetime.now(dt.timezone.utc).isoformat())
         if result is not None: value["result"] = result
-        hydrate.exclusive(self.root / ("publish-status-%02d.json" % self.sequence), bundle.canonical(value))
+        hydrate.exclusive(self.root / (self.prefix + "-status-%02d.json" % self.sequence), bundle.canonical(value))
 
     def read_remote(self, args):
         self.unchanged()
@@ -316,29 +349,29 @@ class Native(hydrate.Native):
     def transfer(self, phase, source, destination, hard_delete=False):
         self.unchanged()
         intent = dict(self.base, phase=phase, dispatched_at=dt.datetime.now(dt.timezone.utc).isoformat())
-        hydrate.exclusive(self.root / ("publish-" + phase + "-intent.json"), bundle.canonical(intent))
+        hydrate.exclusive(self.root / (self.prefix + "-" + phase + "-intent.json"), bundle.canonical(intent))
         args = [plan.BINARY, "copyto", source, destination, "--immutable", "--config",
             "/proc/self/fd/" + str(self.fd), "--log-level", "ERROR", "--stats", "0",
             "--retries", "1", "--low-level-retries", "1", "--transfers", "1",
             "--checkers", "2", "--contimeout", "15s", "--timeout", "45s",
-            "--max-size", "512M", "--max-transfer", "512M", "--cutoff-mode", "HARD"]
+            "--max-transfer", "512M", "--cutoff-mode", "HARD"]
         if hard_delete: args.append("--onedrive-hard-delete=false")
         started = time.monotonic()
         with subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, env=hydrate.ENV, pass_fds=(self.fd, self.lock_fd)) as child:
             try:
                 ticks = int(Path("/proc/%d/stat" % child.pid).read_text().rsplit(") ", 1)[1].split()[19])
-                hydrate.exclusive(self.root / ("publish-" + phase + "-child.json"),
+                hydrate.exclusive(self.root / (self.prefix + "-" + phase + "-child.json"),
                     bundle.canonical({"pid": child.pid, "process_start_ticks": ticks,
                                       "boot_id": self.base["boot_id"]}))
                 code = child.wait(timeout=18000)
-                hydrate.exclusive(self.root / ("publish-" + phase + "-terminal.json"),
+                hydrate.exclusive(self.root / (self.prefix + "-" + phase + "-terminal.json"),
                     bundle.canonical({"pid": child.pid, "returncode": code,
                                       "elapsed_seconds": int(time.monotonic()-started)}))
                 need(code == 0)
             finally:
                 if child.poll() is None: child.kill(); child.wait()
-                terminal = self.root / ("publish-" + phase + "-terminal.json")
+                terminal = self.root / (self.prefix + "-" + phase + "-terminal.json")
                 if not os.path.lexists(terminal):
                     hydrate.exclusive(terminal, bundle.canonical({"pid": child.pid,
                         "returncode": child.returncode,
@@ -354,6 +387,10 @@ class Native(hydrate.Native):
 
     def download(self, candidate):
         need(not os.path.lexists(self.root / "downloaded-repository.tar"))
+        remote = json.loads(self.read_remote(["lsjson", self.target(candidate), "--stat",
+                                             "--no-modtime", "--no-mimetype"]))
+        need(type(remote) is dict and remote.get("IsDir") is False
+             and type(remote.get("Size")) is int and remote["Size"] == candidate["archive_bytes"])
         self.transfer("download", self.target(candidate), str(self.root / "downloaded-repository.tar"))
 
     def verify_download(self, candidate):
@@ -379,9 +416,10 @@ class Native(hydrate.Native):
 def main():
     import argparse
     parser = argparse.ArgumentParser(); parser.add_argument("--transaction", required=True)
+    parser.add_argument("--attempt", type=int, default=1, choices=range(1, 10))
     args = parser.parse_args()
     try:
-        result = publish(args.transaction, Native())
+        result = publish(args.transaction, Native(args.attempt))
         print(json.dumps({"result": "candidate_download_verified", **result}, sort_keys=True)); return 0
     except BaseException:
         print('{"result":"refused","category":"publication_requires_reconciliation"}'); return 1

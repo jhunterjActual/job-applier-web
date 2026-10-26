@@ -1,9 +1,11 @@
 """Offline publisher gates; native/provider acceptance remains separate."""
 from contextlib import contextmanager
 import importlib
+import os
 from pathlib import Path
 import sys
 import types
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -155,13 +157,87 @@ class PublishTests(unittest.TestCase):
                 patch.object(publish.os.path, "lexists", return_value=True):
             native.transfer("upload", "/fixed/task/repository.tar", "onedrive:fixed", True)
         args = call.call_args.args[0]
-        for option, expected in (("--max-size", "512M"), ("--max-transfer", "512M"),
+        self.assertNotIn("--max-size", args)
+        for option, expected in (("--max-transfer", "512M"),
                 ("--cutoff-mode", "HARD"), ("--transfers", "1"), ("--retries", "1"),
                 ("--low-level-retries", "1"), ("--contimeout", "15s"), ("--timeout", "45s")):
             self.assertEqual(args[args.index(option)+1], expected)
         self.assertIn("--onedrive-hard-delete=false", args)
         self.assertEqual(call.call_args.kwargs["pass_fds"], (8, 9))
         self.assertEqual(call.call_args.kwargs["stderr"], publish.subprocess.DEVNULL)
+
+    def test_download_requires_exact_remote_file_size_before_copyto(self):
+        native = publish.Native(); native.root = Path("/fixed/task")
+        candidate = {"archive_sha256": "a"*64, "archive_bytes": 12345}
+        import json
+        for remote in ({"IsDir": False, "Size": 12344}, {"IsDir": True, "Size": 12345},
+                       {"IsDir": False, "Size": True}):
+            with patch.object(native, "read_remote", return_value=json.dumps(remote).encode()), \
+                    patch.object(native, "transfer") as transfer, \
+                    patch.object(publish.os.path, "lexists", return_value=False):
+                with self.assertRaises(publish.PublishError): native.download(candidate)
+                transfer.assert_not_called()
+        with patch.object(native, "read_remote", return_value=b'{"IsDir":false,"Size":12345}'), \
+                patch.object(native, "transfer") as transfer, \
+                patch.object(publish.os.path, "lexists", return_value=False):
+            native.download(candidate)
+            self.assertEqual(transfer.call_args.args[0], "download")
+
+    def test_attempt_bounds_and_distinct_journal_prefix(self):
+        self.assertEqual(publish.Native().prefix, "publish")
+        self.assertEqual(publish.Native(2).prefix, "publish-02")
+        for attempt in (True, 0, 10, "2"):
+            with self.assertRaises(publish.PublishError): publish.Native(attempt)
+
+    def test_second_attempt_requires_fresh_bound_terminal_reconciliation(self):
+        native = publish.Native(2); native.root = Path("/fixed/task"); native.transaction = "a"*32
+        candidate = {"archive_sha256": "b"*64}
+        prior = {"transaction": native.transaction, **candidate}
+        raw = publish.bundle.canonical(prior)
+        import hashlib
+        receipt = {"schema": "careertrellis.onedrive-publication-reconciliation/v1",
+            **prior, "prior_attempt": 1, "next_attempt": 2,
+            "prior_intent_sha256": hashlib.sha256(raw).hexdigest(),
+            "prior_terminal": True, "prior_cgroup_empty": True, "candidate_archive_absent": True,
+            "observed_at": publish.dt.datetime.now(publish.dt.timezone.utc).isoformat()}
+        def check(value):
+            with patch.object(publish, "private_json", side_effect=[value, prior]), \
+                    patch.object(publish.hydrate, "protected", return_value=(raw, ())), \
+                    patch.object(publish.os.path, "lexists", return_value=False):
+                native.reconciliation(candidate)
+        check(receipt)
+        changes = ({"prior_terminal": False}, {"prior_cgroup_empty": False},
+            {"candidate_archive_absent": False}, {"prior_intent_sha256": "f"*64},
+            {"archive_sha256": "f"*64}, {"prior_attempt": True},
+            {"next_attempt": 3}, {"observed_at": "2026-01-01T00:00:00Z"})
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(publish.PublishError):
+                check(dict(receipt, **change))
+
+    @unittest.skipUnless(sys.platform == "linux" and Path("/usr/local/bin/rclone").is_file(),
+                         "requires native Linux installed rclone; uses local fixtures only")
+    def test_real_copyto_cli_local_fixture_has_no_incompatible_filters(self):
+        # Empty anonymous config and task-owned lock; no credentials or providers.
+        with tempfile.TemporaryDirectory(prefix="onedrive-copyto-cli-test-") as temp:
+            root = Path(temp)
+            source = root / "source.tar"; source.write_bytes(b"synthetic local transfer fixture")
+            config = os.memfd_create("empty-test-config", os.MFD_ALLOW_SEALING)
+            lock = os.open(root / "fixture.lock", os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+            try:
+                import fcntl
+                os.fchmod(config, 0o600)
+                fcntl.fcntl(config, fcntl.F_ADD_SEALS, fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK
+                            | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE)
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                native = publish.Native(); native.root = root
+                native.base = {"boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip()}
+                native.fd = config; native.lock_fd = lock; native.unchanged = lambda: None
+                destination = root / "destination.tar"
+                native.transfer("upload", str(source), str(destination), True)
+                self.assertEqual(destination.read_bytes(), source.read_bytes())
+                self.assertTrue((root / "publish-upload-terminal.json").is_file())
+            finally:
+                os.close(config); os.close(lock)
 
 
 if __name__ == "__main__": unittest.main()
