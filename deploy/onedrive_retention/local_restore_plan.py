@@ -95,6 +95,8 @@ def plan(label, archive_sha256, generation_sha256, transaction, max_database_byt
         "-c log_destination=stderr", "-c external_pid_file=",
         "-c primary_conninfo=", "-c primary_slot_name=",
         "-c restore_command='" + archive_get + "'",
+        "-c recovery_target=immediate", "-c recovery_target_action=promote",
+        "-c recovery_target_timeline=latest",
         "-c max_connections=100", "-c shared_buffers=64MB", "-c jit=off",
         "-c max_logical_replication_workers=0", "-c max_sync_workers_per_subscription=0",
         "-c max_parallel_apply_workers_per_subscription=0", "-c max_parallel_workers=0",

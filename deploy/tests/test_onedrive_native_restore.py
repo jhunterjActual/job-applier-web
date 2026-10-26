@@ -3,6 +3,10 @@ import copy
 import datetime as dt
 import hashlib
 import os
+from pathlib import Path
+import stat
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -61,22 +65,10 @@ class ConfigurationTests(unittest.TestCase):
                 native.configuration(raw)
             self.assertNotIn('synthetic-secret', str(caught.exception))
 
-    def test_automatic_recovery_settings_require_local_repository(self):
-        value = prepared()
-        command = '/usr/bin/pgbackrest --repo=1 --repo1-type=posix --repo1-path=' + value['repository_root']
-        command += ' --stanza=careertrellis archive-get %f "%p"'
-        raw = ("restore_command = '" + command + "'\nrecovery_target = 'immediate'\n"
-               "recovery_target_action = 'promote'\n").encode()
-        native.auto_configuration(raw, value)
-        for changed in (raw.replace(b'--repo1-type=posix', b'--repo1-type=s3'),
-                        raw + b"include = '/private/config'\n",
-                        raw + b"primary_conninfo = 'secret'\n",
-                        raw.replace(b'archive-get', b'; sh archive-get'),
-                        raw.replace(b"'immediate'", b"'name'"),
-                        raw.replace(b'--repo=1', b'--repo=2'),
-                        raw + b"restore_command = 'another'\n"):
-            with self.assertRaises(native.NativeRefused):
-                native.auto_configuration(changed, value)
+    def test_isolated_automatic_configuration_contains_no_inherited_settings(self):
+        self.assertTrue(native.ISOLATED_AUTO.startswith(b'#'))
+        self.assertEqual(len(native.ISOLATED_AUTO.splitlines()), 1)
+        self.assertNotIn(b'=', native.ISOLATED_AUTO)
 
 
 class DownloadBindingTests(unittest.TestCase):
@@ -195,6 +187,63 @@ class NativeLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(native.NativeRefused, '^postmaster_not_terminal$'):
                 instance.wait_terminal()
         spawn.assert_not_called()
+
+
+ROOT_POSIX = hasattr(os, 'geteuid') and os.geteuid() == 0 and hasattr(os, 'O_NOFOLLOW')
+
+
+@unittest.skipUnless(ROOT_POSIX, 'requires native root POSIX no-follow configuration fixture')
+class DisposableAutoFilesystemTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='bundle-auto-fixture-', dir='/run')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.data = self.root / 'data'; self.data.mkdir(mode=0o700)
+        self.original = self.data / 'postgresql.auto.conf'
+        self.raw = b"primary_conninfo = 'synthetic-secret'\ninclude = '/outside'\nrestore_command = 'unsafe'\n"
+        self.original.write_bytes(self.raw); self.original.chmod(0o600)
+        self.instance = native.Native.__new__(native.Native)
+        self.instance.root = self.root
+        self.instance.plan = dict(prepared(), data_root=str(self.data))
+        self.instance.account = SimpleNamespace(pw_uid=0, pw_gid=0)
+        self.instance.possible_postmaster = False
+        self.instance.group_members = lambda: {os.getpid()}
+        self.account = patch.object(native, 'postgres_account', return_value=self.instance.account)
+        self.account.start(); self.addCleanup(self.account.stop)
+
+    def test_exact_private_original_preserved_and_only_disposable_leaf_replaced(self):
+        before = self.original.stat().st_ino
+        self.instance.replace_disposable_auto(self.data)
+        audit = self.root / '.restored-auto-conf.original'
+        self.assertEqual(audit.read_bytes(), self.raw)
+        self.assertEqual(stat.S_IMODE(audit.stat().st_mode), 0o600)
+        self.assertEqual(audit.stat().st_uid, 0)
+        self.assertEqual(self.original.read_bytes(), native.ISOLATED_AUTO)
+        self.assertNotEqual(self.original.stat().st_ino, before)
+        self.assertEqual(stat.S_IMODE(self.original.stat().st_mode), 0o600)
+        self.assertFalse((self.data / '.postgresql.auto.conf.native').exists())
+
+    def test_prior_audit_refuses_without_replay_or_original_change(self):
+        audit = self.root / '.restored-auto-conf.original'; audit.write_bytes(b'prior')
+        with self.assertRaises(FileExistsError):
+            self.instance.replace_disposable_auto(self.data)
+        self.assertEqual(audit.read_bytes(), b'prior')
+        self.assertEqual(self.original.read_bytes(), self.raw)
+
+    def test_live_pid_or_unknown_group_refuses_before_audit_or_mutation(self):
+        self.instance.group_members = lambda: {os.getpid(), 12345}
+        with self.assertRaises(native.NativeRefused):
+            self.instance.replace_disposable_auto(self.data)
+        self.assertFalse((self.root / '.restored-auto-conf.original').exists())
+        self.assertEqual(self.original.read_bytes(), self.raw)
+
+    def test_symlink_original_refused_without_following_target(self):
+        target = self.root / 'outside'; target.write_bytes(b'untouched')
+        self.original.unlink(); self.original.symlink_to(target)
+        with self.assertRaises(OSError):
+            self.instance.replace_disposable_auto(self.data)
+        self.assertEqual(target.read_bytes(), b'untouched')
+        self.assertFalse((self.root / '.restored-auto-conf.original').exists())
 
 
 if __name__ == '__main__':

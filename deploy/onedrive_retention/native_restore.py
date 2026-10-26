@@ -26,6 +26,7 @@ from . import bundle, local_restore_plan as plans
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C',
        'PGCONNECT_TIMEOUT': '5', 'PYTHONDONTWRITEBYTECODE': '1'}
 PREFIX = 'onedrive:job-applier-staging/postgresql-bundles/'
+ISOLATED_AUTO = b'# Isolated disposable recovery; settings are supplied by the reviewed start command.\n'
 
 
 class NativeRefused(ValueError):
@@ -164,50 +165,6 @@ def process_identity(pid):
     fields = (process / 'stat').read_text().rsplit(') ', 1)[1].split()
     return {'pid': pid, 'start_ticks': int(fields[19]), 'process_group': int(fields[2]),
             'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
-
-
-def auto_configuration(raw, plan):
-    """Accept only pgBackRest's fixed recovery settings, never an include/hook.
-
-    The start command independently overrides restore_command with the full
-    local-only command. Keep this guard narrow instead of normalizing unknown
-    PostgreSQL syntax or accidentally enabling restored executable settings.
-    """
-    values = {}
-    for line in raw.decode('ascii').splitlines():
-        line = line.strip()
-        if not line or line.startswith('#'): continue
-        match = re.fullmatch(r"([a-z_]+)\s*=\s*'((?:[^'\\]|'')*)'\s*", line)
-        need(match is not None, 'restored_auto_configuration_requires_review')
-        key, value = match.group(1), match.group(2).replace("''", "'")
-        need(key not in values and key in ('restore_command', 'recovery_target',
-                                           'recovery_target_action', 'recovery_target_timeline'),
-             'restored_auto_configuration_requires_review')
-        values[key] = value
-    need(values.get('recovery_target', 'immediate') == 'immediate'
-         and values.get('recovery_target_action', 'promote') == 'promote'
-         and values.get('recovery_target_timeline', 'latest') in ('latest', 'current'),
-         'restored_recovery_target_refused')
-    if 'restore_command' in values:
-        import shlex
-        try:
-            args = shlex.split(values['restore_command'])
-        except ValueError:
-            raise NativeRefused('restored_archive_command_refused') from None
-        expected = ('--repo1-type=posix', '--repo1-path=' + plan['repository_root'],
-                    '--stanza=careertrellis')
-        allowed = set(expected) | {'--repo=1', '--config=' + plans.CONFIG,
-                                  '--log-level-console=off', '--log-level-file=off',
-                                  '--no-archive-async', '--lock-path=' + plan['lock_root'],
-                                  '--spool-path=' + plan['spool_root'],
-                                  '--config-include-path=' + plan['include_root']}
-        need(args and args[0] in ('pgbackrest', '/usr/bin/pgbackrest')
-             and args[-3:] == ['archive-get', '%f', '%p']
-             and all(value in args for value in expected)
-             and len(args[1:-3]) == len(set(args[1:-3]))
-             and set(args[1:-3]) <= allowed
-             and all(not any(char in value for char in ';`$\n\r') for value in args),
-             'restored_archive_command_refused')
 
 
 class Native:
@@ -527,13 +484,8 @@ class Native:
     def isolated_configuration(self):
         self.verify_restored_tree()
         data = Path(self.plan['data_root'])
-        # Restored automatic settings must be empty or contain only the fixed
-        # local archive-get command; no includes, connections or executable hooks.
-        auto = data / 'postgresql.auto.conf'
-        if os.path.lexists(auto):
-            raw = protected(auto, maximum=65536, modes=(0o600,), uids=(self.account.pw_uid,),
-                            gids=(self.account.pw_gid,), task_root=self.root)
-            auto_configuration(raw, self.plan)
+        need(not os.path.lexists(data / 'postmaster.pid')
+             and self.group_members() == {os.getpid()}, 'restored_cluster_not_offline')
         need(not os.path.lexists(data / 'standby.signal') and os.path.lexists(data / 'recovery.signal'),
              'restore_recovery_state_refused')
         control = data / 'global/pg_control'
@@ -549,10 +501,49 @@ class Native:
         need(fields.get('Database cluster state') == 'shut down in recovery'
              and fields.get('Data page checksum version') == '1'
              and fields.get('Database system identifier', '').isdigit(), 'restored_control_refused')
+        self.replace_disposable_auto(data)
         for name, content in (('postgresql.bundle.conf', self.plan['config_template']),
                               ('pg_hba.bundle.conf', self.plan['hba']),
                               ('pg_ident.bundle.conf', self.plan['ident_template'])):
             exclusive(data / name, content.encode('ascii')); os.chown(data / name, self.account.pw_uid, self.account.pw_gid)
+
+    def replace_disposable_auto(self, data):
+        """Preserve private config bytes, then replace only this offline copy.
+
+        Called after actual PG18/control verification. Original settings may
+        contain connection secrets: preserve them as protected configuration,
+        never parse, publish or fingerprint them in operational receipts.
+        """
+        need(data == Path(self.plan['data_root']) and not self.possible_postmaster
+             and not os.path.lexists(data / 'postmaster.pid')
+             and self.group_members() == {os.getpid()}, 'restored_cluster_not_offline')
+        original = data / 'postgresql.auto.conf'
+        before = original.lstat()
+        raw = protected(original, maximum=65536, modes=(0o600,), uids=(self.account.pw_uid,),
+                        gids=(self.account.pw_gid,), task_root=self.root)
+        need(identity(original.lstat()) == identity(before), 'restored_auto_configuration_changed')
+        exclusive(self.root / '.restored-auto-conf.original', raw)
+        with bundle._directory(data) as directory_fd:
+            need(identity(os.stat(original.name, dir_fd=directory_fd, follow_symlinks=False)) == identity(before),
+                 'restored_auto_configuration_changed')
+            temporary = '.postgresql.auto.conf.native'
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=directory_fd)
+            try:
+                os.fchown(fd, self.account.pw_uid, self.account.pw_gid); os.fchmod(fd, 0o600)
+                offset = 0
+                while offset < len(ISOLATED_AUTO):
+                    count = os.write(fd, ISOLATED_AUTO[offset:]); need(count > 0); offset += count
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            need(identity(os.stat(original.name, dir_fd=directory_fd, follow_symlinks=False)) == identity(before),
+                 'restored_auto_configuration_changed')
+            os.replace(temporary, original.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            os.fsync(directory_fd)
+        need(protected(original, maximum=65536, modes=(0o600,), uids=(self.account.pw_uid,),
+                       gids=(self.account.pw_gid,), task_root=self.root) == ISOLATED_AUTO,
+             'isolated_auto_configuration_refused')
 
     def owned_postmaster(self):
         data = Path(self.plan['data_root'])
