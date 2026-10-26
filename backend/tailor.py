@@ -3,6 +3,7 @@ import re
 from datetime import date
 from pydantic import BaseModel, Field
 import config
+from claude_cache import CachedPrompt
 from ai_providers import (
     AIProviderError,
     AIProviderSettings,
@@ -157,6 +158,56 @@ def apply_resume_section_template(markdown: str, resume_mode: str) -> str:
     return "\n\n".join(([preamble] if preamble else []) + sections).strip()
 
 
+def _cached_tailoring_prompt(base_resume_text, supplemental_evidence, resume_mode, mode_guidance,
+                             section_template, page_contract, letter_date, job_title,
+                             company_name, job_description):
+    """Explicit candidate-only variant; default callers retain their original prompt.
+
+    No cache hit is assumed and no input is padded to reach a provider threshold.
+    Reordering is a new prompt variant requiring its own quality acceptance.
+    """
+    prefix = f"""
+    You are an expert resume writer and career coach for both technical and non-technical professions. Your task is to perform two actions for a candidate applying to the job supplied below:
+    1. Tailor their base resume to match the job requirements, emphasizing only relevant, evidenced skills, projects, and work experience. Maintain absolute factual accuracy: DO NOT invent jobs, dates, degrees, credentials, technologies, metrics, or companies.
+    2. Write a customized, compelling, and professional cover letter (under 350 words, 3-4 paragraphs) addressed to the hiring team at the company supplied below.
+
+    {FACTUAL_EVIDENCE_CONTRACT}
+
+    Cover-letter contract:
+    - Use the concrete letter date supplied below in the letter heading.
+    - Never emit [Date], {{Date}}, <Date>, or any other placeholder token.
+    - When a hiring manager's name is unknown, address the letter to "Hiring Team" without a placeholder.
+
+    Resume formatting contract:
+    - Selected resume mode: {resume_mode}. Mode guidance: {mode_guidance}
+    - Use only the applicable level-two sections from this exact ordered template, omitting empty sections: {"; ".join(section_template)}.
+    - {page_contract}
+    - Use only standard Markdown headings (#, ##, ###), paragraphs, bold/italics, and flat bullet lists.
+    - Do not use horizontal rules, tables, columns, images, badges, skill ratings, or decorative symbols.
+    - Use the supplied template's conventional section names for the profession, including relevant Skills, Projects, Portfolio, Work Samples, Licenses, and Certifications sections only when supported by evidence.
+    - Limit the summary to 3-4 lines. Use at most 4-6 concise bullets for the most recent role and 2-3 for older roles. Each bullet should normally fit in 1-2 lines.
+    - Prefer demonstrated outcomes over keyword repetition. Remove or compress older and irrelevant material instead of shrinking the text.
+
+    Candidate's Base Resume:
+    \"\"\"{base_resume_text}\"\"\"
+
+    Candidate's Supplemental Professional Evidence:
+    \"\"\"{supplemental_evidence}\"\"\"
+    Treat these notes as factual source material supplied by the candidate. Use only relevant items, preserve URLs when useful, and never infer or invent missing dates, issuers, credential status, project outcomes, or metrics.
+    """
+    suffix = f"""
+    Job Details:
+    - Concrete letter date: {letter_date}
+    - Job Title: {job_title}
+    - Company: {company_name}
+    - Job Description:
+    \"\"\"{job_description}\"\"\"
+
+    Return the complete tailored resume and cover letter using the supplied response schema.
+    """
+    return CachedPrompt(prefix, suffix)
+
+
 def tailor_resume_and_cover_letter(
     base_resume_text: str,
     job_title: str,
@@ -168,6 +219,7 @@ def tailor_resume_and_cover_letter(
     ai_provider: str = "gemini",
     ai_model: str | None = None,
     professional_evidence: str = "",
+    claude_prompt_cache: bool = False,
 ) -> dict:
     """
     Consolidates resume tailoring and cover letter drafting into one structured AI request.
@@ -184,6 +236,8 @@ def tailor_resume_and_cover_letter(
     """
     if cancel_check:
         cancel_check()
+    if type(claude_prompt_cache) is not bool or (claude_prompt_cache and normalize_provider(ai_provider) != 'anthropic'):
+        raise ValueError('Prompt caching is an explicit Claude-only candidate option')
     settings = _provider_settings(api_key, ai_provider, ai_model)
 
     letter_date = date.today()
@@ -231,6 +285,11 @@ def tailor_resume_and_cover_letter(
     
     Return the complete tailored resume and cover letter using the supplied response schema.
     """
+
+    if claude_prompt_cache:
+        prompt = _cached_tailoring_prompt(base_resume_text, supplemental_evidence, resume_mode,
+            mode_guidance, section_template, page_contract, formatted_letter_date,
+            job_title, company_name, job_description)
 
     try:
         if cancel_check:
