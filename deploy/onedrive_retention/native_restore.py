@@ -98,6 +98,14 @@ def exclusive(path, raw):
         os.close(parent)
 
 
+def fsync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def decode(raw):
     def pairs(items):
         result = {}
@@ -125,10 +133,14 @@ def configuration(raw):
                'repo1-storage-verify-tls', 'repo1-s3-bucket', 'repo1-s3-endpoint',
                'repo1-s3-region', 'repo1-s3-key', 'repo1-s3-key-secret',
                'repo1-s3-key-type', 'repo1-s3-uri-style', 'repo1-s3-token',
-               'start-fast', 'process-max', 'compress-type', 'log-level-console',
+               'start-fast', 'process-max', 'compress-type', 'compress-level', 'log-level-console',
                'log-level-file', 'log-path', 'archive-async', 'spool-path',
                'repo1-bundle', 'repo1-block'}
     need(set(parser['global']) <= allowed, 'private_configuration_unsupported_key')
+    if 'compress-level' in parser['global']:
+        level = parser['global']['compress-level']
+        need(re.fullmatch(r'-?(?:[0-9]|[1-9][0-9])', level) is not None
+             and -5 <= int(level) <= 22, 'private_configuration_compression_refused')
     need(parser['global'].get('repo1-cipher-type') == 'aes-256-cbc'
          and bool(parser['global'].get('repo1-cipher-pass')), 'encrypted_repository_required')
 
@@ -165,6 +177,19 @@ def process_identity(pid):
     fields = (process / 'stat').read_text().rsplit(') ', 1)[1].split()
     return {'pid': pid, 'start_ticks': int(fields[19]), 'process_group': int(fields[2]),
             'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+
+
+def validate_control(fields):
+    """Validate PG18 backup control metadata, not infer process liveness from it.
+
+    An online backup may legitimately retain an 'in production' control state.
+    Actual offline custody is established separately from the private data root,
+    absent PID file, empty owner cgroup and required recovery signal.
+    """
+    need(fields.get('Database cluster state') in ('shut down', 'shut down in recovery', 'in production')
+         and fields.get('Data page checksum version') == '1'
+         and fields.get('Database system identifier', '').isdigit()
+         and int(fields['Database system identifier']) > 0, 'restored_control_refused')
 
 
 class Native:
@@ -409,17 +434,23 @@ class Native:
         if not os.path.lexists(self.root.parent):
             self.root.parent.mkdir(mode=0o700)
             os.chown(self.root.parent, 0, self.account.pw_gid); os.chmod(self.root.parent, 0o710)
+            fsync_directory(self.root.parent)
+            fsync_directory(self.root.parent.parent)
         directory(self.root.parent)
         parent_meta = self.root.parent.lstat()
         need(parent_meta.st_uid == 0 and parent_meta.st_gid == self.account.pw_gid
              and stat.S_IMODE(parent_meta.st_mode) == 0o710, 'acceptance_parent_refused')
         self.root.mkdir(mode=0o700); self.journal_created = True
+        fsync_directory(self.root)
+        fsync_directory(self.root.parent)
         self.event('ownership', {'schema': 'careertrellis.native-local-restore-ownership/v1',
             'owner': self.owner, 'plan': self.plan, 'plan_sha256': plans.digest(self.plan),
             'root_identity': list(identity(self.root.lstat())),
             'download_receipt_sha256': hashlib.sha256(self.download_raw).hexdigest(),
             'web_preflight_sha256': hashlib.sha256(self.web_raw).hexdigest()})
         root = Path(self.plan['repository_root']); root.mkdir(mode=0o700)
+        fsync_directory(root)
+        fsync_directory(self.root)
         with bundle._directory(self.plan['repository_input_root']) as source, bundle._directory(root) as target:
             scanned = bundle._scan(source)
             need(set(scanned) == set(self.manifest['files']))
@@ -442,16 +473,19 @@ class Native:
         for path in (root, *paths):
             meta = path.lstat(); os.chown(path, 0, self.account.pw_gid, follow_symlinks=False)
             os.chmod(path, 0o750 if stat.S_ISDIR(meta.st_mode) else 0o640, follow_symlinks=False)
-            if stat.S_ISDIR(meta.st_mode):
-                fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-                try: os.fsync(fd)
-                finally: os.close(fd)
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW |
+                         (os.O_DIRECTORY if stat.S_ISDIR(meta.st_mode) else 0))
+            try: os.fsync(fd)
+            finally: os.close(fd)
         os.chown(self.root, 0, self.account.pw_gid); os.chmod(self.root, 0o750)
         for name in ('data_root', 'socket_root', 'tablespace_root', 'lock_root', 'spool_root'):
             path = Path(self.plan[name]); path.mkdir(mode=0o700)
             os.chown(path, self.account.pw_uid, self.account.pw_gid); os.chmod(path, 0o700)
+            fsync_directory(path)
         includes = Path(self.plan['include_root']); includes.mkdir(mode=0o700)
         os.chown(includes, 0, self.account.pw_gid); os.chmod(includes, 0o750)
+        fsync_directory(includes)
+        fsync_directory(self.root)
         self.prepared = True
 
     def local_info(self, raw):
@@ -498,9 +532,7 @@ class Native:
             '--init-groups', '--reset-env', '--', plans.PG + 'pg_controldata', '--pgdata=' + str(data)])
         fields = dict(line.split(':', 1) for line in control_data.decode('ascii').splitlines() if ':' in line)
         fields = {key.strip(): value.strip() for key, value in fields.items()}
-        need(fields.get('Database cluster state') == 'shut down in recovery'
-             and fields.get('Data page checksum version') == '1'
-             and fields.get('Database system identifier', '').isdigit(), 'restored_control_refused')
+        validate_control(fields)
         self.replace_disposable_auto(data)
         for name, content in (('postgresql.bundle.conf', self.plan['config_template']),
                               ('pg_hba.bundle.conf', self.plan['hba']),

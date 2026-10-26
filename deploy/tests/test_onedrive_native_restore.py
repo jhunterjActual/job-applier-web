@@ -49,6 +49,14 @@ class ConfigurationTests(unittest.TestCase):
     def test_existing_encrypted_single_repository_configuration_allowed(self):
         self.assertIsNone(native.configuration(config()))
 
+    def test_bounded_benign_compression_level_only(self):
+        for value in ('3', '-5', '0', '22'):
+            native.configuration(config('compress-level=' + value + '\n'))
+        for value in ('-6', '23', 'NaN', '3;command', '3\x01'):
+            with self.subTest(value=value), self.assertRaisesRegex(native.NativeRefused,
+                        '^private_configuration_compression_refused$'):
+                native.configuration(config('compress-level=' + value + '\n'))
+
     def test_includes_hosts_hooks_extra_repository_or_unknown_key_refuse(self):
         for addition in ('config-include-path=/tmp\n', 'repo1-host=other\n',
                          'repo2-type=posix\n', 'recovery-option=primary_conninfo=x\n',
@@ -69,6 +77,17 @@ class ConfigurationTests(unittest.TestCase):
         self.assertTrue(native.ISOLATED_AUTO.startswith(b'#'))
         self.assertEqual(len(native.ISOLATED_AUTO.splitlines()), 1)
         self.assertNotIn(b'=', native.ISOLATED_AUTO)
+
+    def test_control_metadata_allows_recognized_online_backup_states(self):
+        fields = {'Database cluster state': 'in production',
+                  'Data page checksum version': '1', 'Database system identifier': '123456789'}
+        for value in ('shut down', 'shut down in recovery', 'in production'):
+            native.validate_control(dict(fields, **{'Database cluster state': value}))
+        for changed in ({'Database cluster state': 'in crash recovery'},
+                        {'Database cluster state': 'shutting down'},
+                        {'Data page checksum version': '0'}, {'Database system identifier': '0'}):
+            with self.subTest(changed=changed), self.assertRaises(native.NativeRefused):
+                native.validate_control(dict(fields, **changed))
 
 
 class DownloadBindingTests(unittest.TestCase):
