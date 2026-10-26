@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 
 import ai_contracts as contracts
+from claude_cache import CachedPrompt
 from ai_providers import AIProviderError, MAX_PROVIDER_RESPONSE_BYTES, _request
 
 
@@ -130,20 +131,25 @@ def _message(settings, content, max_tokens, timeout, schema=None):
 
 
 def generate_structured(settings, prompt, schema, *, operation=None, timeout_seconds=90,
-                        cancel_check=None, disable_thinking=False):
+                        cancel_check=None, disable_thinking=False, rate_card=None):
     operation = operation or contracts.SCHEMA_OPERATIONS.get(schema.__name__, 'structured')
     limits = _preflight(settings, operation, True, timeout_seconds)
-    if not isinstance(prompt, str) or len(prompt.encode('utf-8')) > limits.max_input_bytes:
+    if isinstance(prompt, CachedPrompt):
+        size, content = prompt.input_bytes, prompt.content()
+    elif isinstance(prompt, str):
+        size, content = len(prompt.encode('utf-8')), prompt
+    else:
+        raise _error('invalid_input')
+    if size > limits.max_input_bytes:
         raise _error('invalid_input')
     document = _schema(schema)
     def invoke():
-        text = _message(settings, prompt, limits.max_output_tokens, timeout_seconds, document)
+        text = _message(settings, content, limits.max_output_tokens, timeout_seconds, document)
         try:
             return schema.model_validate_json(text).model_dump()
         except Exception:
             raise _error('invalid_response') from None
-    # No RateCard accepted: the shared estimator does not model cache writes.
-    return _request(settings, operation, invoke, cancel_check=cancel_check)
+    return _request(settings, operation, invoke, cancel_check=cancel_check, rate_card=rate_card)
 
 
 def extract_text_from_images(settings, images, cancel_check=None):
