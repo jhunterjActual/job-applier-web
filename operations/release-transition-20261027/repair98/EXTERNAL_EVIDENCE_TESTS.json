@@ -1,0 +1,32 @@
+{
+  "excluded_portable_tests": 1,
+  "removed_nodes": [
+    {
+      "module": "test_repair_contract.py",
+      "name": "fixture_bytes",
+      "source_sha256": "2ec33de04be151a4206430905d7b22a3b7ed0afd56f60ea89511ff7fd2dceba0",
+      "is_test": false,
+      "reason": "Depends on actual host-collected baseline inventory; retained artifact evidence only, not a portable test."
+    },
+    {
+      "module": "test_repair_contract.py",
+      "name": "test_load_controls_actual_closed_positive_then_stale_boot_old_source_negatives",
+      "source_sha256": "f4c3d03ab83ea6005e961ad067c9463a42cf7552faf0733913bd30c8cd90bb06",
+      "is_test": true,
+      "reason": "Depends on actual host-collected baseline inventory; retained artifact evidence only, not a portable test."
+    },
+    {
+      "module": "test_repair_contract.py",
+      "name": "controls",
+      "source_sha256": "79293a6ff382c61e2c79fe39d8afb60dac09bb8a216f1e57cddba5370efdec95",
+      "is_test": false,
+      "reason": "Depends on actual host-collected baseline inventory; retained artifact evidence only, not a portable test."
+    }
+  ],
+  "original_portable_count": 22,
+  "remaining_original_portable_count": 21,
+  "independent_methods_added": 5,
+  "expected_portable_count": 26,
+  "original_artifact_freeze": "9ef2165540963403bb87b4852ffc54726d32bcf5342bba8a15b36d59a088f25c",
+  "qualification": "Actual host provenance test remains retained and passed separately; exclusion does not clear native acceptance."
+}
