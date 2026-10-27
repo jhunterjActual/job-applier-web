@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh authenticated backup schedule health every fifteen minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00 UTC
+RandomizedDelaySec=30s
+Persistent=true
+Unit=careertrellis-onedrive-retention-health.service
+
+[Install]
+WantedBy=timers.target
