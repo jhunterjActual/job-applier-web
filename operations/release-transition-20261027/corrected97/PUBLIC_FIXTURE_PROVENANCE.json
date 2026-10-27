@@ -1,0 +1,16 @@
+{
+  "schema": "careertrellis.public-git-fixtures/v1",
+  "fixtures": {
+    "fixtures/test_p0_regressions.py.source": {
+      "commit": "bc68ea0dc253425a44e268452130becdf35d764e",
+      "git_path": "backend/test_p0_regressions.py",
+      "sha256": "db1604118386f23c9039fea1f3ccbec933f9a4d4e40ed7b9d9f37f7cde67fe13"
+    },
+    "public-fixtures/target-deploy-release.sh": {
+      "commit": "bc68ea0dc253425a44e268452130becdf35d764e",
+      "git_path": "deploy/scripts/deploy-release.sh",
+      "sha256": "1fe2a6c2527e46725a16f45fa55c4c1b7304f5740afe1cace34cbe165640da98"
+    }
+  },
+  "source": "Exact candidate tracked public code; not private runtime/data/evidence"
+}
