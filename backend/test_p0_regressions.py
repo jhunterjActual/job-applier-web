@@ -3965,7 +3965,7 @@ class DependencyLockTests(unittest.TestCase):
                 )
 
         with tempfile.TemporaryDirectory(
-            prefix=".systemd-verify-", dir=project_dir
+            prefix=".systemd-verify-"
         ) as temporary:
             verification_root = Path(temporary)
             unit_root = verification_root / "etc" / "systemd" / "system"
