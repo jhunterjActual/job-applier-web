@@ -21,7 +21,7 @@ import sys
 import time
 import types
 
-from . import bundle, capture_plan as plan
+from . import builder, bundle, capture_plan as plan
 
 PINS = {"backup_health": "8d2facf6d71bf985c1c0ffe8b6a661fc9a9699548b6bb81163cd787f53ba97fa",
         "pgbackrest_inventory": "8ce0743446e390c27f5dafa9ad0ead30f41bf9162ea508a1b7fc7469f4a79aa5"}
@@ -135,6 +135,7 @@ def exclusive(path, raw):
 
 class Native:
     def __init__(self):
+        self.source_sizes = None
         self.root = None
         self.config = None
         self.fd = None
@@ -290,19 +291,25 @@ class Native:
         raw = command(["/usr/bin/setpriv", "--reuid=postgres", "--regid=postgres", "--init-groups",
             "--reset-env", "--", "/usr/bin/pgbackrest", "--stanza=careertrellis", "--output=json", "info"],
             output=True, lock_descriptor=self.lock_fd, timeout=120)
-        info = json.loads(raw); need(type(info) is list and len(info) == 1)
-        stanza = info[0]; need(stanza["name"] == "careertrellis" and stanza["status"]["code"] == 0)
-        latest = max(stanza["backup"], key=lambda row: row["timestamp"]["stop"])
-        label = latest["label"]; self.accept_label(label)
+        info = json.loads(raw)
+        observed = dt.datetime.now(dt.timezone.utc)
+        self.source_sizes = builder.database_sizes(info, observed_at=observed.isoformat(), now=observed)
+        label = self.source_sizes['backup_label']; self.accept_label(label)
         return self.pgbackrest_inventory.prepare(self.remote(), label,
             dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 
     def save_generation(self, generation):
-        exclusive(self.root / "generation.json", bundle.canonical(generation))
-        exclusive(self.root / "files.txt", "".join(path + "\n" for path in sorted(generation["files"])).encode("ascii"))
+        plan.validate_generation(generation)
+        need(type(self.source_sizes) is dict and self.source_sizes['backup_label'] == generation['backup_label'])
+        facts = dict(self.source_sizes, schema=builder.SIZE_SCHEMA, source='pgbackrest_info',
+                     transaction=self.base['transaction'], generation_sha256=builder.digest(generation))
+        builder.validate_size_facts(facts)
         needed = 2 * sum(generation["files"].values()) + 5 * 1024**3
         import shutil
         need(shutil.disk_usage(self.root).free >= needed)
+        exclusive(self.root / "generation.json", bundle.canonical(generation))
+        exclusive(self.root / "source-database-size.json", bundle.canonical(facts))
+        exclusive(self.root / "files.txt", "".join(path + "\n" for path in sorted(generation["files"])).encode("ascii"))
 
     def copy_source(self, generation):
         self.unchanged()

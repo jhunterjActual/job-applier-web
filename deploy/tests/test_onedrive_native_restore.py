@@ -207,6 +207,123 @@ class NativeLifecycleTests(unittest.TestCase):
                 instance.wait_terminal()
         spawn.assert_not_called()
 
+    def test_finite_containment_records_incomplete_and_raises_without_cleanup_or_signals(self):
+        instance = self.instance()
+        with patch.object(native.time, 'sleep') as sleep, patch.object(native.os, 'kill') as kill, \
+                patch.object(native.subprocess, 'Popen') as spawn:
+            with self.assertRaisesRegex(native.NativeRefused, '^native_restore_requires_reconciliation$'):
+                instance.contain('restore')
+        self.assertTrue(instance.failed)
+        marker = instance.events[0][1]
+        self.assertFalse(marker['native_restore_accepted'])
+        self.assertFalse(marker['automatic_retry']); self.assertFalse(marker['cleanup_performed'])
+        sleep.assert_not_called(); kill.assert_not_called(); spawn.assert_not_called()
+
+    def test_final_configuration_failure_after_complete_records_failure_and_refuses_receipt(self):
+        instance = unittest.mock.Mock(); instance.restore.return_value = {'native_restore_accepted': True}
+        instance.configuration_unchanged.side_effect = RuntimeError('private details')
+        with patch.object(native, 'Native', return_value=instance):
+            with self.assertRaisesRegex(native.NativeRefused, '^native_restore_requires_reconciliation$'):
+                native.execute(prepared(), '/ignored')
+        instance.record_failure.assert_called_once_with('final-configuration')
+        instance.close.assert_called_once_with()
+
+
+class FiniteOwnerContractTests(unittest.TestCase):
+    def valid(self):
+        return {'MainPID': '123', 'Type': 'exec', 'Restart': 'no', 'RemainAfterExit': 'yes',
+            'KillMode': 'control-group', 'SendSIGKILL': 'yes', 'TimeoutStartUSec': '30s',
+            'TimeoutStopUSec': '1min 30s', 'RuntimeMaxUSec': '2h', 'PrivateNetwork': 'yes',
+            **dict.fromkeys(native.OWNER_HOOK_FIELDS, '')}
+    def test_finite_exec_contract_retains_success_for_external_collector(self):
+        native.validate_owner_unit(self.valid(), 123)
+        native.validate_owner_unit(dict(self.valid(), TimeoutStopUSec='90000ms'), 123)
+    def test_infinite_oneshot_nonretained_or_weak_termination_refuses(self):
+        for key, replacement in (('Type', 'oneshot'), ('MainPID', '124'), ('Restart', 'on-failure'),
+                ('RemainAfterExit', 'no'), ('KillMode', 'process'), ('SendSIGKILL', 'no'),
+                ('PrivateNetwork', 'no'), ('TimeoutStartUSec', 'infinity'),
+                ('TimeoutStopUSec', 'infinity'), ('RuntimeMaxUSec', 'infinity'), ('RuntimeMaxUSec', '3h')):
+            with self.subTest(key=key), self.assertRaises(native.NativeRefused):
+                native.validate_owner_unit(dict(self.valid(), **{key: replacement}), 123)
+    def test_all_five_missing_or_nonempty_hooks_refuse_closed_owner_contract(self):
+        for field in native.OWNER_HOOK_FIELDS:
+            missing=self.valid();missing.pop(field)
+            for value in (missing,dict(self.valid(),**{field:'/bin/true'})):
+                with self.subTest(field=field),self.assertRaises(native.NativeRefused):
+                    native.validate_owner_unit(value,123)
+    def test_wrong_or_missing_typed_hook_refuses_before_prepare_or_pg_commands(self):
+        for hook in native.OWNER_HOOK_FIELDS:
+            for bad in (b'',b'a(sasbttttuii) 1 unexpected\n'):
+                instance=native.Native.__new__(native.Native)
+                instance.plan=prepared();instance.unit=instance.plan['owner_unit']
+                instance.group='/system.slice/'+instance.unit
+                instance.preflight=unittest.mock.Mock();instance.lock=unittest.mock.Mock()
+                instance.prepare_permissions=unittest.mock.Mock()
+                instance.verify_repository=unittest.mock.Mock();instance.reconcile_prior_attempt=unittest.mock.Mock()
+                instance.group_members=unittest.mock.Mock()
+                profile=dict(self.valid(),MainPID=str(os.getpid()))
+                raw=''.join(key+'='+profile[key]+'\n' for key in native.OWNER_SCALAR_FIELDS).encode()
+                calls=[]
+                def capture(args):
+                    calls.append(args)
+                    if args[0]=='/usr/bin/systemctl':return raw
+                    return bad if args[-1]==hook else native.common_io.EMPTY_EXEC_ARRAY
+                instance.capture=capture
+                with self.subTest(hook=hook,bad=bad),patch.object(native.Path,'read_text',return_value='0::'+instance.group), \
+                        patch.object(native.subprocess,'Popen') as spawn:
+                    with self.assertRaises(native.common_io.UnitPropertyRefused):instance.restore()
+                    spawn.assert_not_called()
+                instance.prepare_permissions.assert_not_called();instance.verify_repository.assert_not_called()
+                instance.reconcile_prior_attempt.assert_not_called();instance.group_members.assert_not_called()
+                self.assertTrue(all(args[0] in ('/usr/bin/systemctl','/usr/bin/busctl') for args in calls))
+
+
+class TerminalCollectorTests(unittest.TestCase):
+    def evidence(self):
+        owner = {'pid': 123, 'start_ticks': 456, 'process_group': 123,
+                 'boot_id': '01234567-89ab-cdef-0123-456789abcdef'}
+        unit = prepared()['owner_unit']
+        complete = {'schema': 'careertrellis.onedrive-native-local-restore/v1', 'result': 'verified',
+            'transaction': 'c'*32, 'attempt': 1, 'native_restore_accepted': True,
+            'postmaster_terminal': True, 'checksums_verified': True, 'plan_sha256': 'a'*64,
+            'completed_at': '2026-10-26T12:00:00Z'}
+        snapshot = {'LoadState': 'loaded', 'ActiveState': 'active', 'SubState': 'exited',
+            'RemainAfterExit': 'yes', 'MainPID': '0', 'ControlPID': '0', 'Job': '',
+            'Result': 'success', 'ExecMainStatus': '0', 'ExecMainPID': '123',
+            'InvocationID': 'd'*32, 'ControlGroup': '/system.slice/'+unit}
+        stop = {'schema': 'careertrellis.onedrive-native-stop-intent/v1', 'transaction': 'c'*32,
+            'attempt': 1, 'unit': unit, 'owner': owner, 'receipt_sha256': hashlib.sha256(plans.canonical(complete)).hexdigest(),
+            'unit_state': snapshot, 'observed_at': '2026-10-26T12:00:01Z'}
+        proof = {'schema': 'careertrellis.onedrive-native-terminal/v1', 'transaction': 'c'*32,
+            'attempt': 1, 'unit': unit, 'owner': owner, 'receipt_sha256': stop['receipt_sha256'],
+            'plan_sha256': complete['plan_sha256'], 'unit_state': snapshot,
+            'owner_terminal': True, 'cgroup_empty': True, 'postmaster_terminal': True,
+            'checksums_verified': True, 'failure_markers_absent': True,
+            'observed_at': '2026-10-26T12:00:02Z',
+            'stop_intent_sha256': hashlib.sha256(plans.canonical(stop)).hexdigest(),
+            'stopped_unit_state': {'LoadState': 'not-found', 'ActiveState': 'inactive',
+                'SubState': 'dead', 'MainPID': '0', 'ControlPID': '0', 'Job': '', 'ControlGroup': ''}}
+        return proof, complete, owner, stop
+    def test_external_retained_success_then_empty_stop_and_gc_is_valid(self):
+        proof, complete, owner, stop = self.evidence()
+        native.validate_terminal_proof(proof, complete, owner, stop_intent=stop)
+    def test_owner_complete_alone_or_missing_stop_intent_never_accepts(self):
+        proof, complete, owner, stop = self.evidence()
+        with self.assertRaises(native.NativeRefused): native.validate_terminal_proof(proof, complete, owner)
+        with self.assertRaises(native.NativeRefused): native.validate_terminal_proof(complete, complete, owner, stop_intent=stop)
+    def test_missing_collector_live_owner_failed_unit_or_final_failure_refuses(self):
+        original, complete, owner, original_stop = self.evidence()
+        variants = [('owner_terminal', False), ('cgroup_empty', False), ('failure_markers_absent', False),
+            ('unit_state', dict(original['unit_state'], LoadState='not-found')),
+            ('unit_state', dict(original['unit_state'], MainPID='123')),
+            ('unit_state', dict(original['unit_state'], Result='timeout')),
+            ('stopped_unit_state', dict(original['stopped_unit_state'], MainPID='123')),
+            ('stop_intent_sha256', 'f'*64)]
+        for key, value in variants:
+            proof = dict(original, **{key: value})
+            with self.subTest(key=key), self.assertRaises(native.NativeRefused):
+                native.validate_terminal_proof(proof, complete, owner, stop_intent=original_stop)
+
 
 class ReconciliationTests(unittest.TestCase):
     def evidence(self):

@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import hashlib
 import importlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -47,6 +48,62 @@ class Fake:
 
 
 class HydrateTests(unittest.TestCase):
+    def test_capture_projects_sizes_from_same_private_info_without_extra_command(self):
+        value = generation()
+        private_info = [{'name': 'careertrellis', 'status': {'code': 0}, 'backup': [
+            {'label': value['backup_label'], 'timestamp': {'stop': 1},
+             'info': {'size': 12345}, 'error': False}],
+             'ignored_private_metadata': 'PRIVATE_SYNTHETIC_DETAIL'}]
+        native = hydrate.Native(); native.lock_fd = 9
+        native.accept_label = unittest.mock.Mock(); native.remote = unittest.mock.Mock(return_value=object())
+        prepare = unittest.mock.Mock(return_value=value)
+        native.pgbackrest_inventory = types.SimpleNamespace(prepare=prepare)
+        with patch.object(hydrate, 'command', return_value=json.dumps(private_info).encode()) as command:
+            self.assertEqual(native.capture(), value)
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(native.source_sizes['selected_database_bytes'], 12345)
+        self.assertEqual(native.source_sizes['full_ancestor_database_bytes'], 12345)
+        self.assertNotIn('PRIVATE_SYNTHETIC_DETAIL', repr(native.source_sizes))
+        native.accept_label.assert_called_once_with(value['backup_label'])
+
+    def test_save_generation_writes_bound_private_size_facts_without_raw_info(self):
+        native = hydrate.Native(); native.root = Path('/fixed/private')
+        native.base = {'transaction': 'a' * 32}
+        value = generation()
+        native.source_sizes = {'backup_label': value['backup_label'],
+            'full_ancestor_label': value['backup_label'], 'selected_database_bytes': 12345,
+            'full_ancestor_database_bytes': 12345, 'observed_at': value['started_at']}
+        with patch.object(hydrate, 'exclusive') as write, \
+                patch('shutil.disk_usage', return_value=types.SimpleNamespace(free=10 ** 12)):
+            native.save_generation(value)
+        outputs = {call.args[0].name: call.args[1] for call in write.call_args_list}
+        self.assertEqual(set(outputs), {'generation.json', 'source-database-size.json', 'files.txt'})
+        facts = hydrate.builder.decode(outputs['source-database-size.json'], 8192)
+        self.assertEqual(facts['schema'], hydrate.builder.SIZE_SCHEMA)
+        self.assertEqual(facts['source'], 'pgbackrest_info')
+        self.assertEqual(facts['transaction'], 'a' * 32)
+        self.assertEqual(facts['generation_sha256'], hydrate.builder.digest(value))
+        self.assertEqual(facts['selected_database_bytes'], 12345)
+        self.assertEqual(facts['full_ancestor_label'], value['backup_label'])
+
+    def test_missing_or_mismatched_size_facts_refuse_before_any_output(self):
+        for sizes in (None, {'backup_label': '20261025-155056F'}):
+            native = hydrate.Native(); native.root = Path('/fixed/private')
+            native.base = {'transaction': 'a' * 32}; native.source_sizes = sizes
+            with patch.object(hydrate, 'exclusive') as write:
+                with self.assertRaises(ValueError): native.save_generation(generation())
+                write.assert_not_called()
+
+    def test_unproved_size_does_not_prepare_remote_generation(self):
+        native = hydrate.Native(); native.lock_fd = 9
+        native.accept_label = unittest.mock.Mock()
+        native.pgbackrest_inventory = types.SimpleNamespace(prepare=unittest.mock.Mock())
+        malformed = [{'name': 'careertrellis', 'status': {'code': 0}, 'backup': [
+            {'label': generation()['backup_label'], 'timestamp': {'stop': 1}, 'info': {'size': True}}]}]
+        with patch.object(hydrate, 'command', return_value=json.dumps(malformed).encode()):
+            with self.assertRaises(hydrate.builder.BuilderRefused): native.capture()
+        native.accept_label.assert_not_called(); native.pgbackrest_inventory.prepare.assert_not_called()
+
     def test_lock_owns_complete_success_sequence(self):
         backend = Fake()
         self.assertEqual(hydrate.hydrate("a"*32, backend), {"sha256": "a"*64})

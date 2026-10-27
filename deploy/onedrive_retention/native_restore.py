@@ -1,8 +1,9 @@
 """Fixed-host native recovery of a verified downloaded encrypted repository.
 
 No provider calls, application changes, deletion, replay or credential prompts.
-Run only as the dedicated native owner unit; ambiguous dispatch or a possibly
-running postmaster retains that owner and all fences for operator reconciliation.
+Run only as the dedicated finite native owner unit. Ambiguous execution leaves
+durable incomplete evidence; systemd terminates only that disposable cgroup.
+No new attempt or acceptance may rely on flock availability as terminal proof.
 Raw subprocess output is either privately parsed or discarded, never published.
 """
 import configparser
@@ -20,13 +21,18 @@ import stat
 import subprocess
 import time
 
-from . import bundle, local_restore_plan as plans
+from . import bundle, local_restore_plan as plans, common_io
 
 
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C',
        'PGCONNECT_TIMEOUT': '5', 'PYTHONDONTWRITEBYTECODE': '1'}
 PREFIX = 'onedrive:job-applier-staging/postgresql-bundles/'
 ISOLATED_AUTO = b'# Isolated disposable recovery; settings are supplied by the reviewed start command.\n'
+START_SECONDS, RUNTIME_SECONDS, STOP_SECONDS = 30, 7200, 90
+OWNER_SCALAR_FIELDS = ('MainPID', 'Type', 'Restart', 'RemainAfterExit', 'KillMode', 'SendSIGKILL',
+    'TimeoutStartUSec', 'TimeoutStopUSec', 'RuntimeMaxUSec', 'PrivateNetwork')
+OWNER_HOOK_FIELDS = ('ExecCondition', 'ExecStartPre', 'ExecStartPost', 'ExecStop', 'ExecStopPost')
+OWNER_FIELDS = OWNER_SCALAR_FIELDS + OWNER_HOOK_FIELDS
 
 
 class NativeRefused(ValueError):
@@ -179,6 +185,107 @@ def process_identity(pid):
             'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
 
 
+def span_microseconds(value):
+    """Parse bounded systemctl duration output without accepting infinity."""
+    need(type(value) is str and len(value) <= 64, 'owner_unit_containment_refused')
+    tokens = re.findall(r'([0-9]+)(us|ms|min|s|h)', value)
+    need(tokens and ' '.join(number + unit for number, unit in tokens) == value,
+         'owner_unit_containment_refused')
+    factors = {'us': 1, 'ms': 1000, 's': 1000000, 'min': 60000000, 'h': 3600000000}
+    return sum(int(number) * factors[unit] for number, unit in tokens)
+
+
+def validate_owner_unit(value, pid):
+    need(type(value) is dict and set(value) == set(OWNER_FIELDS),
+        'owner_unit_containment_refused')
+    need(value['MainPID'] == str(pid) and value['Type'] == 'exec' and value['Restart'] == 'no'
+         and value['RemainAfterExit'] == 'yes'
+         and value['KillMode'] == 'control-group' and value['SendSIGKILL'] == 'yes'
+         and value['PrivateNetwork'] == 'yes'
+         and all(value[key] == '' for key in OWNER_HOOK_FIELDS)
+         and span_microseconds(value['TimeoutStartUSec']) == START_SECONDS * 1000000
+         and span_microseconds(value['TimeoutStopUSec']) == STOP_SECONDS * 1000000
+         and span_microseconds(value['RuntimeMaxUSec']) == RUNTIME_SECONDS * 1000000,
+         'owner_unit_containment_refused')
+    return value
+
+
+def validate_terminal_proof(value, receipt, owner, now=None, *, stop_intent=None):
+    """Validate external collector evidence; an owner complete file is insufficient.
+
+    The caller separately verifies protected canonical receipt/proof/ownership
+    files. Success is witnessed while RemainAfterExit retains actual metadata;
+    only then may a separate collector stop the already empty exact unit.
+    Missing collector intent/proof refuses. GC defaults never prove success.
+    No process, unit, provider or filesystem action is performed here.
+    """
+    need(type(value) is dict and set(value) == {'schema', 'transaction', 'attempt', 'unit',
+        'owner', 'receipt_sha256', 'plan_sha256', 'unit_state', 'owner_terminal', 'cgroup_empty',
+        'postmaster_terminal', 'checksums_verified', 'failure_markers_absent', 'observed_at',
+        'stopped_unit_state', 'stop_intent_sha256'},
+        'native_terminal_proof_refused')
+    need(type(stop_intent) is dict and set(stop_intent) == {'schema', 'transaction', 'attempt',
+        'unit', 'owner', 'receipt_sha256', 'unit_state', 'observed_at'}, 'native_terminal_proof_refused')
+    need(value['schema'] == 'careertrellis.onedrive-native-terminal/v1'
+         and type(owner) is dict and set(owner) == {'pid', 'start_ticks', 'process_group', 'boot_id'}
+         and value['owner'] == owner, 'native_terminal_proof_refused')
+    need(all(type(owner[key]) is int and owner[key] > 0 for key in ('pid', 'start_ticks', 'process_group'))
+         and type(owner['boot_id']) is str
+         and re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', owner['boot_id']),
+         'native_terminal_proof_refused')
+    need(type(receipt) is dict and receipt.get('schema') == 'careertrellis.onedrive-native-local-restore/v1'
+         and receipt.get('result') == 'verified' and receipt.get('native_restore_accepted') is True
+         and receipt.get('postmaster_terminal') is True and receipt.get('checksums_verified') is True,
+         'native_terminal_proof_refused')
+    tx, attempt = value['transaction'], value['attempt']
+    need(type(tx) is str and re.fullmatch('[0-9a-f]{32}', tx)
+         and type(attempt) is int and 1 <= attempt <= 9
+         and receipt.get('transaction') == tx and receipt.get('attempt') == attempt,
+         'native_terminal_proof_refused')
+    suffix = '' if attempt == 1 else '-%02d' % attempt
+    unit = 'careertrellis-onedrive-bundle-restore-' + tx + suffix + '.service'
+    need(value['unit'] == unit
+         and value['receipt_sha256'] == hashlib.sha256(plans.canonical(receipt)).hexdigest()
+         and type(value['plan_sha256']) is str and re.fullmatch('[0-9a-f]{64}', value['plan_sha256'])
+         and value['plan_sha256'] == receipt.get('plan_sha256'), 'native_terminal_proof_refused')
+    need(all(value[key] is True for key in ('owner_terminal', 'cgroup_empty', 'postmaster_terminal',
+         'checksums_verified', 'failure_markers_absent')), 'native_terminal_proof_refused')
+    state = value['unit_state']
+    need(type(state) is dict and set(state) == {'LoadState', 'ActiveState', 'SubState', 'RemainAfterExit',
+        'MainPID', 'ControlPID', 'Job', 'Result', 'ExecMainStatus', 'ExecMainPID', 'InvocationID', 'ControlGroup'},
+        'native_terminal_proof_refused')
+    need(state['LoadState'] == 'loaded' and state['ActiveState'] == 'active'
+         and state['SubState'] == 'exited' and state['RemainAfterExit'] == 'yes'
+         and state['MainPID'] == state['ControlPID'] == '0' and state['Job'] == ''
+         and state['Result'] == 'success' and state['ExecMainStatus'] == '0'
+         and state['ExecMainPID'] == str(owner['pid'])
+         and type(state['InvocationID']) is str and re.fullmatch('[0-9a-f]{32}', state['InvocationID'])
+         and state['ControlGroup'] in ('', '/system.slice/' + unit), 'native_terminal_proof_refused')
+    need(stop_intent['schema'] == 'careertrellis.onedrive-native-stop-intent/v1'
+         and all(stop_intent[key] == value[key] for key in
+                 ('transaction', 'attempt', 'unit', 'owner', 'receipt_sha256', 'unit_state'))
+         and value['stop_intent_sha256'] == hashlib.sha256(plans.canonical(stop_intent)).hexdigest(),
+         'native_terminal_proof_refused')
+    stopped = value['stopped_unit_state']
+    need(type(stopped) is dict and set(stopped) == {'LoadState', 'ActiveState', 'SubState',
+         'MainPID', 'ControlPID', 'Job', 'ControlGroup'}, 'native_terminal_proof_refused')
+    need(stopped['LoadState'] in ('loaded', 'not-found') and stopped['ActiveState'] == 'inactive'
+         and stopped['SubState'] == 'dead' and stopped['MainPID'] == stopped['ControlPID'] == '0'
+         and stopped['Job'] == '' and stopped['ControlGroup'] in ('', '/system.slice/' + unit),
+         'native_terminal_proof_refused')
+    try:
+        observed = dt.datetime.fromisoformat(value['observed_at'].replace('Z', '+00:00'))
+        completed = dt.datetime.fromisoformat(receipt['completed_at'].replace('Z', '+00:00'))
+        stop_at = dt.datetime.fromisoformat(stop_intent['observed_at'].replace('Z', '+00:00'))
+        current = dt.datetime.now(dt.timezone.utc) if now is None else now
+        need(observed.utcoffset() == completed.utcoffset() == stop_at.utcoffset()
+             == current.utcoffset() == dt.timedelta(0)
+             and completed <= stop_at <= observed <= current, 'native_terminal_proof_refused')
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise NativeRefused('native_terminal_proof_refused') from None
+    return value
+
+
 def validate_control(fields):
     """Validate PG18 backup control metadata, not infer process liveness from it.
 
@@ -303,17 +410,26 @@ class Native:
         except Exception:
             raise NativeRefused('private_configuration_changed') from None
 
-    def contain(self, phase):
-        for sig in (signal.SIGTERM, signal.SIGINT): signal.signal(sig, signal.SIG_IGN)
+    def record_failure(self, phase):
+        """Best-effort marker supplements the already durable incomplete intent."""
+        self.failed = True
         try:
             self.event('contained-' + phase, {'schema': 'careertrellis.bundle-restore-contained/v1',
-                       'owner': self.owner, 'phase': phase, 'operator_required': True})
+                       'owner': self.owner, 'phase': phase, 'operator_required': True,
+                       'native_restore_accepted': False, 'automatic_retry': False,
+                       'cleanup_performed': False, 'termination_profile': 'finite-control-group',
+                       'observed_at': dt.datetime.now(dt.timezone.utc).isoformat()})
         except Exception:
             pass
-        # Never release fences or signal an unknown process. The native unit's
-        # operator reconciliation is the only exit from ambiguous execution.
-        while True:
-            time.sleep(60)
+
+    def contain(self, phase):
+        self.record_failure(phase)
+        # Fixed entry must exit nonzero. systemd owns cgroup-wide SIGTERM then
+        # SIGKILL after 90s, including children that started new sessions. Never
+        # kill guessed PIDs, clean partial data or convert timeout into success.
+        # Kernel D-state may outlive SIGKILL: later dispatch still needs exact
+        # terminal/cgroup proof and the durable incomplete-attempt guard.
+        raise NativeRefused('native_restore_requires_reconciliation')
 
     def dispatch(self, argv, phase, timeout, maximum=0):
         proc = None
@@ -393,13 +509,8 @@ class Native:
     def observe(self):
         need(Path('/proc/self/cgroup').read_text().strip() == '0::' + self.group,
              'dedicated_owner_unit_required')
-        fields = ('MainPID', 'KillMode', 'SendSIGKILL', 'TimeoutStopUSec', 'RuntimeMaxUSec', 'PrivateNetwork')
-        raw = self.capture(['/usr/bin/systemctl', 'show', self.unit,
-                            '--property=' + ','.join(fields)])
-        unit = dict(line.split('=', 1) for line in raw.decode().splitlines())
-        need(unit == {'MainPID': str(os.getpid()), 'KillMode': 'process', 'SendSIGKILL': 'no',
-                      'TimeoutStopUSec': 'infinity', 'RuntimeMaxUSec': 'infinity', 'PrivateNetwork': 'yes'},
-             'owner_unit_containment_refused')
+        unit = common_io.read_unit_properties(self.unit, OWNER_FIELDS, self.capture)
+        validate_owner_unit(unit, os.getpid())
         need(self.group_members() == {os.getpid()}, 'owner_group_not_exclusive')
         for name in self.plan['idle_units']:
             raw = self.capture(['/usr/bin/systemctl', 'show', name,
@@ -749,6 +860,7 @@ class Native:
         self.dispatch(self.plan['checksums'], 'checksums', 600)
         self.verify_repository()
         self.configuration_unchanged()
+        need(not getattr(self, 'failed', False), 'native_attempt_already_failed')
         receipt = {'schema': 'careertrellis.onedrive-native-local-restore/v1', 'result': 'verified',
             'transaction': self.plan['transaction'], 'attempt': self.plan['attempt'],
             'archive_sha256': self.plan['archive_sha256'],
@@ -783,6 +895,10 @@ def execute(plan, web_preflight):
     finally:
         if native is not None:
             try:
-                native.configuration_unchanged()
+                try:
+                    native.configuration_unchanged()
+                except BaseException:
+                    native.record_failure('final-configuration')
+                    raise NativeRefused('native_restore_requires_reconciliation') from None
             finally:
                 native.close()
