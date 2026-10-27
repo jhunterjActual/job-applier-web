@@ -1,0 +1,24 @@
+{
+  "schema": "careertrellis.preparation-source-bundle/v1",
+  "runtime_sources": [
+    "preparation/collect_existing_provenance.py",
+    "preparation/prepare_release.py",
+    "preparation/run_checks.py"
+  ],
+  "source_files": {
+    ".gitattributes": "705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da",
+    "preparation/collect_existing_provenance.py": "817faa4e87248aac49f4cfc7cd8f074c0cac9e6c4c62fe8b8075ffb09899332d",
+    "preparation/extract_v5_controls.py": "3b9f6803a0c468814d4b2d73d8545c99a88524069abadc2f272d555b71f1edd5",
+    "preparation/prepare_release.py": "a0d3db047dda8062969ba7005054ab147dd2ccae6efab5a9b4789b2137b852b3",
+    "preparation/run_checks.py": "a812fea21f0908f36fdf9249f98b1a7a7c9b6af12881b63779325cfa17f2a97d",
+    "preparation/test_collector.py": "333928b0ebc23b23fb37549d00f516c638768d0d1e630a8268bdcfb83d7291a9",
+    "preparation/test_empty_collection.py": "d409ea88a9ec79bb487da7b13cb8020248aba962b0cefd2077bc1110e137abd5",
+    "preparation/test_extract_v5_controls.py": "6abc29ae168ed8bf1cd3b6027a8a79143a1557930c4435a0c3dcb8165052b768",
+    "preparation/test_opened_readonly.py": "4e1eea38dddbd2d0a44e731e2f4c4c2e91b2fa1f42291cc7b20dc5f8fa7b3189",
+    "preparation/test_preparation.py": "cdbf17dffcb758c059199a04c2da3a797c969c817b2c4be7d031963be47a3004",
+    "README.md": "031332efe6dfecd9e3ab9d725255d3dc3afdadf9147ff8ae3513e02aad410e5f"
+  },
+  "native_qualification": "controls verified; overall wrapper failed P60; corrected collection pure-tested only",
+  "full_preparation_accepted": false,
+  "activation_authority": false
+}
