@@ -64,7 +64,7 @@ def broker_policy(campaign,adapters):
 
 class Tests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory(dir=Path(__file__).parent,prefix='synthetic-broker-');self.addCleanup(self.temp.cleanup)
+        self.temp=tempfile.TemporaryDirectory(prefix='synthetic-broker-');self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.patch=patch.object(m,'fsync_dir',lambda p:None);self.patch.start();self.addCleanup(self.patch.stop)
         self.c=Campaign.create(self.root/'campaign.jsonl',campaign_policy());self.h=Harness();self.adapters=self.h.adapters();self.policy=broker_policy(self.c,self.adapters)
         self.b=m.Broker.create(self.root/'broker',self.c,self.policy,*self.adapters,reservation_calculator=request_reservation)
