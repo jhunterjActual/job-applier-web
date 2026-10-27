@@ -1,0 +1,2 @@
+* -text
+public-fixtures/prepare_release291d.py whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
