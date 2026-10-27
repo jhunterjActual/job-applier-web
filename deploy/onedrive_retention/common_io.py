@@ -15,7 +15,9 @@ SCALAR_PROPERTIES = frozenset(('LoadState', 'Type', 'Restart', 'RemainAfterExit'
 MAX_REPLY = 16384
 EMPTY_EXEC_ARRAY = b'a(sasbttttuii) 0\n'
 SERVICE = re.compile(r'careertrellis-onedrive-bundle-(?:'
-    r'(?:hydrate|publish|restore|collector|retire)-[0-9a-f]{32}(?:-0[2-9])?'
+    r'(?:hydrate|publish|prepare|retire)-collector-[0-9a-f]{32}'
+    r'|'
+    r'(?:hydrate|publish|restore|collector|prepare|retire)-[0-9a-f]{32}(?:-0[2-9])?'
     r'|identity-[0-9a-f]{32}-(?:0[1-9]|[1-9][0-9]))\.service\Z')
 
 

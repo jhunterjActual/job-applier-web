@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import types
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, Mock
 
 from deploy.onedrive_retention import bundle, identity_collect as identity
 
@@ -64,6 +64,44 @@ class Fake:
 
 
 class IdentityTests(unittest.TestCase):
+    def native_contract_fixture(self,fake):
+        native = identity.Native()
+        for name in ('locked','preflight','download_receipt','begin','now','monotonic',
+                     'stat_object','download','downloaded_digest','unchanged','finish','failed'):
+            setattr(native,name,getattr(fake,name))
+        return native
+
+    def test_native_contract_requires_same_graph_etag_around_downloaded_bytes(self):
+        # No native IO: every effect replaced by the explicit synthetic fixture.
+        fake = Fake(); native = self.native_contract_fixture(fake)
+        row = {'object_id':fake.before['ID'],'size':len(DATA),'etag':'"version-1"'}
+        native.graph_metadata = Mock(side_effect=[row,dict(row)])
+        identity.collect(TX,1,native)
+        self.assertEqual(fake.receipt['schema'],'careertrellis.onedrive-bundle-identity/v2')
+        self.assertTrue(fake.receipt['etag_verified_before_after_download'])
+        self.assertEqual(fake.receipt['etag'],'"version-1"')
+        self.assertEqual(native.graph_metadata.call_count,2)
+        fake = Fake();native = self.native_contract_fixture(fake)
+        native.graph_metadata = Mock(side_effect=[row,dict(row,etag='"version-2"')])
+        with self.assertRaises(identity.IdentityRefused):identity.collect(TX,1,native)
+        self.assertIsNone(fake.receipt);self.assertIn('failed',fake.events)
+
+    def test_idle_delegates_retention_parent_authentication_and_keeps_legacy_fences(self):
+        from deploy.onedrive_retention import entry
+        native=identity.Native();native.transaction=TX;native.verification=1
+        def system(args):
+            if args[1]=='list-units':
+                self.assertNotIn('careertrellis-onedrive-bundle-*.service',args)
+                return b''
+            return b'ActiveState=inactive\nMainPID=0\nControlPID=0\nJob=\nControlGroup=\n'
+        native.system=Mock(side_effect=system)
+        with patch.object(entry,'identity_reverification_idle',return_value=True) as guard:
+            native.idle();guard.assert_called_once_with(TX,1)
+        native.system.reset_mock()
+        with patch.object(entry,'identity_reverification_idle',return_value=False):
+            with self.assertRaises(identity.IdentityRefused):native.idle()
+        native.system.assert_not_called()
+
     def test_default_refuses_without_creating_backend_or_provider_calls(self):
         with patch.object(identity.subprocess, 'Popen') as spawn:
             with self.assertRaisesRegex(identity.IdentityRefused, 'native_identity_collector_not_installed'):

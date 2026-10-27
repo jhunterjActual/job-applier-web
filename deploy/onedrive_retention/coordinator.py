@@ -21,7 +21,7 @@ EXPIRY = dt.datetime(2027, 1, 24, tzinfo=dt.timezone.utc)
 PRIVATE_POLICY = Path("/etc/careertrellis/onedrive-retention/policy.json")
 STATE = Path("/var/lib/careertrellis/onedrive-retention")
 PUBLIC = Path("/var/lib/careertrellis/onedrive-retention-public")
-STAGES = ("hydrate", "publish", "restore", "retire")
+STAGES = ("hydrate", "publish", "restore", "prepare", "retire")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 TX = re.compile(r"[0-9a-f]{32}\Z")
 
@@ -49,7 +49,10 @@ class Policy:
             "keep_verified", "grace_seconds", "schedule_hour_utc", "schedule_minute_utc",
             "artifact_revision", "paired_policy_sha256"})
         need(value["schema"] == "careertrellis.onedrive-retention-policy/v1"
-             and type(value["enabled"]) is bool and value["application_release"] == RELEASE)
+             and type(value["enabled"]) is bool
+             and type(value["application_release"]) is str
+             and re.fullmatch(r"[0-9a-f]{40}", value["application_release"])
+             and value["application_release"] != "0"*40)
         need(timestamp(value["valid_until"]) <= EXPIRY)
         for key, low, high in (("reserve_percent", 20, 99), ("peak_multiplier", 4, 100),
                 ("namespace_budget_bytes", 1, 512*1024**2), ("keep_verified", 2, 100),
@@ -73,14 +76,17 @@ def native_policy_binding(policy):
     need(private == public and bundle.canonical(policy.data) == private)
 
 
-def web_proof(value, now):
+def web_proof(value, now, expected_release=None):
     need(type(value) is dict and set(value) == {"schema", "host", "authority", "pending_phase",
         "activation_lease_absent", "services_healthy", "release_binding_verified", "release", "observed_at"})
     need(value["schema"] == "careertrellis.onedrive-restore-web-preflight/v1"
          and value["host"] == "careertrellis-staging-web-1"
          and value["authority"] == "postgres-r2-authoritative" and value["pending_phase"] == "activated"
          and all(value[key] is True for key in ("activation_lease_absent", "services_healthy", "release_binding_verified"))
-         and value["release"] == RELEASE and 0 <= (now-timestamp(value["observed_at"])).total_seconds() <= 300)
+         and type(value["release"]) is str and re.fullmatch(r"[0-9a-f]{40}", value["release"])
+         and value["release"] != "0"*40
+         and (expected_release is None or value["release"] == expected_release)
+         and 0 <= (now-timestamp(value["observed_at"])).total_seconds() <= 300)
     return value
 
 
@@ -97,7 +103,10 @@ def run(transaction, policy, backend):
                 policy.require_active(backend.now())
                 facts = {} if previous is None else {"predecessor_receipt_sha256": previous["receipt_sha256"]}
                 payload = {"stage": stage, "receipt_facts": facts}
-                if stage == "restore": payload["web_preflight"] = web_proof(backend.web_preflight(), backend.now())
+                if type(backend) is NativeWEB:
+                    payload['web_history'] = backend.web_history(transaction, stage)
+                if stage == "restore": payload["web_preflight"] = web_proof(
+                    backend.web_preflight(), backend.now(), policy.data["application_release"])
                 request = endpoint.request(policy.digest, transaction, stage, payload)
                 backend.once(stage + "-intent.json", request)
                 response = backend.call(request)  # One dispatch only, even on lost acknowledgement.
@@ -208,7 +217,38 @@ class NativeWEB:
     @contextmanager
     def locked(self):
         need(os.geteuid() == os.getegid() == 0 and socket.gethostname() == "careertrellis-staging-web-1")
-        with control(self.root): yield
+        # All OneDrive writers on WEB share this existing canonical fence.
+        # Keep it for the entire coordinator lifetime, including DB waits.
+        # Other writers must inspect DB histories after acquiring it: if this
+        # coordinator dies, a still-running DB job remains a blocking attempt.
+        import fcntl
+        path = Path('/run/lock/careertrellis-maintenance.lock')
+        for parent in path.parents:
+            meta = parent.lstat()
+            need(stat.S_ISDIR(meta.st_mode) and meta.st_uid == meta.st_gid == 0
+                 and (stat.S_IMODE(meta.st_mode) == 0o1777 if parent == Path('/run/lock')
+                      else not meta.st_mode & 0o022))
+        before = path.lstat()
+        need(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0
+             and stat.S_IMODE(before.st_mode) == 0o644 and before.st_nlink == 1 and before.st_size == 0)
+        fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            identity = lambda meta:(meta.st_dev, meta.st_ino, meta.st_mode, meta.st_uid,
+                meta.st_gid, meta.st_nlink, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns)
+            expected = identity(before)
+            need(identity(os.fstat(fd)) == expected)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with control(self.root):
+                need(identity(os.fstat(fd)) == identity(path.lstat()) == expected)
+                yield
+                need(identity(os.fstat(fd)) == identity(path.lstat()) == expected)
+        finally: os.close(fd)
+
+    def web_history(self, transaction, stage):
+        from . import guard
+        value = guard.native_history_snapshot(transaction, stage)
+        guard.validate_peer_history(value, transaction, stage, self.policy.digest)
+        return value
 
     def preflight(self):
         from . import entry  # Absent/unreviewed entry fails closed; no fallback.
@@ -257,7 +297,8 @@ class NativeWEB:
         return {"schema": "careertrellis.onedrive-restore-web-preflight/v1",
             "host": "careertrellis-staging-web-1", "authority": "postgres-r2-authoritative",
             "pending_phase": "activated", "activation_lease_absent": True, "services_healthy": True,
-            "release_binding_verified": True, "release": RELEASE, "observed_at": self.now().isoformat()}
+            "release_binding_verified": True, "release": self.policy.data["application_release"],
+            "observed_at": self.now().isoformat()}
 
     def call(self, request):
         from paired_maintenance.client import Client

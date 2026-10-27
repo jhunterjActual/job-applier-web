@@ -3,8 +3,9 @@
 Pure validation authenticates nothing. Native admission additionally requires
 protected native journals, a reviewed terminal-proof validator/collector, and a
 protected provider object-identity receipt. Missing integration fails closed.
-Historical acceptance records are immutable; retirement tombstones are not yet
-supported, so missing/unknown provider objects require reconciliation.
+Historical acceptance records remain immutable. Only an authenticated complete
+native retirement chain creates committed tombstones; other missing/unknown
+provider objects require reconciliation.
 """
 from contextlib import contextmanager
 import datetime as dt
@@ -68,6 +69,21 @@ def hex_value(value, length=64):
 def keys(value, expected): need(type(value) is dict and set(value) == set(expected))
 
 
+def read_identity(io, transaction):
+    """Select latest immutable numbered witness, refusing later partial attempts."""
+    need(hex_value(transaction,32)); source = SOURCE_ROOT/transaction
+    names = io.names_at(source)
+    numbered = sorted(name for name in names if re.fullmatch(r'bundle-object-identity-[0-9]{2}\.json',name))
+    if not numbered: return decode(io.read(source/'bundle-object-identity.json'))
+    latest = int(numbered[-1][-7:-5]); need(1 <= latest <= 99)
+    attempts = [int(name[-2:]) for name in names if re.fullmatch('identity-verification-[0-9]{2}',name)]
+    need(all(number <= latest for number in attempts), 'later_identity_attempt_requires_reconciliation')
+    raw = io.read(source/numbered[-1])
+    receipt = io.read(source/('identity-verification-%02d'%latest)/'receipt.json')
+    need(raw == receipt,'identity_alias_receipt_mismatch')
+    return decode(raw)
+
+
 def process_identity(value):
     keys(value, ('pid', 'start_ticks', 'process_group', 'boot_id'))
     need(type(value['pid']) is int and value['pid'] > 1
@@ -113,9 +129,16 @@ def acceptance_entry(plan, manifest, download_raw, native_raw, identity, accepte
         need(manifest['generation_sha256'] == plan['generation_sha256']
              and manifest['backup_label'] == plan['backup_label'])
         need(timestamp(download['completed_at']) <= timestamp(native['completed_at']) <= now)
-        keys(identity, ('schema', 'observed_at', 'download_receipt_sha256', 'path', 'object_id',
-                        'size', 'sha256', 'identity_verified_before_after_download'))
-        need(identity['schema'] == 'careertrellis.onedrive-bundle-identity/v1'
+        identity_keys = {'schema', 'observed_at', 'download_receipt_sha256', 'path', 'object_id',
+                        'size', 'sha256', 'identity_verified_before_after_download'}
+        if identity.get('schema') == 'careertrellis.onedrive-bundle-identity/v2':
+            from . import graph_delete
+            identity_keys |= {'etag', 'etag_verified_before_after_download'}
+            need(identity.get('etag_verified_before_after_download') is True
+                 and graph_delete.valid_etag(identity.get('etag')))
+        keys(identity, identity_keys)
+        need(identity['schema'] in ('careertrellis.onedrive-bundle-identity/v1',
+                                   'careertrellis.onedrive-bundle-identity/v2')
              and identity['identity_verified_before_after_download'] is True,
              'provider_identity_receipt_required')
         need(identity['download_receipt_sha256'] == sha(download_raw)
@@ -244,14 +267,19 @@ class Catalog:
 
     def accept(self, transaction, attempt=1, *, dependencies=()):
         need(hex_value(transaction, 32) and type(attempt) is int and 1 <= attempt <= 9)
+        need(self.io.authentication != 'root-protected-native-journals' or type(self.io) is NativeFiles,
+             'caller_selected_native_catalog_refused')
         source = SOURCE_ROOT / transaction
         root = RESTORE_ROOT / (transaction + ('' if attempt == 1 else '-%02d' % attempt))
         try:
             download_raw = self.io.read(source / 'downloaded-receipt.json')
             native_raw = self.io.read(root / 'complete.json')
             manifest = decode(self.io.read(source / 'downloaded-manifest.json', bundle.MAX_MANIFEST), bundle.MAX_MANIFEST)
-            try: identity = decode(self.io.read(source / 'bundle-object-identity.json'))
+            try: identity = read_identity(self.io, transaction)
             except FileNotFoundError: raise CatalogRefused('provider_identity_receipt_required') from None
+            if self.io.authentication == 'root-protected-native-journals':
+                need(identity.get('schema') == 'careertrellis.onedrive-bundle-identity/v2',
+                     'native_etag_byte_witness_required')
             try: terminal_raw = self.io.read(root / 'unit-terminal-proof.json')
             except FileNotFoundError: raise CatalogRefused('native_terminal_proof_required') from None
             ownership = decode(self.io.read(root / 'ownership.json'))
@@ -265,7 +293,8 @@ class Catalog:
                     now.isoformat(), dependencies=dependencies)
                 entry = claimed['entry']; identifier = entry['id']
                 need(identifier not in existing, 'duplicate_archive_is_not_a_successor')
-                need(all(key in existing for key in entry['dependencies']), 'unresolved_bundle_dependency')
+                need(all(key in existing and key not in self.retired(existing) for key in entry['dependencies']),
+                     'unresolved_bundle_dependency')
                 need(all(timestamp(record['entry']['accepted_at']) < now for record in existing.values()),
                      'ambiguous_acceptance_order')
                 record = {'schema': 'careertrellis.onedrive-bundle-acceptance/v1',
@@ -280,7 +309,7 @@ class Catalog:
                     'intent_sha256': sha(bundle.canonical(intent)), 'record_sha256': sha(raw)}))
                 return {'schema': 'careertrellis.onedrive-catalog-admission/v1',
                     'archive_sha256': identifier, 'record_sha256': sha(raw),
-                    'native_authenticated': self.io.authentication == 'root-protected-native-journals',
+                    'native_authenticated': type(self.io) is NativeFiles,
                     'retirement_performed': False}
         except CatalogRefused: raise
         except Exception: raise CatalogRefused('catalog_admission_requires_reconciliation') from None
@@ -296,7 +325,8 @@ class Catalog:
              and all(hex_value(value) for value in hold['bundles'])
              and len(set(hold['bundles'])) == len(hold['bundles']))
         with self.io.locked():
-            records = self.records(); need(all(value in records for value in hold['bundles']))
+            records = self.records(); retired = self.retired(records)
+            need(all(value in records and value not in retired for value in hold['bundles']))
             self.io.write_store('holds/' + hold['name'] + '.json', bundle.canonical(hold))
 
     def snapshot(self, inventory, *, current_ids=()):
@@ -304,7 +334,10 @@ class Catalog:
         with self.io.locked():
             records = self.records(); entries = []; expected = {}
             need(type(current_ids) in (tuple, list, set, frozenset) and all(value in records for value in current_ids))
+            retired = self.retired(records)
+            need(not set(current_ids) & retired, 'current_bundle_has_retirement_record')
             for identifier, record in records.items():
+                if identifier in retired: continue
                 entry = json.loads(bundle.canonical(record['entry'])); entry['current'] = identifier in current_ids
                 need(timestamp(entry['accepted_at']) <= timestamp(inventory['observed_at']))
                 entries.append(entry)
@@ -315,9 +348,113 @@ class Catalog:
             for name in sorted(self.io.names('holds')):
                 need(type(name) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.json', name))
                 value = decode(self.io.read_store('holds/' + name))
-                need(value['name'] + '.json' == name); holds.append(value)
+                need(value['name'] + '.json' == name
+                     and not set(value['bundles']) & retired, 'held_bundle_has_retirement_record')
+                holds.append(value)
             return {'schema': 'careertrellis.onedrive-bundle-catalog/v1',
                 'observed_at': inventory['observed_at'], 'entries': entries, 'holds': holds}
+
+    def retired(self, records):
+        """Read immutable committed tombstones; never infer retirement from absence."""
+        if not hasattr(self.io, 'supports_tombstones'): return set()
+        names = self.io.names('tombstones')
+        need(names == self.io.names('tombstone-intents') == self.io.names('tombstone-complete'),
+             'retirement_catalog_interruption_requires_reconciliation')
+        result = set()
+        for name in names:
+            need(re.fullmatch(r'[0-9a-f]{64}\.json', name) and name[:-5] in records)
+            raw = self.io.read_store('tombstones/'+name); value = decode(raw)
+            keys(value, ('schema', 'archive_sha256', 'acceptance_record_sha256',
+                         'retirement_receipt_sha256', 'retired_at', 'authentication'))
+            need(value['schema'] == 'careertrellis.onedrive-retired-bundle/v1'
+                 and value['archive_sha256'] == name[:-5]
+                 and value['acceptance_record_sha256'] == sha(bundle.canonical(records[name[:-5]]))
+                 and value['authentication'] == self.io.authentication
+                 and hex_value(value['retirement_receipt_sha256'])
+                 and timestamp(value['retired_at']) <= self.clock())
+            intent = decode(self.io.read_store('tombstone-intents/'+name))
+            complete = decode(self.io.read_store('tombstone-complete/'+name))
+            need(intent == {'record_sha256':sha(raw), 'archive_sha256':name[:-5]}
+                 and complete == {'intent_sha256':sha(bundle.canonical(intent)), 'record_sha256':sha(raw)})
+            result.add(name[:-5])
+        return result
+
+    def commit_retirement(self, transaction):
+        """Authenticate an exact completed native chain before catalog retirement.
+
+        The native adapter publishes every per-object intent/ack/absence record
+        before operation-complete. No caller-supplied terminal claim is accepted.
+        """
+        need(hex_value(transaction, 32) and type(self.io) is NativeFiles
+             and self.io.authentication == 'root-protected-native-journals')
+        with self.io.locked():
+            records = self.records(); retired = self.retired(records)
+            operation = decode(self.io.read_retirement(transaction, 'operation-intent.json'))
+            complete_raw = self.io.read_retirement(transaction, 'operation-complete.json')
+            complete = decode(complete_raw)
+            need(operation.get('schema') == 'careertrellis.bundle-retirement-native-intent/v1'
+                 and operation.get('transaction') == transaction and operation.get('simulation') is False
+                 and operation.get('namespace') == NAMESPACE
+                 and complete.get('schema') == 'careertrellis.bundle-retirement-native/v1'
+                 and complete.get('transaction') == transaction
+                 and complete.get('native_retirement_accepted') is True
+                 and complete.get('result') == 'complete'
+                 and complete.get('catalog_sha256') == operation.get('catalog_sha256')
+                 and complete.get('retention_policy_sha256') == operation.get('retention_policy_sha256')
+                 and complete.get('operation_intent_sha256') == sha(bundle.canonical(operation)))
+            planned = operation['catalog']; planned_at = operation['plan']['planned_at']
+            need(operation['catalog_sha256'] == sha(policy.canonical(planned)))
+            from . import retire
+            recalculated = retire.prepare(planned, planned_at)
+            need(recalculated == operation['plan'])
+            expected_ids = {row['bundle_id'] for row in recalculated['candidates']}
+            need(not expected_ids & retired and expected_ids <= set(records))
+            need({row['id'] for row in planned['entries']} == set(records)-retired)
+            current_holds = [decode(self.io.read_store('holds/'+name)) for name in sorted(self.io.names('holds'))]
+            need(current_holds == planned['holds'], 'holds_changed_since_retirement_plan')
+            for entry in planned['entries']:
+                original = dict(records[entry['id']]['entry']); original['current'] = entry['current']
+                need(original == entry)
+            terminals = []; count = 0
+            for candidate in recalculated['candidates']:
+                for obj in candidate['objects']:
+                    prefix = 'object-%05d-' % count
+                    intent_raw = self.io.read_retirement(transaction, prefix+'intent.json')
+                    intent = decode(intent_raw); ack_raw = self.io.read_retirement(transaction, prefix+'ack.json')
+                    ack = decode(ack_raw); terminal_raw = self.io.read_retirement(transaction, prefix+'terminal.json')
+                    terminal = decode(terminal_raw)
+                    dispatch = decode(self.io.read_retirement(transaction, prefix+'dispatch.json'))
+                    need(intent.get('schema') == 'careertrellis.bundle-object-retirement-intent/v1'
+                         and intent.get('namespace') == NAMESPACE and intent.get('sequence') == count
+                         and intent.get('operation_intent_sha256') == sha(bundle.canonical(operation))
+                         and intent.get('transaction') == transaction and intent.get('object') == obj
+                         and intent.get('bundle_id') == candidate['bundle_id'] and intent.get('simulation') is False
+                         and dispatch == {'intent_sha256':sha(intent_raw), 'simulation':False}
+                         and ack == {'result':'deleted', 'object_id':obj['object_id'],
+                             'request_id':sha(intent_raw), 'recoverable':True, 'permanent':False}
+                         and terminal.get('schema') == 'careertrellis.bundle-object-retirement-terminal/v1'
+                         and terminal.get('transaction') == transaction and terminal.get('sequence') == count
+                         and terminal.get('namespace') == NAMESPACE and terminal.get('bundle_id') == candidate['bundle_id']
+                         and terminal.get('intent_sha256') == sha(intent_raw)
+                         and terminal.get('dispatch_ack_sha256') == sha(ack_raw)
+                         and terminal.get('object') == obj and terminal.get('absent') is True
+                         and terminal.get('simulation') is False)
+                    need(timestamp(terminal['absence_observed_at']) <= timestamp(complete['completed_at']) <= self.clock())
+                    terminals.append(sha(terminal_raw)); count += 1
+            need(complete.get('terminal_receipt_sha256') == terminals
+                 and type(complete.get('deletions_performed')) is int and complete['deletions_performed'] == count)
+            for identifier in sorted(expected_ids):
+                record = {'schema':'careertrellis.onedrive-retired-bundle/v1', 'archive_sha256':identifier,
+                    'acceptance_record_sha256':sha(bundle.canonical(records[identifier])),
+                    'retirement_receipt_sha256':sha(complete_raw), 'retired_at':complete['completed_at'],
+                    'authentication':self.io.authentication}
+                raw = bundle.canonical(record); name = identifier+'.json'
+                intent = {'record_sha256':sha(raw), 'archive_sha256':identifier}
+                self.io.write_store('tombstone-intents/'+name, bundle.canonical(intent))
+                self.io.write_store('tombstones/'+name, raw)
+                self.io.write_store('tombstone-complete/'+name, bundle.canonical({
+                    'intent_sha256':sha(bundle.canonical(intent)), 'record_sha256':sha(raw)}))
+            return sorted(expected_ids)
 
     def retirement_plan(self, inventory, *, current_ids=()):
         catalog = self.snapshot(inventory, current_ids=current_ids)
@@ -332,6 +469,7 @@ class Catalog:
 class NativeFiles:
     """Fixed-root native storage. Existing canonical repository lock is required."""
     authentication = 'root-protected-native-journals'
+    supports_tombstones = True
 
     def __init__(self, repository_lock_fd):
         need(hasattr(os, 'geteuid') and hasattr(os, 'getegid') and os.geteuid() == os.getegid() == 0
@@ -417,7 +555,7 @@ class NativeFiles:
     def read(self, path, limit=MAX_RECORD):
         path = Path(path)
         source = re.fullmatch(re.escape(str(SOURCE_ROOT)) + r'/[0-9a-f]{32}/'
-            r'(?:downloaded-receipt\.json|downloaded-manifest\.json|bundle-object-identity\.json)', str(path))
+            r'(?:downloaded-receipt\.json|downloaded-manifest\.json|bundle-object-identity(?:-[0-9]{2})?\.json|identity-verification-[0-9]{2}/receipt\.json)', str(path))
         native = re.fullmatch(re.escape(str(RESTORE_ROOT)) + r'/[0-9a-f]{32}(?:-0[2-9])?/'
             r'(?:complete|ownership|unit-terminal-proof|unit-stop-intent|(?:info|restore|start|probe|stop|checksums)-(?:intent|dispatch|terminal))\.json', str(path))
         need(source or native, 'catalog_evidence_path_refused')
@@ -431,13 +569,13 @@ class NativeFiles:
 
     def _store_path(self, name):
         need(type(name) is str and re.fullmatch(
-            r'(?:accepted|intents|complete)/[0-9a-f]{64}\.json|holds/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.json', name))
+            r'(?:accepted|intents|complete|tombstones|tombstone-intents|tombstone-complete)/[0-9a-f]{64}\.json|holds/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.json', name))
         return ROOT / name
 
     def read_store(self, name): return self._protected(self._store_path(name), MAX_RECORD)
 
     def names(self, branch):
-        need(branch in ('accepted', 'intents', 'complete', 'holds'))
+        need(branch in ('accepted', 'intents', 'complete', 'holds', 'tombstones', 'tombstone-intents', 'tombstone-complete'))
         with self.directory(ROOT / branch, private=True) as fd:
             import itertools
             with os.scandir(fd) as rows: values = [row.name for row in itertools.islice(rows, MAX_ENTRIES + 1)]
@@ -466,7 +604,7 @@ class NativeFiles:
             except FileExistsError: pass
             os.fsync(parent)
         with self.directory(ROOT, private=True) as root:
-            for name in ('accepted', 'intents', 'complete', 'holds'):
+            for name in ('accepted', 'intents', 'complete', 'holds', 'tombstones', 'tombstone-intents', 'tombstone-complete'):
                 try: os.mkdir(name, mode=0o700, dir_fd=root)
                 except FileExistsError: pass
                 with self.directory(ROOT / name, private=True): pass
@@ -488,6 +626,12 @@ class NativeFiles:
                 need((after.st_dev, after.st_ino) == (meta.st_dev, meta.st_ino))
                 self.require_repository_lock()
             finally: os.close(fd)
+
+    def read_retirement(self, transaction, name):
+        need(hex_value(transaction, 32) and type(name) is str and re.fullmatch(
+            r'operation-(?:intent|complete)\.json|object-[0-9]{5}-(?:intent|dispatch|ack|terminal)\.json', name))
+        self.require_repository_lock()
+        return self._protected(ROOT.parent/'retirements'/transaction/name, MAX_RECORD)
 
 
 class NativeStore(Catalog):

@@ -22,7 +22,7 @@ import stat
 import subprocess
 import time
 
-from . import bundle, capture_plan, catalog, hydrate, common_io
+from . import bundle, capture_plan, catalog, hydrate, common_io, graph_delete
 
 
 ROOT = Path('/var/lib/careertrellis/onedrive-bundles')
@@ -128,12 +128,15 @@ def collect(transaction, verification=1, backend=None):
         started = backend.monotonic()
         try:
             before = stat_identity(backend.stat_object(observed, 'before'), observed['archive_bytes'])
+            graph_before = backend.graph_metadata(before) if type(backend) is Native else None
             backend.download(observed)
             digest, size = backend.downloaded_digest()
             need(digest == observed['archive_sha256'] and size == observed['archive_bytes'],
                  'current_object_download_mismatch')
             after = stat_identity(backend.stat_object(observed, 'after'), observed['archive_bytes'])
             need(before == after, 'current_object_identity_changed')
+            graph_after = backend.graph_metadata(after) if type(backend) is Native else None
+            need(graph_before == graph_after, 'current_object_etag_changed')
             now = backend.now(); elapsed = backend.monotonic() - started
             need(math.isfinite(elapsed) and 0 <= elapsed <= MAX_ELAPSED_SECONDS
                  and timestamp(observed['completed_at']) <= now,
@@ -144,6 +147,9 @@ def collect(transaction, verification=1, backend=None):
                 'path': observed['archive_sha256'] + '/repository.tar',
                 'object_id': after['object_id'], 'size': size, 'sha256': digest,
                 'identity_verified_before_after_download': True}
+            if type(backend) is Native:
+                value.update(schema='careertrellis.onedrive-bundle-identity/v2',
+                    etag=graph_after['etag'], etag_verified_before_after_download=True)
             backend.finish(value)
             return {'schema': 'careertrellis.onedrive-identity-collection/v1',
                 'result': 'fresh_reverification_complete', 'verification': verification,
@@ -225,14 +231,17 @@ class Native:
         return common_io.read_unit_properties(self.unit, PROFILE_FIELDS, self.system)
 
     def idle(self):
+        from . import entry
+        need(entry.identity_reverification_idle(self.transaction,self.verification) is True,
+             'persistent_identity_idle_guard_required')
         units = list(hydrate.UNITS)
         raw = self.system(['/usr/bin/systemctl', 'list-units', '--all', '--plain', '--no-legend',
-            '--no-pager', 'careertrellis-paired-db*.service', 'careertrellis-onedrive-bundle-*.service'])
+            '--no-pager', 'careertrellis-paired-db*.service'])
         lines = raw.decode('ascii').splitlines(); need(len(lines) <= 128)
         for line in lines:
             unit = line.split()[0]
-            need(re.fullmatch(r'careertrellis-(?:paired-db(?:-recovery)?@|onedrive-bundle-[a-z]+-)[0-9a-f]{32}(?:-[0-9]{2})?\.service', unit))
-            if unit != self.unit: units.append(unit)
+            need(re.fullmatch(r'careertrellis-paired-db(?:-recovery)?@[0-9a-f]{32}\.service', unit))
+            units.append(unit)
         for unit in units:
             raw = self.system(['/usr/bin/systemctl', 'show', unit,
                 '--property=ActiveState,MainPID,ControlPID,Job,ControlGroup'])
@@ -243,9 +252,13 @@ class Native:
             if group:
                 need(group == '/system.slice/'+unit)
                 root = Path('/sys/fs/cgroup')/group.lstrip('/')
-                if root.exists():
+                try: meta = root.lstat()
+                except FileNotFoundError: continue
+                else:
+                    need(stat.S_ISDIR(meta.st_mode) and meta.st_uid == 0 and not meta.st_mode & 0o022)
                     import itertools
-                    files = list(itertools.islice(root.rglob('cgroup.procs'), 65)); need(len(files) <= 64)
+                    files = list(itertools.islice(root.rglob('cgroup.procs'), 65))
+                    need(0 < len(files) <= 64 and root/'cgroup.procs' in files)
                     need(all(not path.read_text().strip() for path in files))
 
     @contextmanager
@@ -327,13 +340,19 @@ class Native:
         with bundle._directory(self.source) as fd:
             meta = os.fstat(fd)
             need(meta.st_uid == meta.st_gid == 0 and stat.S_IMODE(meta.st_mode) == 0o700)
-        need(not os.path.lexists(self.source/'bundle-object-identity.json'), 'identity_receipt_already_exists')
         raw = hydrate.protected(self.source/'downloaded-receipt.json', 0o600)[0]
         self.download_receipt_snapshot = raw
         return raw
 
     def begin(self, transaction, verification, observed, digest):
         self.expected = observed
+        with bundle._directory(self.source) as fd:
+            names = os.listdir(fd)
+        existing = [int(name[-7:-5]) for name in names
+                    if re.fullmatch(r'bundle-object-identity-[0-9]{2}\.json',name)]
+        attempts = [int(name[-2:]) for name in names if re.fullmatch('identity-verification-[0-9]{2}',name)]
+        need(set(attempts) == set(existing), 'prior_identity_attempt_requires_reconciliation')
+        need(not existing or verification > max(existing), 'identity_verification_must_advance')
         manifest_raw = hydrate.protected(self.source/'downloaded-manifest.json', 0o600)[0]
         manifest = catalog.decode(manifest_raw, bundle.MAX_MANIFEST); bundle.validate_manifest(manifest)
         need(sha(manifest_raw) == observed['manifest_sha256'] and manifest['backup_label'] == observed['backup_label']
@@ -351,6 +370,12 @@ class Native:
             'owner': self.owner, 'started_at': self.now().isoformat()}))
 
     def target(self, observed): return NAMESPACE+'/'+observed['archive_sha256']+'/repository.tar'
+    def graph_metadata(self, identity):
+        if not hasattr(self, '_graph'):
+            self._graph = graph_delete.Client(graph_delete.native_grant(self.transaction,
+                self.expected['archive_sha256'], self.fds[-1], verification=self.verification))
+        self._unchanged()
+        return self._graph.metadata(identity['object_id'], identity['size'])
     def stat_object(self, observed, phase):
         return self.command(['lsjson', self.target(observed), '--stat', '--no-modtime', '--no-mimetype'],
                             'stat-'+phase, output=True)
@@ -383,7 +408,9 @@ class Native:
     def finish(self, value):
         raw = bundle.canonical(value)
         hydrate.exclusive(self.root/'receipt.json', raw)
-        hydrate.exclusive(self.source/'bundle-object-identity.json', raw)
+        hydrate.exclusive(self.source/('bundle-object-identity-%02d.json'%self.verification), raw)
+        if not os.path.lexists(self.source/'bundle-object-identity.json'):
+            hydrate.exclusive(self.source/'bundle-object-identity.json', raw)
     def failed(self):
         if self.root is not None:
             hydrate.exclusive(self.root/'failed.json', bundle.canonical({'result': 'failed_requires_reconciliation',

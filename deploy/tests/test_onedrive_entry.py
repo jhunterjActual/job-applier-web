@@ -1,9 +1,11 @@
 """Synthetic protected-package and routing contracts; no native side effects."""
 import datetime as dt
+import contextlib
 import hashlib
 import io
 from pathlib import Path
 import stat
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -49,7 +51,7 @@ class ManifestTests(unittest.TestCase):
         result=entry.verify_fixture(Reader())
         self.assertEqual(result['revision'],'a'*40)
         self.assertFalse(result['authenticated']);self.assertFalse(result['native_actions'])
-        self.assertEqual(len(entry.FILES),22)
+        self.assertEqual(len(entry.FILES),24)
     def test_missing_extra_or_tampered_module_refuses(self):
         for action in ('missing','extra','tampered'):
             reader=Reader()
@@ -93,6 +95,19 @@ class ManifestTests(unittest.TestCase):
 
 
 class RoutingTests(unittest.TestCase):
+    def test_paired_namespace_requires_verified_package_without_sys_path_change(self):
+        before=list(sys.path)
+        prior=sys.modules.pop('paired_maintenance',None)
+        try:
+            with patch.object(entry,'_PairedPackage',return_value=contextlib.nullcontext(object())), \
+                    patch.object(entry,'verify_package',return_value={}) as verify:
+                package=entry._paired_namespace()
+            self.assertEqual(list(package.__path__),[str(entry.PAIRED_ROOT)])
+            self.assertEqual(sys.path,before);verify.assert_called_once()
+        finally:
+            sys.modules.pop('paired_maintenance',None)
+            if prior is not None:sys.modules['paired_maintenance']=prior
+
     def test_all_fixed_stages_dispatch_offline_without_native_acceptance(self):
         for stage in entry.STAGES:
             backend=Offline();result=entry.route(['db-stage',stage,'--transaction','d'*32],backend)
@@ -115,12 +130,12 @@ class RoutingTests(unittest.TestCase):
             with self.subTest(field=field),self.assertRaises(entry.EntryRefused):
                 entry.route(['db-stage','hydrate','--transaction','d'*32],backend)
             self.assertEqual(backend.calls,[])
-    def test_native_hooks_are_explicitly_unavailable_not_successful_stubs(self):
+    def test_native_hooks_require_fixed_installed_source_not_successful_stubs(self):
         for function,args in ((entry.retention_idle,('d'*32,'hydrate')),
                 (entry.observe_retention_stage,('d'*32,'restore','f'*64)),
                 (entry.dispatch_native_with_collector,('d'*32,)),
                 (entry.identity_reverification_idle,('d'*32,1))):
-            with self.assertRaisesRegex(entry.EntryRefused,'^retention_native_integration_unavailable$'):
+            with self.assertRaises(entry.EntryRefused):
                 function(*args)
     def test_cli_refuses_without_native_dependencies_and_never_dispatches(self):
         with patch.object(entry,'verify_install',return_value='a'*40), \
@@ -130,9 +145,18 @@ class RoutingTests(unittest.TestCase):
             self.assertNotIn('private details',output.getvalue())
             self.assertIn('"native_actions":false',output.getvalue())
             deps.assert_called_once_with('a'*40,'db')
-    def test_matching_baseline_context_still_does_not_enable_native_dispatch(self):
+    def test_matching_baseline_context_still_requires_verified_execution_module(self):
         with patch.object(entry,'verify_install',return_value='a'*40), \
                 patch.object(entry,'_native_dependencies',return_value=SimpleNamespace(authenticated=True)), \
                 patch('sys.stdout',new_callable=io.StringIO) as output:
             self.assertEqual(entry.main(['db-stage','hydrate','--transaction','d'*32]),1)
             self.assertIn('"native_actions":false',output.getvalue())
+
+    def test_preservation_has_no_caller_paths_and_requires_verified_install_before_loading(self):
+        with patch.object(entry,'verify_install',side_effect=entry.EntryRefused('unverified')), \
+             patch.object(entry,'_load') as load:
+            with self.assertRaises(entry.EntryRefused):entry.route(['preserve-info-only'])
+            load.assert_not_called()
+        for args in (['preserve-info-only','--transaction','d'*32],
+                     ['preserve-info-only','--path','/anything']):
+            with self.assertRaises(entry.EntryRefused):entry.parse_command(args)

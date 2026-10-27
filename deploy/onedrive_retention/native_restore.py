@@ -838,7 +838,10 @@ class Native:
             time.sleep(.25)
 
     def restore(self):
-        self.preflight(); self.lock(); self.observe(); self.verify_repository()
+        self.preflight(); self.lock(); self.observe()
+        from . import guard
+        guard.native_check('bundle_restore', self.plan['transaction'], self.plan['attempt'], self.fds[-1])
+        self.verify_repository()
         self.reconcile_prior_attempt()
         self.old_umask = os.umask(0o077)
         self.prepare_permissions(); self.verify_repository()

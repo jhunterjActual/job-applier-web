@@ -1,9 +1,15 @@
-"""Synthetic only: no fixture is native proof or installed guard clearance."""
+"""Synthetic contracts plus isolated Linux OFD mechanism; no guard clearance."""
 import copy
 import datetime as dt
 import hashlib
 import json
 import unittest
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+from unittest.mock import patch
 
 from deploy.onedrive_retention import preservation as p
 
@@ -98,6 +104,51 @@ class PreservationTests(unittest.TestCase):
         with self.assertRaises(p.PreservationRefused):
             p.validate_preservation(*args)
         self.refused(lambda r: r[2].update(exit_code=0))
+
+
+class InheritedDescriptorContracts(unittest.TestCase):
+    def test_fdinfo_requires_one_exact_whole_file_advisory_write_flock(self):
+        good = b'pos:\t0\nflags:\t0100001\nlock:\t1: FLOCK ADVISORY WRITE 123 08:01:99 0 EOF\n'
+        with patch.object(p.os,'major',return_value=8,create=True), \
+             patch.object(p.os,'minor',return_value=1,create=True):
+            self.assertEqual(p.fdinfo_lock(good,1,99)[0],'FLOCK')
+            for invalid in (b'pos:\t0\n',good+good,good.replace(b'WRITE',b'READ'),
+                            good.replace(b'FLOCK',b'OFDLCK'),good.replace(b'08:01:99',b'08:01:100'),
+                            good.replace(b'0 EOF',b'1 EOF')):
+                with self.assertRaises(p.PreservationRefused): p.fdinfo_lock(invalid,1,99)
+
+    def test_inherited_capability_cannot_be_issued_from_fixture_dictionary(self):
+        with self.assertRaises(p.PreservationRefused):
+            p.InheritedObjectReservation({},'a'*40,'20261027-000000F',8,9,{})
+
+    def test_malformed_original_boot_never_proves_terminal_via_another_boot(self):
+        with self.assertRaises(p.PreservationRefused):
+            p._terminal_birth({'pid':222,'start_ticks':333,'boot_id':'unknown'})
+
+    @unittest.skipUnless(sys.platform.startswith('linux') and Path('/usr/bin/bash').is_file()
+                         and Path('/usr/bin/flock').is_file(),'requires actual Linux bash/flock/proc')
+    def test_actual_inherited_ofd_survives_external_flock_child_and_separate_fd_refuses(self):
+        repository = Path(__file__).resolve().parents[2]
+        child = '''import os,sys
+sys.path.insert(0,sys.argv[1])
+from deploy.onedrive_retention import preservation as p
+path=sys.argv[2]
+try: p.prove_same_description(path,9,os.getppid())
+except p.PreservationRefused: pass
+else: raise AssertionError('separate open description was accepted')
+assert p.prove_same_description(path,8,os.getppid()) is True
+print('ofd_verified')
+'''
+        script = ('exec 8>"$1"\nexec 9<>"$1"\n/usr/bin/flock -n 8\n'
+                  '"$2" -B -c "$3" "$4" "$1"\nresult=$?\nexit "$result"\n')
+        with tempfile.TemporaryDirectory(prefix='retention-ofd-test-') as folder:
+            lock = Path(folder)/'owned.lock'
+            result = subprocess.run(['/usr/bin/bash','-c',script,'ofd-fixture',str(lock),sys.executable,
+                child,str(repository)],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,timeout=15,check=False,
+                env={'PATH':'/usr/bin:/bin','LANG':'C','PYTHONDONTWRITEBYTECODE':'1'})
+            self.assertEqual(result.returncode,0,'isolated inherited-OFD fixture refused')
+            self.assertEqual(result.stdout,b'ofd_verified\n')
 
 
 if __name__ == '__main__':

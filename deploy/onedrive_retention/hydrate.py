@@ -46,6 +46,9 @@ def hydrate(transaction, backend):
     need(type(transaction) is str and re.fullmatch(r"[0-9a-f]{32}", transaction))
     with backend.locked():
         backend.preflight()
+        if type(backend) is Native:
+            from . import guard
+            guard.native_check('bundle_capture', transaction, repository_lock_fd=backend.lock_fd)
         backend.begin(transaction)
         try:
             backend.status("capturing")
@@ -160,6 +163,45 @@ class Native:
 
     @contextmanager
     def locked(self):
+        with self.additional_fences() as additional:
+            with self.repository_locked():
+                self.canonical_fds=dict(additional)
+                self.canonical_fds[str(plan.LOCK)]=self.lock_fd
+                try:yield
+                finally:self.canonical_fds=None
+
+    @contextmanager
+    def additional_fences(self):
+        """Preserve paired-control/maintenance order before the repository fence."""
+        import fcntl
+        need(os.geteuid() == os.getegid() == 0
+             and socket.gethostname() == 'job-applier-db-staging-01')
+        held=[]
+        try:
+            for name in ('/var/lib/careertrellis/paired-maintenance/db/control.lock',
+                         '/run/lock/careertrellis-maintenance.lock'):
+                path=Path(name)
+                for parent in path.parents:
+                    meta=parent.lstat()
+                    need(stat.S_ISDIR(meta.st_mode) and meta.st_uid == meta.st_gid == 0
+                         and (stat.S_IMODE(meta.st_mode) == 0o1777 if parent == Path('/run/lock')
+                              else not meta.st_mode & 0o022))
+                before=path.lstat()
+                need(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0
+                     and stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1 and before.st_size == 0)
+                fd=os.open(path,os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK)
+                held.append((path,fd,before.st_dev,before.st_ino))
+                need((os.fstat(fd).st_dev,os.fstat(fd).st_ino) == (before.st_dev,before.st_ino))
+                fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            yield {str(path):fd for path,fd,_device,_inode in held}
+            for path,fd,device,inode in held:
+                need((path.lstat().st_dev,path.lstat().st_ino) ==
+                     (os.fstat(fd).st_dev,os.fstat(fd).st_ino) == (device,inode))
+        finally:
+            for _path,fd,_device,_inode in reversed(held):os.close(fd)
+
+    @contextmanager
+    def repository_locked(self):
         import fcntl
         need(os.geteuid() == os.getegid() == 0
              and socket.gethostname() == "job-applier-db-staging-01")

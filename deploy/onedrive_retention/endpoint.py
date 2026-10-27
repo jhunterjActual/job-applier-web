@@ -35,6 +35,8 @@ def validate_request(value):
          and type(value["capture_transaction"]) is str and c.TX.fullmatch(value["capture_transaction"]))
     operation, payload = OPERATIONS[value["operation"]], value["payload"]
     keys = {"stage", "receipt_facts", "web_preflight"} if operation == "restore" else {"stage", "receipt_facts"}
+    if operation != 'status' and type(payload) is dict and 'web_history' in payload:
+        keys |= {'web_history'}
     c.need(type(payload) is dict and set(payload) == keys and payload["stage"] in c.STAGES)
     c.need(operation == "status" or payload["stage"] == operation)
     facts = payload["receipt_facts"]
@@ -42,6 +44,10 @@ def validate_request(value):
     c.need(type(facts) is dict and set(facts) == expected)
     c.need(all(type(value) is str and c.HEX.fullmatch(value) for value in facts.values()))
     if operation == "restore": c.web_proof(payload["web_preflight"], dt.datetime.now(dt.timezone.utc))
+    if operation != 'status' and 'web_history' in payload:
+        from . import guard
+        guard.validate_peer_history(payload['web_history'],value['capture_transaction'],operation,
+                                    value['retention_policy_sha256'])
     return value
 
 
@@ -51,7 +57,23 @@ def from_paired_request(value):
     payload = value.get("payload")
     c.need(type(payload) is dict and set(payload) == {"retention_policy_sha256", "capture_transaction", "payload"}
          and payload["capture_transaction"] == value.get("transaction"))
-    return validate_request(dict(payload, schema=SCHEMA, operation=value["operation"]))
+    requested = validate_request(dict(payload, schema=SCHEMA, operation=value["operation"]))
+    require_native_peer(requested)
+    return requested
+
+
+def require_native_peer(value):
+    """Authenticated native mutations require the protected WEB reservation.
+
+    Minimal pure request fixtures may omit it; neither the paired bridge nor
+    the concrete native endpoint accepts those fixtures for dispatch.
+    """
+    if value['operation'] != 'bundle_status':
+        c.need('web_history' in value['payload'])
+        from . import guard
+        guard.validate_peer_history(value['payload']['web_history'],value['capture_transaction'],
+            OPERATIONS[value['operation']],value['retention_policy_sha256'])
+    return value
 
 
 def validate_response(value, requested):
@@ -65,18 +87,19 @@ def validate_response(value, requested):
     if value["state"] == "complete":
         c.need(type(value["receipt_sha256"]) is str and c.HEX.fullmatch(value["receipt_sha256"]))
         base = {"archive_sha256", "archive_bytes", "generation_sha256", "backup_label"}
-        expected = {"catalog_sha256", "retired_count"} if value["stage"] == "retire" else base
+        expected = ({"catalog_sha256", "retired_count"} if value["stage"] == "retire" else
+                    {"catalog_sha256", "prepared_count"} if value['stage'] == 'prepare' else base)
         if value["stage"] in ("publish", "restore"): expected |= {"native_restore_accepted"}
         c.need(set(value["facts"]) == expected)
         if value["stage"] == "publish": c.need(value["facts"]["native_restore_accepted"] is False)
         if value["stage"] == "restore": c.need(value["facts"]["native_restore_accepted"] is True)
     else: c.need(value["receipt_sha256"] == "" and value["facts"] == {})
     allowed = {"archive_sha256", "archive_bytes", "generation_sha256", "backup_label",
-               "native_restore_accepted", "catalog_sha256", "retired_count"}
+               "native_restore_accepted", "catalog_sha256", "retired_count", "prepared_count"}
     c.need(set(value["facts"]) <= allowed)
     for key, item in value["facts"].items():
         if key.endswith("sha256"): c.need(type(item) is str and c.HEX.fullmatch(item))
-        elif key in ("archive_bytes", "retired_count"):
+        elif key in ("archive_bytes", "retired_count", "prepared_count"):
             c.need(type(item) is int and (1 if key == "archive_bytes" else 0) <= item <= 512*1024**2)
         elif key == "native_restore_accepted": c.need(type(item) is bool)
         else: c.need(type(item) is str and re.fullmatch(r"[0-9]{8}-[0-9]{6}F(?:_[0-9]{8}-[0-9]{6}[DI])?", item))
@@ -90,10 +113,15 @@ class Endpoint:
         value = validate_request(value)
         c.need(value["retention_policy_sha256"] == self.policy.digest)
         stage = value["payload"]["stage"]
+        if type(self.backend) is NativeDB: require_native_peer(value)
+        if value["operation"] == "bundle_status":
+            # Progress observations may not acquire/create the operation lock.
+            # preflight verifies installed bytes and policy only; observe must
+            # remain provider-free and must never dispatch a terminal collector.
+            self.backend.preflight()
+            return validate_response(self.backend.observe(value), value)
         with self.backend.locked():
             self.backend.preflight()
-            if value["operation"] == "bundle_status":
-                return validate_response(self.backend.observe(value), value)
             self.policy.require_active(self.backend.now())
             if self.backend.intent_exists(value):
                 self.backend.require_same_intent(value)
@@ -119,16 +147,14 @@ def command_plan(stage, transaction, journal_root):
     # Only a fixed manifest-guarded entry, fixed stage and validated transaction.
     log = str(Path(journal_root) / "private-output.log")
     args = ["/usr/bin/systemd-run", "--no-block", "--unit=" + name,
-        "--property=Type=oneshot", "--property=UMask=0077", "--property=TimeoutStartSec=infinity",
+        "--property=Type=exec", "--property=Restart=no", "--property=RemainAfterExit=yes",
+        "--property=UMask=0077", "--property=TimeoutStartSec=30s", "--property=TimeoutStopSec=90s",
+        "--property=KillMode=control-group", "--property=SendSIGKILL=yes",
         "--property=StandardOutput=append:" + log, "--property=StandardError=append:" + log]
+    limits = {'hydrate':'9h','publish':'6h','prepare':'9h','retire':'1h'}
+    if stage != 'restore': args += ['--property=RuntimeMaxSec=' + limits[stage]]
     if stage == "restore":
-        args = [value for value in args if value not in
-                ("--property=Type=oneshot", "--property=TimeoutStartSec=infinity")]
-        args += ["--property=Type=exec", "--property=Restart=no", "--property=TimeoutStartSec=30s",
-            "--property=RemainAfterExit=yes",
-            "--property=RuntimeMaxSec=2h", "--property=TimeoutStopSec=90s",
-            "--property=KillMode=control-group", "--property=SendSIGKILL=yes",
-            "--property=PrivateNetwork=yes"]
+        args += ["--property=RuntimeMaxSec=2h", "--property=PrivateNetwork=yes"]
     return args + ["/usr/bin/python3", "-I", "-B", ENTRY, "db-stage", stage, "--transaction", transaction]
 
 
@@ -161,7 +187,10 @@ class NativeDB:
         observed = self.observe(query)
         c.need(observed["state"] == "complete" and observed["receipt_sha256"] ==
                value["payload"]["receipt_facts"]["predecessor_receipt_sha256"])
-        if stage == "retire": c.need(observed["facts"].get("native_restore_accepted") is True)
+        if stage in ('prepare','retire'):
+            restored = request(self.policy.digest,value['capture_transaction'],'status',{'stage':'restore','receipt_facts':{}})
+            accepted = self.observe(restored)
+            c.need(accepted['state'] == 'complete' and accepted['facts'].get('native_restore_accepted') is True)
 
     def require_previous_terminal(self, value):
         # New installed entry checks every earlier unit, child identity, original
@@ -182,7 +211,8 @@ class NativeDB:
         stage, tx = value["payload"]["stage"], value["capture_transaction"]
         folder = self.folder(value)
         if stage == "restore":
-            c.web_proof(value["payload"]["web_preflight"], self.now())
+            c.web_proof(value["payload"]["web_preflight"], self.now(),
+                        expected_release=self.policy.data["application_release"])
             target = Path("/var/lib/careertrellis/onedrive-bundles") / tx / "web-preflight.json"
             hydrate.exclusive(target, bundle.canonical(value["payload"]["web_preflight"]))
         log = folder / "private-output.log"
@@ -197,7 +227,8 @@ class NativeDB:
             c.need(callable(dispatch))
             c.need(dispatch(tx) is True)
         else:
-            hydrate.command(command_plan(stage, tx, folder), timeout=30)
+            from . import execution
+            execution.dispatch_stage(tx, stage)
         hydrate.exclusive(folder / "dispatch.json", bundle.canonical({"unit": unit(stage, tx),
             "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
             "dispatched_at": self.now().isoformat()}))

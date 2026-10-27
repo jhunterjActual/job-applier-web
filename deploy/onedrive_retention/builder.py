@@ -2,7 +2,7 @@
 
 No database, provider or application operations occur here. Parsed claims alone
 are not authentication. The fixed native writer verifies the installed namespace
-and persistent-idle entry before any output; that entry currently fails closed.
+and persistent-idle entry before any output; unknown runtime state fails closed.
 Missing facts on historical candidates require a separately reviewed backfill,
 never a guessed database-size ceiling.
 """

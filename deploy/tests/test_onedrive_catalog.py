@@ -103,6 +103,72 @@ class CatalogTests(unittest.TestCase):
             bundle.canonical(native), identity, NOW.isoformat())
         self.assertFalse(value['authenticated']); self.assertEqual(value['entry']['id'], 'b'*64)
 
+    def test_v2_identity_requires_valid_before_after_etag_witness(self):
+        plan, manifest, download, native, identity = self.fixture
+        identity.update(schema='careertrellis.onedrive-bundle-identity/v2',
+                        etag='"opaque-version"',etag_verified_before_after_download=True)
+        result = catalog.acceptance_entry(plan,manifest,bundle.canonical(download),
+            bundle.canonical(native),identity,NOW.isoformat())
+        self.assertFalse(result['authenticated'])
+        for change in ({'etag':'*'},{'etag':'bad\r\nheader'},
+                       {'etag_verified_before_after_download':False}):
+            changed = dict(identity,**change)
+            with self.assertRaises(catalog.CatalogRefused):
+                catalog.acceptance_entry(plan,manifest,bundle.canonical(download),
+                    bundle.canonical(native),changed,NOW.isoformat())
+
+    def test_numbered_identity_selection_never_rewrites_or_ignores_partial_later_attempt(self):
+        source = catalog.SOURCE_ROOT/('a'*32)
+        old = self.memory.sources[str(source/'bundle-object-identity.json')]
+        refreshed = catalog.decode(old); refreshed['etag']='"new"'
+        raw = bundle.canonical(refreshed)
+        self.memory.sources[str(source/'bundle-object-identity-02.json')] = raw
+        self.memory.sources[str(source/'identity-verification-02'/'receipt.json')] = raw
+        original_names = self.memory.names_at
+        self.memory.names_at = lambda path: original_names(path)|{'identity-verification-02'}
+        self.assertEqual(catalog.read_identity(self.memory,'a'*32),refreshed)
+        self.assertEqual(self.memory.sources[str(source/'bundle-object-identity.json')],old)
+        self.memory.names_at = lambda path: original_names(path)|{'identity-verification-02','identity-verification-03'}
+        with self.assertRaisesRegex(catalog.CatalogRefused,'later_identity_attempt'):
+            catalog.read_identity(self.memory,'a'*32)
+        self.memory.names_at = lambda path: original_names(path)|{'identity-verification-02'}
+        self.memory.sources[str(source/'identity-verification-02'/'receipt.json')] = old
+        with self.assertRaisesRegex(catalog.CatalogRefused,'identity_alias_receipt_mismatch'):
+            catalog.read_identity(self.memory,'a'*32)
+
+    def tombstone(self):
+        self.store.accept('a'*32); self.memory.supports_tombstones = True
+        name = 'b'*64+'.json'; accepted = self.memory.read_store('accepted/'+name)
+        value = {'schema':'careertrellis.onedrive-retired-bundle/v1', 'archive_sha256':'b'*64,
+            'acceptance_record_sha256':catalog.sha(accepted), 'retirement_receipt_sha256':'f'*64,
+            'retired_at':NOW.isoformat(), 'authentication':self.memory.authentication}
+        raw = bundle.canonical(value); intent = {'record_sha256':catalog.sha(raw),'archive_sha256':'b'*64}
+        self.memory.store['tombstones/'+name] = raw
+        self.memory.store['tombstone-intents/'+name] = bundle.canonical(intent)
+        self.memory.store['tombstone-complete/'+name] = bundle.canonical({
+            'intent_sha256':catalog.sha(bundle.canonical(intent)),'record_sha256':catalog.sha(raw)})
+        return name
+
+    def test_committed_tombstone_preserves_history_and_excludes_retired_inventory(self):
+        name = self.tombstone()
+        current = inventory(self.memory,NOW); current['objects'] = []
+        self.assertEqual(self.store.snapshot(current)['entries'],[])
+        self.assertIn('accepted/'+name,self.memory.store)
+        with self.assertRaises(catalog.CatalogRefused):
+            self.store.snapshot(current,current_ids=['b'*64])
+        with self.assertRaises(catalog.CatalogRefused):
+            self.store.add_hold({'name':'late-hold','owner':'test','reason':'test',
+                'review_after':NOW.isoformat(),'bundles':['b'*64]})
+
+    def test_partial_tombstone_blocks_planning_and_fake_native_commit_refuses(self):
+        name = self.tombstone(); del self.memory.store['tombstone-complete/'+name]
+        with self.assertRaisesRegex(catalog.CatalogRefused,'retirement_catalog_interruption'):
+            self.store.snapshot(inventory(self.memory,NOW))
+        self.memory.authentication = 'root-protected-native-journals'
+        with self.assertRaises(catalog.CatalogRefused):self.store.commit_retirement('a'*32)
+        with self.assertRaisesRegex(catalog.CatalogRefused,'caller_selected_native_catalog_refused'):
+            self.store.accept('a'*32)
+
     def test_admission_is_unique_durable_and_bootstrap_never_invokes_planner(self):
         admitted = self.store.accept('a'*32)
         self.assertFalse(admitted['native_authenticated'])

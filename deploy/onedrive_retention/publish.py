@@ -34,6 +34,9 @@ def publish(transaction, backend):
     with backend.locked():
         backend.preflight()
         candidate = backend.candidate(transaction)
+        if type(backend) is Native:
+            from . import guard
+            guard.native_check('bundle_publish', transaction, repository_lock_fd=backend.lock_fd)
         backend.begin_publish(candidate)
         try:
             facts = backend.capacity_facts(candidate)

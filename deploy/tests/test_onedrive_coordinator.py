@@ -23,7 +23,8 @@ def response(request):
     facts = {"archive_sha256": "a"*64, "archive_bytes": 12345,
              "generation_sha256": "b"*64, "backup_label": "20261026-155056F"}
     if stage in ("publish", "restore"): facts["native_restore_accepted"] = stage == "restore"
-    if stage == "retire": facts = {"catalog_sha256": "f"*64, "retired_count": 0}
+    if stage in ("prepare","retire"):
+        facts = {"catalog_sha256": "f"*64, "prepared_count" if stage == "prepare" else "retired_count": 0}
     return {"schema": e.RESPONSE, "capture_transaction": request["capture_transaction"],
         "retention_policy_sha256": request["retention_policy_sha256"], "stage": stage,
         "state": "complete", "receipt_sha256": "c"*64,
@@ -55,7 +56,7 @@ class Fake:
 class Tests(unittest.TestCase):
     def test_pipeline_proof_is_fresh_after_download_and_before_restore(self):
         fake=Fake(); c.run("d"*32,policy(),fake)
-        self.assertEqual(fake.events,["preflight","begin","hydrate","publish","fresh_web","restore","retire","complete"])
+        self.assertEqual(fake.events,["preflight","begin","hydrate","publish","fresh_web","restore","prepare","retire","complete"])
     def test_lost_ack_preserves_intent_and_never_redispatches(self):
         fake=Fake("publish")
         with self.assertRaises(c.Refused): c.run("d"*32,policy(),fake)

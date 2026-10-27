@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
-from test_onedrive_coordinator import policy, response
+from deploy.tests.test_onedrive_coordinator import policy, response
 e=importlib.import_module("deploy.onedrive_retention.endpoint")
 c=importlib.import_module("deploy.onedrive_retention.coordinator")
 
@@ -33,6 +33,30 @@ class Fake:
 
 
 class Tests(unittest.TestCase):
+    def test_offline_minimal_request_cannot_cross_native_bridge(self):
+        p=policy(); minimal=e.request(p.digest,'d'*32,'hydrate',{'stage':'hydrate','receipt_facts':{}})
+        with patch.object(e.NativeDB,'locked',side_effect=AssertionError('lock before peer proof')):
+            with self.assertRaises(c.Refused):e.Endpoint(p,e.NativeDB(p)).handle(minimal)
+        wrapped={'operation':'bundle_hydrate','transaction':'d'*32,
+            'payload':{key:minimal[key] for key in ('retention_policy_sha256','capture_transaction','payload')}}
+        with self.assertRaises(c.Refused):e.from_paired_request(wrapped)
+
+    def test_present_history_is_validated_and_saved_inside_exact_request(self):
+        from deploy.onedrive_retention import guard
+        p=policy(); history={'synthetic':'validator-only'}
+        with patch.object(guard,'validate_peer_history') as validate:
+            requested=e.request(p.digest,'d'*32,'hydrate',{'stage':'hydrate','receipt_facts':{},'web_history':history})
+            e.require_native_peer(requested)
+        self.assertEqual(validate.call_count,2)
+        self.assertEqual(requested['payload']['web_history'],history)
+
+    def test_status_does_not_acquire_lock_or_mutate(self):
+        fake=Fake()
+        def forbidden(*args): raise AssertionError('status attempted mutation or lock')
+        fake.locked=fake.intent=fake.dispatch=fake.failed=forbidden
+        p=policy(); query=e.request(p.digest,'d'*32,'status',{'stage':'hydrate','receipt_facts':{}})
+        self.assertEqual(e.Endpoint(p,fake).handle(query),response(query))
+        self.assertEqual(fake.events,['observe'])
     def test_intent_precedes_dispatch_and_repeated_call_only_observes(self):
         fake=Fake(); p=policy(); request=e.request(p.digest,"d"*32,"hydrate",{"stage":"hydrate","receipt_facts":{}})
         endpoint=e.Endpoint(p,fake);endpoint.handle(request);endpoint.handle(request)
@@ -45,7 +69,7 @@ class Tests(unittest.TestCase):
         with self.assertRaises(c.Refused): e.Endpoint(p,Fake()).handle(request)
     def test_fixed_distinct_units_and_native_network_boundary(self):
         plans=[e.command_plan(stage,"d"*32,"/fixed/private") for stage in c.STAGES]
-        self.assertEqual(len({plan[2] for plan in plans}),4)
+        self.assertEqual(len({plan[2] for plan in plans}),5)
         self.assertIn("--property=PrivateNetwork=yes",plans[2])
         for setting in ("Type=exec","Restart=no","RemainAfterExit=yes","TimeoutStartSec=30s","RuntimeMaxSec=2h",
                         "TimeoutStopSec=90s","KillMode=control-group","SendSIGKILL=yes"):

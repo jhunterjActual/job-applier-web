@@ -3,6 +3,7 @@ from contextlib import contextmanager
 import copy
 import datetime as dt
 import unittest
+from unittest.mock import Mock,patch
 
 from deploy.onedrive_retention import coordinator, policy, retire
 
@@ -109,8 +110,61 @@ class Fake:
 
 
 class RetirementTests(unittest.TestCase):
+    def native_contract_fixture(self, fake):
+        # Exact class exercises schema/commit routing only. Every side effect is
+        # replaced by the synthetic memory fixture; this is no native acceptance.
+        native = retire.Native()
+        for name in ('locked','trusted_snapshot','quota','once','delete_exact','now'):
+            setattr(native,name,getattr(fake,name))
+        native.commit_catalog = Mock(return_value=['synthetic-only'])
+        return native
+
+    def test_native_contract_commits_only_after_exact_absence_and_durable_complete(self):
+        fake = Fake(); native = self.native_contract_fixture(fake)
+        result = retire.run(TX,native)
+        native.commit_catalog.assert_called_once_with(TX)
+        self.assertEqual(result['schema'],'careertrellis.bundle-retirement-native/v1')
+        self.assertEqual(result['deletions_performed'],4)
+        self.assertIsNone(result['physical_bytes_reclaimed'])
+        self.assertNotIn('simulated_retired_count',result)
+        operation = fake.records[(TX,'operation-intent.json')]
+        self.assertFalse(operation['simulation']); self.assertEqual(operation['catalog'],fake.catalog)
+        self.assertEqual(result['operation_intent_sha256'],retire.digest(operation))
+        self.assertEqual(result['completed_at'],NOW.isoformat())
+
+    def test_native_contract_lost_delete_ack_never_commits_catalog_or_retries(self):
+        fake = Fake();fake.fail='delete_ack_lost';native=self.native_contract_fixture(fake)
+        with self.assertRaises(retire.RetirementRefused):retire.run(TX,native)
+        native.commit_catalog.assert_not_called();self.assertEqual(len(fake.deletes),1)
+        self.assertNotIn((TX,'operation-complete.json'),fake.records)
+
+    def test_absence_exception_requires_contiguous_exact_current_native_ack_chain(self):
+        from deploy.onedrive_retention import entry,execution,hydrate,catalog,bundle
+        fake=Fake();native=self.native_contract_fixture(fake);retire.run(TX,native)
+        class Files:
+            @contextmanager
+            def directory(self,*args,**kwargs):yield 7
+            def require_repository_lock(self):pass
+            def read_retirement(self,tx,name):
+                if (tx,name) not in fake.records:raise FileNotFoundError()
+                return bundle.canonical(fake.records[(tx,name)])
+        files=Files()
+        with patch.object(execution,'require_stage_owner'),patch.object(entry,'verify_install',return_value='a'*40), \
+             patch.object(entry,'_native_dependencies'),patch.object(catalog,'NativeFiles',return_value=files), \
+             patch.object(retire.os,'listdir',side_effect=lambda fd:[name for tx,name in fake.records if tx==TX]), \
+             patch.object(hydrate,'protected',return_value=(bundle.canonical(fake.policy),None)), \
+             patch.object(coordinator,'native_policy_binding'):
+            expected={obj['path'] for obj in fake.deletes}
+            self.assertEqual(retire.authenticated_retirement_absences(8,TX,fake.inventory),expected)
+            original=fake.records.pop((TX,'object-00000-ack.json'))
+            with self.assertRaises((retire.RetirementRefused,FileNotFoundError)):
+                retire.authenticated_retirement_absences(8,TX,fake.inventory)
+            fake.records[(TX,'object-00000-ack.json')]=dict(original,permanent=True)
+            with self.assertRaises(retire.RetirementRefused):
+                retire.authenticated_retirement_absences(8,TX,fake.inventory)
+
     def test_default_and_native_adapter_refuse_before_any_activity(self):
-        with self.assertRaisesRegex(retire.RetirementRefused, '^native_retirement_adapter_unsupported$'):
+        with self.assertRaisesRegex(retire.RetirementRefused, '^retirement_requires_reconciliation$'):
             retire.run(TX)
         backend = Fake(); backend.mode = 'native'
         with self.assertRaises(retire.RetirementRefused): retire.run(TX, backend)

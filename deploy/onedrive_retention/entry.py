@@ -1,9 +1,8 @@
 """Stdlib-only installed-byte bootstrap and explicitly fenced native entry.
 
 No package code is imported until the exact installed namespace is verified.
-Native baseline, persistent-idle, observation and dispatch integration remain
-unavailable. The injectable routing contract is OFFLINE ONLY and its results
-cannot establish native acceptance or authorize catalog retirement.
+Native execution requires the protected accepted baseline. The injectable
+routing contract is OFFLINE ONLY and cannot establish native acceptance.
 """
 import datetime as dt
 import hashlib
@@ -23,7 +22,7 @@ ROOT = Path('/usr/local/libexec/careertrellis/onedrive_retention')
 PAIRED_ROOT = Path('/usr/local/libexec/careertrellis/paired_maintenance')
 SCHEMA = 'careertrellis.onedrive-retention-install/v1'
 FILES = frozenset(('baseline.py', 'builder.py', 'bundle.py', 'capture_plan.py', 'catalog.py', 'collector.py', 'common_io.py',
-    'coordinator.py', 'endpoint.py', 'entry.py', 'guard.py', 'hydrate.py',
+    'coordinator.py', 'endpoint.py', 'entry.py', 'execution.py', 'guard.py', 'health.py', 'hydrate.py',
     'identity_collect.py', 'local_restore_plan.py', 'local_restore.py',
     'native_restore.py', 'policy.py', 'publish.py', 'retire.py', 'upgrade_493.py', 'graph_delete.py', 'preservation.py'))
 PAIRED_FILES = frozenset(('__init__.py', 'common.py', 'runtime.py', 'provider.py',
@@ -34,7 +33,7 @@ MAX_TOTAL = 64 * 1024**2
 HEX = re.compile(r'[0-9a-f]{64}\Z')
 REVISION = re.compile(r'[0-9a-f]{40}\Z')
 TX = re.compile(r'[0-9a-f]{32}\Z')
-STAGES = ('hydrate', 'publish', 'restore', 'retire')
+STAGES = ('hydrate', 'publish', 'restore', 'prepare', 'retire')
 
 
 class EntryRefused(ValueError):
@@ -197,6 +196,21 @@ def _load(name):
     return module
 
 
+def _paired_namespace():
+    """Create only the exact already-verified paired namespace under -I."""
+    with _PairedPackage() as reader:
+        verify_package(reader, PAIRED_FILES, 'careertrellis.paired-maintenance-install/v1')
+    package = sys.modules.get('paired_maintenance')
+    if package is None:
+        package = types.ModuleType('paired_maintenance')
+        package.__package__ = 'paired_maintenance'; package.__path__ = [str(PAIRED_ROOT)]
+        package.__spec__ = importlib.machinery.ModuleSpec('paired_maintenance',None,is_package=True)
+        package.__spec__.submodule_search_locations = [str(PAIRED_ROOT)]
+        sys.modules['paired_maintenance'] = package
+    need(list(package.__path__) == [str(PAIRED_ROOT)])
+    return package
+
+
 def _protected_document(path, mode):
     for parent in path.parents:
         meta = parent.lstat()
@@ -228,6 +242,7 @@ def _native_dependencies(revision, role):
     pair_public, _ = _protected_document(Path('/var/lib/careertrellis/paired-maintenance/public-policy.json'), 0o644)
     with _PairedPackage() as reader:
         paired_manifest = verify_package(reader, PAIRED_FILES, 'careertrellis.paired-maintenance-install/v1')
+    _paired_namespace()
     need(pair_raw == pair_public and hashlib.sha256(pair_raw).hexdigest() == policy.data['paired_policy_sha256']
          and paired_policy.get('manifest_revision') == paired_manifest['revision']
          and paired_policy.get('application_release') == policy.data['application_release']
@@ -245,6 +260,11 @@ def parse_command(argv):
     need(type(argv) is list and all(type(item) is str for item in argv))
     if argv == ['verify-install']:
         return {'operation':'verify-install', 'role':'read-only', 'stage':None, 'transaction':None, 'attempt':None}
+    if argv == ['preserve-info-only']:
+        return {'operation':'preserve-info-only','role':'db','stage':None,'transaction':None,'attempt':None}
+    if len(argv) == 1 and argv[0] in ('health-web','health-db','schedule-check'):
+        return {'operation':argv[0],'role':'web' if argv[0]=='health-web' else 'db',
+                'stage':None,'transaction':None,'attempt':None}
     if len(argv) == 4 and argv[0] == 'db-stage' and argv[1] in STAGES and argv[2] == '--transaction':
         need(TX.fullmatch(argv[3]))
         return {'operation':'db-stage','role':'db','stage':argv[1],'transaction':argv[3],'attempt':1}
@@ -254,6 +274,12 @@ def parse_command(argv):
     if len(argv) == 5 and argv[0] == 'collect-native' and argv[1] == '--transaction' and argv[3] == '--attempt':
         need(TX.fullmatch(argv[2]) and re.fullmatch('[1-9]',argv[4]))
         return {'operation':'collect-native','role':'db','stage':'restore','transaction':argv[2],'attempt':int(argv[4])}
+    if len(argv) == 4 and argv[0] == 'collect-stage' and argv[1] in ('hydrate','publish','prepare','retire') and argv[2] == '--transaction':
+        need(TX.fullmatch(argv[3]))
+        return {'operation':'collect-stage','role':'db','stage':argv[1],'transaction':argv[3],'attempt':1}
+    if len(argv) == 5 and argv[0] == 'collect-identity' and argv[1] == '--transaction' and argv[3] == '--verification':
+        need(TX.fullmatch(argv[2]) and re.fullmatch('[1-9][0-9]?',argv[4]))
+        return {'operation':'collect-identity','role':'db','stage':'retire','transaction':argv[2],'attempt':int(argv[4])}
     raise EntryRefused('retention_entry_refused')
 
 
@@ -278,15 +304,22 @@ def validate_bindings(value, now):
 
 
 def route(argv, backend=None):
-    """Only an explicitly OFFLINE injected adapter can exercise dispatch today."""
+    """Authenticate native installation before loading any execution module."""
     command = parse_command(argv)
     if backend is None:
         revision = verify_install()
         if command['operation'] == 'verify-install':
             return {'schema':'careertrellis.retention-source-verification/v1','revision':revision,
                     'result':'source_verified','native_actions':False,'native_restore_accepted':False}
+        if command['operation'] == 'preserve-info-only':
+            # This explicit metadata-preservation operation is available after
+            # verified inactive source installation. It cannot authorize a
+            # backup, retry or cleanup and does not need an enabled policy.
+            owner=_load('hydrate').Native()
+            with owner.locked():
+                return _load('preservation').collect_historical_info_preservation(owner.canonical_fds)
         _native_dependencies(revision, command['role'])
-        unavailable()
+        return _load('execution').run_command(command)
     need(getattr(backend,'mode',None) == 'offline' and command['operation'] != 'verify-install')
     validate_bindings(backend.bindings(), backend.now())
     backend.dispatch(dict(command))
@@ -296,30 +329,34 @@ def route(argv, backend=None):
 
 def retention_idle(transaction, stage):
     need(type(transaction) is str and TX.fullmatch(transaction) and stage in STAGES)
-    unavailable()
+    return _load('execution').idle(transaction, stage)
 
 
 def observe_retention_stage(transaction, stage, policy_sha256):
     need(type(transaction) is str and TX.fullmatch(transaction) and stage in STAGES
          and type(policy_sha256) is str and HEX.fullmatch(policy_sha256))
-    unavailable()
+    return _load('execution').observe(transaction, stage, policy_sha256)
 
 
 def dispatch_native_with_collector(transaction):
     need(type(transaction) is str and TX.fullmatch(transaction))
-    unavailable()
+    return _load('execution').dispatch_restore(transaction)
 
 
 def identity_reverification_idle(transaction, verification):
     need(type(transaction) is str and TX.fullmatch(transaction)
          and type(verification) is int and 1 <= verification <= 99)
-    unavailable()
+    return _load('execution').idle(transaction, 'retire', identity_verification=verification)
 
 
 def main(argv=None):
     try:
-        result = route(list(sys.argv[1:] if argv is None else argv))
-        print(json.dumps(result,sort_keys=True)); return 0
+        arguments=list(sys.argv[1:] if argv is None else argv)
+        result = route(arguments)
+        print(json.dumps(result,sort_keys=True))
+        if arguments == ['schedule-check']:return 0 if result.get('result') == 'ready' else 1
+        if arguments == ['health-db']:return 0 if result.get('result') == 'ok' else 1
+        return 0
     except BaseException:
         print('{"result":"refused","category":"retention_entry_native_dependencies_unavailable","native_actions":false}')
         return 1
