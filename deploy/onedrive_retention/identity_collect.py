@@ -32,7 +32,7 @@ MAX_ELAPSED_SECONDS = 900
 PROFILE_FIELDS = ('LoadState', 'Type', 'Restart', 'RemainAfterExit', 'ActiveState', 'SubState',
     'MainPID', 'ControlPID', 'Job', 'KillMode', 'SendSIGKILL', 'RuntimeMaxUSec',
     'TimeoutStartUSec', 'TimeoutStopUSec', 'InvocationID', 'ControlGroup',
-    'ExecCondition', 'ExecStartPre', 'ExecStartPost', 'ExecStop', 'ExecStopPost')
+    'ExecCondition', 'ExecStartPre', 'ExecStartPost', 'ExecReload', 'ExecStop', 'ExecStopPost')
 LOCKS = ('/var/lib/careertrellis/paired-maintenance/db/control.lock',
          '/run/lock/careertrellis-maintenance.lock',
          '/run/lock/careertrellis-pgbackrest-repository.lock')
@@ -98,12 +98,13 @@ def validate_unit_profile(value, pid, unit):
     need(type(value) is dict and set(value) == set(PROFILE_FIELDS)
          and type(pid) is int and pid > 1
          and type(unit) is str and re.fullmatch(
-             r'careertrellis-onedrive-bundle-identity-[0-9a-f]{32}-[0-9]{2}\.service', unit))
-    expected = {'LoadState': 'loaded', 'Type': 'exec', 'Restart': 'no', 'RemainAfterExit': 'no',
+             r'careertrellis-onedrive-(?:bundle-identity-[0-9a-f]{32}|pre-growth-identity-[0-9a-f]{32}-[0-9a-f]{32})-[0-9]{2}\.service', unit))
+    expected = {'LoadState': 'loaded', 'Type': 'exec', 'Restart': 'no',
+        'RemainAfterExit': 'no',
         'ActiveState': 'active', 'SubState': 'running', 'MainPID': str(pid), 'ControlPID': '0',
         'Job': '', 'KillMode': 'control-group', 'SendSIGKILL': 'yes', 'RuntimeMaxUSec': '15min',
         'TimeoutStartUSec': '30s', 'TimeoutStopUSec': '30s', 'ControlGroup': '/system.slice/'+unit,
-        'ExecCondition': '', 'ExecStartPre': '', 'ExecStartPost': '', 'ExecStop': '', 'ExecStopPost': ''}
+        'ExecCondition': '', 'ExecStartPre': '', 'ExecStartPost': '', 'ExecReload': '', 'ExecStop': '', 'ExecStopPost': ''}
     need(all(value.get(key) == expected_value for key, expected_value in expected.items())
          and catalog.hex_value(value['InvocationID'], 32), 'finite_identity_owner_profile_required')
     return value['InvocationID']
@@ -163,10 +164,21 @@ def collect(transaction, verification=1, backend=None):
             raise IdentityRefused('identity_reverification_requires_reconciliation') from None
 
 
+def collect_existing_for_parent(transaction, verification, parent):
+    """Separate pre-growth capability boundary; never borrow prepare authority."""
+    try:
+        need(catalog.hex_value(transaction, 32) and type(verification) is int and 1 <= verification <= 99)
+        graph_delete._parent_authority(parent,transaction,verification,None)
+    except Exception:
+        raise IdentityRefused('pre_growth_identity_native_adapter_unavailable') from None
+    return collect(transaction,verification,Native(parent=parent))
+
+
 class Native:
     """Fixed installed native boundary. Constructing it performs no operation."""
     mode = 'native-installed'
-    def __init__(self):
+    def __init__(self,parent=None):
+        self.parent=parent
         self.fds = []; self.config_fd = None; self.root = None; self.config = None
         self.lock_identities = []
         self.transaction = None; self.verification = None; self.expected = None
@@ -232,8 +244,10 @@ class Native:
 
     def idle(self):
         from . import entry
-        need(entry.identity_reverification_idle(self.transaction,self.verification) is True,
-             'persistent_identity_idle_guard_required')
+        if self.parent is None:
+            need(entry.identity_reverification_idle(self.transaction,self.verification) is True,
+                 'persistent_identity_idle_guard_required')
+        else:graph_delete._parent_authority(self.parent,self.transaction,self.verification,None)
         units = list(hydrate.UNITS)
         raw = self.system(['/usr/bin/systemctl', 'list-units', '--all', '--plain', '--no-legend',
             '--no-pager', 'careertrellis-paired-db*.service'])
@@ -279,7 +293,10 @@ class Native:
                      == manifest['files']['identity_collect.py'], 'identity_entry_verification_required')
         except Exception: raise IdentityRefused('identity_entry_verification_required') from None
         self.transaction = transaction; self.verification = verification
-        self.unit = 'careertrellis-onedrive-bundle-identity-'+transaction+'-%02d.service' % verification
+        if self.parent is None:self.unit = 'careertrellis-onedrive-bundle-identity-'+transaction+'-%02d.service' % verification
+        else:
+            graph_delete._parent_authority(self.parent,transaction,verification,None)
+            self.unit='careertrellis-onedrive-pre-growth-identity-'+self.parent.transaction+'-'+transaction+'-%02d.service'%verification
         need(Path('/proc/self/cgroup').read_text().strip() == '0::/system.slice/'+self.unit)
         values = self.unit_profile()
         invocation = validate_unit_profile(values, os.getpid(), self.unit)
@@ -315,9 +332,7 @@ class Native:
 
     def preflight(self):
         from . import entry
-        idle_guard = getattr(entry, 'identity_reverification_idle', None)
-        need(callable(idle_guard) and idle_guard(self.transaction, self.verification) is True,
-             'persistent_identity_idle_guard_required')
+        self.idle()
         os.umask(0o077)
         binary, self.binary_identity = hydrate.protected(capture_plan.BINARY, limit=256*1024**2)
         need(sha(binary) == capture_plan.BINARY_SHA256)
@@ -373,7 +388,7 @@ class Native:
     def graph_metadata(self, identity):
         if not hasattr(self, '_graph'):
             self._graph = graph_delete.Client(graph_delete.native_grant(self.transaction,
-                self.expected['archive_sha256'], self.fds[-1], verification=self.verification))
+                self.expected['archive_sha256'], self.fds[-1], verification=self.verification,parent=self.parent))
         self._unchanged()
         return self._graph.metadata(identity['object_id'], identity['size'])
     def stat_object(self, observed, phase):

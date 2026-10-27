@@ -26,10 +26,10 @@ ROLE_ROOT = Path('/var/lib/careertrellis/paired-maintenance/db')
 MIRROR = 'careertrellis-pgbackrest-onedrive.service'
 HEALTH = 'careertrellis-backup-health.service'
 MIRROR_PINS = {
- '/usr/local/sbin/careertrellis-mirror-pgbackrest-onedrive': '2d16adc16b9254427ba317e10178a79cc70693586929e3c14a3695ff2590948a',
+ '/usr/local/sbin/careertrellis-mirror-pgbackrest-onedrive': '630de3092529f165ee305601dc52ad6b89b912e90294dc42ab09ec419de552ca',
  '/etc/systemd/system/' + MIRROR: 'bb1796a7b2131e5964cc119a77fbc0a4260d39a69ef6d6aca6d8e6646d1720a4'}
 HEALTH_PINS = {
- '/usr/local/sbin/careertrellis-backup-health': '2d54f0178cf3ce44995aa1012883e3394a34fe602819a842611fdd6a7c86d60d',
+ '/usr/local/sbin/careertrellis-backup-health': '58bc6e0e408e02830691b34fbebc71a3919a69834df5950c8fae8228db66bf41',
  '/etc/systemd/system/' + HEALTH: '7466dc73af94a06a1ee53f92dca2ee2ed64358ef4806f2b3b2ec56f172e7b3e0',
  '/etc/systemd/system/' + HEALTH + '.d/50-backup-reporting.conf': '34272f25158e3b6dea3c5243a7f0d5d1c516c72f6703bc50032270c4e57448f3'}
 
@@ -229,8 +229,92 @@ class DBBackend:
         need(dt.datetime.fromisoformat(receipt['started_at'].replace('Z', '+00:00')).timestamp() >= int(intent['issued_epoch']))
         return {'state': 'mirror_complete', 'backup_label': expected, 'completed_at': receipt['completed_at']}
 
+    def _native_retention(self):
+        """An invalid selector never falls back to the legacy mirror proof."""
+        from onedrive_retention import entry as retention_entry
+        revision=retention_entry.verify_install()
+        activation=retention_entry._load('activation')
+        selected=activation.routing_state()
+        if selected is None:return None
+        context=retention_entry._native_dependencies(revision,'db')
+        current=activation.require_activated(context)
+        need(current.digest==selected.digest and current.role=='db'
+             and current.bindings['paired_policy_sha256']==self.policy.digest
+             and context.document['application_release']==self.policy.data['application_release'])
+        return retention_entry,context,current
+
+    def _native_bundle_acceptance(self, selected):
+        """Authenticate the fixed same-TX native recovery, retirement and catalog.
+
+        No evidence is accepted from the health/complete request payload. The
+        original sealed capture supplies its label and publication manifest.
+        This creates a genuinely named acceptance record, never a legacy mirror.
+        """
+        retention_entry,context,selector=selected
+        state=self.store.read('status.json')
+        need(state.get('state')=='released' and state.get('transaction')==self.transaction
+             and state.get('policy_sha256')==self.policy.digest
+             and state.get('release')==self.policy.data['application_release'])
+        captured=validate_request(self.store.read('capture.json'))
+        restored=validate_request(self.store.read('restored.json'))
+        original=validate_request(self.store.read('begin-intent.json'))
+        need(captured['operation']=='capture' and restored['operation']=='restored'
+             and original['operation']=='begin'
+             and all(record['transaction']==self.transaction and record['policy_sha256']==self.policy.digest
+                     for record in (captured,restored,original))
+             and all(record['payload'][key]==original['payload'][key] for record in (captured,restored)
+                     for key in ('release','web_boot','web_invocation')))
+        capture=captured['payload']['capture']
+        need(capture['release']==self.policy.data['application_release']
+             and restored['payload'].get('services_restored') is True
+             and restored['payload'].get('capture_sha256')==digest(capture))
+        coordinator=retention_entry._load('coordinator');endpoint=retention_entry._load('endpoint')
+        catalog=retention_entry._load('catalog')
+        policy=coordinator.Policy(retention_entry._protected_document(coordinator.PRIVATE_POLICY,0o600)[1])
+        need(policy.digest==context.bindings['standalone_policy_sha256'])
+        with provider.repository_lock() as (fd,_identity):
+            adapter=endpoint.NativeDB(policy)
+            def observed(stage):
+                query=endpoint.request(policy.digest,self.transaction,'status',{'stage':stage,'receipt_facts':{}})
+                value=adapter.observe(query)
+                endpoint.validate_response(value,query)
+                need(value['state']=='complete');return value
+            native,retirement=observed('restore'),observed('retire')
+            need(native['facts'].get('native_restore_accepted') is True
+                 and native['facts'].get('backup_label')==capture['backup_label'])
+            identifier=native['facts']['archive_sha256']
+            store=catalog.NativeStore(fd)
+            with store.io.locked():
+                records=store.records();retired=store.retired(records)
+                need(identifier in records and identifier not in retired)
+                record=records[identifier];entry=record['entry'];evidence=record['evidence']
+                need(entry['archive_sha256']==identifier and entry['native_restore_receipt_sha256']==native['receipt_sha256']
+                     and evidence['native']['transaction']==self.transaction
+                     and evidence['native']['archive_sha256']==identifier
+                     and evidence['native']['backup_label']==capture['backup_label']
+                     and evidence['native']['native_restore_accepted'] is True
+                     and evidence['download']['transaction']==self.transaction
+                     and evidence['download']['backup_label']==capture['backup_label'])
+                record_sha256=digest(record)
+            store.io.require_repository_lock()
+        current=retention_entry._load('activation').require_activated(
+            retention_entry._native_dependencies(retention_entry.verify_install(),'db'))
+        need(current.digest==selector.digest and current.bindings==selector.bindings)
+        accepted={'schema':'careertrellis.paired-native-db-bundle-accepted/v1','transaction':self.transaction,
+            'policy_sha256':self.policy.digest,'retention_policy_sha256':policy.digest,
+            'activation_sha256':selector.digest,'release':capture['release'],'backup_label':capture['backup_label'],
+            'publication_manifest_sha256':capture['manifest_sha256'],'archive_sha256':identifier,
+            'native_receipt_sha256':native['receipt_sha256'],'restore_status_sha256':digest(native),
+            'retirement_status_sha256':digest(retirement),'catalog_acceptance_sha256':record_sha256}
+        if self.store.exists('bundle-accepted.json'):need(self.store.read('bundle-accepted.json')==accepted)
+        else:self.store.write_once('bundle-accepted.json',accepted)
+        return accepted
+
     def start_health(self, transaction):
-        need(self.mirror_status(transaction)['state'] == 'mirror_complete')
+        need(transaction==self.transaction)
+        selected=self._native_retention()
+        if selected is None:need(self.mirror_status(transaction)['state'] == 'mirror_complete')
+        else:self._native_bundle_acceptance(selected)
         pins(self.r, HEALTH_PINS, HEALTH, '/etc/systemd/system/' + HEALTH + '.d/50-backup-reporting.conf')
         for unit in runtime.BACKUP_UNITS: self.r.terminal(unit)
         self._dispatch('health', HEALTH)
@@ -291,9 +375,17 @@ class DBBackend:
         need(transaction == self.transaction)
         state = self.store.read('status.json')
         need(state['state'] == 'released' and state['transaction'] == transaction)
-        need(payload == self.store.read('mirror-intent.json')['payload'])
-        need(self.mirror_status(transaction)['state'] == 'mirror_complete')
-        need(self.health_status(transaction)['state'] == 'health_complete')
+        selected=self._native_retention()
+        if selected is None:
+            need(payload == self.store.read('mirror-intent.json')['payload'])
+            need(self.mirror_status(transaction)['state'] == 'mirror_complete')
+        else:
+            accepted=self._native_bundle_acceptance(selected)
+            need(payload=={'release':accepted['release'],'backup_label':accepted['backup_label'],
+                           'publication_manifest_sha256':accepted['publication_manifest_sha256']})
+        health=self.health_status(transaction)
+        need(health['state'] == 'health_complete'
+             and (selected is None or health.get('normal_report_accepted') is True))
         self.store.write_once('complete-result.json', {'transaction': transaction, 'policy_sha256': self.policy.digest,
             'backup_label': payload['backup_label'], 'manifest_sha256': payload['publication_manifest_sha256']})
         self._write_status('complete', services_restored=True)

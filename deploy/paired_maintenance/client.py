@@ -13,6 +13,30 @@ RESPONSE_SCHEMA = 'careertrellis.paired-maintenance-response/v1'
 KEY = '/etc/careertrellis/paired-maintenance/id_ed25519'
 KNOWN_HOSTS = '/etc/careertrellis/paired-maintenance/known_hosts'
 COMMAND = 'careertrellis-paired-v1'
+ACTIVATION_WAIT_OPERATIONS=frozenset(('retention_activation_prepare',
+    'retention_activation_commit','retention_activation_material'))
+
+
+def pre_growth_capacity_transport_ready(request):
+    """Implementation capability for this exact closed request, not activation."""
+    try:
+        validate_request(request)
+        return (request['operation']=='retention_capacity_snapshot'
+            and request['payload']['stage']=='retire_existing_before_growth') is True
+    except Exception:return False
+
+
+def request_timeout(operation,*,endpoint=False,request=None):
+    """Fixed attended activation wait; payloads cannot extend any deadline.
+
+    The actor's bounded110s receipt wait follows its bounded30s start. Allow
+    overhead at the root gate and a further15s at the SSH client. Only the
+    validated pre-growth capacity request gets210/225s around its shared180s
+    provider deadline. Other requests retain35s. No timeout permits redispatch.
+    """
+    if request is not None and operation==request.get('operation') and pre_growth_capacity_transport_ready(request):
+        return 210 if endpoint else 225
+    return (180 if endpoint else 195) if operation in ACTIVATION_WAIT_OPERATIONS else 35
 
 
 def decode(raw, maximum):
@@ -84,7 +108,7 @@ class Client:
                 args.extend(['-o', option])
             args.extend(['careertrellis-backup-control@10.70.0.2', COMMAND])
             completed = subprocess.run(args, input=canonical(request), stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE, timeout=35, check=False,
+                                       stderr=subprocess.PIPE, timeout=request_timeout(operation,request=request), check=False,
                                        env={'PATH': '/usr/bin:/bin', 'LANG': 'C'})
             if completed.returncode != 0:
                 raise Refused('peer_unavailable')

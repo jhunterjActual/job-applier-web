@@ -39,6 +39,104 @@ class NativeRefused(ValueError):
     """A fixed sanitized category, never private configuration or output."""
 
 
+INFO_METADATA_SCHEMA = 'careertrellis.onedrive-native-info-metadata/v1'
+
+
+def _utc(value):
+    result = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+    need(result.utcoffset() == dt.timedelta(0))
+    return result
+
+
+def _info_times(info, plan, downloaded, now):
+    need(type(info) is list and len(info) == 1)
+    stanza = info[0]
+    need(stanza.get('name') == 'careertrellis' and stanza.get('status', {}).get('code') == 0)
+    backups = stanza.get('backup'); need(type(backups) is list)
+    result = {}
+    for name, label in (('selected', plan['backup_label']), ('full', plan['full_ancestor_label'])):
+        rows = [row for row in backups if row.get('label') == label]
+        need(len(rows) == 1, 'local_backup_label_missing')
+        row = rows[0]; size = row.get('info', {}).get('size')
+        need(type(size) is int and 0 < size <= plan['maximum_database_bytes'])
+        need(row.get('error', False) is False, 'local_backup_unhealthy')
+        times = row.get('timestamp')
+        need(type(times) is dict and set(times) == {'start', 'stop'})
+        need(all(type(times[key]) is int and times[key] > 0 for key in times))
+        need(times['start'] <= times['stop'] <= downloaded.timestamp() <= now.timestamp(),
+             'backup_timestamp_refused')
+        result[name] = dict(times)
+    need(result['full']['stop'] <= result['selected']['stop'])
+    return result
+
+
+def _info_binding(root, plan, ownership_raw, download_raw):
+    ownership = decode(ownership_raw)
+    need(ownership['plan'] == plan and ownership['plan_sha256'] == plans.digest(plan)
+         and ownership['download_receipt_sha256'] == hashlib.sha256(download_raw).hexdigest())
+    raw = {name: protected(root / ('info-' + name + '.json'), maximum=16384)
+           for name in ('intent', 'dispatch', 'terminal')}
+    intent, dispatch, terminal = (decode(raw[name]) for name in ('intent', 'dispatch', 'terminal'))
+    need(set(intent) == {'owner', 'plan_sha256', 'phase', 'observed_at'}
+         and intent['owner'] == ownership['owner'] and intent['phase'] == 'info'
+         and intent['plan_sha256'] == plans.digest(plan))
+    from . import catalog
+    if type(dispatch) is dict and set(dispatch) == {'pid', 'boot_id', 'identity_unavailable_child_terminal'}:
+        need(type(dispatch['pid']) is int and dispatch['pid'] > 1
+             and dispatch['identity_unavailable_child_terminal'] is True)
+    else:
+        catalog.process_identity(dispatch)
+    need(dispatch['boot_id'] == ownership['owner']['boot_id'])
+    need(type(terminal.get('exit_code')) is int and terminal == dict(dispatch, exit_code=0))
+    return {'plan_sha256': plans.digest(plan),
+            'ownership_sha256': hashlib.sha256(ownership_raw).hexdigest(),
+            'download_receipt_sha256': hashlib.sha256(download_raw).hexdigest(),
+            **{'info_' + name + '_sha256': hashlib.sha256(value).hexdigest() for name, value in raw.items()}}
+
+
+def accepted_backup_completed_at(record):
+    """Read original successful INFO metadata; never reconstruct historical INFO."""
+    from . import catalog
+    native = record['evidence']['native']; tx = native['transaction']; attempt = native['attempt']
+    need(native.get('schema') == 'careertrellis.onedrive-native-local-restore/v2',
+         'original_info_metadata_binding_required')
+    need(type(tx) is str and re.fullmatch('[0-9a-f]{32}', tx)
+         and type(attempt) is int and 1 <= attempt <= 9)
+    root = Path(plans.RESTORE_ROOT) / (tx + ('' if attempt == 1 else '-%02d' % attempt))
+    ownership_raw = protected(root / 'ownership.json'); ownership = decode(ownership_raw)
+    plan = ownership['plan']; plans.validate_plan(plan)
+    need(plan['transaction'] == tx and plan['attempt'] == attempt)
+    native_raw = protected(root / 'complete.json')
+    need(decode(native_raw) == native and hashlib.sha256(native_raw).hexdigest()
+         == record['entry']['native_restore_receipt_sha256'])
+    terminal_raw = protected(root / 'unit-terminal-proof.json')
+    need(hashlib.sha256(terminal_raw).hexdigest() == record['evidence']['terminal_proof_sha256'])
+    validate_terminal_proof(decode(terminal_raw), native, ownership['owner'],
+        now=catalog.timestamp(record['entry']['accepted_at']),
+        stop_intent=decode(protected(root / 'unit-stop-intent.json')))
+    download_raw = protected(Path(plans.ROOT) / tx / 'downloaded-receipt.json')
+    binding = _info_binding(root, plan, ownership_raw, download_raw)
+    metadata_raw = protected(root / 'info-metadata.json')
+    need(hashlib.sha256(metadata_raw).hexdigest() == native.get('info_metadata_sha256'),
+         'original_info_metadata_binding_required')
+    metadata = decode(metadata_raw)
+    need(set(metadata) == set(binding) | {'schema', 'transaction', 'attempt', 'info_sha256',
+         'selected', 'full', 'observed_at'})
+    need(metadata['schema'] == INFO_METADATA_SCHEMA and metadata['transaction'] == tx
+         and metadata['attempt'] == attempt and all(metadata[key] == value for key, value in binding.items())
+         and re.fullmatch('[0-9a-f]{64}', metadata['info_sha256']))
+    observed = _utc(metadata['observed_at'])
+    need(observed <= _utc(native['completed_at']) <= dt.datetime.now(dt.timezone.utc))
+    need(_utc(decode(protected(root / 'info-intent.json'))['observed_at']) <= observed)
+    rows = [{'label': plan[key], 'info': {'size': 1}, 'timestamp': metadata[name]}
+            for name, key in (('selected', 'backup_label'), ('full', 'full_ancestor_label'))]
+    if plan['backup_label'] == plan['full_ancestor_label']:
+        need(metadata['selected'] == metadata['full']); rows = rows[:1]
+    times = _info_times([{'name': 'careertrellis', 'status': {'code': 0}, 'backup': rows}],
+                        plan, _utc(decode(download_raw)['completed_at']), observed)
+    return dt.datetime.fromtimestamp(times['selected']['stop'], dt.timezone.utc).isoformat()
+
+
 def postgres_account():
     import pwd
     return pwd.getpwnam('postgres')
@@ -188,10 +286,11 @@ def process_identity(pid):
 def span_microseconds(value):
     """Parse bounded systemctl duration output without accepting infinity."""
     need(type(value) is str and len(value) <= 64, 'owner_unit_containment_refused')
-    tokens = re.findall(r'([0-9]+)(us|ms|min|s|h)', value)
+    tokens = re.findall(r'([0-9]+)(us|ms|min|s|h|d)', value)
     need(tokens and ' '.join(number + unit for number, unit in tokens) == value,
          'owner_unit_containment_refused')
-    factors = {'us': 1, 'ms': 1000, 's': 1000000, 'min': 60000000, 'h': 3600000000}
+    factors = {'us': 1, 'ms': 1000, 's': 1000000, 'min': 60000000, 'h': 3600000000,
+               'd': 86400000000}
     return sum(int(number) * factors[unit] for number, unit in tokens)
 
 
@@ -233,10 +332,15 @@ def validate_terminal_proof(value, receipt, owner, now=None, *, stop_intent=None
          and type(owner['boot_id']) is str
          and re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', owner['boot_id']),
          'native_terminal_proof_refused')
-    need(type(receipt) is dict and receipt.get('schema') == 'careertrellis.onedrive-native-local-restore/v1'
+    need(type(receipt) is dict and receipt.get('schema') in (
+         'careertrellis.onedrive-native-local-restore/v1', 'careertrellis.onedrive-native-local-restore/v2')
          and receipt.get('result') == 'verified' and receipt.get('native_restore_accepted') is True
          and receipt.get('postmaster_terminal') is True and receipt.get('checksums_verified') is True,
          'native_terminal_proof_refused')
+    if receipt['schema'] == 'careertrellis.onedrive-native-local-restore/v2':
+        need(type(receipt.get('info_metadata_sha256')) is str
+             and re.fullmatch('[0-9a-f]{64}', receipt['info_metadata_sha256'])
+             and receipt['info_metadata_sha256'] != '0'*64, 'native_terminal_proof_refused')
     tx, attempt = value['transaction'], value['attempt']
     need(type(tx) is str and re.fullmatch('[0-9a-f]{32}', tx)
          and type(attempt) is int and 1 <= attempt <= 9
@@ -712,16 +816,14 @@ class Native:
         self.prepared = True
 
     def local_info(self, raw):
-        info = decode(raw); need(type(info) is list and len(info) == 1)
-        stanza = info[0]
-        need(stanza.get('name') == 'careertrellis' and stanza.get('status', {}).get('code') == 0)
-        backups = stanza.get('backup'); need(type(backups) is list)
-        for label in (self.plan['backup_label'], self.plan['full_ancestor_label']):
-            selected = [row for row in backups if row.get('label') == label]
-            need(len(selected) == 1, 'local_backup_label_missing')
-            size = selected[0].get('info', {}).get('size')
-            need(type(size) is int and 0 < size <= self.plan['maximum_database_bytes'])
-            need(selected[0].get('error', False) is False, 'local_backup_unhealthy')
+        now = dt.datetime.now(dt.timezone.utc)
+        times = _info_times(decode(raw), self.plan,
+                            _utc(decode(self.download_raw)['completed_at']), now)
+        ownership_raw = protected(self.root / 'ownership.json')
+        binding = _info_binding(self.root, self.plan, ownership_raw, self.download_raw)
+        self.event('info-metadata', dict(binding, schema=INFO_METADATA_SCHEMA,
+            transaction=self.plan['transaction'], attempt=self.plan['attempt'],
+            info_sha256=hashlib.sha256(raw).hexdigest(), observed_at=now.isoformat(), **times))
 
     def verify_restored_tree(self):
         data = Path(self.plan['data_root']); directory(data, task_root=self.root, postgres_uid=self.account.pw_uid)
@@ -864,7 +966,9 @@ class Native:
         self.verify_repository()
         self.configuration_unchanged()
         need(not getattr(self, 'failed', False), 'native_attempt_already_failed')
-        receipt = {'schema': 'careertrellis.onedrive-native-local-restore/v1', 'result': 'verified',
+        metadata_raw = protected(self.root / 'info-metadata.json')
+        receipt = {'schema': 'careertrellis.onedrive-native-local-restore/v2', 'result': 'verified',
+            'info_metadata_sha256': hashlib.sha256(metadata_raw).hexdigest(),
             'transaction': self.plan['transaction'], 'attempt': self.plan['attempt'],
             'archive_sha256': self.plan['archive_sha256'],
             'generation_sha256': self.plan['generation_sha256'], 'backup_label': self.plan['backup_label'],

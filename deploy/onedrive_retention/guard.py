@@ -37,8 +37,10 @@ COVERAGE = ('hydration', 'publication', 'native_restore', 'catalog_admission',
 OPERATIONS = ('bundle_capture', 'bundle_publish', 'bundle_restore',
               'legacy_pg_mirror', 'legacy_object_mirror')
 MAX_RECORDS = 10000
+PRE_GROWTH_PURPOSE='retire_existing_before_growth'
 _PROVIDER_SEAL = object()
 _POLICY_ARCHIVE_SEAL = object()
+_PAIRED_HANDOFF_SEAL = object()
 LEGACY_PAIRED_POLICY = '3dcd50ba5bbc6fdd3270a83c7dd255c35f86c18f9da5d0613a55c8a4be94c880'
 LEGACY_PAIRED_RELEASE = '7a4d3f077c4da21f2a315cbbcf4fd926d91151f4'
 
@@ -304,6 +306,8 @@ def native_check(operation, transaction, attempt=1, repository_lock_fd=None):
     context = baseline.native_context()
     need(type(context) is baseline.AuthenticatedContext and context.authenticated and context.role == 'db'
          and Path(__file__).absolute() == entry.ROOT/'guard.py')
+    from . import activation
+    activation.routing_state()
     catalog.NativeFiles(repository_lock_fd).require_repository_lock()
     need(entry.retention_idle(transaction,stage) is True)
     peer = native_web_witness(transaction,stage,context)
@@ -467,8 +471,11 @@ class NativeProvider:
     config bytes or provider error text is logged. This collector never acquires
     a lock itself and therefore cannot be used as an operation progress poll.
     """
-    def __init__(self, repository_lock_fd):
+    def __init__(self, repository_lock_fd, *, operation_deadline=None):
         from . import baseline, capture_plan, entry
+        need(operation_deadline is None or (type(operation_deadline) in (int,float)
+            and math.isfinite(operation_deadline) and operation_deadline>time.monotonic()))
+        self.operation_deadline=operation_deadline
         need(os.name == 'posix' and os.geteuid() == os.getegid() == 0
              and socket.gethostname() == 'job-applier-db-staging-01'
              and Path(__file__).absolute() == entry.ROOT / 'guard.py')
@@ -512,6 +519,22 @@ class NativeProvider:
              and hydrate.protected(self.binary, limit=256 * 1024**2)[1] == self.binary_identity
              and baseline.native_context().bindings == self.context.bindings)
 
+    def _command_timeout(self):
+        """Trusted shared monotonic budget; no fresh allowance per child.
+
+        hydrate.command returns only after waiting for its direct child. A
+        timeout/unknown kill-and-wait never returns capacity evidence here.
+        This does not promise a hard terminal time if kernel wait is unknown.
+        """
+        deadline=getattr(self,'operation_deadline',None)
+        if deadline is None:return 600
+        remaining=deadline-time.monotonic();need(remaining>0)
+        return min(600,remaining)
+
+    def _within_deadline(self):
+        deadline=getattr(self,'operation_deadline',None)
+        need(deadline is None or time.monotonic()<deadline)
+
     def read(self, operation):
         from . import hydrate
         commands = {'quota': ['about', 'onedrive:', '--json'],
@@ -522,9 +545,9 @@ class NativeProvider:
         raw = hydrate.command([self.binary, *commands[operation], '--config', '/proc/self/fd/' + str(self.fd),
             '--log-level', 'ERROR', '--stats', '0', '--retries', '1', '--low-level-retries', '1',
             '--contimeout', '15s', '--timeout', '45s'], descriptor=self.fd,
-            lock_descriptor=self.files.repository_lock_fd, output=True, timeout=600)
+            lock_descriptor=self.files.repository_lock_fd, output=True, timeout=self._command_timeout())
         need(type(raw) is bytes and len(raw) <= 4 * 1024**2)
-        self.unchanged(); return raw
+        self.unchanged();self._within_deadline();return raw
 
     def source_allocation(self):
         """Bound the next deterministic tar from actual R2 count/byte census."""
@@ -547,7 +570,7 @@ class NativeProvider:
             raw = hydrate.command([self.binary,'size',capture_plan.SOURCE,'--json','--config',
                 '/proc/self/fd/'+str(fd),'--log-level','ERROR','--stats','0','--retries','1',
                 '--low-level-retries','1','--contimeout','15s','--timeout','45s'],descriptor=fd,
-                lock_descriptor=self.files.repository_lock_fd,output=True,timeout=600)
+                lock_descriptor=self.files.repository_lock_fd,output=True,timeout=self._command_timeout())
             need(len(raw) <= 65536)
             value = native_restore.decode(raw)
             need(type(value) is dict and type(value.get('bytes')) is int
@@ -555,7 +578,7 @@ class NativeProvider:
                  and 0 < value['count'] <= 100000)
             candidate = value['bytes'] + value['count']*1536 + bundle.MAX_MANIFEST + 20480
             need(candidate <= bundle.MAX_BYTES)
-            self.unchanged(); return value['bytes'],candidate
+            self.unchanged();self._within_deadline();return value['bytes'],candidate
         finally: os.close(fd)
 
     def collect(self):
@@ -581,7 +604,7 @@ class NativeProvider:
         rows = provider_rows(self.read('inventory')) if matches else {}
         observed = dt.datetime.now(dt.timezone.utc).isoformat()
         need(0 <= time.monotonic() - started <= policy.MAX_INVENTORY_AGE_SECONDS)
-        self.unchanged()
+        self.unchanged();self._within_deadline()
         return AuthenticatedProviderFacts({'schema': 'careertrellis.onedrive-provider-census/v1',
             'observed_at': observed, 'quota': {'total': quota['total'], 'free': quota['free'],
             'observed_at': quota_observed}, 'rows': rows, 'namespace_bytes': sum(row['size'] for row in rows.values()),
@@ -595,10 +618,11 @@ def collect_provider_facts(repository_lock_fd):
     finally: collector.close()
 
 
-def _namespace_owners(facts, repository_lock_fd, candidate_transaction=None, *, retirement_transaction=None):
+def _namespace_owners(facts, repository_lock_fd, candidate_transaction=None, *, retirement_transaction=None,
+                      retirement_parent=None):
     """Every remote row needs accepted, current-candidate or explicit hold provenance."""
     from . import preservation
-    store = catalog.NativeStore(repository_lock_fd)
+    store = catalog.NativeReadStore(repository_lock_fd)
     with store.io.locked():
         records = store.records(); retired = store.retired(records)
         expected = {}
@@ -640,14 +664,15 @@ def _namespace_owners(facts, repository_lock_fd, candidate_transaction=None, *, 
             # authenticate the current finite owner and every durable original
             # candidate/dispatch/known-success acknowledgement before returning
             # exactly the missing paths. Unknown outcomes still refuse.
+            options={} if retirement_parent is None else {'parent':retirement_parent}
             authenticated = retire.authenticated_retirement_absences(
-                repository_lock_fd,retirement_transaction,facts['rows'])
+                repository_lock_fd,retirement_transaction,facts['rows'],**options)
             need(type(authenticated) is frozenset and authenticated == missing)
         need(set(expected) == set(accepted_rows)|missing)
         return accepted_rows,held_rows,candidate_rows
 
 
-def native_catalog_inventory(repository_lock_fd, *, retirement_transaction=None):
+def native_catalog_inventory(repository_lock_fd, *, retirement_transaction=None,retirement_parent=None):
     """Collect protected catalog + fresh provider census for native revalidation.
 
     Missing accepted objects are represented by the inventory and MUST be
@@ -656,12 +681,13 @@ def native_catalog_inventory(repository_lock_fd, *, retirement_transaction=None)
     Unknown provider objects have no authenticated byte witness and refuse.
     """
     from . import baseline, coordinator, entry
+    need(retirement_parent is None or retirement_transaction is not None)
     facts = collect_provider_facts(repository_lock_fd)
     need(type(facts) is AuthenticatedProviderFacts and facts.authenticated)
     collected = facts.value
     accepted_rows,held_rows,_candidate = _namespace_owners(collected,repository_lock_fd,
-        retirement_transaction=retirement_transaction)
-    store = catalog.NativeStore(repository_lock_fd)
+        retirement_transaction=retirement_transaction,retirement_parent=retirement_parent)
+    store = catalog.NativeReadStore(repository_lock_fd)
     with store.io.locked():
         records = store.records()
         retired = store.retired(records)
@@ -708,10 +734,14 @@ HISTORY_ROOTS = {
            ('retirement', '/var/lib/careertrellis/onedrive-retention/db/retirements'),
            ('stage_dispatch', '/var/lib/careertrellis/onedrive-retention/db'),
            ('paired_runs', '/var/lib/careertrellis/paired-maintenance/db/runs'),
+           ('pre_growth','/var/lib/careertrellis/onedrive-retention/pre-growth'),
+           ('expiry_capability','/var/lib/careertrellis/onedrive-retention/expiry-capability'),
            ('legacy_pg_mirror', '/var/backups/careertrellis/backup-health/operations')),
     'web': (('legacy_object_mirror', '/var/lib/careertrellis/generated-object-captures'),
             ('legacy_object_mirror', '/var/lib/careertrellis/generated-object-recovery/work'),
             ('paired_runs', '/var/lib/careertrellis/paired-maintenance/web/runs'),
+            ('pre_growth_web','/var/lib/careertrellis/onedrive-retention/pre-growth-web'),
+            ('activation_web','/var/lib/careertrellis/onedrive-retention/activation-web'),
             ('legacy_object_mirror', '/var/backups/careertrellis/backup-health/operations'))}
 
 
@@ -797,15 +827,24 @@ def _legacy_history(category, rows):
         else: sys.modules['_careertrellis_retention_history_health'] = previous
 
 
-def _new_stage_history(category, rows, transaction, stage, context):
+def _new_stage_history(category, rows, transaction, stage, context,repository_lock_fd=None):
     from . import endpoint, execution, preservation, publish
     mapped = {'hydration':'hydrate','publication':'publish','native_restore':'restore','retirement':'retire'}[category]
-    own = endpoint.unit(stage,transaction)
-    current_owner = (Path('/proc/self/cgroup').read_text().strip() == '0::/system.slice/'+own
+    own = endpoint.unit(stage,transaction) if stage!=PRE_GROWTH_PURPOSE else None
+    current_owner = (own is not None and Path('/proc/self/cgroup').read_text().strip() == '0::/system.slice/'+own
                      and execution.show(own).get('MainPID') == str(os.getpid()))
     for row in rows:
         identifier = row['name']
         need(row['directory'] and re.fullmatch('[0-9a-f]{32}',identifier))
+        if category=='retirement':
+            root=Path('/var/lib/careertrellis/onedrive-retention/db/retirements')/identifier
+            raw=native_restore.protected(root/'operation-intent.json',maximum=32*1024**2)
+            operation=native_restore.decode(raw);need(bundle.canonical(operation)==raw)
+            if operation.get('purpose')=='pre_growth_retirement':
+                from . import pre_growth_native
+                pre_growth_native.retirement_history_complete(identifier,
+                    transaction if stage==PRE_GROWTH_PURPOSE else None,repository_lock_fd)
+                continue
         if identifier == preservation.HISTORICAL_TRANSACTION and category in (
                 'hydration','publication','native_restore'):
             preservation.read_historical_info_preservation()
@@ -828,7 +867,51 @@ def _new_stage_history(category, rows, transaction, stage, context):
         need(result['state'] == 'complete')
 
 
-def _source_auxiliary_history(transaction):
+def _pre_growth_identity_scope(transaction):
+    """Only this actual opaque child can describe its current partial attempt."""
+    group=Path('/proc/self/cgroup').read_text('ascii').strip()
+    match=re.fullmatch(r'0::/system.slice/careertrellis-onedrive-pre-growth-identity-([0-9a-f]{32})-'
+        +transaction+r'-([0-9]{2})\.service',group)
+    if match is None:return None
+    from . import pre_growth_native
+    cap=pre_growth_native.native_identity(match[1],transaction,int(match[2]))
+    need(type(cap) is pre_growth_native.IdentityCapability and cap.authenticated)
+    cap.require_identity(transaction,int(match[2]))
+    state,owner=pre_growth_native._current('identity',match[1],transaction,int(match[2]))
+    return {'cap':cap,'verification':int(match[2]),'owner':{'pid':owner['pid'],'start_ticks':owner['start_ticks'],
+        'boot_id':owner['boot_id'],'unit':cap.unit,'invocation_id':state['InvocationID']}}
+
+
+def _current_identity_partial(target,transaction,number,actual,scope,document):
+    """Account for in-flight files without calling them accepted or complete."""
+    allowed={'intent.json','receipt.json','archive.tar'}|{phase+'-'+suffix+'.json'
+        for phase in ('stat-before','download','stat-after') for suffix in ('intent','child','terminal')}
+    need(scope is not None and number==scope['verification'] and 'intent.json' in actual and actual<=allowed)
+    intent=document(target/'intent.json')
+    policy._keys(intent,('schema','transaction','verification','archive_sha256','archive_bytes',
+        'download_receipt_sha256','owner','started_at'))
+    need(intent['schema']=='careertrellis.onedrive-identity-intent/v1' and intent['transaction']==transaction
+        and intent['verification']==number and intent['owner']==scope['owner'])
+    for phase in ('stat-before','download','stat-after'):
+        seen=[phase+'-'+suffix+'.json' in actual for suffix in ('intent','child','terminal')]
+        need(not seen[1] or seen[0]);need(not seen[2] or seen[1])
+        if seen[0]:
+            step=document(target/(phase+'-intent.json'))
+            need(step['phase']==phase and step['owner']==scope['owner'])
+        if seen[2]:
+            child=document(target/(phase+'-child.json'));terminal=document(target/(phase+'-terminal.json'))
+            need(type(terminal.get('returncode')) is int and terminal['returncode']==0
+                and terminal.get('pid')==child.get('pid'))
+    if 'receipt.json' in actual:
+        need('archive.tar' in actual and all(phase+'-terminal.json' in actual for phase in ('stat-before','download','stat-after')))
+        witness=document(target/'receipt.json')
+        need(witness.get('sha256')==intent['archive_sha256'] and witness.get('size')==intent['archive_bytes'])
+    from . import pre_growth_native
+    pre_growth_native.require_parent(scope['cap']);scope['cap'].require_identity(transaction,number)
+    return True
+
+
+def _source_auxiliary_history(transaction,current_transaction=None,repository_lock_fd=None):
     """Identity and temporary OAuth attempts remain durable growth fences."""
     from . import execution, preservation, publish
     root = Path('/var/lib/careertrellis/onedrive-bundles')/transaction
@@ -839,10 +922,15 @@ def _source_auxiliary_history(transaction):
         return value
     attempts = {int(name[-2:]) for name in names if re.fullmatch('identity-verification-[0-9]{2}',name)}
     aliases = {int(name[-7:-5]) for name in names if re.fullmatch('bundle-object-identity-[0-9]{2}[.]json',name)}
-    need(attempts == aliases and all(1 <= number <= 99 for number in attempts))
+    scope=_pre_growth_identity_scope(transaction)
+    current={scope['verification']} if scope is not None else set()
+    need((attempts-current)==(aliases-current) and aliases<=attempts and all(1 <= number <= 99 for number in attempts))
     for number in sorted(attempts):
         target = root/('identity-verification-%02d'%number)
         actual = {row['name'] for row in _history_names(target)}
+        if number in current:
+            _current_identity_partial(target,transaction,number,actual,scope,document)
+            continue
         expected = {'intent.json','receipt.json','archive.tar'} | {
             phase+'-'+suffix+'.json' for phase in ('stat-before','download','stat-after')
             for suffix in ('intent','child','terminal')}
@@ -859,7 +947,16 @@ def _source_auxiliary_history(transaction):
                  and terminal.get('pid') == child.get('pid'))
             preservation._terminal_birth(child)
         need(publish.digest_file(target/'archive.tar') == (witness.get('sha256'),witness.get('size')))
-        execution.terminal('careertrellis-onedrive-bundle-identity-'+transaction+'-%02d.service'%number)
+        unit=intent['owner'].get('unit')
+        ordinary='careertrellis-onedrive-bundle-identity-'+transaction+'-%02d.service'%number
+        if unit!=ordinary:
+            from . import pre_growth_native
+            match=re.fullmatch(r'careertrellis-onedrive-pre-growth-identity-([0-9a-f]{32})-'+transaction+
+                r'-%02d\.service'%number,unit or '')
+            need(match is not None)
+            pre_growth_native.identity_history_complete(match[1],transaction,number,
+                current_transaction,repository_lock_fd,identity_owner=intent['owner'])
+        else:execution.terminal(ordinary)
     prefixes = set()
     for name in names:
         if name.startswith('oauth-refresh-'):
@@ -915,6 +1012,27 @@ def _endpoint_history(rows,transaction,stage,context):
                 witness = native_restore.decode(raw); need(bundle.canonical(witness) == raw)
                 health.validate_schedule(witness,context.bindings,context.revision,
                                          context.document['application_release'],dt.datetime.now(dt.timezone.utc))
+            continue
+        if identifier == 'health':
+            need(row['directory'])
+            health_root = coordinator.STATE/'db'/'health'
+            names = {part['name'] for part in _history_names(health_root)}
+            need(names <= {'current.json','control.lock'})
+            if 'control.lock' in names:
+                need(native_restore.protected(health_root/'control.lock',maximum=0) == b'')
+            if 'current.json' in names:
+                raw = native_restore.protected(health_root/'current.json',maximum=131072)
+                cached = native_restore.decode(raw)
+                need(bundle.canonical(cached) == raw
+                     and cached.get('schema') in ('careertrellis.onedrive-retention-health/v1','careertrellis.onedrive-retention-health/v2')
+                     and cached.get('result') in ('ok','warning','urgent','alert')
+                     and policy.timestamp(cached['observed_at']) <= dt.datetime.now(dt.timezone.utc))
+                if cached['schema']=='careertrellis.onedrive-retention-health/v2':
+                    from . import health
+                    health.validate_cached_health(cached)
+                # Classification of an existing private monitor cache is not
+                # permission to grow or report healthy. The monitor separately
+                # enforces its current-baseline/activation/5-minute contract.
             continue
         need(row['directory'] and re.fullmatch('[0-9a-f]{32}',identifier))
         root = coordinator.STATE/'db'/identifier
@@ -1069,9 +1187,22 @@ def _paired_capture_claim(value):
     need(value['capture_started_epoch'] <= value['captured_epoch'])
 
 
-def paired_run_claim(role,transaction,documents,current_pair_sha,current_release):
-    """Pure recognized terminal-chain contract; supplied records authenticate nothing."""
-    need(role in ('web','db') and type(documents) is dict)
+def _paired_start(original,transaction,paired_sha,identity):
+    need(type(original) is dict and set(original) in (
+        {'transaction','policy_sha256','identity'}, {'transaction','policy_sha256','identity','backup_strategy'})
+         and original['transaction'] == transaction and original['policy_sha256'] == paired_sha
+         and original['identity'] == identity)
+    strategy = original.get('backup_strategy',{'mode':'legacy-mirror'})
+    need(type(strategy) is dict)
+    if strategy.get('mode') == 'legacy-mirror': need(strategy == {'mode':'legacy-mirror'})
+    else:
+        policy._keys(strategy,('mode','retention_policy_sha256','activation_sha256'))
+        need(strategy['mode'] == 'native-bundle-v2')
+        policy._digest(strategy['retention_policy_sha256']); policy._digest(strategy['activation_sha256'])
+    return strategy
+
+
+def _paired_known_files(role):
     known = {
         'web': {'status.json','prestart-original-status.json','prestart-aborted.json','complete.json',
             'start-intent.json','db-begin-intent.json','stop-intent.json','quiesced-result.json',
@@ -1079,14 +1210,20 @@ def paired_run_claim(role,transaction,documents,current_pair_sha,current_release
             'restore-intent.json','recovery-restore-intent.json','writers-restored.json','db-released.json',
             'publish-intent.json','publish-dispatch-intent.json','publication-result.json','peer-identity.json',
             'db-mirror-accepted.json','db-health-accepted.json','health-dispatch-intent.json','health-dispatched.json',
-            'normal-reports-accepted.json','abort-intent.json','aborted-restored.json'},
+            'normal-reports-accepted.json','abort-intent.json','aborted-restored.json','bundle-intent.json',
+            'bundle-dispatch-intent.json','bundle-child-dispatched.json','bundle-child-terminal.json','db-bundle-accepted.json'},
         'db': {'status.json','begin-intent.json','worker-started.json','worker-dispatch.json',
             'quiesced.json','capture.json','restored.json','abort.json','abort-dispatch-intent.json',
             'backup-intent.json','backup-invocation.json','recovery-dispatch-intent.json',
             'mirror-intent.json','mirror-unit-intent.json','mirror-unit-dispatch.json',
             'health-intent.json','health-unit-intent.json','health-unit-dispatch.json',
-            'complete-intent.json','complete-result.json'}}
-    need(set(documents) <= known[role])
+            'complete-intent.json','complete-result.json','bundle-accepted.json'}}
+    return known[role]
+
+
+def paired_run_claim(role,transaction,documents,current_pair_sha,current_release):
+    """Pure recognized terminal-chain contract; supplied records authenticate nothing."""
+    need(role in ('web','db') and type(documents) is dict and set(documents) <= _paired_known_files(role))
     status = documents['status.json']
     need(type(status) is dict and status.get('transaction') == transaction)
     paired_sha,release,boot = status.get('policy_sha256'),status.get('release'),status.get('boot_id')
@@ -1122,10 +1259,9 @@ def paired_run_claim(role,transaction,documents,current_pair_sha,current_release
                 state = 'skipped'
             else:
                 original = documents['start-intent.json']
-                policy._keys(original,('transaction','policy_sha256','identity'))
                 identity = original['identity']; policy._keys(identity,('release','web_boot','web_invocation'))
-                need(original['transaction'] == transaction and original['policy_sha256'] == paired_sha
-                     and identity == {'release':release,'web_boot':boot,'web_invocation':invocation})
+                strategy = _paired_start(original,transaction,paired_sha,
+                    {'release':release,'web_boot':boot,'web_invocation':invocation})
                 need(documents.get('db-begin-intent.json') == identity)
                 if 'aborted-restored.json' in documents:
                     need(documents.get('abort-intent.json') == identity
@@ -1150,11 +1286,39 @@ def paired_run_claim(role,transaction,documents,current_pair_sha,current_release
                                  ('release','backup_label','snapshot_id','manifest_sha256','authority'))
                          and terminal.get('backup_label') == capture['backup_label']
                          and terminal.get('manifest_sha256') == capture['manifest_sha256'])
-                    mirror,health = documents['db-mirror-accepted.json'],documents['db-health-accepted.json']
-                    need(mirror.get('state') == 'mirror_complete' and mirror.get('backup_label') == capture['backup_label']
-                         and health.get('state') == 'health_complete' and health.get('normal_report_accepted') is True
-                         and all(record.get('transaction') == transaction and record.get('policy_sha256') == paired_sha
-                                 for record in (mirror,health)))
+                    health = documents['db-health-accepted.json']
+                    need(health.get('state') == 'health_complete' and health.get('normal_report_accepted') is True
+                         and health.get('transaction') == transaction and health.get('policy_sha256') == paired_sha)
+                    if strategy['mode'] == 'native-bundle-v2':
+                        need('db-mirror-accepted.json' not in documents and documents['bundle-intent.json'] == {
+                            'capture_sha256':hashlib.sha256(bundle.canonical(capture)).hexdigest(),
+                            'publication_sha256':hashlib.sha256(bundle.canonical(publication)).hexdigest(),
+                            'backup_strategy':strategy})
+                        accepted = documents['db-bundle-accepted.json']
+                        policy._keys(accepted,('schema','state','transaction','policy_sha256',
+                            'retention_policy_sha256','activation_sha256','backup_label','native_restore_accepted',
+                            'archive_sha256','native_receipt_sha256','restore_status_sha256','bundle_completion_sha256'))
+                        need(accepted['schema'] == 'careertrellis.paired-native-bundle-accepted/v1'
+                             and accepted['state'] == 'native_bundle_complete' and accepted['transaction'] == transaction
+                             and accepted['policy_sha256'] == paired_sha and accepted['backup_label'] == capture['backup_label']
+                             and accepted['retention_policy_sha256'] == strategy['retention_policy_sha256']
+                             and accepted['activation_sha256'] == strategy['activation_sha256']
+                             and accepted['native_restore_accepted'] is True)
+                        for key in ('archive_sha256','native_receipt_sha256','restore_status_sha256','bundle_completion_sha256'):
+                            policy._digest(accepted[key])
+                        handoff,dispatched,child_terminal = (documents[name] for name in
+                            ('bundle-dispatch-intent.json','bundle-child-dispatched.json','bundle-child-terminal.json'))
+                        _paired_handoff_records(documents,transaction,paired_sha,strategy['retention_policy_sha256'],
+                            release,handoff['parent_owner'],dispatched['owner'])
+                        need(child_terminal == {'schema':'careertrellis.paired-retention-child-terminal/v1',
+                            'transaction':transaction,'handoff_sha256':hashlib.sha256(bundle.canonical(handoff)).hexdigest(),
+                            'owner':dispatched['owner'],'returncode':0,'completed_at':child_terminal.get('completed_at')})
+                        need(policy.timestamp(handoff['issued_at']) <= policy.timestamp(child_terminal['completed_at'])
+                             <= dt.datetime.now(dt.timezone.utc))
+                    else:
+                        mirror = documents['db-mirror-accepted.json']
+                        need(mirror.get('state') == 'mirror_complete' and mirror.get('backup_label') == capture['backup_label']
+                             and mirror.get('transaction') == transaction and mirror.get('policy_sha256') == paired_sha)
                     state = 'complete'
     else:
         original = documents['begin-intent.json']
@@ -1167,7 +1331,9 @@ def paired_run_claim(role,transaction,documents,current_pair_sha,current_release
              and restored.get('operation') == 'restored' and restored.get('payload',{}).get('services_restored') is True
              and all(restored['payload'].get(key) == original['payload'][key]
                      for key in ('release','web_boot','web_invocation')))
-        state = status.get('state'); need(state in ('complete','released','aborted'))
+        state = status.get('state')
+        native_accepted = documents.get('bundle-accepted.json')
+        need(state in ('complete','released','aborted') or state == 'health_running' and native_accepted is not None)
         if state == 'aborted':
             abort = documents['abort.json']
             need(abort.get('transaction') == transaction and abort.get('policy_sha256') == paired_sha
@@ -1181,27 +1347,43 @@ def paired_run_claim(role,transaction,documents,current_pair_sha,current_release
             _paired_capture_claim(capture)
             need(capture['release'] == release and restored['payload'].get('capture_sha256') ==
                  hashlib.sha256(bundle.canonical(capture)).hexdigest())
+            if native_accepted is not None:
+                policy._keys(native_accepted,('schema','transaction','policy_sha256','retention_policy_sha256',
+                    'activation_sha256','release','backup_label','publication_manifest_sha256','archive_sha256',
+                    'native_receipt_sha256','restore_status_sha256','retirement_status_sha256','catalog_acceptance_sha256'))
+                need(native_accepted['schema'] == 'careertrellis.paired-native-db-bundle-accepted/v1'
+                     and native_accepted['transaction'] == transaction and native_accepted['policy_sha256'] == paired_sha
+                     and native_accepted['release'] == release and native_accepted['backup_label'] == capture['backup_label']
+                     and native_accepted['publication_manifest_sha256'] == capture['manifest_sha256']
+                     and not any(name in documents for name in ('mirror-intent.json','mirror-unit-intent.json',
+                                                               'mirror-unit-dispatch.json')))
+                for field in ('retention_policy_sha256','activation_sha256','archive_sha256','native_receipt_sha256',
+                              'restore_status_sha256','retirement_status_sha256','catalog_acceptance_sha256'):
+                    policy._digest(native_accepted[field])
             if state == 'complete':
-                result = documents['complete-result.json']; mirror = documents['mirror-intent.json']
+                result = documents['complete-result.json']
                 need(status.get('services_restored') is True
                      and result == {'transaction':transaction,'policy_sha256':paired_sha,
-                        'backup_label':capture['backup_label'],'manifest_sha256':capture['manifest_sha256']}
-                     and mirror.get('payload',{}).get('backup_label') == capture['backup_label']
-                     and mirror['payload'].get('publication_manifest_sha256') == capture['manifest_sha256'])
-            else:
+                        'backup_label':capture['backup_label'],'manifest_sha256':capture['manifest_sha256']})
+                if native_accepted is None:
+                    mirror = documents['mirror-intent.json']
+                    need(mirror.get('payload',{}).get('backup_label') == capture['backup_label']
+                         and mirror['payload'].get('publication_manifest_sha256') == capture['manifest_sha256'])
+            elif native_accepted is None:
                 need(not any(name in documents for name in ('mirror-intent.json','health-intent.json','complete-result.json')))
+            else:need('complete-result.json' not in documents)
     return {'state':state,'transaction':transaction,'paired_policy_sha256':paired_sha,
             'release':release,'boot_id':boot,'original_invocation':invocation,'authenticated':False}
 
 
-def validate_paired_handoff(documents,transaction,paired_policy_sha256,retention_policy_sha256,
-                            release,parent_owner,child_owner,now):
-    """SOURCE PROPOSAL ONLY: validate a same-TX post-restoration handoff.
+def _paired_handoff_records(documents,transaction,paired_policy_sha256,retention_policy_sha256,
+                            release,parent_owner,child_owner):
+    """Pure immutable record bindings; deliberately no freshness assertion.
 
-    No native history or dispatcher consumes this result. It cannot clear an
-    active paired unit, authorize a child, or replace approval of the proposed
-    paired workflow change. A reviewed parent must still collect actual owners,
-    unit/cgroup/source bindings and durably record one dispatch before use.
+    This parsed result cannot clear an active unit or authorize a child. The
+    fixed native factory separately authenticates protected records, actual
+    owner births, selector, unit/cgroup/source and inherited descriptor before
+    issuing a sealed same-operation continuation.
     """
     need(type(documents) is dict and type(transaction) is str and re.fullmatch('[0-9a-f]{32}',transaction))
     catalog.process_identity(parent_owner); catalog.process_identity(child_owner)
@@ -1209,7 +1391,8 @@ def validate_paired_handoff(documents,transaction,paired_policy_sha256,retention
     policy._digest(paired_policy_sha256); policy._digest(retention_policy_sha256)
     handoff,child = documents['bundle-dispatch-intent.json'],documents['bundle-child-dispatched.json']
     policy._keys(handoff,('schema','transaction','paired_policy_sha256','retention_policy_sha256','release',
-        'backup_label','capture_sha256','publication_sha256','parent_owner','parent_unit','parent_invocation','issued_at'))
+        'backup_label','capture_sha256','publication_sha256','parent_owner','parent_unit','parent_invocation','issued_at',
+        'maintenance_fd','maintenance_identity'))
     policy._keys(child,('schema','transaction','handoff_sha256','owner','command'))
     need(handoff['schema'] == 'careertrellis.paired-retention-handoff/v1'
          and handoff['transaction'] == transaction and handoff['paired_policy_sha256'] == paired_policy_sha256
@@ -1217,11 +1400,16 @@ def validate_paired_handoff(documents,transaction,paired_policy_sha256,retention
          and handoff['parent_owner'] == parent_owner
          and handoff['parent_unit'] == 'careertrellis-paired-maintenance.service'
          and type(handoff['parent_invocation']) is str and re.fullmatch('[0-9a-f]{32}',handoff['parent_invocation']))
-    current = policy.timestamp(now)
-    need(0 <= (current-policy.timestamp(handoff['issued_at'])).total_seconds() <= 120)
+    lock_identity = handoff['maintenance_identity']; policy._keys(lock_identity,('device','inode','owner_pid'))
+    need(type(handoff['maintenance_fd']) is int and 3 <= handoff['maintenance_fd'] <= 1024
+         and type(lock_identity['device']) is int and lock_identity['device'] >= 0
+         and type(lock_identity['inode']) is int and lock_identity['inode'] > 0
+         and lock_identity['owner_pid'] == parent_owner['pid'])
     original = documents['start-intent.json']
-    need(original == {'transaction':transaction,'policy_sha256':paired_policy_sha256,
-        'identity':{'release':release,'web_boot':parent_owner['boot_id'],'web_invocation':handoff['parent_invocation']}})
+    strategy = _paired_start(original,transaction,paired_policy_sha256,
+        {'release':release,'web_boot':parent_owner['boot_id'],'web_invocation':handoff['parent_invocation']})
+    need(strategy.get('mode') == 'native-bundle-v2'
+         and strategy.get('retention_policy_sha256') == retention_policy_sha256)
     capture,publication = documents['capture-result.json'],documents['publication-result.json']
     _paired_capture_claim(capture)
     need(capture['release'] == release and handoff['backup_label'] == capture['backup_label']
@@ -1236,14 +1424,23 @@ def validate_paired_handoff(documents,transaction,paired_policy_sha256,retention
     need(child == {'schema':'careertrellis.paired-retention-child/v1','transaction':transaction,
         'handoff_sha256':hashlib.sha256(bundle.canonical(handoff)).hexdigest(),'owner':child_owner,
         'command':['/usr/bin/python3','-I','-B','/usr/local/libexec/careertrellis/onedrive_retention/entry.py',
-                   'web-run','--transaction',transaction]})
+                   'web-run','--transaction',transaction,'--expected-backup-label',capture['backup_label']]})
     return {'result':'consistent_post_restoration_handoff','authenticated':False,
             'continuation_authorized':False,'dispatch_authorized':False,'backup_accepted':False,
             'transaction':transaction,'required_backup_label':capture['backup_label']}
 
 
-def _paired_unit_terminal(unit):
-    """Bounded legacy-unit/cgroup terminal proof, with no state transition."""
+def validate_paired_handoff(documents,transaction,paired_policy_sha256,retention_policy_sha256,
+                            release,parent_owner,child_owner,now):
+    """Fresh first-admission contract; does not authenticate supplied claims."""
+    result = _paired_handoff_records(documents,transaction,paired_policy_sha256,retention_policy_sha256,
+                                     release,parent_owner,child_owner)
+    need(0 <= (policy.timestamp(now)-policy.timestamp(
+        documents['bundle-dispatch-intent.json']['issued_at'])).total_seconds() <= 120)
+    return result
+
+
+def _paired_unit_state(unit):
     from . import hydrate
     need(re.fullmatch(r'careertrellis-paired-(?:maintenance|recovery|db(?:-recovery)?@[0-9a-f]{32})[.]service',unit))
     fields = ('LoadState','ActiveState','SubState','MainPID','ControlPID','Job','ControlGroup','InvocationID')
@@ -1253,7 +1450,14 @@ def _paired_unit_terminal(unit):
     for line in raw.decode('ascii').splitlines():
         key,separator,value = line.partition('='); need(separator and key in fields and key not in state)
         state[key] = value
-    need(set(state) == set(fields) and state['LoadState'] in ('loaded','not-found')
+    need(set(state) == set(fields))
+    return state
+
+
+def _paired_unit_terminal(unit):
+    """Bounded legacy-unit/cgroup terminal proof, with no state transition."""
+    state = _paired_unit_state(unit)
+    need(state['LoadState'] in ('loaded','not-found')
          and state['ActiveState'] in ('inactive','failed') and state['MainPID'] == state['ControlPID'] == '0'
          and state['Job'] == '')
     groups = {Path('/sys/fs/cgroup/system.slice')/unit}
@@ -1280,32 +1484,326 @@ def _paired_unit_terminal(unit):
     return state
 
 
-def _paired_history(role,rows,context):
+class AuthenticatedPairedHandoff:
+    __slots__ = ('_raw','_seal')
+    def __init__(self,value,seal=None):
+        need(seal is _PAIRED_HANDOFF_SEAL)
+        self._raw,self._seal = bundle.canonical(value),seal
+    @property
+    def authenticated(self):return self._seal is _PAIRED_HANDOFF_SEAL
+    @property
+    def value(self):return json.loads(self._raw)
+    @property
+    def handoff_sha256(self):return self.value['handoff_sha256']
+    @property
+    def required_backup_label(self):return self.value['required_backup_label']
+    @property
+    def parent_owner(self):return self.value['parent_owner']
+    @property
+    def maintenance_fd(self):return self.value['maintenance_fd']
+
+
+def _paired_inherited_maintenance(handoff):
+    """Only the actual activated paired parent/child can use its protected FD."""
+    from . import preservation
+    need(type(handoff) is AuthenticatedPairedHandoff and handoff.authenticated)
+    value = handoff.value; path = Path('/run/lock/careertrellis-maintenance.lock')
+    meta = path.lstat(); fd = value['maintenance_fd']
+    for ancestor in path.parents:
+        parent = ancestor.lstat(); need(stat.S_ISDIR(parent.st_mode) and parent.st_uid == 0)
+        need(stat.S_IMODE(parent.st_mode) == 0o1777 if ancestor == Path('/run/lock') else not parent.st_mode & 0o022)
+    need(stat.S_ISREG(meta.st_mode) and meta.st_uid == meta.st_gid == 0
+         and stat.S_IMODE(meta.st_mode) == 0o644 and meta.st_nlink == 1 and meta.st_size == 0
+         and value['maintenance_identity'] == {'device':meta.st_dev,'inode':meta.st_ino,
+                                               'owner_pid':value['parent_owner']['pid']}
+         and preservation._root_process(value['parent_owner']['pid']) == value['parent_owner'])
+    need(preservation.prove_same_description(str(path),fd,value['parent_owner']['pid']) is True)
+    return {'device':meta.st_dev,'inode':meta.st_ino,'owner_pid':os.getpid()}
+
+
+def native_paired_handoff(transaction,context,*,initial=False):
+    """Authenticate only the activated same-TX direct child of the paired owner."""
+    from . import activation,baseline,coordinator,entry,preservation
+    need(type(context) is baseline.AuthenticatedContext and context.authenticated and context.role == 'web'
+         and Path(__file__).absolute() == entry.ROOT/'guard.py'
+         and type(transaction) is str and re.fullmatch('[0-9a-f]{32}',transaction))
+    group = '/system.slice/careertrellis-paired-maintenance.service'
+    if Path('/proc/self/cgroup').read_text().strip() != '0::'+group:return None
+    selected = activation.require_activated(context)
+    need(type(selected) is activation.AuthenticatedSelector and selected.authenticated)
+    state = _paired_unit_state('careertrellis-paired-maintenance.service')
+    parent = preservation._root_process(os.getppid()); child = native_restore.process_identity(os.getpid())
+    need(state['LoadState'] == 'loaded' and state['ActiveState'] == 'active' and state['SubState'] == 'running'
+         and state['MainPID'] == str(parent['pid']) and state['ControlPID'] == '0' and state['Job'] == ''
+         and state['ControlGroup'] == group
+         and (Path('/proc')/str(parent['pid'])/'cgroup').read_text().strip() == '0::'+group)
+    executable = Path('/usr/bin/python3').resolve()
+    need(os.readlink(Path('/proc')/str(parent['pid'])/'exe') == str(executable))
+    command = (Path('/proc')/str(parent['pid'])/'cmdline').read_bytes(); need(len(command) <= 32768)
+    arguments = command.split(b'\0'); need(arguments[-1] == b''); arguments.pop()
+    need(len(arguments) in (4,5) and arguments[-2:] == [
+        b'/usr/local/libexec/careertrellis/paired_maintenance/entry.py',b'web-run']
+         and set(arguments[1:-2]) <= {b'-I',b'-B'} and len(set(arguments[1:-2])) == len(arguments[1:-2]))
+    root = Path('/var/lib/careertrellis/paired-maintenance/web/runs')/transaction
+    def document(name):
+        raw = native_restore.protected(root/name,maximum=131072)
+        value = native_restore.decode(raw); need(bundle.canonical(value) == raw)
+        return value
+    handoff = document('bundle-dispatch-intent.json')
+    need(handoff.get('parent_owner') == parent and handoff.get('parent_invocation') == state['InvocationID'])
+    # Startup handshake only: the already-created handoff precedes Popen, while
+    # actual child birth can be written only after Popen returns in the parent.
+    deadline = time.monotonic()+5
+    while True:
+        try: dispatched = document('bundle-child-dispatched.json');break
+        except FileNotFoundError:
+            need(time.monotonic() < deadline and preservation._root_process(parent['pid']) == parent)
+            time.sleep(.05)
+    while True:
+        startup_status = document('status.json')
+        if startup_status.get('state') == 'mirroring':break
+        need(initial and startup_status.get('state') == 'publishing'
+             and time.monotonic() < deadline and preservation._root_process(parent['pid']) == parent)
+        time.sleep(.05)
+    names = ('start-intent.json','capture-result.json','publication-result.json','writers-restored.json','db-released.json')
+    documents = {name:document(name) for name in names}
+    documents.update({'bundle-dispatch-intent.json':handoff,'bundle-child-dispatched.json':dispatched})
+    strategy = documents['start-intent.json'].get('backup_strategy',{})
+    need(strategy.get('activation_sha256') == selected.digest)
+    handoff_sha = hashlib.sha256(bundle.canonical(handoff)).hexdigest()
+    if not initial:
+        raw = native_restore.protected(coordinator.STATE/'web'/transaction/'coordinator-intent.json',maximum=131072)
+        claim = native_restore.decode(raw);need(bundle.canonical(claim) == raw
+            and claim.get('transaction') == transaction and claim.get('paired_handoff_sha256') == handoff_sha
+            and claim.get('pid') == child['pid'] and claim.get('process_start_ticks') == child['start_ticks']
+            and claim.get('boot_id') == child['boot_id']
+            and claim.get('retention_policy_sha256') == context.bindings['standalone_policy_sha256'])
+        # Same already-admitted live owner may continue; this never admits a
+        # different birth or a new operation using an expired startup witness.
+        checked = _paired_handoff_records(documents,transaction,context.bindings['paired_policy_sha256'],
+            context.bindings['standalone_policy_sha256'],context.document['application_release'],parent,child)
+    else:
+        checked = validate_paired_handoff(documents,transaction,context.bindings['paired_policy_sha256'],
+            context.bindings['standalone_policy_sha256'],context.document['application_release'],parent,child,
+            dt.datetime.now(dt.timezone.utc).isoformat())
+    result = AuthenticatedPairedHandoff({'transaction':transaction,'handoff_sha256':handoff_sha,
+        'required_backup_label':checked['required_backup_label'],'parent_owner':parent,
+        'parent_invocation':state['InvocationID'],'maintenance_fd':handoff['maintenance_fd'],
+        'maintenance_identity':handoff['maintenance_identity']},_PAIRED_HANDOFF_SEAL)
+    _paired_inherited_maintenance(result)
+    need(_paired_unit_state('careertrellis-paired-maintenance.service') == state
+         and preservation._root_process(parent['pid']) == parent
+         and baseline.native_context().bindings == context.bindings)
+    return result
+
+
+def _paired_log(path):
+    """Validate the one private bounded log without reading/publishing its bytes."""
+    meta = path.lstat(); fd = os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    try:
+        opened = os.fstat(fd)
+        need(stat.S_ISREG(meta.st_mode) and meta.st_uid == meta.st_gid == 0 and meta.st_nlink == 1
+             and stat.S_IMODE(meta.st_mode) == 0o600 and meta.st_size <= 262144
+             and (meta.st_dev,meta.st_ino) == (opened.st_dev,opened.st_ino))
+    finally:os.close(fd)
+
+
+def _object_paired_continuation(documents,context,reservation,state):
+    from . import activation,preservation
+    need(type(reservation) is preservation.InheritedObjectReservation and reservation.authenticated)
+    selected = activation.require_activated(context)
+    status = documents['status.json']; original = documents['start-intent.json']; identity = original['identity']
+    strategy = _paired_start(original,status['transaction'],context.bindings['paired_policy_sha256'],identity)
+    need(strategy == {'mode':'native-bundle-v2','retention_policy_sha256':context.bindings['standalone_policy_sha256'],
+                      'activation_sha256':selected.digest}
+         and state['LoadState'] == 'loaded' and state['ActiveState'] == 'active' and state['SubState'] == 'running'
+         and state['ControlPID'] == '0' and state['Job'] == ''
+         and state['ControlGroup'] == '/system.slice/careertrellis-paired-maintenance.service'
+         and identity == {'release':context.document['application_release'],'web_boot':reservation.parent['boot_id'],
+                          'web_invocation':state['InvocationID']}
+         and status.get('state') == 'publishing' and status.get('services_restored') is True
+         and status.get('worker_invocation') == state['InvocationID'])
+    need((Path('/proc')/str(reservation.parent['pid'])/'cgroup').read_text().strip() == '0::'+state['ControlGroup'])
+    pid = reservation.parent['pid']; parent = preservation._root_process(int(state['MainPID']))
+    for _ in range(4):
+        if pid == parent['pid']:break
+        preservation._root_process(pid)
+        raw = (Path('/proc')/str(pid)/'stat').read_bytes();need(len(raw) <= 65536)
+        pid = int(raw.rsplit(b') ',1)[1].split()[1])
+    need(pid == parent['pid'])
+    capture = documents['capture-result.json']; _paired_capture_claim(capture)
+    need(capture['release'] == reservation.release and capture['backup_label'] == reservation.backup_label
+         and documents.get('writers-restored.json') == {
+             'services_restored':True,'capture_sha256':hashlib.sha256(bundle.canonical(capture)).hexdigest()}
+         and documents.get('db-released.json') == {'services_restored':True}
+         and documents.get('publish-dispatch-intent.json') == {
+             'capture_sha256':hashlib.sha256(bundle.canonical(capture)).hexdigest()}
+         and not any(name in documents for name in ('publication-result.json','bundle-dispatch-intent.json',
+                                                   'bundle-child-dispatched.json','complete.json','aborted-restored.json')))
+    preservation._inherited_lock('/run/lock/careertrellis-maintenance.lock',reservation.maintenance_fd,reservation.parent)
+    preservation._inherited_lock('/run/lock/careertrellis-generated-object-recovery.lock',reservation.recovery_fd,reservation.parent)
+    return status['transaction']
+
+
+def _paired_history(role,rows,context,requested_transaction,inherited_reservation=None,repository_lock_fd=None):
     from . import entry
     from paired_maintenance import entry as paired_entry,host,web_control
     paired_entry.verify_install()
     need(Path(host.__file__).absolute() == entry.PAIRED_ROOT/'host.py'
          and Path(web_control.__file__).absolute() == entry.PAIRED_ROOT/'web_control.py')
     root = Path('/var/lib/careertrellis/paired-maintenance')/role/'runs'
+    active_handoff = (native_paired_handoff(requested_transaction,context)
+                      if role == 'web' and inherited_reservation is None else None)
+    active_state = _paired_unit_state('careertrellis-paired-maintenance.service') if role == 'web' else None
+    current_seen = 0
     for row in rows:
         transaction = row['name']; need(row['directory'] and re.fullmatch('[0-9a-f]{32}',transaction))
         run = root/transaction; files = _history_names(run); need(0 < len(files) <= 512)
         documents = {}
+        private_log = False
         for file in files:
+            if file['name'] == 'bundle-private-output.log':
+                need(not file['directory']);_paired_log(run/file['name']);private_log=True;continue
             need(not file['directory'] and re.fullmatch('[a-z0-9][a-z0-9-]{0,95}[.]json',file['name']))
             raw = native_restore.protected(run/file['name'],maximum=131072)
             value = native_restore.decode(raw); need(bundle.canonical(value) == raw)
             documents[file['name']] = value
-        claim = paired_run_claim(role,transaction,documents,context.bindings['paired_policy_sha256'],
-                                 context.document['application_release'])
+        need(set(documents) <= _paired_known_files(role))
+        if private_log:
+            need(role == 'web' and documents.get('start-intent.json',{}).get('backup_strategy',{}).get('mode')
+                 == 'native-bundle-v2' and 'bundle-dispatch-intent.json' in documents)
+        if 'bundle-dispatch-intent.json' in documents:need(private_log)
+        if role == 'web' and active_state['ActiveState'] == 'active':
+            if active_handoff is not None and transaction == requested_transaction:
+                need(documents['bundle-dispatch-intent.json']['parent_owner'] == active_handoff.parent_owner
+                     and documents['start-intent.json']['identity']['web_invocation'] == active_state['InvocationID']
+                     and documents['status.json'].get('state') == 'mirroring'
+                     and documents['status.json'].get('services_restored') is True
+                     and 'bundle-child-terminal.json' not in documents and 'complete.json' not in documents
+                     and 'bundle-child-unconfirmed.json' not in documents)
+                current_seen += 1;continue
+            if inherited_reservation is not None and documents.get('start-intent.json',{}).get('identity',{}).get(
+                    'web_invocation') == active_state['InvocationID']:
+                _object_paired_continuation(documents,context,inherited_reservation,active_state)
+                current_seen += 1;continue
+        recognized_pair,recognized_release = context.bindings['paired_policy_sha256'],context.document['application_release']
+        historical_pair = documents['status.json'].get('policy_sha256')
+        if historical_pair not in (recognized_pair,LEGACY_PAIRED_POLICY):
+            old_retention = (documents.get('start-intent.json',{}).get('backup_strategy',{}).get('retention_policy_sha256')
+                             if role == 'web' else documents.get('bundle-accepted.json',{}).get('retention_policy_sha256'))
+            archive = authenticated_policy_archive(old_retention)
+            need(archive.policy['paired_policy_sha256'] == historical_pair
+                 and archive.policy['application_release'] == documents['status.json'].get('release'))
+            recognized_pair,recognized_release = historical_pair,archive.policy['application_release']
+        claim = paired_run_claim(role,transaction,documents,recognized_pair,recognized_release)
         if role == 'web':
+            if 'db-bundle-accepted.json' in documents:
+                from . import coordinator
+                capture = documents['capture-result.json'];strategy = documents['start-intent.json']['backup_strategy']
+                own = coordinator.STATE/'web'/transaction
+                evidence = {name:coordinator.read_private(own/name) for name in (
+                    'coordinator-intent.json','hydrate-complete.json','restore-complete.json',
+                    'retire-complete.json','coordinator-terminal.json')}
+                need(host.native_bundle_acceptance(capture,strategy,transaction,
+                    claim['paired_policy_sha256'],evidence) == documents['db-bundle-accepted.json'])
             need(host._finished_claim({'transaction':transaction,'policy_sha256':claim['paired_policy_sha256']},
                                      claim['release'],claim['boot_id']) is True)
-            for unit in ('careertrellis-paired-maintenance.service','careertrellis-paired-recovery.service'):
-                _paired_unit_terminal(unit)
         else:
+            if 'bundle-accepted.json' in documents:
+                need(repository_lock_fd is not None)
+                accepted = documents['bundle-accepted.json'];store = catalog.NativeReadStore(repository_lock_fd)
+                records = store.records();record = records.get(accepted['archive_sha256'])
+                need(record is not None and hashlib.sha256(bundle.canonical(record)).hexdigest() ==
+                     accepted['catalog_acceptance_sha256'])
+                native,download = record['evidence']['native'],record['evidence']['download']
+                need(native.get('transaction') == transaction and download.get('transaction') == transaction
+                     and native.get('backup_label') == accepted['backup_label']
+                     and record['entry']['native_restore_receipt_sha256'] == accepted['native_receipt_sha256'])
+                restore_status = {'schema':'careertrellis.onedrive-stage-status/v1','capture_transaction':transaction,
+                    'retention_policy_sha256':accepted['retention_policy_sha256'],'stage':'restore','state':'complete',
+                    'receipt_sha256':accepted['native_receipt_sha256'],'facts':{
+                        'archive_sha256':native['archive_sha256'],'archive_bytes':download['archive_bytes'],
+                        'generation_sha256':native['generation_sha256'],'backup_label':native['backup_label'],
+                        'native_restore_accepted':True}}
+                need(hashlib.sha256(bundle.canonical(restore_status)).hexdigest() == accepted['restore_status_sha256'])
+                terminal_raw = store.io.read_retirement(transaction,'operation-complete.json')
+                terminal = catalog.decode(terminal_raw)
+                need(terminal.get('result') == 'complete' and terminal.get('native_retirement_accepted') is True)
+                retirement_status = {'schema':'careertrellis.onedrive-stage-status/v1','capture_transaction':transaction,
+                    'retention_policy_sha256':accepted['retention_policy_sha256'],'stage':'retire','state':'complete',
+                    'receipt_sha256':hashlib.sha256(terminal_raw).hexdigest(),'facts':{
+                        'catalog_sha256':terminal['catalog_sha256'],'retired_count':terminal['deletions_performed']}}
+                need(hashlib.sha256(bundle.canonical(retirement_status)).hexdigest() == accepted['retirement_status_sha256'])
             for suffix in ('','-recovery'):
                 _paired_unit_terminal('careertrellis-paired-db'+suffix+'@'+transaction+'.service')
+    if role == 'web':
+        _paired_unit_terminal('careertrellis-paired-recovery.service')
+        if active_state['ActiveState'] == 'active':need(current_seen == 1)
+        else:_paired_unit_terminal('careertrellis-paired-maintenance.service')
+
+
+def _web_pre_growth_current(transaction,context):
+    """Authenticate actual WEB caller before allowing its incomplete journal."""
+    from . import coordinator,execution,activation
+    need(context.role=='web')
+    owner=coordinator.read_private(coordinator.STATE/'pre-growth-web'/transaction/'owner.json')
+    need(owner['owner']==native_restore.process_identity(os.getpid())
+        and owner['retention_policy_sha256']==context.bindings['standalone_policy_sha256']
+        and owner['activation_sha256']==activation.require_activated(context).digest)
+    path=coordinator.STATE/'web'/'control.lock';need(native_restore.protected(path,maximum=0)==b'')
+    meta=path.lstat();raw=Path('/proc/locks').read_bytes();need(len(raw)<=2*1024**2)
+    expected=(os.major(meta.st_dev),os.minor(meta.st_dev),meta.st_ino);found=False
+    for line in raw.decode('ascii').splitlines():
+        fields=line.split()
+        for index,field in enumerate(fields):
+            match=re.fullmatch('([0-9a-f]+):([0-9a-f]+):([0-9]+)',field)
+            if match and tuple(int(value,16 if part<2 else 10) for part,value in enumerate(match.groups()))==expected:
+                need(index>0 and fields[index-1]==str(os.getpid()) and 'FLOCK' in fields and 'WRITE' in fields and '->' not in fields)
+                found=True
+    need(found and (path.lstat().st_dev,path.lstat().st_ino)==(meta.st_dev,meta.st_ino))
+    group=Path('/proc/self/cgroup').read_text('ascii').strip()
+    if group=='0::/system.slice/careertrellis-onedrive-retention.service':
+        current=execution.require_scheduled_owner();need(current.document==context.document and current.bindings==context.bindings)
+        return None
+    need(type(owner['capture_transaction']) is str and re.fullmatch('[0-9a-f]{32}',owner['capture_transaction']))
+    handoff=native_paired_handoff(owner['capture_transaction'],context)
+    need(handoff is not None);_paired_inherited_maintenance(handoff)
+    return handoff
+
+
+def _expiry_capability_history(context,rows):
+    """Closed prior renewal history, not a fresh capability or provider call."""
+    if not rows:return True
+    from . import expiry_capability
+    need(expiry_capability.ROOT==Path('/var/lib/careertrellis/onedrive-retention/expiry-capability'))
+    # This maintained reader validates the existing directory and all retained
+    # attempts without creating it. False checks age at the original observation
+    # only: expiry permits renewal but never silently refreshes a witness.
+    expiry_capability._prior_history(context,False)
+    return True
+
+
+def _activation_web_history(rows,transaction,stage,context):
+    """No current exception is inferred from a document or a PID alone."""
+    need(type(rows) is list and len(rows)<=MAX_RECORDS and context.role=='web')
+    if not rows:return True
+    from . import activation_web
+    need(activation_web.ROOT==Path('/var/lib/careertrellis/onedrive-retention/activation-web'))
+    group=Path('/proc/self/cgroup').read_text('ascii').strip()
+    candidate=(transaction if stage=='prepare' and group==
+        '0::/system.slice/careertrellis-onedrive-activation@'+transaction+'.service' else None)
+    seen=set()
+    for row in rows:
+        identifier=row['name']
+        need(row['directory'] is True and type(identifier) is str and re.fullmatch('[0-9a-f]{32}',identifier)
+            and identifier!='0'*32 and identifier not in seen)
+        seen.add(identifier)
+        # The callback authenticates the actual fixed WEB owner and both kernel
+        # flocks itself. A matching cgroup merely selects that narrow proof;
+        # False never falls back to accepting a current or old partial row.
+        need(activation_web.history_complete(identifier,
+            current_transaction=candidate if identifier==candidate else None) is True)
+    return True
 
 
 def native_history_snapshot(transaction, stage, repository_lock_fd=None, *, inherited_reservation=None):
@@ -1318,7 +1816,7 @@ def native_history_snapshot(transaction, stage, repository_lock_fd=None, *, inhe
     """
     from . import baseline, entry, preservation
     need(type(transaction) is str and re.fullmatch('[0-9a-f]{32}',transaction)
-         and stage in ('hydrate','publish','restore','prepare','retire'))
+         and stage in ('hydrate','publish','restore','prepare','retire',PRE_GROWTH_PURPOSE))
     context = baseline.native_context()
     need(type(context) is baseline.AuthenticatedContext and context.authenticated
          and Path(__file__).absolute() == entry.ROOT / 'guard.py')
@@ -1326,8 +1824,12 @@ def native_history_snapshot(transaction, stage, repository_lock_fd=None, *, inhe
                         else '/run/lock/careertrellis-pgbackrest-repository.lock')
     if context.role == 'db': need(repository_lock_fd is not None)
     if inherited_reservation is None:
-        reservation_identity = preservation.require_owned_lock(reservation_path,
-            repository_lock_fd if context.role == 'db' else None)
+        paired_handoff = (_web_pre_growth_current(transaction,context) if stage==PRE_GROWTH_PURPOSE
+            else native_paired_handoff(transaction,context)) if context.role == 'web' else None
+        if paired_handoff is not None:reservation_identity = _paired_inherited_maintenance(paired_handoff)
+        else:
+            reservation_identity = preservation.require_owned_lock(reservation_path,
+                repository_lock_fd if context.role == 'db' else None)
     else:
         need(context.role == 'web' and type(inherited_reservation) is preservation.InheritedObjectReservation
              and inherited_reservation.authenticated)
@@ -1346,25 +1848,38 @@ def native_history_snapshot(transaction, stage, repository_lock_fd=None, *, inhe
         # The per-schema normalizer must separately bind every extant attempt.
         roots.append({'category':category,'root':root,'entry_count':len(rows),
                       'inventory_sha256':hashlib.sha256(bundle.canonical(rows)).hexdigest()})
-        if rows:
+        if rows or category in ('paired_runs','pre_growth','pre_growth_web','activation_web'):
             try:
-                if root == '/var/backups/careertrellis/backup-health/operations':
+                if category=='activation_web':
+                    _activation_web_history(rows,transaction,stage,context)
+                elif category=='expiry_capability':
+                    _expiry_capability_history(context,rows)
+                elif category=='pre_growth':
+                    from . import pre_growth_native
+                    pre_growth_native.history_census(transaction if stage==PRE_GROWTH_PURPOSE else None,repository_lock_fd)
+                elif category=='pre_growth_web':
+                    from . import coordinator
+                    for row in rows:
+                        need(row['directory'] and re.fullmatch('[0-9a-f]{32}',row['name']))
+                        coordinator.pre_growth_web_history(row['name'],transaction if stage==PRE_GROWTH_PURPOSE else None)
+                elif root == '/var/backups/careertrellis/backup-health/operations':
                     _legacy_history(category,rows)
                 elif category == 'catalog_admission':
                     need(repository_lock_fd is not None)
-                    store = catalog.NativeStore(repository_lock_fd)
+                    store = catalog.NativeReadStore(repository_lock_fd)
                     with store.io.locked():
                         records = store.records(); store.retired(records)
                         need({row['name'] for row in rows} == {'accepted','intents','complete','holds',
                             'tombstones','tombstone-intents','tombstone-complete','catalog.lock'})
                 elif category in ('hydration','publication','native_restore','retirement'):
-                    _new_stage_history(category,rows,transaction,stage,context)
+                    _new_stage_history(category,rows,transaction,stage,context,repository_lock_fd)
                     if category == 'hydration':
-                        for row in rows: _source_auxiliary_history(row['name'])
+                        for row in rows:_source_auxiliary_history(row['name'],
+                            transaction if stage==PRE_GROWTH_PURPOSE else None,repository_lock_fd)
                 elif category == 'stage_dispatch':
                     _endpoint_history(rows,transaction,stage,context)
                 elif category == 'paired_runs':
-                    _paired_history(context.role,rows,context)
+                    _paired_history(context.role,rows,context,transaction,inherited_reservation,repository_lock_fd)
                 elif root == '/var/lib/careertrellis/generated-object-captures':
                     _generated_history(rows)
                 elif root == '/var/lib/careertrellis/generated-object-recovery/work':
@@ -1554,12 +2069,13 @@ def legacy_object_guard(release,backup_label,maintenance_fd=8,recovery_fd=9):
     through its subsequent upload. This guard never takes over the helper, buys
     storage, changes source data, rewrites credentials, or uploads a byte.
     """
-    from . import baseline, entry, hydrate, preservation
+    from . import activation, baseline, entry, hydrate, preservation
     from paired_maintenance import client, entry as paired_entry,runtime
     reservation = preservation.inherited_object_reservation(
         release,backup_label,maintenance_fd,recovery_fd)
     context = baseline.native_context()
     need(context.authenticated and context.role == 'web' and context.document['application_release'] == release)
+    activation.require_activated(context)
     need(Path(client.__file__).absolute() == entry.PAIRED_ROOT/'client.py'
          and Path(runtime.__file__).absolute() == entry.PAIRED_ROOT/'runtime.py')
     paired_entry.verify_install(); paired = paired_entry.load_policy()

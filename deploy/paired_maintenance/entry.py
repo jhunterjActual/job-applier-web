@@ -9,6 +9,7 @@ import re
 import socket
 import stat
 import sys
+import time
 
 INSTALL_ROOT = Path('/usr/local/libexec/careertrellis/paired_maintenance')
 ROOT = Path('/var/lib/careertrellis/paired-maintenance')
@@ -192,6 +193,209 @@ def _transaction_store(policy, request):
     return common.Journal(path)
 
 
+def _retention_activation_evidence(retention_entry,request,retention_policy,context):
+    """Fixed read-only native collector, never caller-provided recovery facts."""
+    activation=retention_entry._load('activation')
+    selector=activation.require_activated(context)
+    _need(selector.role=='db' and selector.bindings==context.bindings
+          and request['payload']['retention_policy_sha256']==retention_policy.digest
+          and request['payload']['activation_sha256']==selector.digest)
+    readiness=retention_entry._load('activation_readiness')
+    catalog=retention_entry._load('catalog')
+    with _module('provider').repository_lock() as (fd,_identity):
+        files=catalog.NativeFiles(fd)
+        # The fixed readiness factory uses an existing-only NativeReadStore;
+        # missing catalog state is refusal, never initialization by this RPC.
+        files.require_repository_lock()
+        evidence=readiness.native_replacements(fd)
+        readiness.validate_evidence(evidence,context.bindings,context.revision,
+            context.document['application_release'],dt.datetime.now(dt.timezone.utc))
+        current_backup=readiness.native_current_backup(fd)
+        files.require_repository_lock()
+    current=activation.require_activated(retention_entry._native_dependencies(retention_entry.verify_install(),'db'))
+    _need(current.digest==selector.digest and current.bindings==context.bindings)
+    return {'schema':'careertrellis.onedrive-retention-scheduled-eligibility/v1',
+        'transaction':request['transaction'],'retention_policy_sha256':retention_policy.digest,
+        'activation_sha256':selector.digest,'replacement_evidence':evidence,'current_backup':current_backup}
+
+
+def _retention_bootstrap_evidence(retention_entry,request,retention_policy,context):
+    """First-activation evidence only while BOTH fixed markers remain absent."""
+    activation=retention_entry._load('activation')
+    _need(activation.routing_state() is None
+          and request['payload']['retention_policy_sha256']==retention_policy.digest
+          and retention_policy.digest==context.bindings['standalone_policy_sha256'])
+    health=retention_entry._load('health')
+    _plan,installed=health._installation(context)
+    _need(type(installed) is str and re.fullmatch('[0-9a-f]{64}',installed)
+          and installed!='0'*64 and installed==context.document['acceptance_receipts']['ops'])
+    readiness=retention_entry._load('activation_readiness')
+    catalog=retention_entry._load('catalog')
+    with _module('provider').repository_lock() as (fd,_identity):
+        files=catalog.NativeFiles(fd);files.require_repository_lock()
+        evidence=readiness.native_replacements(fd)
+        readiness.validate_evidence(evidence,context.bindings,context.revision,
+            context.document['application_release'],dt.datetime.now(dt.timezone.utc))
+        files.require_repository_lock()
+    current=retention_entry._native_dependencies(retention_entry.verify_install(),'db')
+    _need(current.document==context.document and current.bindings==context.bindings
+          and activation.routing_state() is None)
+    return {'schema':'careertrellis.onedrive-retention-bootstrap-evidence/v1',
+        'transaction':request['transaction'],'retention_policy_sha256':retention_policy.digest,
+        'db_install_receipt_sha256':installed,'db_baseline_sha256':hashlib.sha256(
+            retention_entry.canonical(context.document)).hexdigest(),'replacement_evidence':evidence}
+
+
+def _retention_activation_bridge(retention_entry,request,retention_policy,context):
+    """Fixed actor ingress without paired-control or repository lock acquisition.
+
+    The actor must remain the canonical fence owner across requests. The fixed
+    installed loader refuses this module while it remains outside FILES. These
+    synchronous methods are not a declaration that the 35s transport budget can
+    contain native preparation; unknown outcomes must never be retried.
+    """
+    protocol=_module('db_control');operation=request['operation'];value=request['payload']
+    protocol.validate_request(request)
+    _need(operation in protocol.RETENTION_BRIDGE and context.role=='db'
+        and context.authenticated is True
+        and request['policy_sha256']==context.bindings['paired_policy_sha256']
+        and retention_policy.digest==context.bindings['standalone_policy_sha256']
+        and retention_policy.data['application_release']==context.document['application_release'])
+    if operation in (protocol.RETENTION_PREPARE,protocol.RETENTION_COMMIT):
+        _need(value['baseline_bindings']==context.bindings
+            and value['installation_receipts']['db']==context.document['acceptance_receipts']['ops'])
+    else:_need(value['retention_policy_sha256']==retention_policy.digest)
+    if operation==protocol.RETENTION_MATERIAL:
+        _need(value['documents']['prepare-request-web.json']['baseline_bindings']==context.bindings)
+    actor=retention_entry._load('activation_actor')
+    if operation==protocol.RETENTION_ACTOR_TERMINAL_STATUS:
+        result=actor.terminal_status(request['transaction'],value['intent_sha256'])
+        _need(type(result) is dict and set(result)=={'schema','transaction','intent_sha256','baseline_bindings',
+            'baseline_sha256','source','actor_owner','actor_invocation','observed_at','state','terminal'}
+            and result['schema']=='careertrellis.retention-activation-actor-terminal-status/v1'
+            and result['transaction']==request['transaction'] and result['intent_sha256']==value['intent_sha256']
+            and result['baseline_bindings']==context.bindings
+            and result['baseline_sha256']==hashlib.sha256(retention_entry.canonical(context.document)).hexdigest()
+            and result['state'] in ('running','terminal')
+            and ((result['state']=='running' and result['terminal'] is None)
+                 or (result['state']=='terminal' and type(result['terminal']) is dict)))
+        observed=protocol.utc(result['observed_at'])
+        _need(0<=(dt.datetime.now(dt.timezone.utc)-observed).total_seconds()<=120)
+    elif operation==protocol.RETENTION_ACTOR_STATE:
+        result=actor.observe(request['transaction'],value['intent_sha256'])
+        _need(type(result) is dict and set(result)=={'schema','transaction','intent_sha256','actor_owner','actor_invocation',
+            'prepare_request_sha256','baseline_bindings','baseline_sha256','source'}
+            and result['schema']=='careertrellis.retention-activation-actor-state/v1'
+            and result['transaction']==request['transaction'] and result['intent_sha256']==value['intent_sha256']
+            and result['baseline_bindings']==context.bindings
+            and result['baseline_sha256']==hashlib.sha256(retention_entry.canonical(context.document)).hexdigest())
+    elif operation==protocol.RETENTION_MATERIAL:
+        result=actor.submit_material(retention_entry.canonical(value))
+        _need(type(result) is dict and set(result)=={'schema','transaction','material_sha256','value_sha256',
+            'actor_owner','actor_invocation'} and result['schema']=='careertrellis.retention-activation-material-accepted/v1'
+            and result['transaction']==request['transaction']
+            and result['value_sha256']==hashlib.sha256(retention_entry.canonical(value)).hexdigest()
+            and protocol.nonzero(result['material_sha256']) and protocol.nonzero(result['actor_invocation'],32)
+            and result['actor_owner']==value['documents']['commit-authority.json']['dispatcher_owner'])
+    else:
+        result=actor.submit(retention_entry.canonical(request))
+        phase='prepare' if operation==protocol.RETENTION_PREPARE else 'commit'
+        fields={'transaction','role','phase','intent_sha256','result'}
+        fields|=({'request_sha256'} if phase=='prepare' else {'selector_sha256','committed_at'})
+        _need(type(result) is dict and set(result)==fields and result['transaction']==request['transaction']
+            and result['role']=='db' and result['phase']==phase and result['intent_sha256']==value['intent_sha256']
+            and result['result']==('prepared' if phase=='prepare' else 'committed'))
+        if phase=='prepare':_need(protocol.nonzero(result['request_sha256']))
+        else:
+            _need(protocol.nonzero(result['selector_sha256']));protocol.utc(result['committed_at'])
+    current=retention_entry._native_dependencies(retention_entry.verify_install(),'db')
+    _need(current.role=='db' and current.authenticated is True
+        and current.document==context.document and current.bindings==context.bindings)
+    return result
+
+
+def _retention_activation_finalize(retention_entry,request,retention_policy,context):
+    """One fixed receiver call; it owns its fences and independent exit proof."""
+    protocol=_module('db_control');protocol.validate_request(request)
+    value=request['payload']
+    _need(request['operation']==protocol.RETENTION_FINALIZE and context.role=='db' and context.authenticated is True
+        and request['policy_sha256']==context.bindings['paired_policy_sha256']
+        and value['retention_policy_sha256']==retention_policy.digest==context.bindings['standalone_policy_sha256']
+        and value['intent']['baseline_bindings']==context.bindings
+        and value['intent']['artifact_revision']==context.revision
+        and value['intent']['application_release']==retention_policy.data['application_release']==context.document['application_release']
+        and value['finalized']['baseline_sha256']['db']==hashlib.sha256(retention_entry.canonical(context.document)).hexdigest()
+        and value['intent']['installation_receipts']['db']==context.document['acceptance_receipts']['ops'])
+    # The installed loader refuses while this receiver is outside FILES.
+    finalizer=retention_entry._load('activation_finalize')
+    result=finalizer.receive(retention_entry.canonical(value))
+    finalizer.validate_ack(result,value,dt.datetime.now(dt.timezone.utc))
+    current=retention_entry._native_dependencies(retention_entry.verify_install(),'db')
+    _need(current.role=='db' and current.authenticated is True
+        and current.document==context.document and current.bindings==context.bindings)
+    return result
+
+
+def _retention_pre_growth(retention_entry,request,retention_policy,context):
+    protocol=_module('db_control');protocol.validate_request(request)
+    _need(context.role=='db' and context.authenticated is True
+        and request['policy_sha256']==context.bindings['paired_policy_sha256']
+        and retention_policy.digest==context.bindings['standalone_policy_sha256'])
+    native=retention_entry._load('pre_growth_native')
+    if request['operation'] in (protocol.RETENTION_PRE_GROWTH_STATUS,protocol.RETENTION_PRE_GROWTH_VERIFY):
+        _need(request['payload']['retention_policy_sha256']==retention_policy.digest)
+        if request['operation']==protocol.RETENTION_PRE_GROWTH_VERIFY:return native.verify_complete(request['transaction'])
+        return native.observe(request['transaction'])
+    value=request['payload']['request']
+    _need(request['operation']==protocol.RETENTION_PRE_GROWTH
+        and value['retention_policy_sha256']==retention_policy.digest
+        and request['payload']['web_history']['baseline_bindings']==context.bindings
+        and native.native_routes_available() is True)
+    return native.submit(retention_entry.canonical(request))
+
+
+def _pre_growth_capacity(retention_entry,request,retention_policy,context):
+    """Fixed bounded admission observation, never a progress/status operation."""
+    protocol=_module('db_control');protocol.validate_request(request)
+    _need(request['operation']==protocol.RETENTION_CAPACITY
+        and request['payload']['stage']==protocol.RETENTION_PRE_GROWTH
+        and request['payload']['retention_policy_sha256']==retention_policy.digest
+        and request['policy_sha256']==context.bindings['paired_policy_sha256']
+        and retention_policy.digest==context.bindings['standalone_policy_sha256']
+        and context.authenticated is True and context.role=='db')
+    _need(_module('client').pre_growth_capacity_transport_ready(request) is True)
+    activation=retention_entry._load('activation');selector=activation.require_activated(context)
+    _need(selector.role=='db' and selector.bindings==context.bindings)
+    guard=retention_entry._load('guard');deadline=time.monotonic()+180
+    with _module('provider').repository_lock() as (fd,_identity):
+        guard.native_history_snapshot(request['transaction'],protocol.RETENTION_PRE_GROWTH,fd)
+        _need(time.monotonic()<deadline)
+        provider=guard.NativeProvider(fd,operation_deadline=deadline)
+        try:
+            source,candidate=provider.source_allocation()
+            collected=provider.collect();_need(collected.authenticated is True)
+            facts=collected.value
+            _need(time.monotonic()<deadline)
+        finally:provider.close()
+        _need(type(source) is int and type(candidate) is int and 0<=source<=candidate<=512*1024**2 and candidate>0)
+        guard._namespace_owners(facts,fd)
+        history=guard.native_history_snapshot(request['transaction'],protocol.RETENTION_PRE_GROWTH,fd)
+        guard.validate_peer_history(history,request['transaction'],protocol.RETENTION_PRE_GROWTH,
+            retention_policy.digest,expected_role='db')
+        _need(facts['baseline_bindings']==history['baseline_bindings']==context.bindings
+            and time.monotonic()<deadline)
+        observed=dt.datetime.now(dt.timezone.utc)
+        _need(all(0<=(observed-protocol.utc(stamp)).total_seconds()<=120 for stamp in
+            (facts['observed_at'],facts['quota']['observed_at'],history['observed_at'])))
+        current=activation.require_activated(context)
+        _need(current.digest==selector.digest and current.bindings==context.bindings)
+        return {'schema':'careertrellis.retention-capacity-preflight/v1','history':history,'quota':facts['quota'],
+            'namespace_bytes':facts['namespace_bytes'],'account_scope':facts['account_scope'],
+            'observed_at':facts['observed_at'],'baseline_bindings':facts['baseline_bindings'],
+            'allocation':{'source_bytes':source,'candidate_bytes':candidate,'namespace_new_bytes':candidate},
+            'activation_sha256':selector.digest}
+
+
 def db_endpoint(raw):
     request = {'transaction': '0' * 32, 'policy_sha256': '0' * 64}
     common = _module('common')
@@ -205,19 +409,47 @@ def db_endpoint(raw):
         if (request['operation'] in _module('db_control').RETENTION
                 or request['operation'] in (_module('db_control').RETENTION_PREFLIGHT,
                                             _module('db_control').RETENTION_CAPACITY,
-                                            _module('db_control').RETENTION_SCHEDULE)):
+                                            _module('db_control').RETENTION_SCHEDULE,
+                                            _module('db_control').RETENTION_ACTIVATION,
+                                            _module('db_control').RETENTION_BOOTSTRAP,
+                                            _module('db_control').RETENTION_STATE,
+                                            _module('db_control').RETENTION_FINALIZE)
+                or request['operation'] in _module('db_control').RETENTION_BRIDGE
+                or request['operation'] in (_module('db_control').RETENTION_PRE_GROWTH,
+                                            _module('db_control').RETENTION_PRE_GROWTH_STATUS,
+                                            _module('db_control').RETENTION_PRE_GROWTH_VERIFY)):
             # Authenticate both installed namespaces and both policy bindings
             # before loading operational retention code. Status takes no paired
             # control lock and never creates a transaction store.
             from onedrive_retention import entry as retention_entry
             revision = retention_entry.verify_install()
-            retention_entry._native_dependencies(revision, 'db')
+            context=retention_entry._native_dependencies(revision, 'db')
             endpoint = retention_entry._load('endpoint')
             coordinator = retention_entry._load('coordinator')
             retention_policy = coordinator.Policy(retention_entry._protected_document(
                 coordinator.PRIVATE_POLICY, 0o600)[1])
             _need(retention_policy.data['paired_policy_sha256'] == policy.digest)
-            if request['operation'] == _module('db_control').RETENTION_SCHEDULE:
+            if request['operation']==_module('db_control').RETENTION_FINALIZE:
+                payload=_retention_activation_finalize(retention_entry,request,retention_policy,context)
+            elif request['operation'] in (_module('db_control').RETENTION_PRE_GROWTH,
+                                        _module('db_control').RETENTION_PRE_GROWTH_STATUS,
+                                        _module('db_control').RETENTION_PRE_GROWTH_VERIFY):
+                payload=_retention_pre_growth(retention_entry,request,retention_policy,context)
+            elif request['operation'] in _module('db_control').RETENTION_BRIDGE:
+                payload=_retention_activation_bridge(retention_entry,request,retention_policy,context)
+            elif request['operation'] == _module('db_control').RETENTION_STATE:
+                _need(request['payload']['retention_policy_sha256']==retention_policy.digest
+                      and retention_policy.digest==context.bindings['standalone_policy_sha256'])
+                payload=retention_entry._load('activation_readiness').native_activation_state(
+                    request['transaction'],request['payload']['intent_sha256'])
+                _need(payload['baseline_bindings']==context.bindings
+                      and payload['db_baseline_sha256']==hashlib.sha256(
+                          retention_entry.canonical(context.document)).hexdigest())
+            elif request['operation'] == _module('db_control').RETENTION_BOOTSTRAP:
+                payload=_retention_bootstrap_evidence(retention_entry,request,retention_policy,context)
+            elif request['operation'] == _module('db_control').RETENTION_ACTIVATION:
+                payload=_retention_activation_evidence(retention_entry,request,retention_policy,context)
+            elif request['operation'] == _module('db_control').RETENTION_SCHEDULE:
                 payload=retention_entry._load('health').store_schedule(request['payload']['witness'])
             elif request['operation'] in (_module('db_control').RETENTION_PREFLIGHT,
                                         _module('db_control').RETENTION_CAPACITY):
@@ -226,20 +458,24 @@ def db_endpoint(raw):
                 # owns the exact existing repository fence while inspecting
                 # histories; a running repository operation makes it refuse.
                 guard = retention_entry._load('guard')
-                with _module('provider').repository_lock() as (fd, _identity):
-                    payload = guard.native_history_snapshot(request['transaction'],
-                        request['payload']['stage'], fd)
-                    if request['operation'] == _module('db_control').RETENTION_CAPACITY:
-                        collected = guard.collect_provider_facts(fd)
-                        _need(collected.authenticated is True)
-                        facts = collected.value
-                        guard._namespace_owners(facts, fd)
-                        payload = {'schema':'careertrellis.retention-capacity-preflight/v1',
-                            'history':payload,'quota':facts['quota'],
-                            'namespace_bytes':facts['namespace_bytes'],
-                            'account_scope':facts['account_scope'],
-                            'observed_at':facts['observed_at'],
-                            'baseline_bindings':facts['baseline_bindings']}
+                if (request['operation']==_module('db_control').RETENTION_CAPACITY
+                        and request['payload']['stage']==_module('db_control').RETENTION_PRE_GROWTH):
+                    payload=_pre_growth_capacity(retention_entry,request,retention_policy,context)
+                else:
+                    with _module('provider').repository_lock() as (fd, _identity):
+                        payload = guard.native_history_snapshot(request['transaction'],
+                            request['payload']['stage'], fd)
+                        if request['operation'] == _module('db_control').RETENTION_CAPACITY:
+                            collected = guard.collect_provider_facts(fd)
+                            _need(collected.authenticated is True)
+                            facts = collected.value
+                            guard._namespace_owners(facts, fd)
+                            payload = {'schema':'careertrellis.retention-capacity-preflight/v1',
+                                'history':payload,'quota':facts['quota'],
+                                'namespace_bytes':facts['namespace_bytes'],
+                                'account_scope':facts['account_scope'],
+                                'observed_at':facts['observed_at'],
+                                'baseline_bindings':facts['baseline_bindings']}
             else:
                 value = endpoint.from_paired_request(request)
                 payload = endpoint.Endpoint(retention_policy, endpoint.NativeDB(retention_policy)).handle(value)

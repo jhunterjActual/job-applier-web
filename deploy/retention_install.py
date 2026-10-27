@@ -27,6 +27,10 @@ PAIR_PUBLIC = Path('/var/lib/careertrellis/paired-maintenance/public-policy.json
 ONE_POLICY = Path('/etc/careertrellis/onedrive-retention/policy.json')
 ONE_PUBLIC = Path('/var/lib/careertrellis/onedrive-retention-public/policy.json')
 ACCEPTED = ONE_POLICY.parent/'accepted-baseline.json'
+STATE=Path('/var/lib/careertrellis/onedrive-retention')
+OPERATION_ROOTS=('pre-growth','pre-growth-web','expiry-capability','activation-web')
+PAIRED_RW_DROPIN = '/etc/systemd/system/careertrellis-paired-maintenance.service.d/70-onedrive-retention-paths.conf'
+PAIRED_RW_BYTES = b'[Service]\nReadWritePaths=/var/lib/careertrellis/onedrive-retention /var/lib/careertrellis/onedrive-retention-public\n'
 PAIR_REVISION = '493bf14a3bae2cb2b36f3a57191602b72ea6e3d3'
 PAIR_MANIFEST = '7a5122cb39b34137d9b2539d0bf60c0e3720e2854ebe8dcc30f1f1b18d092fd5'
 PAIR_POLICY = '3dcd50ba5bbc6fdd3270a83c7dd255c35f86c18f9da5d0613a55c8a4be94c880'
@@ -36,6 +40,7 @@ TIMERS = {'web':('careertrellis-paired-maintenance.timer','careertrellis-paired-
           'db':('careertrellis-pgbackrest-full.timer','careertrellis-pgbackrest-differential.timer',
                 'careertrellis-pgbackrest-onedrive.timer')}
 UNITS = {'web':('careertrellis-onedrive-retention.service','careertrellis-onedrive-retention.timer',
+               'careertrellis-onedrive-retention-health.service','careertrellis-onedrive-retention-health.timer',
                'careertrellis-backup-health.service','careertrellis-backup-health.timer'),
          'db':('careertrellis-backup-health.service','careertrellis-backup-health.timer')}
 HELPERS = {'web':{'/usr/local/sbin/careertrellis-mirror-generated-objects':0o755,
@@ -154,6 +159,21 @@ def mkdir(path,mode=0o700):
     with directory(path,mode):pass
 
 
+def prepare_paired_dropin_parent(target):
+    """Only the new fixed WEB drop-in parent may be created; never repair it."""
+    need(target==PAIRED_RW_DROPIN)
+    parent=Path(target).parent
+    if not os.path.lexists(parent):mkdir(parent,0o755)
+    with directory(parent,0o755):pass
+
+
+def require_new_timers_disabled(role):
+    if role=='web':
+        for name in ('careertrellis-onedrive-retention.timer','careertrellis-onedrive-retention-health.timer'):
+            retained=show(name,('ActiveState','UnitFileState','Job'))
+            need(retained['ActiveState']=='inactive' and retained['UnitFileState']=='disabled' and retained['Job']=='')
+
+
 def command(args,timeout=15):
     try:
         result=subprocess.run(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
@@ -244,15 +264,19 @@ def validate_plan(value,now):
          and all(hex_value(baseline[key],40) for key in ('application_current','application_previous')))
     need(type(value['files']) is dict and type(baseline['files']) is dict)
     allowed=dict(HELPERS[value['role']]);allowed.update({'/etc/systemd/system/'+name:0o644 for name in UNITS[value['role']]})
+    if value['role']=='web':allowed[PAIRED_RW_DROPIN]=0o644
     need(set(value['files'])<=set(allowed) and set(baseline['files'])==set(value['files']))
     if value['role']=='web':
         required={'/etc/systemd/system/careertrellis-onedrive-retention.service',
-                  '/etc/systemd/system/careertrellis-onedrive-retention.timer'}
+                  '/etc/systemd/system/careertrellis-onedrive-retention.timer',
+                  '/etc/systemd/system/careertrellis-onedrive-retention-health.service',
+                  '/etc/systemd/system/careertrellis-onedrive-retention-health.timer',PAIRED_RW_DROPIN}
         need(required<=set(value['files']) and all(baseline['files'][path] is None for path in required))
     for path,row in value['files'].items():
         need(type(row) is dict and set(row)=={'source','sha256','mode'}
              and row['source']=='extras/'+Path(path).name and row['mode']==allowed[path]
              and hex_value(row['sha256']) and (baseline['files'][path] is None or hex_value(baseline['files'][path])))
+        if path==PAIRED_RW_DROPIN:need(row['sha256']==sha(PAIRED_RW_BYTES))
     need(type(baseline['unit_dropins']) is dict)
     timer_names=set(TIMERS[value['role']])|{'careertrellis-backup-health.timer'}
     need(type(baseline['timer_sources']) is dict and set(baseline['timer_sources'])==timer_names
@@ -431,7 +455,12 @@ def preflight(plan):
         if expected is None:need(not os.path.lexists(target))
         else:
             old_extras[target]=read(target,row['mode']);need(sha(old_extras[target])==expected)
-        if target.startswith('/etc/systemd/system/'):
+        if target==PAIRED_RW_DROPIN:
+            need(extras[target]==PAIRED_RW_BYTES)
+            parent=Path(target).parent
+            if os.path.lexists(parent):
+                with directory(parent,0o755):pass
+        elif target.startswith('/etc/systemd/system/'):
             name=Path(target).name
             for suffix in ('.d',''):
                 need(not os.path.lexists('/run/systemd/system/'+name+suffix))
@@ -524,8 +553,9 @@ def preflight(plan):
             need(not os.path.lexists('/run/systemd/system/'+name+suffix))
         timers[name]=state
     if plan['role']=='web':
-        state=show('careertrellis-onedrive-retention.timer',('LoadState','ActiveState','UnitFileState','Job'))
-        need(state=={'LoadState':'not-found','ActiveState':'inactive','UnitFileState':'','Job':''})
+        for name in ('careertrellis-onedrive-retention.timer','careertrellis-onedrive-retention-health.timer'):
+            state=show(name,('LoadState','ActiveState','UnitFileState','Job'))
+            need(state=={'LoadState':'not-found','ActiveState':'inactive','UnitFileState':'','Job':''})
     peak=sum(len(raw) for files in incoming.values() for raw in files.values())*3
     peak+=sum(map(len,extras.values()))*3+sum(map(len,old_extras.values()))*2+1024**2
     free=os.statvfs(BASE);need(free.f_bavail*free.f_frsize>=5*1024**3+peak and free.f_favail>=512)
@@ -542,6 +572,42 @@ def replace(path,raw,mode,transaction):
     need(read(path,mode)==raw)
 
 
+def require_prepared_dependencies(plan):
+    raw=command(['/usr/bin/python3','-I','-B',str(BASE/'onedrive_retention'/'entry.py'),
+                 'verify-prepared-install'],timeout=90)
+    value=json.loads(raw)
+    need(type(value) is dict and set(value)=={'schema','result','revision','role','native_actions',
+         'provider_calls','application_services_restarted','native_restore_accepted'}
+         and value['schema']=='careertrellis.retention-prepared-dependencies/v1'
+         and value['result']=='dependencies_verified' and value['revision']==plan['revision']
+         and value['role']==plan['role'] and value['native_actions'] is False
+         and type(value['provider_calls']) is int and value['provider_calls']==0
+         and value['application_services_restarted'] is False and value['native_restore_accepted'] is False)
+    return canonical(value)
+
+
+def initialize_operation_roots():
+    """Precreate only empty protected siblings; never repair or adopt state."""
+    missing=[]
+    with directory(STATE,0o700) as parent:
+        names=os.listdir(parent)
+        need(len(names)<=len(HOSTS)+len(OPERATION_ROOTS)
+             and set(names)<=set(HOSTS)|set(OPERATION_ROOTS))
+        # Validate every existing target before creating any missing sibling.
+        for name in OPERATION_ROOTS:
+            try:meta=os.stat(name,dir_fd=parent,follow_symlinks=False)
+            except FileNotFoundError as error:
+                need(error.errno==2);missing.append(name);continue
+            need(stat.S_ISDIR(meta.st_mode) and meta.st_uid==meta.st_gid==0
+                 and stat.S_IMODE(meta.st_mode)==0o700)
+            with directory(STATE/name,0o700) as child:
+                need(identity(os.fstat(child))==identity(meta) and not os.listdir(child))
+            need(identity(os.stat(name,dir_fd=parent,follow_symlinks=False))==identity(meta))
+        for name in missing:
+            os.mkdir(name,0o700,dir_fd=parent);os.fsync(parent)
+            with directory(STATE/name,0o700) as child:need(not os.listdir(child))
+
+
 def initialize_state(role):
     """Create the exact empty first-install census, never repair existing state.
 
@@ -551,6 +617,7 @@ def initialize_state(role):
     need(role in HOSTS)
     root=Path('/var/lib/careertrellis/onedrive-retention')/role
     with directory(root,0o700) as fd:need(not os.listdir(fd))
+    initialize_operation_roots()
     write_once(root/'control.lock',b'')
     if role=='db':
         mkdir(root/'catalog')
@@ -559,6 +626,7 @@ def initialize_state(role):
         write_once(root/'catalog'/'catalog.lock',b'')
         mkdir(root/'retirements')
         mkdir(root/'schedule')
+        mkdir(root/'health')
 
 
 def restore_prior_timers(plan,previous,root):
@@ -671,6 +739,7 @@ def install():
         os.rename(BASE/('.onedrive_retention.retention-'+plan['transaction']),BASE/'onedrive_retention')
         with directory(BASE) as fd:os.fsync(fd)
         for target,data in observed['extras'].items():
+            if target==PAIRED_RW_DROPIN:prepare_paired_dropin_parent(target)
             if target in observed['old_extras']:
                 need(read(target,plan['files'][target]['mode'])==observed['old_extras'][target])
             else:need(not os.path.lexists(target))
@@ -686,14 +755,14 @@ def install():
             marker=decode(observed['old_marker']);marker['policy_sha256']=new_status['policy_sha256']
             replace(observed['marker_path'],canonical(marker),0o644,plan['transaction'])
         command(['/usr/bin/systemctl','daemon-reload'],timeout=30)
-        if plan['role']=='web':
-            retained=show('careertrellis-onedrive-retention.timer',('ActiveState','UnitFileState','Job'))
-            need(retained['ActiveState']=='inactive' and retained['UnitFileState']=='disabled' and retained['Job']=='')
+        require_new_timers_disabled(plan['role'])
         # Installed verification is source-only; no provider or repository walk.
         revision=command(['/usr/bin/python3','-I','-B',str(BASE/'onedrive_retention'/'entry.py'),'verify-install'])
         verified=json.loads(revision)
         need(type(verified) is dict and verified.get('result')=='source_verified'
              and verified.get('revision')==plan['revision'] and verified.get('native_actions') is False)
+        dependencies=require_prepared_dependencies(plan)
+        write_once(root/'dependencies-verified.json',dependencies)
         for name,files in observed['incoming'].items():
             for filename,data in files.items():need(read(BASE/name/filename,0o644)==data)
         idle(plan);need(read(PLAN)==raw)
@@ -703,6 +772,7 @@ def install():
             'owner':birth,'completed_at':dt.datetime.now(dt.timezone.utc).isoformat(),
             'paired_manifest_sha256':sha(observed['incoming']['paired_maintenance']['manifest.json']),
             'standalone_manifest_sha256':sha(observed['incoming']['onedrive_retention']['manifest.json']),
+            'dependency_verification_sha256':sha(dependencies),
             'application_pointers_changed':False,'application_services_restarted':False,
             'provider_calls':0,'backup_operations':0,'retention_timer_activated':False,
             'legacy_timer_transition_performed':False,

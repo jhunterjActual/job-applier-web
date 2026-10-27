@@ -105,6 +105,67 @@ class WebControlTests(unittest.TestCase):
         self.store = Store(); self.policy = Policy(); self.backend = Backend(self.store)
         self.control = WebControl(self.policy, self.store, self.backend)
 
+    def native_backend(self):
+        strategy={'mode':'native-bundle-v2','retention_policy_sha256':'a'*64,'activation_sha256':'b'*64}
+        prior=self.backend.preflight
+        self.backend.preflight=lambda:dict(prior(),backup_strategy=copy.deepcopy(strategy))
+        self.backend.bundle_calls=0
+        def run(value,selected):
+            self.assertEqual(selected,strategy)
+            self.assertFalse(self.backend.stopped or self.backend.fenced or self.backend.blocked)
+            self.assertTrue(self.store.exists('db-released.json') and self.store.exists('publication-result.json'))
+            self.backend.bundle_calls+=1;self.backend.event('native_bundle')
+            return {'schema':'careertrellis.paired-native-bundle-accepted/v1','state':'native_bundle_complete',
+                'transaction':TX,'policy_sha256':HASH,'retention_policy_sha256':'a'*64,
+                'activation_sha256':'b'*64,'backup_label':value['backup_label'],'native_restore_accepted':True,
+                'archive_sha256':'c'*64,'native_receipt_sha256':'d'*64,'restore_status_sha256':'e'*64,
+                'bundle_completion_sha256':'f'*64}
+        self.backend.run_native_bundle=run
+        return run
+
+    def test_native_bundle_replaces_only_legacy_db_mirror_after_publication(self):
+        self.native_backend()
+        self.assertEqual(self.control.run(TX)['state'],'complete')
+        self.assertEqual(self.backend.bundle_calls,1)
+        self.assertNotIn('peer_mirror',self.backend.events);self.assertNotIn('wait_mirror',self.backend.events)
+        self.assertLess(self.backend.events.index('publish'),self.backend.events.index('native_bundle'))
+        self.assertLess(self.backend.events.index('native_bundle'),self.backend.events.index('peer_health'))
+        self.assertIn('normal_reports',self.backend.events)
+        self.assertFalse(self.store.exists('db-mirror-accepted.json'))
+        self.assertTrue(self.store.exists('db-bundle-accepted.json'))
+        self.assertEqual(self.store.read('start-intent.json')['backup_strategy']['mode'],'native-bundle-v2')
+        self.control.run(TX);self.assertEqual(self.backend.bundle_calls,1)
+
+    def test_wrong_bundle_label_or_non_native_result_never_reaches_health(self):
+        for key,bad in (('backup_label','20261027-001723F'),('native_restore_accepted',False),
+                        ('retention_policy_sha256','f'*64),('activation_sha256','f'*64)):
+            with self.subTest(key=key):
+                self.setUp();original=self.native_backend()
+                self.backend.run_native_bundle=lambda *args:dict(original(*args),**{key:bad})
+                self.assertEqual(self.control.run(TX)['state'],'operator_required')
+                self.assertNotIn('peer_health',self.backend.events)
+                self.assertFalse(self.store.exists('complete.json'))
+
+    def test_native_dispatch_ambiguity_is_never_replayed_or_fallback_mirrored(self):
+        self.native_backend();self.backend.fail='native_bundle'
+        self.assertEqual(self.control.run(TX)['state'],'operator_required')
+        self.assertEqual(self.backend.bundle_calls,1)
+        self.control.run(TX,recovery_only=True)
+        self.assertEqual(self.backend.bundle_calls,1);self.assertNotIn('peer_mirror',self.backend.events)
+
+    def test_native_health_failure_preserves_evidence_and_withholds_completion(self):
+        self.native_backend();self.backend.fail='wait_health'
+        self.assertEqual(self.control.run(TX)['state'],'operator_required')
+        self.assertTrue(self.store.exists('db-bundle-accepted.json'))
+        self.assertFalse(self.store.exists('complete.json'));self.assertNotIn('normal_reports',self.backend.events)
+
+    def test_invalid_strategy_refuses_before_new_transaction_or_writer_stop(self):
+        prior=self.backend.preflight
+        self.backend.preflight=lambda:dict(prior(),backup_strategy={'mode':'native-bundle-v2'})
+        self.assertEqual(self.control.run(TX)['state'],'prestart_aborted')
+        self.assertFalse(self.store.exists('start-intent.json'))
+        self.assertFalse(self.store.exists('stop-intent.json'))
+
     def test_success_and_complete_replay_no_backend_actions(self):
         result = self.control.run(TX)
         self.assertEqual('complete', result['state'])

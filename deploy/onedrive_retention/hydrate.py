@@ -23,7 +23,7 @@ import types
 
 from . import builder, bundle, capture_plan as plan
 
-PINS = {"backup_health": "8d2facf6d71bf985c1c0ffe8b6a661fc9a9699548b6bb81163cd787f53ba97fa",
+PINS = {"backup_health": "293212836a6c3df380ea4e8b77fff92c6be4383ad08fbb9a26adfc12c89010e8",
         "pgbackrest_inventory": "8ce0743446e390c27f5dafa9ad0ead30f41bf9162ea508a1b7fc7469f4a79aa5"}
 CORE = Path("/usr/local/libexec/careertrellis")
 UNITS = tuple("careertrellis-pgbackrest-" + n + ".service" for n in

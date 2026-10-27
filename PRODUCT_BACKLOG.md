@@ -1,5 +1,21 @@
 # Product Backlog
 
+## October 26 — backup destination migration
+
+- [ ] **BKP-GDRIVE-001 — P1, open: migrate the OneDrive backup destination to
+  Google Drive.** Owner: Hunter / CareerTrellis backup maintenance. Cover both
+  PostgreSQL repository backups and generated-object recovery copies. Verify
+  account quota, supported transfers and least-privilege access before creating
+  a remote or credentials. Preserve bounded retention, named recovery holds,
+  account headroom, monitoring and interruption reconciliation. Acceptance:
+  download-verify uploaded bytes, independently restore PostgreSQL and generated
+  objects, switch reviewed helpers/schedules/selectors/monitoring with installed
+  byte verification, and retain a documented rollback path. Preserve OneDrive
+  recovery copies until migration acceptance and rollback retention are satisfied;
+  retire only an explicitly reviewed exact list. This is backlog work, with no
+  active Google Drive destination change. The same item ID is already recorded
+  in the primary workspace backlog; reconcile it once when integrating branches.
+
 ## October 19 — product value and selective upstream adoption
 
 Owner: Hunter / CareerTrellis product and engineering. The

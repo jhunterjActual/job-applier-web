@@ -69,12 +69,16 @@ BACKUP_UNITS=tuple('careertrellis-pgbackrest-'+n+'.service' for n in ('full','di
 ACKS=('I_HAVE_VERIFIED_SOURCE_R2_CREDENTIAL_IS_READ_ONLY','I_UNDERSTAND_THIS_APPENDS_AN_IMMUTABLE_ONEDRIVE_SNAPSHOT')
 UNIT_PINS={'careertrellis-web.service': ('8bde08ffeace51f2d86da9b8b96db8d819280f406889254a97a86153a842a571', '1a756de26856195ce0b7a63a63c4080dd9ff2c502a815f6ba41a876155302ff0'), 'careertrellis-worker.service': ('189fadce24d4baac3d9139973647ea14cb6848256acf11598d6728baa031a367', '5f5c4939910e660535ace2d016a551d572799b3ba381ba84cd8339e35077bedb'), 'careertrellis-erasure-worker.service': ('9c8f9f2ae32804691423119074776532871abd3db73d69bc4e63f7bcad8d845d', '5f5c4939910e660535ace2d016a551d572799b3ba381ba84cd8339e35077bedb'), 'careertrellis-pgbackrest-full.service': ('63ee2e6c6430d80c50364fd1560c489ae3ea8d221f45e8ae92f11e0d2c29e9bd', None)}
 PINS={
- 'web':{HELPER:'d52b86a3a3c10fa50ce9befe353e33c489053ced56040864be1cddb609197890',
+ 'web':{CORE:'293212836a6c3df380ea4e8b77fff92c6be4383ad08fbb9a26adfc12c89010e8',
+ '/usr/local/sbin/careertrellis-backup-health':'e7b51cf999481554e3fc68c9cc4159a81dd19cb38464de13b1c9304db09361af',
+ HELPER:'d61b8ad7575f23b290b5eca764cbeea08ea5ca104d3559a533194b1fd95e28c0',
  '/usr/local/libexec/careertrellis/generated_object_recovery.py':'866a054532b2a8a7def685168d7783eaf2dbdf80701191dd922b646f7aa77d30',
  '/usr/local/libexec/careertrellis/maintenance-lock.sh':'d6e448f41dd3d6932bce4c0e87a9aa676b4de6e15111aa53aca3a576f40d7cc1',
  '/usr/local/sbin/careertrellis-authority':'07399780faffbc8a761b558f3d116e0fd7d0cf2d1bb0226de987c5455ad45206'},
- 'db':{'/usr/local/sbin/careertrellis-run-pgbackrest-backup':'70d95eafce97e6bae0ba6cf28b61c9d764a7b82ce9bd4fb67843bedf642ec25e',
- CORE:'8d2facf6d71bf985c1c0ffe8b6a661fc9a9699548b6bb81163cd787f53ba97fa',
+ 'db':{'/usr/local/sbin/careertrellis-backup-health':'58bc6e0e408e02830691b34fbebc71a3919a69834df5950c8fae8228db66bf41',
+ '/usr/local/sbin/careertrellis-mirror-pgbackrest-onedrive':'630de3092529f165ee305601dc52ad6b89b912e90294dc42ab09ec419de552ca',
+ '/usr/local/sbin/careertrellis-run-pgbackrest-backup':'70d95eafce97e6bae0ba6cf28b61c9d764a7b82ce9bd4fb67843bedf642ec25e',
+ CORE:'293212836a6c3df380ea4e8b77fff92c6be4383ad08fbb9a26adfc12c89010e8',
  '/opt/careertrellis/staging/releases/'+OPS+'/backend/admission_operations.py':'47fc77170563d7c2067de1f88907d398db386b331fc8969f891654d35244d582',
  '/opt/careertrellis/staging/releases/'+OPS+'/backend/admission_purge.py':'f0759546d8c9de5025b59c00e48fd533594af3efb8605b76d094bd3e91ea54b2',
  '/opt/careertrellis/staging/releases/'+OPS+'/backend/totp_cleanup_operations.py':'31f02a03181d7705b6493111c61aeb33245abe799042fa87c90cb929861dd954',
@@ -447,7 +451,7 @@ def configure(policy, role):
     MAX_CAPTURE_BYTES = data['max_capture_bytes']
     PINS = {key: {path.replace(_BASE_OPS, OPS): value for path, value in values.items()}
             for key, values in _BASE_PINS.items()}
-    PINS['web'][CORE] = 'e143adbeea83df31d4fc4b5c1b25f0f4972dad7dbeef1b427688ca09e468ee91'
+    PINS['web'][CORE] = '293212836a6c3df380ea4e8b77fff92c6be4383ad08fbb9a26adfc12c89010e8'
     for key, values in data.get('artifact_hashes', {}).items():
         for path, expected in values.items():
             require(path in PINS[key], 'unknown_artifact_pin')

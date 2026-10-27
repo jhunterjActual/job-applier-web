@@ -30,6 +30,26 @@ def successful(stage):
 
 
 class Controls(unittest.TestCase):
+    def test_scheduler_requires_owning_unit_before_any_dispatch(self):
+        from deploy.onedrive_retention import entry
+        command = entry.parse_command(['scheduled-run'])
+        self.assertEqual(command['operation'],'scheduled-run')
+        self.assertTrue(e.supports_operation('scheduled-run'))
+        with patch.object(e,'require_scheduled_owner',side_effect=e.c.Refused('unit')), \
+             patch.object(e.c,'run') as run,self.assertRaises(e.c.Refused):
+            e.run_command(command)
+        run.assert_not_called()
+
+    def test_proposed_scheduler_profile_requires_finite_controls_and_exact_root_owner(self):
+        value = successful('hydrate')
+        value.update(LoadState='loaded',ActiveState='active',SubState='running',MainPID='123',ControlPID='0',Job='',
+            User='root',Group='root',UMask='0077',RemainAfterExit='no',RuntimeMaxUSec='1d 12h')
+        self.assertEqual(e.validate_scheduled_owner(value,123),value)
+        for field,bad in (('User','nobody'),('Group','nobody'),('UMask','0022'),('MainPID','124'),
+                          ('RuntimeMaxUSec','infinity'),('TimeoutStopUSec','1s'),('KillMode','process'),
+                          ('SendSIGKILL','no'),('Restart','always'),('ExecStop','unexpected')):
+            with self.subTest(field=field),self.assertRaises((e.c.Refused,e.native.NativeRefused)):
+                e.validate_scheduled_owner(dict(value,**{field:bad}),123)
     def test_nonrestore_profiles_are_bounded_retained_and_separate(self):
         for stage in e.STAGE_SECONDS:
             owner=endpoint.command_plan(stage,TX,Path('/fixed'))
@@ -139,11 +159,73 @@ class Observation(unittest.TestCase):
 
 
 class Routing(unittest.TestCase):
+    def test_scheduled_branch_uses_fresh_tx_and_the_real_eligibility_gate(self):
+        from deploy.tests.test_onedrive_coordinator import policy
+        with patch.object(e,'require_scheduled_owner'),patch.object(e.c,'read_private',return_value=policy().data), \
+             patch.object(e.c,'run',return_value={'state':'fixture'}) as run:
+            e.run_command({'operation':'scheduled-run','transaction':None})
+            e.run_command({'operation':'scheduled-run','transaction':None})
+        calls=run.call_args_list
+        self.assertNotEqual(calls[0].args[0],calls[1].args[0])
+        for called in calls:
+            self.assertRegex(called.args[0],'^[0-9a-f]{32}$')
+            self.assertIs(type(called.args[2]),e.c.NativeWEB)
+            self.assertIs(called.args[2].scheduled,True)
+
+    @contextlib.contextmanager
+    def scheduled_owner_fixture(self,*,argv=None,changes=None):
+        from deploy.onedrive_retention import entry,health
+        unit='careertrellis-onedrive-retention.service'
+        state=successful('hydrate')
+        state.update(LoadState='loaded',ActiveState='active',SubState='running',MainPID='123',ControlPID='0',Job='',
+            User='root',Group='root',UMask='0077',RemainAfterExit='no',RuntimeMaxUSec='1d 12h',
+            ControlGroup='/system.slice/'+unit,InvocationID='f'*32)
+        state.update(changes or {})
+        command=(b'/usr/bin/python3\0-I\0-B\0/usr/local/libexec/careertrellis/onedrive_retention/entry.py\0scheduled-run\0'
+                 if argv is None else argv)
+        def read(path):return {'/proc/self/cgroup':('0::/system.slice/'+unit+'\n').encode(),
+                              '/proc/self/cmdline':command}[path.as_posix()]
+        context=SimpleNamespace(role='web');executable=Path('synthetic-python.exe').absolute()
+        with patch.object(entry,'verify_install',return_value='a'*40), \
+             patch.object(entry,'_native_dependencies',return_value=context), \
+             patch.object(e.os,'geteuid',return_value=0,create=True),patch.object(e.os,'getegid',return_value=0,create=True), \
+             patch.object(e.os,'getpid',return_value=123),patch.object(Path,'read_bytes',autospec=True,side_effect=read), \
+             patch.object(Path,'resolve',return_value=executable),patch.object(e.os,'readlink',return_value=str(executable)), \
+             patch.dict(e.os.environ,{'INVOCATION_ID':'f'*32}), \
+             patch.object(e.common_io,'read_unit_properties',return_value=state), \
+             patch.object(health,'_installation',return_value=({},{})),patch.object(health,'_service') as installed:
+            yield context,installed
+
+    def test_scheduled_owner_requires_current_installed_unit_in_addition_to_profile(self):
+        with self.scheduled_owner_fixture() as (context,installed):
+            self.assertIs(e.require_scheduled_owner(),context)
+        installed.assert_called_once()
+
+    def test_manual_or_changed_scheduled_command_never_reaches_installation_gate(self):
+        with self.scheduled_owner_fixture(argv=b'/usr/bin/python3\0arbitrary.py\0') as (_,installed):
+            with self.assertRaises(e.c.Refused):e.require_scheduled_owner()
+        installed.assert_not_called()
+
+    def test_scheduled_owner_rejects_wrong_unit_invocation(self):
+        with self.scheduled_owner_fixture(changes={'InvocationID':'e'*32}) as (_,installed):
+            with self.assertRaises(e.c.Refused):e.require_scheduled_owner()
+        installed.assert_not_called()
+
     def test_cli_requires_own_unit_before_provider_stage(self):
+        from deploy.onedrive_retention import activation
         command={'operation':'db-stage','transaction':TX,'stage':'hydrate'}
-        with patch.object(e,'require_stage_owner',side_effect=e.c.Refused('unit')), \
+        with patch.object(activation,'routing_state',return_value=None), \
+                patch.object(e,'require_stage_owner',side_effect=e.c.Refused('unit')), \
                 patch.object(e.hydrate,'hydrate') as capture,self.assertRaises(e.c.Refused):e.run_command(command)
         capture.assert_not_called()
+
+    def test_partial_activation_fences_new_stage_before_owner_or_provider(self):
+        from deploy.onedrive_retention import activation
+        with patch.object(activation,'routing_state',side_effect=activation.ActivationRefused()), \
+             patch.object(e,'require_stage_owner') as owner,patch.object(e.hydrate,'hydrate') as capture, \
+             self.assertRaises(activation.ActivationRefused):
+            e.run_command({'operation':'db-stage','transaction':TX,'stage':'hydrate'})
+        owner.assert_not_called();capture.assert_not_called()
 
     def test_dispatch_preflight_refuses_before_any_write(self):
         with patch.object(e,'authenticated',side_effect=e.c.Refused('baseline')), \

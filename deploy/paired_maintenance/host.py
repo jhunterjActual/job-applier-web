@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import threading
 import time
 import urllib.error
@@ -19,7 +20,8 @@ from . import runtime, provider
 from .client import Client, decode
 from .common import Journal, Refused, canonical, digest
 from .db_control import hex_string, validate_capture
-from .web_control import WebControl, slot_name, validate_prestart_proof
+from .web_control import (WebControl, slot_name, validate_prestart_proof,
+                          validate_backup_strategy, validate_bundle_acceptance)
 
 ROOT = Path('/var/lib/careertrellis/paired-maintenance')
 ROLE_ROOT = ROOT / 'web'
@@ -33,11 +35,59 @@ HEALTH_PINS = {
 DROPINS = ' '.join('/etc/systemd/system/' + HEALTH + '.d/' + name for name in
                   ('50-backup-reporting.conf', '60-completed-alert-report.conf'))
 RECOVERY_RECHECK_SECONDS = 60
+BUNDLE_OUTPUT_LIMIT = 262144
+BUNDLE_ONLINE_SECONDS = 28*3600
 
 
 def need(value, code='web_host_refused'):
     if not value:
         raise Refused(code)
+
+
+def native_bundle_acceptance(capture, strategy, transaction, paired_policy_sha256, documents):
+    """Normalize protected child receipts; supplied dictionaries alone are claims.
+
+    Only run_native_bundle supplies these records after the exact installed
+    child exits successfully. No legacy mirror receipt is manufactured here.
+    """
+    validate_capture(capture);validate_backup_strategy(strategy)
+    need(strategy['mode']=='native-bundle-v2' and type(documents) is dict and set(documents)=={
+        'coordinator-intent.json','hydrate-complete.json','restore-complete.json',
+        'retire-complete.json','coordinator-terminal.json'})
+    original=documents['coordinator-intent.json']
+    need(original.get('schema')=='careertrellis.retention-coordinator/v1'
+         and original.get('transaction')==transaction
+         and original.get('retention_policy_sha256')==strategy['retention_policy_sha256']
+         and original.get('expected_backup_label')==capture['backup_label'])
+    hydrate_result=documents['hydrate-complete.json'];restore=documents['restore-complete.json']
+    final=documents['retire-complete.json'];terminal=documents['coordinator-terminal.json']
+    for stage,result in (('hydrate',hydrate_result),('restore',restore),('retire',final)):
+        need(type(result) is dict and set(result)=={'schema','capture_transaction','retention_policy_sha256',
+            'stage','state','receipt_sha256','facts'}
+             and result['schema']=='careertrellis.onedrive-stage-status/v1'
+             and result['capture_transaction']==transaction and result['stage']==stage
+             and result['retention_policy_sha256']==strategy['retention_policy_sha256']
+             and result['state']=='complete' and hex_string(result['receipt_sha256'],64)
+             and type(result['facts']) is dict)
+    base={'archive_sha256','archive_bytes','generation_sha256','backup_label'}
+    need(set(hydrate_result['facts'])==base and set(restore['facts'])==base|{'native_restore_accepted'}
+         and type(restore['facts']['archive_bytes']) is int and 0<restore['facts']['archive_bytes']<=512*1024**2
+         and hex_string(restore['facts']['generation_sha256'],64)
+         and set(final['facts'])=={'catalog_sha256','retired_count'}
+         and hex_string(final['facts']['catalog_sha256'],64)
+         and type(final['facts']['retired_count']) is int and 0<=final['facts']['retired_count']<=10000)
+    need(terminal.get('transaction')==transaction and terminal.get('state')=='complete'
+         and terminal.get('result')==final and restore['facts'].get('native_restore_accepted') is True
+         and all(hydrate_result['facts'].get(key)==restore['facts'].get(key) for key in
+                 ('archive_sha256','archive_bytes','generation_sha256','backup_label'))
+         and restore['facts'].get('backup_label')==capture['backup_label'])
+    accepted={'schema':'careertrellis.paired-native-bundle-accepted/v1','state':'native_bundle_complete',
+        'transaction':transaction,'policy_sha256':paired_policy_sha256,
+        'retention_policy_sha256':strategy['retention_policy_sha256'],'activation_sha256':strategy['activation_sha256'],
+        'backup_label':capture['backup_label'],'native_restore_accepted':True,
+        'archive_sha256':restore['facts']['archive_sha256'],'native_receipt_sha256':restore['receipt_sha256'],
+        'restore_status_sha256':digest(restore),'bundle_completion_sha256':digest(terminal)}
+    return validate_bundle_acceptance(accepted,transaction,paired_policy_sha256,capture,strategy)
 
 
 def _journal_names(store, maximum=512):
@@ -153,6 +203,7 @@ class WebBackend:
         self.status_lock = threading.RLock()
         self.stop_heartbeat = threading.Event()
         self.heartbeat_failure = None
+        self.bundle_unconfirmed = False
 
     def now(self):
         return dt.datetime.now(dt.timezone.utc)
@@ -267,12 +318,19 @@ class WebBackend:
         restored = self.store.read('writers-restored.json')
         need(restored.get('services_restored') is True and restored.get('capture_sha256') == digest(capture)
              and self.store.read('db-released.json').get('services_restored') is True and self.restored)
-        mirror = self.store.read('db-mirror-accepted.json')
         health = self.store.read('db-health-accepted.json')
-        need(mirror.get('state') == 'mirror_complete' and mirror.get('backup_label') == capture['backup_label']
-             and health.get('state') == 'health_complete' and health.get('normal_report_accepted') is True)
+        strategy=validate_backup_strategy(self.store.read('start-intent.json').get('backup_strategy',
+            {'mode':'legacy-mirror'}) if self.store.exists('start-intent.json') else {'mode':'legacy-mirror'})
+        if strategy['mode']=='native-bundle-v2':
+            accepted=self.store.read('db-bundle-accepted.json')
+            validate_bundle_acceptance(accepted,self.transaction,self.policy.digest,capture,strategy)
+            need(not self.store.exists('db-mirror-accepted.json'))
+        else:
+            accepted=self.store.read('db-mirror-accepted.json')
+            need(accepted.get('state')=='mirror_complete' and accepted.get('backup_label')==capture['backup_label'])
+        need(health.get('state') == 'health_complete' and health.get('normal_report_accepted') is True)
         need(all(record.get('transaction') == self.transaction and record.get('policy_sha256') == self.policy.digest
-                 for record in (mirror, health)))
+                 for record in (accepted, health)))
         self.r.verify_sources()
         self.r.health()
         root = Journal(ROLE_ROOT)
@@ -346,7 +404,26 @@ class WebBackend:
                         '--operation', 'generated_object_mirror', '--receipt-root',
                         '/var/backups/careertrellis/backup-health/operations']), 65536)
         need(latest.get('operation') == 'generated_object_mirror' and latest.get('result') == 'ok')
-        return {'ready': True, 'last_capture_started_at': latest['started_at']}
+        return {'ready': True, 'last_capture_started_at': latest['started_at'],
+                'backup_strategy':self.retention_strategy()}
+
+    def retention_strategy(self):
+        """Use only the explicit activated selector, never policy-file presence.
+
+        New paired source is installed together with the standalone namespace.
+        A missing/corrupt installation is a preflight failure. The selector
+        alone may return the legacy contract before the explicit activation.
+        """
+        from onedrive_retention import entry as retention_entry
+        retention_entry.verify_install()
+        activation=retention_entry._load('activation')
+        strategy=validate_backup_strategy(activation.selection_for_paired(self.policy))
+        if strategy['mode']=='native-bundle-v2':
+            context=retention_entry._native_dependencies(retention_entry.verify_install(),'web')
+            activation.require_activated(context)
+            need(context.bindings['paired_policy_sha256']==self.policy.digest
+                 and context.bindings['standalone_policy_sha256']==strategy['retention_policy_sha256'])
+        return strategy
 
     def acquire_fence(self):
         need(not self.heartbeat_failure)
@@ -555,6 +632,104 @@ class WebBackend:
         need(value['result'] == 'onedrive_snapshot_created')
         need(all(value[key] == capture[key] for key in ('authority', 'backup_label', 'manifest_sha256', 'release', 'snapshot_id')))
         return value
+
+    def run_native_bundle(self,capture,strategy):
+        """One same-TX fixed child after writers and object publication recover.
+
+        The parent retains the canonical WEB fence and passes its SAME open
+        description to the child. Unknown completion never releases that fence,
+        retries the coordinator, starts a legacy mirror, or signals a DB job.
+        """
+        validate_capture(capture);validate_backup_strategy(strategy)
+        need(strategy['mode']=='native-bundle-v2' and strategy==self.retention_strategy())
+        need(self.restored and self.r.fence is None and not self.r.live_group()
+             and self.store.read('db-released.json')=={'services_restored':True}
+             and self.store.read('writers-restored.json')=={'services_restored':True,'capture_sha256':digest(capture)}
+             and self.store.read('start-intent.json').get('backup_strategy')==strategy)
+        publication=self.store.read('publication-result.json')
+        need(publication.get('result')=='onedrive_snapshot_created'
+             and all(publication.get(key)==capture[key] for key in
+                 ('release','backup_label','snapshot_id','manifest_sha256','authority')))
+        from onedrive_retention import entry as retention_entry
+        retention_entry.verify_install()
+        native=retention_entry._load('native_restore')
+        preservation=retention_entry._load('preservation')
+        parent_unit='careertrellis-paired-maintenance.service'
+        parent_state=self.r.state(parent_unit)
+        need(parent_state.get('ActiveState')=='active' and parent_state.get('SubState')=='running'
+             and parent_state.get('MainPID')==str(os.getpid()) and parent_state.get('ControlPID')=='0'
+             and parent_state.get('Job')=='' and parent_state.get('InvocationID')==self.r.invocation
+             and Path('/proc/self/cgroup').read_text().strip()=='0::/system.slice/'+parent_unit)
+        self.r.verify_sources();self.r.health()
+        self.r.fence=runtime.Fence(runtime.MAINTENANCE,0o644).acquire()
+        # From this point, only a fully verified successful child may close it.
+        self.bundle_unconfirmed=True
+        maintenance_fd=self.r.fence.fd
+        maintenance_identity=preservation.require_owned_lock(str(runtime.MAINTENANCE),maintenance_fd)
+        need(type(maintenance_fd) is int and 3<=maintenance_fd<=1024)
+        handoff={'schema':'careertrellis.paired-retention-handoff/v1','transaction':self.transaction,
+            'paired_policy_sha256':self.policy.digest,'retention_policy_sha256':strategy['retention_policy_sha256'],
+            'release':capture['release'],'backup_label':capture['backup_label'],'capture_sha256':digest(capture),
+            'publication_sha256':digest(publication),'parent_owner':native.process_identity(os.getpid()),
+            'parent_unit':parent_unit,'parent_invocation':self.r.invocation,
+            'maintenance_fd':maintenance_fd,'maintenance_identity':maintenance_identity,'issued_at':self.now().isoformat()}
+        self.store.write_once('bundle-dispatch-intent.json',handoff)
+        command=['/usr/bin/python3','-I','-B',
+            '/usr/local/libexec/careertrellis/onedrive_retention/entry.py','web-run',
+            '--transaction',self.transaction,'--expected-backup-label',capture['backup_label']]
+        log=self.store.root/'bundle-private-output.log'
+        output=os.open(log,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        proc=None;child=None
+        try:
+            os.fchmod(output,0o600);os.fsync(output)
+            parent_fd=os.open(log.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:os.fsync(parent_fd)
+            finally:os.close(parent_fd)
+            proc=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=output,stderr=output,
+                env={'PATH':runtime.CHILD_PATH,'LANG':'C.UTF-8','PYTHONDONTWRITEBYTECODE':'1',
+                     'INVOCATION_ID':self.r.invocation},pass_fds=(maintenance_fd,),close_fds=True,start_new_session=True)
+            self.r.child,self.r.group=proc,proc.pid
+            child=native.process_identity(proc.pid)
+            self.store.write_once('bundle-child-dispatched.json',{
+                'schema':'careertrellis.paired-retention-child/v1','transaction':self.transaction,
+                'handoff_sha256':digest(handoff),'owner':child,'command':command})
+            self.status('mirroring',services_restored=True)
+            deadline=time.monotonic()+BUNDLE_ONLINE_SECONDS
+            while proc.poll() is None:
+                self.r.fence.check()
+                need(not self.heartbeat_failure and time.monotonic()<deadline,'bundle_outcome_unknown')
+                need(os.fstat(output).st_size<=BUNDLE_OUTPUT_LIMIT,'bundle_output_bound')
+                time.sleep(1)
+            code=proc.wait()
+            need(not self.r.live_group(),'bundle_descendants_unconfirmed')
+            self.store.write_once('bundle-child-terminal.json',{
+                'schema':'careertrellis.paired-retention-child-terminal/v1','transaction':self.transaction,
+                'handoff_sha256':digest(handoff),'owner':child,'returncode':code,'completed_at':self.now().isoformat()})
+            need(code==0 and os.fstat(output).st_size<=BUNDLE_OUTPUT_LIMIT,'bundle_child_failed')
+            raw=runtime.protected(log,BUNDLE_OUTPUT_LIMIT,(0o600,))
+            returned=decode(raw,BUNDLE_OUTPUT_LIMIT)
+            coordinator=retention_entry._load('coordinator')
+            root=coordinator.STATE/'web'/self.transaction
+            documents={name:coordinator.read_private(root/name) for name in
+                ('coordinator-intent.json','hydrate-complete.json','restore-complete.json',
+                 'retire-complete.json','coordinator-terminal.json')}
+            need(returned==documents['retire-complete.json'] and strategy==self.retention_strategy())
+            accepted=native_bundle_acceptance(capture,strategy,self.transaction,self.policy.digest,documents)
+            self.r.fence.check()
+            self.r.child,self.r.group=None,None
+            self.r.fence.close();self.r.fence=None
+            self.bundle_unconfirmed=False
+            return accepted
+        except BaseException:
+            # Never kill/replay an unknown coordinator or release its inherited
+            # fence. The recovery observer keeps the original guardian alive.
+            if not self.store.exists('bundle-child-unconfirmed.json'):
+                self.store.write_once('bundle-child-unconfirmed.json',{
+                    'schema':'careertrellis.paired-retention-unconfirmed/v1','transaction':self.transaction,
+                    'handoff_sha256':digest(handoff),'child_owner':child,
+                    'returncode':proc.poll() if proc is not None else None,'automatic_retry':False})
+            raise Refused('bundle_outcome_requires_reconciliation') from None
+        finally:os.close(output)
 
     def _wait_online(self, operation, complete, timeout):
         deadline = time.monotonic() + timeout
@@ -813,7 +988,18 @@ def reconcile_prestart(policy, transaction):
 
 def _run_controller(controller, backend, transaction, recovery_only):
     result = controller.run(transaction, recovery_only=recovery_only)
-    while result.get('state') == 'operator_required' and not backend.restored:
+    while result.get('state') == 'operator_required' and (not backend.restored or getattr(backend,'bundle_unconfirmed',False)):
+        if getattr(backend,'bundle_unconfirmed',False):
+            # Writers were already restored. Preserve that fact and only the
+            # original backup fence; do not rerun publication, child dispatch,
+            # DB health, or writer restoration as an observation side effect.
+            fence=backend.r.fence
+            if fence is None or fence.fd is None:break
+            fence.check()
+            try:backend.status('operator_required','failed',True)
+            except Exception:pass
+            time.sleep(RECOVERY_RECHECK_SECONDS)
+            continue
         try:
             public_marker(backend.policy, backend.r.boot, 'blocked', transaction)
         except Exception:

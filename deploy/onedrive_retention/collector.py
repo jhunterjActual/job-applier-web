@@ -203,7 +203,8 @@ class Native:
              and Path(plan['attempt_root']) == self.root
              and ownership['plan_sha256'] == plans.digest(plan) == receipt.get('plan_sha256'))
         meta = self.root.lstat(); need(list(native.identity(meta)[:2]) == ownership['root_identity'][:2])
-        need(receipt.get('schema') == 'careertrellis.onedrive-native-local-restore/v1'
+        need(receipt.get('schema') in ('careertrellis.onedrive-native-local-restore/v1',
+                                     'careertrellis.onedrive-native-local-restore/v2')
              and receipt.get('result') == 'verified' and receipt.get('transaction') == self.transaction
              and type(receipt.get('attempt')) is int and receipt['attempt'] == self.attempt
              and all(receipt.get(key) is True for key in ('native_restore_accepted', 'postmaster_terminal', 'checksums_verified'))

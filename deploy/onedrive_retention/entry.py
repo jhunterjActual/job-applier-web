@@ -21,7 +21,9 @@ import types
 ROOT = Path('/usr/local/libexec/careertrellis/onedrive_retention')
 PAIRED_ROOT = Path('/usr/local/libexec/careertrellis/paired_maintenance')
 SCHEMA = 'careertrellis.onedrive-retention-install/v1'
-FILES = frozenset(('baseline.py', 'builder.py', 'bundle.py', 'capture_plan.py', 'catalog.py', 'collector.py', 'common_io.py',
+FILES = frozenset(('activation.py', 'activation_readiness.py', 'activation_actor.py', 'activation_controller.py',
+    'activation_transition.py', 'activation_finalize.py', 'activation_web.py', 'pre_growth_native.py', 'expiry_capability.py',
+    'baseline.py', 'builder.py', 'bundle.py', 'capture_plan.py', 'catalog.py', 'collector.py', 'common_io.py',
     'coordinator.py', 'endpoint.py', 'entry.py', 'execution.py', 'guard.py', 'health.py', 'hydrate.py',
     'identity_collect.py', 'local_restore_plan.py', 'local_restore.py',
     'native_restore.py', 'policy.py', 'publish.py', 'retire.py', 'upgrade_493.py', 'graph_delete.py', 'preservation.py'))
@@ -256,12 +258,65 @@ def _native_dependencies(revision, role):
     return context
 
 
+def verify_prepared_dependencies(revision):
+    """Read-only local dependencies before accepted-baseline publication.
+
+    Unlike operational dispatch this needs no accepted baseline. It verifies
+    the fixed installed packages/policies and all role-specific helper and
+    unit pins, and cannot call health, a provider, a worker or a repository.
+    """
+    need(os.name=='posix' and os.geteuid()==os.getegid()==0)
+    role={'careertrellis-staging-web-1':'web','job-applier-db-staging-01':'db'}.get(socket.gethostname())
+    need(role in ('web','db') and verify_install()==revision)
+    _paired_namespace()
+    paired_entry=importlib.import_module('paired_maintenance.entry')
+    runtime=importlib.import_module('paired_maintenance.runtime')
+    need(paired_entry.verify_install()==revision)
+    paired=paired_entry.load_policy()
+    private,document=_protected_document(Path('/etc/careertrellis/onedrive-retention/policy.json'),0o600)
+    public,_=_protected_document(Path('/var/lib/careertrellis/onedrive-retention-public/policy.json'),0o644)
+    one=_load('coordinator').Policy(document)
+    need(private==public and one.data['artifact_revision']==revision
+         and one.data['paired_policy_sha256']==paired.digest
+         and one.data['application_release']==paired.data['application_release'])
+    one.require_active(dt.datetime.now(dt.timezone.utc))
+    runtime.preflight_runtime(paired,role).verify_sources()
+    need(verify_install()==revision and paired_entry.load_policy().digest==paired.digest
+         and _protected_document(Path('/etc/careertrellis/onedrive-retention/policy.json'),0o600)[0]==private)
+    return {'schema':'careertrellis.retention-prepared-dependencies/v1','result':'dependencies_verified',
+        'revision':revision,'role':role,'native_actions':False,'provider_calls':0,
+        'application_services_restarted':False,'native_restore_accepted':False}
+
+
+WEB_ACTIVATION_COMMANDS={'activation-web-dispatch':'dispatch','activation-web-run':'run',
+    'activation-web-status':'status','activation-web-verify':'verify_terminal'}
+
+
 def parse_command(argv):
     need(type(argv) is list and all(type(item) is str for item in argv))
     if argv == ['verify-install']:
         return {'operation':'verify-install', 'role':'read-only', 'stage':None, 'transaction':None, 'attempt':None}
+    if argv == ['verify-prepared-install']:
+        return {'operation':'verify-prepared-install','role':'read-only','stage':None,'transaction':None,'attempt':None}
     if argv == ['preserve-info-only']:
         return {'operation':'preserve-info-only','role':'db','stage':None,'transaction':None,'attempt':None}
+    if argv == ['scheduled-run']:
+        return {'operation':'scheduled-run','role':'web','stage':None,'transaction':None,'attempt':None}
+    if argv == ['legacy-pg-routing']:
+        return {'operation':'legacy-pg-routing','role':'db','stage':None,'transaction':None,'attempt':None}
+    if argv == ['activation-evidence-db']:
+        return {'operation':'activation-evidence-db','role':'db','stage':None,'transaction':None,'attempt':None}
+    if argv == ['monitor-mode']:
+        return {'operation':'monitor-mode','role':'db','stage':None,'transaction':None,'attempt':None}
+    if argv in (['evaluate-core'],['evaluate-core','--bundle-unavailable']):
+        return {'operation':'evaluate-core','role':'db','stage':None,'transaction':None,'attempt':None,
+                'bundle_unavailable':len(argv)==2}
+    if len(argv) == 9 and argv[0] == 'legacy-object-guard' and argv[1] == '--release' \
+            and argv[3] == '--backup-label' and argv[5] == '--maintenance-fd' and argv[7] == '--recovery-fd':
+        need(REVISION.fullmatch(argv[2]) and re.fullmatch('[0-9]{8}-[0-9]{6}F',argv[4])
+             and argv[6] in ('8','10') and argv[8] == '9')
+        return {'operation':'legacy-object-guard','role':'web','stage':None,'transaction':None,'attempt':None,
+                'release':argv[2],'backup_label':argv[4],'maintenance_fd':int(argv[6]),'recovery_fd':9}
     if len(argv) == 1 and argv[0] in ('health-web','health-db','schedule-check'):
         return {'operation':argv[0],'role':'web' if argv[0]=='health-web' else 'db',
                 'stage':None,'transaction':None,'attempt':None}
@@ -271,6 +326,26 @@ def parse_command(argv):
     if len(argv) == 3 and argv[0] == 'web-run' and argv[1] == '--transaction':
         need(TX.fullmatch(argv[2]))
         return {'operation':'web-run','role':'web','stage':None,'transaction':argv[2],'attempt':1}
+    if len(argv)==3 and argv[0]=='activation-actor' and argv[1]=='--transaction':
+        need(TX.fullmatch(argv[2]) and argv[2]!='0'*32)
+        return {'operation':'activation-actor','role':'db','stage':None,'transaction':argv[2],'attempt':None}
+    if len(argv)==3 and argv[0] in WEB_ACTIVATION_COMMANDS and argv[1]=='--transaction':
+        need(TX.fullmatch(argv[2]) and argv[2]!='0'*32)
+        return {'operation':argv[0],'role':'web','stage':None,'transaction':argv[2],'attempt':None}
+    if len(argv)==3 and argv[0] in ('pre-growth-owner','pre-growth-watch') and argv[1]=='--transaction':
+        need(TX.fullmatch(argv[2]) and argv[2]!='0'*32)
+        return {'operation':argv[0],'role':'db','stage':None,'transaction':argv[2],'attempt':None}
+    if (len(argv)==7 and argv[0]=='pre-growth-identity' and argv[1]=='--transaction'
+            and argv[3]=='--source-transaction' and argv[5]=='--verification'):
+        need(TX.fullmatch(argv[2]) and argv[2]!='0'*32 and TX.fullmatch(argv[4]) and argv[4]!='0'*32
+            and re.fullmatch('[1-9][0-9]?',argv[6]))
+        return {'operation':argv[0],'role':'db','stage':None,'transaction':argv[2],
+            'source_transaction':argv[4],'attempt':int(argv[6])}
+    if (len(argv) == 5 and argv[0] == 'web-run' and argv[1] == '--transaction'
+            and argv[3] == '--expected-backup-label'):
+        need(TX.fullmatch(argv[2]) and re.fullmatch(r'[0-9]{8}-[0-9]{6}F(?:_[0-9]{8}-[0-9]{6}[DI])?',argv[4]))
+        return {'operation':'web-run','role':'web','stage':None,'transaction':argv[2],'attempt':1,
+                'expected_backup_label':argv[4]}
     if len(argv) == 5 and argv[0] == 'collect-native' and argv[1] == '--transaction' and argv[3] == '--attempt':
         need(TX.fullmatch(argv[2]) and re.fullmatch('[1-9]',argv[4]))
         return {'operation':'collect-native','role':'db','stage':'restore','transaction':argv[2],'attempt':int(argv[4])}
@@ -311,6 +386,7 @@ def route(argv, backend=None):
         if command['operation'] == 'verify-install':
             return {'schema':'careertrellis.retention-source-verification/v1','revision':revision,
                     'result':'source_verified','native_actions':False,'native_restore_accepted':False}
+        if command['operation'] == 'verify-prepared-install':return verify_prepared_dependencies(revision)
         if command['operation'] == 'preserve-info-only':
             # This explicit metadata-preservation operation is available after
             # verified inactive source installation. It cannot authorize a
@@ -318,7 +394,31 @@ def route(argv, backend=None):
             owner=_load('hydrate').Native()
             with owner.locked():
                 return _load('preservation').collect_historical_info_preservation(owner.canonical_fds)
+        if command['operation'] == 'monitor-mode':
+            need(os.geteuid() == os.getegid() == 0 and socket.gethostname() == 'job-applier-db-staging-01')
+            return _load('health').monitor_mode()
+        if command['operation'] in ('legacy-object-guard','legacy-pg-routing'):
+            need(os.geteuid() == os.getegid() == 0 and socket.gethostname() == {
+                'web':'careertrellis-staging-web-1','db':'job-applier-db-staging-01'}[command['role']])
+            selected = _load('activation').routing_state()
+            if selected is None:
+                return {'result':'legacy_strategy_unselected','native_actions':False,
+                        'provider_writes':0,'deletion_authorized':False}
+            if command['operation'] == 'legacy-pg-routing':
+                return {'result':'legacy_pg_mirror_retired','native_actions':False,
+                        'provider_writes':0,'deletion_authorized':False}
         _native_dependencies(revision, command['role'])
+        if command['operation']=='activation-actor':
+            # Parsing alone is not runtime promotion. The closed source
+            # inventory must separately admit every reviewed native component.
+            need({'activation_actor.py','activation_controller.py','activation_transition.py'}<=FILES)
+            return _load('activation_actor').run(command['transaction'])
+        if command['operation'] in WEB_ACTIVATION_COMMANDS:
+            need('activation_web.py' in FILES)
+            action=WEB_ACTIVATION_COMMANDS[command['operation']]
+            return getattr(_load('activation_web'),action)(command['transaction'])
+        if command['operation'] in ('pre-growth-owner','pre-growth-watch','pre-growth-identity'):
+            need('pre_growth_native.py' in FILES)
         return _load('execution').run_command(command)
     need(getattr(backend,'mode',None) == 'offline' and command['operation'] != 'verify-install')
     validate_bindings(backend.bindings(), backend.now())
@@ -330,6 +430,14 @@ def route(argv, backend=None):
 def retention_idle(transaction, stage):
     need(type(transaction) is str and TX.fullmatch(transaction) and stage in STAGES)
     return _load('execution').idle(transaction, stage)
+
+
+def expiry_capability_idle(repository_fd):
+    """Only the actual held canonical repository FD reaches native renewal."""
+    need(type(repository_fd) is int and repository_fd>=0)
+    os.fstat(repository_fd)
+    _load('preservation').require_owned_lock('/run/lock/careertrellis-pgbackrest-repository.lock',repository_fd)
+    return _load('execution').expiry_capability_idle(repository_fd)
 
 
 def observe_retention_stage(transaction, stage, policy_sha256):
@@ -356,6 +464,8 @@ def main(argv=None):
         print(json.dumps(result,sort_keys=True))
         if arguments == ['schedule-check']:return 0 if result.get('result') == 'ready' else 1
         if arguments == ['health-db']:return 0 if result.get('result') == 'ok' else 1
+        if arguments == ['legacy-pg-routing']:
+            return 0 if result.get('result') == 'legacy_strategy_unselected' else 1
         return 0
     except BaseException:
         print('{"result":"refused","category":"retention_entry_native_dependencies_unavailable","native_actions":false}')

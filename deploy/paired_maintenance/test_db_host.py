@@ -4,8 +4,9 @@ import datetime as dt
 import hashlib
 import json
 import unittest
+from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 try:
     from . import db_host as h
@@ -182,10 +183,12 @@ class DBHostTests(unittest.TestCase):
         self.store.write_once('mirror-intent.json', request('mirror', payload))
         self.store.replace('status.json', {'state': 'released', 'transaction': TX, 'worker_invocation': '7' * 32})
         with patch.object(backend, 'mirror_status', return_value={'state': 'mirror_complete'}), \
+             patch.object(backend,'_native_retention',return_value=None), \
              patch.object(backend, 'health_status', side_effect=h.Refused('report_unproven')):
             with self.assertRaises(h.Refused): backend.complete(TX, payload)
         self.assertFalse(self.store.exists('complete-result.json'))
         with patch.object(backend, 'mirror_status', return_value={'state': 'mirror_complete'}), \
+             patch.object(backend,'_native_retention',return_value=None), \
              patch.object(backend, 'health_status', return_value={'state': 'health_complete'}), \
              patch.object(backend, '_global'):
             backend.complete(TX, payload)
@@ -255,6 +258,101 @@ class DBHostTests(unittest.TestCase):
         with patch.object(h.runtime, 'protected', return_value=b'changed'):
             with self.assertRaises(h.Refused): h.latest(self.r, 'full_backup')
         self.assertEqual([], self.r.events)
+
+
+class NativeBundleDBTests(unittest.TestCase):
+    def fixture(self):
+        from deploy.onedrive_retention import endpoint as real_endpoint
+        value=object.__new__(h.DBBackend);value.transaction=TX;value.policy=policy();value.store=Memory()
+        value.r=Runtime(value.store)
+        captured=capture()
+        for name,record in {'begin-intent.json':request('begin',IDENTITY),
+            'capture.json':request('capture',dict(IDENTITY,capture=captured)),
+            'restored.json':request('restored',dict(IDENTITY,services_restored=True,capture_sha256=h.digest(captured))),
+            'status.json':{'state':'released','transaction':TX,'policy_sha256':HASH,'release':RELEASE,
+                           'worker_invocation':'7'*32}}.items():value.store.write_once(name,record)
+        bindings={'paired_policy_sha256':HASH,'standalone_policy_sha256':'a'*64}
+        context=SimpleNamespace(bindings=bindings,document={'application_release':RELEASE})
+        selector=SimpleNamespace(digest='b'*64,bindings=bindings,role='db')
+        facts={'archive_sha256':'c'*64,'archive_bytes':10240,'generation_sha256':'d'*64,
+               'backup_label':captured['backup_label'],'native_restore_accepted':True}
+        def status(stage,details):return {'schema':real_endpoint.RESPONSE,'capture_transaction':TX,
+            'retention_policy_sha256':'a'*64,'stage':stage,'state':'complete','receipt_sha256':'e'*64,'facts':details}
+        statuses={'restore':status('restore',facts),'retire':status('retire',{'catalog_sha256':'f'*64,'retired_count':0})}
+        record={'entry':{'archive_sha256':'c'*64,'native_restore_receipt_sha256':'e'*64},
+            'evidence':{'native':{'transaction':TX,'archive_sha256':'c'*64,'backup_label':captured['backup_label'],
+                                  'native_restore_accepted':True},
+                        'download':{'transaction':TX,'backup_label':captured['backup_label']}}}
+        held=[False]
+        class Catalog:
+            def __init__(self,fd):self.io=self
+            @contextmanager
+            def locked(self):
+                if not held[0]:raise AssertionError('catalog without repository fence')
+                yield
+            def records(self):return {'c'*64:copy.deepcopy(record)}
+            def retired(self,records):return set()
+            def require_repository_lock(self):
+                if not held[0]:raise AssertionError('repository fence lost')
+        @contextmanager
+        def repository_lock():
+            held[0]=True
+            try:yield 7,(1,2)
+            finally:held[0]=False
+        adapter=SimpleNamespace(observe=lambda query:copy.deepcopy(statuses[query['payload']['stage']]))
+        endpoint=SimpleNamespace(request=real_endpoint.request,validate_response=real_endpoint.validate_response,
+                                 NativeDB=lambda policy:adapter)
+        coordinator=SimpleNamespace(PRIVATE_POLICY=object(),Policy=lambda document:SimpleNamespace(digest='a'*64))
+        activation=SimpleNamespace(require_activated=lambda ctx:selector)
+        modules={'coordinator':coordinator,'endpoint':endpoint,'catalog':SimpleNamespace(NativeStore=Catalog),
+                 'activation':activation}
+        entry=SimpleNamespace(verify_install=lambda:'1'*40,_native_dependencies=lambda *args:context,
+            _protected_document=lambda *args:(b'',{}),_load=lambda name:modules[name])
+        selected=(entry,context,selector)
+        payload={'release':RELEASE,'backup_label':captured['backup_label'],
+                 'publication_manifest_sha256':captured['manifest_sha256']}
+        return value,selected,repository_lock,statuses,record,payload
+
+    def test_native_health_and_complete_use_real_named_bundle_record_without_legacy_mirror(self):
+        value,selected,lock,statuses,record,payload=self.fixture()
+        with patch.object(value,'_native_retention',return_value=selected), \
+                patch.object(h.provider,'repository_lock',side_effect=lock), \
+                patch.object(value,'mirror_status',side_effect=AssertionError('legacy mirror')), \
+                patch.object(h,'pins'),patch.object(value,'_dispatch') as dispatch, \
+                patch.object(value,'health_status',return_value={'state':'health_complete','normal_report_accepted':True}), \
+                patch.object(value,'_global'):
+            value.start_health(TX);dispatch.assert_called_once_with('health',h.HEALTH)
+            accepted=value.store.read('bundle-accepted.json')
+            self.assertEqual(accepted['backup_label'],payload['backup_label'])
+            self.assertEqual(accepted['native_receipt_sha256'],'e'*64)
+            self.assertFalse(value.store.exists('mirror-intent.json'))
+            value.complete(TX,payload)
+        self.assertEqual(value.store.read('status.json')['state'],'complete')
+        self.assertTrue(value.store.exists('complete-result.json'))
+
+    def test_wrong_transaction_label_or_receipt_never_dispatches_health_or_writes_acceptance(self):
+        for mutate in (lambda statuses,record:statuses['restore'].update(capture_transaction='f'*32),
+            lambda statuses,record:statuses['restore']['facts'].update(backup_label='20261027-001723F'),
+            lambda statuses,record:record['entry'].update(native_restore_receipt_sha256='f'*64),
+            lambda statuses,record:record['evidence']['native'].update(transaction='f'*32),
+            lambda statuses,record:statuses['retire'].update(state='running',receipt_sha256='',facts={})):
+            value,selected,lock,statuses,record,payload=self.fixture();mutate(statuses,record)
+            with patch.object(value,'_native_retention',return_value=selected), \
+                    patch.object(h.provider,'repository_lock',side_effect=lock), \
+                    patch.object(value,'_dispatch') as dispatch,patch.object(h,'pins'):
+                with self.assertRaises(Exception):value.start_health(TX)
+            dispatch.assert_not_called();self.assertFalse(value.store.exists('bundle-accepted.json'))
+
+    def test_native_completion_keeps_health_delivery_and_exact_capture_payload_gates(self):
+        for health,payload_change in (({'state':'health_complete','normal_report_accepted':False},False),
+                                     ({'state':'health_complete','normal_report_accepted':True},True)):
+            value,selected,lock,statuses,record,payload=self.fixture()
+            if payload_change:payload['backup_label']='20261027-001723F'
+            with patch.object(value,'_native_retention',return_value=selected), \
+                    patch.object(h.provider,'repository_lock',side_effect=lock), \
+                    patch.object(value,'health_status',return_value=health),patch.object(value,'_global'):
+                with self.assertRaises(h.Refused):value.complete(TX,payload)
+            self.assertFalse(value.store.exists('complete-result.json'))
 
 
 if __name__ == '__main__': unittest.main()

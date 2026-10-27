@@ -11,6 +11,35 @@ from deploy.paired_maintenance.db_control import SCHEMA
 
 
 class ChannelTests(unittest.TestCase):
+    def test_only_closed_activation_mutations_receive_a_bounded_longer_wait(self):
+        from deploy.tests.test_onedrive_paired_routing import ActivationBridgeTests
+        from deploy.paired_maintenance import db_control
+        for operation in db_control.RETENTION_BRIDGE:
+            request,*unused=ActivationBridgeTests().fixture(operation)
+            envelope={'schema':client.RESPONSE_SCHEMA,'transaction':request['transaction'],
+                'policy_sha256':request['policy_sha256'],'payload':{'state':'fixture'}}
+            result=types.SimpleNamespace(returncode=0,stdout=canonical(envelope),stderr=b'PRIVATE')
+            expected=195 if operation in client.ACTIVATION_WAIT_OPERATIONS else 35
+            policy=types.SimpleNamespace(digest=request['policy_sha256'])
+            with patch.object(client,'_trusted_file'),patch.object(client.subprocess,'run',return_value=result) as runner:
+                client.Client(policy,request['transaction']).call(operation,request['payload'])
+                self.assertEqual(runner.call_count,1);self.assertEqual(runner.call_args.kwargs['timeout'],expected)
+            runner=unittest.mock.Mock(return_value=result)
+            ssh_gate.run({'SSH_ORIGINAL_COMMAND':client.COMMAND},canonical(request),runner)
+            self.assertEqual(runner.call_count,1)
+            self.assertEqual(runner.call_args.kwargs['timeout'],180 if expected==195 else 35)
+        for operation in ('status','bundle_restore','retention_activation_state','retention_activation_prepare-extra'):
+            self.assertEqual(client.request_timeout(operation),35)
+
+    def test_activation_timeout_is_single_attempt_and_unknown_not_completion(self):
+        from deploy.tests.test_onedrive_paired_routing import ActivationBridgeTests
+        request,*unused=ActivationBridgeTests().fixture('retention_activation_prepare')
+        runner=unittest.mock.Mock(side_effect=subprocess.TimeoutExpired('PRIVATE',180))
+        result=json.loads(ssh_gate.run({'SSH_ORIGINAL_COMMAND':client.COMMAND},canonical(request),runner))
+        self.assertEqual(runner.call_count,1)
+        self.assertEqual(result['payload'],{'state':'unknown','operator_required':True})
+        self.assertNotIn('PRIVATE',json.dumps(result))
+
     def setUp(self):
         self.policy = types.SimpleNamespace(digest='a' * 64)
         self.request = {'schema': SCHEMA, 'transaction': 'b' * 32,

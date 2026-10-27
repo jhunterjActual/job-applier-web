@@ -7,18 +7,21 @@ module never starts a process itself and never returns raw failure output.
 """
 import re
 
-HOOK_PROPERTIES = frozenset(('ExecCondition', 'ExecStartPre', 'ExecStartPost', 'ExecStop', 'ExecStopPost'))
+HOOK_PROPERTIES = frozenset(('ExecCondition', 'ExecStartPre', 'ExecStartPost', 'ExecReload', 'ExecStop', 'ExecStopPost'))
 SCALAR_PROPERTIES = frozenset(('LoadState', 'Type', 'Restart', 'RemainAfterExit',
     'ActiveState', 'SubState', 'MainPID', 'ControlPID', 'Job', 'KillMode', 'SendSIGKILL',
     'RuntimeMaxUSec', 'TimeoutStartUSec', 'TimeoutStopUSec', 'InvocationID', 'ControlGroup',
-    'PrivateNetwork', 'Result', 'ExecMainStatus', 'ExecMainPID'))
+    'PrivateNetwork', 'Result', 'ExecMainStatus', 'ExecMainPID','User','Group','UMask'))
 MAX_REPLY = 16384
 EMPTY_EXEC_ARRAY = b'a(sasbttttuii) 0\n'
 SERVICE = re.compile(r'careertrellis-onedrive-bundle-(?:'
     r'(?:hydrate|publish|prepare|retire)-collector-[0-9a-f]{32}'
     r'|'
     r'(?:hydrate|publish|restore|collector|prepare|retire)-[0-9a-f]{32}(?:-0[2-9])?'
-    r'|identity-[0-9a-f]{32}-(?:0[1-9]|[1-9][0-9]))\.service\Z')
+    r'|identity-[0-9a-f]{32}-(?:0[1-9]|[1-9][0-9]))\.service\Z'
+    r'|careertrellis-onedrive-retention\.service\Z'
+    r'|careertrellis-onedrive-pre-growth-(?:retire|watch)-[0-9a-f]{32}\.service\Z'
+    r'|careertrellis-onedrive-pre-growth-identity-[0-9a-f]{32}-[0-9a-f]{32}-(?:0[1-9]|[1-9][0-9])\.service\Z')
 
 
 class UnitPropertyRefused(ValueError):

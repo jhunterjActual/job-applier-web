@@ -4,8 +4,9 @@ Offline receipts and terminal records remain explicitly simulations. Native
 execution requires authenticated snapshots, all canonical locks, finite owning
 unit, fresh downloaded-byte/eTag witnesses and durable interruption fences.
 Unfinished operations block new work; unknown outcomes require reconciliation,
-never another delete call. Recoverable single-object deletion is the only API:
-there is no sync, account-trash, permanent-delete or legacy/source operation.
+never another delete call. Native explicit policy selects recoverable deletion
+or capability-gated conditional permanent POST. No sync, account-trash or
+legacy/source operation is available.
 """
 import copy
 import datetime as dt
@@ -163,7 +164,13 @@ def comparable(catalog):
     return bundle.canonical(value)
 
 
-def authenticated_retirement_absences(repository_lock_fd,transaction,provider_rows):
+def selected_expiry_mode(policy_data):
+    mode=policy_data.get('expiry_mode','recoverable_manual')
+    need(mode in ('recoverable_manual','conditional_permanent'))
+    return mode
+
+
+def authenticated_retirement_absences(repository_lock_fd,transaction,provider_rows,*,parent=None):
     """Exact known-ack absences for the CURRENT finite native operation only.
 
     This is not an allowlist argument. Missing objects must be candidates in
@@ -174,7 +181,6 @@ def authenticated_retirement_absences(repository_lock_fd,transaction,provider_ro
     from . import execution,entry
     need(type(transaction) is str and re.fullmatch('[0-9a-f]{32}',transaction)
          and type(provider_rows) is dict)
-    execution.require_stage_owner(transaction,'retire')
     revision=entry.verify_install();entry._native_dependencies(revision,'db')
     files=catalog_module.NativeFiles(repository_lock_fd)
     root=catalog_module.ROOT.parent/'retirements'/transaction
@@ -182,6 +188,12 @@ def authenticated_retirement_absences(repository_lock_fd,transaction,provider_ro
     need(0<len(names)<=10000 and all(name in ('operation-intent.json','operation-complete.json')
         or re.fullmatch(r'object-[0-9]{5}-(?:intent|dispatch|ack|terminal)\.json',name) for name in names))
     raw=files.read_retirement(transaction,'operation-intent.json');operation=catalog_module.decode(raw)
+    if parent is None:
+        need(operation.get('purpose','retention_stage')=='retention_stage')
+        execution.require_stage_owner(transaction,'retire')
+    else:
+        need(operation.get('purpose')=='pre_growth_retirement')
+        graph_delete._parent_authority(parent,None,None,transaction)
     need(operation.get('schema')=='careertrellis.bundle-retirement-native-intent/v1'
          and operation.get('transaction')==transaction and operation.get('namespace')==NAMESPACE
          and operation.get('simulation') is False)
@@ -190,6 +202,8 @@ def authenticated_retirement_absences(repository_lock_fd,transaction,provider_ro
     current=coordinator.Policy(catalog_module.decode(hydrate.protected(coordinator.PRIVATE_POLICY,0o600)[0]))
     coordinator.native_policy_binding(current);current.require_active(dt.datetime.now(dt.timezone.utc))
     need(current.digest==operation['retention_policy_sha256'])
+    mode=selected_expiry_mode(current.data)
+    need(operation.get('expiry_mode','recoverable_manual')==mode)
     expected=[(candidate['bundle_id'],obj) for candidate in plan['candidates'] for obj in candidate['objects']]
     indices={int(name[7:12]) for name in names if name.startswith('object-')}
     need(not indices or indices==set(range(max(indices)+1)))
@@ -199,23 +213,39 @@ def authenticated_retirement_absences(repository_lock_fd,transaction,provider_ro
         intent_raw=files.read_retirement(transaction,prefix+'intent.json');intent=catalog_module.decode(intent_raw)
         dispatch=catalog_module.decode(files.read_retirement(transaction,prefix+'dispatch.json'))
         ack_raw=files.read_retirement(transaction,prefix+'ack.json');ack=catalog_module.decode(ack_raw)
+        expected_ack={'result':'deleted','object_id':obj['object_id'],
+            'request_id':catalog_module.sha(intent_raw),'recoverable':mode=='recoverable_manual',
+            'permanent':mode=='conditional_permanent'}
+        if 'expiry_mode' in operation:expected_ack['expiry_mode']=mode
         need(intent.get('schema')=='careertrellis.bundle-object-retirement-intent/v1'
              and intent.get('transaction')==transaction and intent.get('sequence')==index
              and intent.get('namespace')==NAMESPACE and intent.get('bundle_id')==bundle_id
              and intent.get('object')==obj and intent.get('simulation') is False
              and intent.get('operation_intent_sha256')==catalog_module.sha(raw)
              and dispatch=={'intent_sha256':catalog_module.sha(intent_raw),'simulation':False}
-             and ack=={'result':'deleted','object_id':obj['object_id'],
-                'request_id':catalog_module.sha(intent_raw),'recoverable':True,'permanent':False})
+             and intent.get('expiry_mode','recoverable_manual')==mode
+             and ('expiry_mode' in intent)==('expiry_mode' in operation) and ack==expected_ack)
         if prefix+'terminal.json' in names:
             saved=catalog_module.decode(files.read_retirement(transaction,prefix+'terminal.json'))
             need(saved.get('transaction')==transaction and saved.get('sequence')==index
                  and saved.get('object')==obj and saved.get('simulation') is False and saved.get('absent') is True
                  and saved.get('intent_sha256')==catalog_module.sha(intent_raw)
-                 and saved.get('dispatch_ack_sha256')==catalog_module.sha(ack_raw))
+                 and saved.get('dispatch_ack_sha256')==catalog_module.sha(ack_raw)
+                 and saved.get('expiry_mode','recoverable_manual')==mode
+                 and ('expiry_mode' in saved)==('expiry_mode' in operation))
         if obj['path'] not in provider_rows:missing.add(obj['path'])
     files.require_repository_lock()
     return frozenset(missing)
+
+
+def run_existing_for_parent(transaction, parent):
+    """New purpose needs its own Graph/absence/idle authority, not retire proof."""
+    try:
+        need(type(transaction) is str and re.fullmatch('[0-9a-f]{32}', transaction))
+        graph_delete._parent_authority(parent,None,None,transaction)
+    except Exception:
+        raise RetirementRefused('pre_growth_retirement_native_adapter_unavailable') from None
+    return run(transaction,Native(parent=parent))
 
 
 def run(transaction, backend=None):
@@ -237,12 +267,19 @@ def run(transaction, backend=None):
     try:
         with backend.locked(LOCK):
             baseline, plan, policy_sha = snapshot(backend, transaction)
+            expiry_mode=selected_expiry_mode(baseline['policy']) if native else 'recoverable_manual'
+            need(not native or backend.parent is None or expiry_mode=='conditional_permanent')
+            recoverable=expiry_mode=='recoverable_manual';permanent=not recoverable
+            if native and permanent and plan['candidates']:
+                backend.require_expiry_capability() # Read-only; missing proof creates no retirement ledger.
             before = quota(backend)
             operation = {'schema': 'careertrellis.bundle-retirement-native-intent/v1' if native else
                 'careertrellis.bundle-retirement-simulation-intent/v1',
                 'transaction': transaction, 'namespace': NAMESPACE, 'retention_policy_sha256': policy_sha,
                 'catalog_sha256': plan['catalog_sha256'], 'plan': plan, 'simulation': not native}
-            if native: operation['catalog'] = baseline['catalog']
+            if native:
+                operation['catalog'] = baseline['catalog'];operation['expiry_mode']=expiry_mode
+                operation['purpose']='pre_growth_retirement' if backend.parent is not None else 'retention_stage'
 
             def once(name, value):
                 expected = digest(value)
@@ -258,22 +295,26 @@ def run(transaction, backend=None):
                     need(revised['candidates'] == plan['candidates']
                          and revised['retained_bundle_ids'] == plan['retained_bundle_ids'])
                     index = len(completed)
+                    if native and permanent:backend.require_expiry_capability()
                     intent = {'schema': 'careertrellis.bundle-object-retirement-intent/v1',
                         'transaction': transaction, 'sequence': index, 'namespace': NAMESPACE,
                         'bundle_id': candidate['bundle_id'], 'object': obj,
                         'successor_id': candidate['successor_id'],
                         'successor_accepted_at': candidate['successor_accepted_at'],
                         'operation_intent_sha256': operation_sha, 'simulation': not native}
+                    if native:intent['expiry_mode']=expiry_mode
                     intent_sha = once('object-%05d-intent.json' % index, intent)
+                    if native and permanent:backend.require_expiry_capability()
                     once('object-%05d-dispatch.json' % index, {'intent_sha256': intent_sha, 'simulation': not native})
                     # Sole dispatch. Any exception, malformed acknowledgement or
                     # failure to durably publish it ends this invocation.
                     ack = backend.delete_exact(NAMESPACE, copy.deepcopy(obj), intent_sha,
-                                               recoverable=True, permanent=False)
-                    policy._keys(ack, ('result', 'object_id', 'request_id', 'recoverable', 'permanent'))
+                                               recoverable=recoverable, permanent=permanent)
+                    policy._keys(ack, ('result', 'object_id', 'request_id', 'recoverable', 'permanent')
+                        + (('expiry_mode',) if native else ()))
                     need(ack['result'] == 'deleted' and ack['object_id'] == obj['object_id']
-                         and ack['request_id'] == intent_sha and ack['recoverable'] is True
-                         and ack['permanent'] is False)
+                         and ack['request_id'] == intent_sha and ack['recoverable'] is recoverable
+                         and ack['permanent'] is permanent and (not native or ack['expiry_mode']==expiry_mode))
                     ack_sha = once('object-%05d-ack.json' % index, ack)
                     acknowledged_at = clock(backend)
                     absent, _revised, absent_policy = snapshot(backend, transaction, completed + [obj])
@@ -285,6 +326,7 @@ def run(transaction, backend=None):
                         'bundle_id': candidate['bundle_id'], 'object': obj, 'intent_sha256': intent_sha,
                         'dispatch_ack_sha256': ack_sha, 'absent': True,
                         'absence_observed_at': absent['inventory']['observed_at'], 'simulation': not native}
+                    if native:terminal['expiry_mode']=expiry_mode
                     terminals.append(once('object-%05d-terminal.json' % index, terminal))
                     completed.append(copy.deepcopy(obj))
             after = quota(backend)
@@ -302,6 +344,7 @@ def run(transaction, backend=None):
                 result.update(schema='careertrellis.bundle-retirement-native/v1', result='complete',
                     native_retirement_accepted=True, deletions_performed=len(completed),
                     operation_intent_sha256=operation_sha, completed_at=clock(backend).isoformat())
+                result['expiry_mode']=expiry_mode
                 result.pop('simulated_retired_count'); result.pop('simulated_logical_bytes')
                 result['logical_bytes_retired'] = sum(obj['size'] for obj in completed)
             once('operation-complete.json', result)
@@ -318,10 +361,33 @@ class Native:
     mode = 'native-installed'
     ROOT = catalog_module.ROOT.parent/'retirements'
 
-    def __init__(self):
+    def __init__(self,parent=None):
+        self.parent=parent
         self.fds = []; self.tx = None; self.root = None; self.store = None
 
     def now(self): return dt.datetime.now(dt.timezone.utc)
+
+    def require_expiry_capability(self):
+        """Read-only sealed current proof, no grant/provider/refresh/intent.
+
+        The Graph client independently repeats its final freshness check at the
+        actual POST. This earlier check prevents known missing proof from being
+        recorded as an uncertain provider dispatch.
+        """
+        import configparser
+        from . import entry,capture_plan
+        self.files.require_repository_lock()
+        revision=entry.verify_install();context=entry._native_dependencies(revision,'db')
+        need(context.authenticated is True and context.role=='db' and context.revision==revision)
+        original=hydrate.protected(capture_plan.CONFIG,0o600)
+        parser=configparser.ConfigParser(interpolation=None,strict=True);parser.read_string(original[0].decode('utf-8'))
+        need(not parser.defaults() and set(parser.sections())=={'r2','onedrive'}
+            and parser['onedrive'].get('type')=='onedrive')
+        remote=parser['onedrive']
+        value=graph_delete._permanent_capability(remote['drive_id'],remote.get('root_folder_id',''),revision)
+        need(type(value) is str and re.fullmatch('[0-9a-f]{64}',value)
+            and hydrate.protected(capture_plan.CONFIG,0o600)==original)
+        self.files.require_repository_lock();return value
 
     @contextmanager
     def locked(self, lock):
@@ -330,6 +396,7 @@ class Native:
              and socket.gethostname() == 'job-applier-db-staging-01'
              and Path(__file__).absolute() == Path('/usr/local/libexec/careertrellis/onedrive_retention/retire.py'))
         revision = entry.verify_install(); entry._native_dependencies(revision, 'db')
+        if self.parent is not None:graph_delete._parent_authority(self.parent,None,None,self.parent.transaction)
         import fcntl
         try:
             for name in identity_collect.LOCKS:
@@ -355,9 +422,10 @@ class Native:
 
     def trusted_snapshot(self, transaction):
         from . import guard, entry, execution
-        execution.require_stage_owner(transaction,'retire')
+        if self.parent is None:execution.require_stage_owner(transaction,'retire')
+        else:graph_delete._parent_authority(self.parent,None,None,transaction)
         need(self.fds and re.fullmatch('[0-9a-f]{32}',transaction)
-             and entry.retention_idle(transaction,'retire') is True
+             and (self.parent is not None or entry.retention_idle(transaction,'retire') is True)
              and not os.path.lexists('/run/careertrellis-hosted-activation.lease'))
         self.files.require_repository_lock()
         with self.store.io.locked():
@@ -374,7 +442,9 @@ class Native:
                  and witness.get('sha256') == identifier and graph_delete.valid_etag(witness.get('etag')))
             fresh(witness['observed_at'],self.now())
             self.transactions[identifier] = tx
-        observed = guard.native_catalog_inventory(self.fds[-1],retirement_transaction=self.tx)
+        observed = (guard.native_catalog_inventory(self.fds[-1],retirement_transaction=self.tx,
+            retirement_parent=self.parent) if self.parent is not None
+            else guard.native_catalog_inventory(self.fds[-1],retirement_transaction=self.tx))
         need(observed['authenticated'] is True)
         pending = self.unresolved(transaction)
         return {'policy':observed['policy'], 'catalog':observed['catalog'],
@@ -424,14 +494,17 @@ class Native:
         return digest(value)
 
     def delete_exact(self, namespace, obj, request_id, *, recoverable, permanent):
-        need(namespace == NAMESPACE and recoverable is True and permanent is False
+        mode='conditional_permanent' if permanent is True and recoverable is False else 'recoverable_manual'
+        need(namespace == NAMESPACE and recoverable is (mode=='recoverable_manual') and permanent is (mode=='conditional_permanent')
              and self.tx is not None and self.root is not None
              and obj['path'] == obj['sha256']+'/repository.tar')
         tx = self.transactions[obj['sha256']]
         client = graph_delete.Client(graph_delete.native_grant(tx,obj['sha256'],self.fds[-1],
-                                                              operation_transaction=self.tx))
-        need(client.soft_delete(obj['sha256'],obj['object_id'],obj['size']) == 'soft_delete_accepted')
+            operation_transaction=self.tx,expiry_mode=mode,parent=self.parent))
+        result=(client.permanent_delete(obj['sha256'],obj['object_id'],obj['size']) if permanent
+            else client.soft_delete(obj['sha256'],obj['object_id'],obj['size']))
+        need(result==('permanent_delete_accepted' if permanent else 'soft_delete_accepted'))
         return {'result':'deleted','object_id':obj['object_id'],'request_id':request_id,
-                'recoverable':True,'permanent':False}
+                'recoverable':recoverable,'permanent':permanent,'expiry_mode':mode}
 
     def commit_catalog(self, transaction): return self.store.commit_retirement(transaction)

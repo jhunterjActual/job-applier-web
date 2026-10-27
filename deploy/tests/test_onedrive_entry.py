@@ -1,16 +1,79 @@
 """Synthetic protected-package and routing contracts; no native side effects."""
 import datetime as dt
+import ast
 import contextlib
 import hashlib
 import io
+import os
 from pathlib import Path
 import stat
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch,Mock
 
 from deploy.onedrive_retention import entry
+
+
+class RenewalWrapperTests(unittest.TestCase):
+    def test_actual_fd_and_native_false_are_preserved(self):
+        opened,other=os.pipe()
+        preservation=Mock();execution=Mock();execution.expiry_capability_idle.return_value=False
+        try:
+            with patch.object(entry,'_load',side_effect=lambda name:{'preservation':preservation,'execution':execution}[name]):
+                self.assertIs(entry.expiry_capability_idle(opened),False)
+            preservation.require_owned_lock.assert_called_once_with('/run/lock/careertrellis-pgbackrest-repository.lock',opened)
+            execution.expiry_capability_idle.assert_called_once_with(opened)
+        finally:os.close(opened);os.close(other)
+
+    def test_invalid_or_closed_fd_never_reaches_native_backend(self):
+        with patch.object(entry,'_load') as load:
+            for value in (True,-1,None,1.5,'4'):
+                with self.assertRaises(entry.EntryRefused):entry.expiry_capability_idle(value)
+            opened,other=os.pipe();os.close(opened);os.close(other)
+            with self.assertRaises(OSError):entry.expiry_capability_idle(opened)
+            load.assert_not_called()
+
+    def test_canonical_lock_failure_and_missing_allowlist_never_dispatch(self):
+        opened,other=os.pipe()
+        try:
+            preservation=Mock();preservation.require_owned_lock.side_effect=ValueError('fixture refusal')
+            with patch.object(entry,'_load',return_value=preservation) as load:
+                with self.assertRaises(ValueError):entry.expiry_capability_idle(opened)
+                load.assert_called_once_with('preservation')
+        finally:os.close(opened);os.close(other)
+        with self.assertRaises(entry.EntryRefused):entry.parse_command(['pre-growth-identity','--transaction','a'*32])
+
+
+class WebActivationRoutingTests(unittest.TestCase):
+    def test_pre_growth_closed_arguments_cannot_promote_unallowlisted_native_code(self):
+        commands=[['pre-growth-owner','--transaction','a'*32],['pre-growth-watch','--transaction','a'*32],
+            ['pre-growth-identity','--transaction','a'*32,'--source-transaction','b'*32,'--verification','99']]
+        for args in commands:
+            command=entry.parse_command(args);self.assertEqual(command['role'],'db')
+            with patch.object(entry,'FILES',entry.FILES-{'pre_growth_native.py'}),\
+                 patch.object(entry,'verify_install',return_value='b'*40),\
+                 patch.object(entry,'_native_dependencies'),patch.object(entry,'_load') as load:
+                with self.assertRaises(entry.EntryRefused):entry.route(args)
+                load.assert_not_called()
+        for value in ('0','00','01','100','-1','1;other'):
+            with self.assertRaises(entry.EntryRefused):entry.parse_command(commands[-1][:-1]+[value])
+        for index in (2,4):
+            args=list(commands[-1]);args[index]='0'*32
+            with self.assertRaises(entry.EntryRefused):entry.parse_command(args)
+
+    def test_closed_commands_require_nonzero_transaction_and_explicit_source_admission(self):
+        for operation in entry.WEB_ACTIVATION_COMMANDS:
+            command=entry.parse_command([operation,'--transaction','a'*32])
+            self.assertEqual((command['role'],command['transaction']),('web','a'*32))
+            for args in ([operation,'--transaction','0'*32],[operation,'--transaction','../other'],
+                         [operation,'--transaction','a'*32,'--retry']):
+                with self.assertRaises(entry.EntryRefused):entry.parse_command(args)
+            with patch.object(entry,'FILES',entry.FILES-{'activation_web.py'}),\
+                 patch.object(entry,'verify_install',return_value='b'*40),\
+                 patch.object(entry,'_native_dependencies'),patch.object(entry,'_load') as load:
+                with self.assertRaises(entry.EntryRefused):entry.route([operation,'--transaction','a'*32])
+                load.assert_not_called()
 
 
 def metadata(mode,size=0,ino=1):
@@ -47,11 +110,39 @@ class Offline:
 
 
 class ManifestTests(unittest.TestCase):
+    def test_admitted_actor_parser_has_only_exact_nonzero_transaction(self):
+        command=entry.parse_command(['activation-actor','--transaction','d'*32])
+        self.assertEqual(command['operation'],'activation-actor');self.assertEqual(command['role'],'db')
+        self.assertIn('activation_actor.py',entry.FILES)
+        for args in (['activation-actor','--transaction','0'*32],
+                     ['activation-actor','--transaction','D'*32],
+                     ['activation-actor','--transaction','d'*32,'--path','/tmp/anything']):
+            with self.assertRaises(entry.EntryRefused):entry.parse_command(args)
+
     def test_complete_exact_package_hashes_verified_only_as_unauthenticated_fixture(self):
         result=entry.verify_fixture(Reader())
         self.assertEqual(result['revision'],'a'*40)
         self.assertFalse(result['authenticated']);self.assertFalse(result['native_actions'])
-        self.assertEqual(len(entry.FILES),24)
+        self.assertEqual(len(entry.FILES),33)
+
+    def test_runtime_dependency_closure_and_offline_modules_stay_separate(self):
+        root=Path(entry.__file__).parent
+        offline={'pre_growth.py','capacity_window.py','package.py'} # Simulations and packet builder, never runtime.
+        self.assertTrue(offline.isdisjoint(entry.FILES))
+        self.assertEqual({p.name for p in root.glob('*.py') if p.name!='__init__.py'},set(entry.FILES)|offline)
+        for name in sorted(entry.FILES):
+            tree=ast.parse((root/name).read_bytes(),filename=name)
+            dependencies=set()
+            for node in ast.walk(tree):
+                if isinstance(node,ast.ImportFrom) and node.level:
+                    self.assertEqual(node.level,1,(name,node.lineno))
+                    dependencies.update([node.module.split('.')[0]+'.py'] if node.module else
+                        [alias.name.split('.')[0]+'.py' for alias in node.names])
+                if (isinstance(node,ast.Call) and isinstance(node.func,(ast.Name,ast.Attribute))
+                        and (node.func.id if isinstance(node.func,ast.Name) else node.func.attr)=='_load'
+                        and node.args and isinstance(node.args[0],ast.Constant) and type(node.args[0].value) is str):
+                    dependencies.add(node.args[0].value+'.py')
+            self.assertLessEqual(dependencies,set(entry.FILES),(name,sorted(dependencies-set(entry.FILES))))
     def test_missing_extra_or_tampered_module_refuses(self):
         for action in ('missing','extra','tampered'):
             reader=Reader()
@@ -95,6 +186,70 @@ class ManifestTests(unittest.TestCase):
 
 
 class RoutingTests(unittest.TestCase):
+    def test_prepared_verification_needs_no_accepted_baseline_and_has_no_mutation_route(self):
+        result={'result':'dependencies_verified','native_actions':False}
+        with patch.object(entry,'verify_install',return_value='a'*40), \
+             patch.object(entry,'verify_prepared_dependencies',return_value=result) as verify, \
+             patch.object(entry,'_native_dependencies') as active:
+            self.assertIs(entry.route(['verify-prepared-install']),result)
+        verify.assert_called_once_with('a'*40);active.assert_not_called()
+        with self.assertRaises(entry.EntryRefused):entry.parse_command(['verify-prepared-install','--skip-helper-check'])
+
+    def test_prepared_dependency_failure_cannot_return_installation_proof(self):
+        with patch.object(entry,'verify_install',return_value='a'*40), \
+             patch.object(entry,'verify_prepared_dependencies',side_effect=entry.EntryRefused('source_drift')), \
+             patch.object(entry,'_native_dependencies') as active,self.assertRaises(entry.EntryRefused):
+            entry.route(['verify-prepared-install'])
+        active.assert_not_called()
+
+    def test_activation_evidence_is_fixed_db_read_only_command_without_caller_paths(self):
+        command = entry.parse_command(['activation-evidence-db'])
+        self.assertEqual(command,{'operation':'activation-evidence-db','role':'db','stage':None,
+                                 'transaction':None,'attempt':None})
+        for args in (['activation-evidence-db','--path','/anything'],['activation-evidence-db','latest']):
+            with self.assertRaises(entry.EntryRefused):entry.parse_command(args)
+
+    def test_monitor_bridge_has_only_bounded_fixed_modes(self):
+        self.assertEqual(entry.parse_command(['monitor-mode'])['role'],'db')
+        self.assertFalse(entry.parse_command(['evaluate-core'])['bundle_unavailable'])
+        self.assertTrue(entry.parse_command(['evaluate-core','--bundle-unavailable'])['bundle_unavailable'])
+        for args in (['evaluate-core','--path','/anything'],['evaluate-core','--healthy'],
+                     ['monitor-mode','--bundle-unavailable']):
+            with self.assertRaises(entry.EntryRefused):entry.parse_command(args)
+
+    def test_selected_legacy_pg_route_refuses_without_starting_another_operation(self):
+        activation = SimpleNamespace(routing_state=lambda:object())
+        with patch.object(entry,'verify_install',return_value='a'*40), \
+             patch.object(entry.os,'geteuid',return_value=0,create=True), \
+             patch.object(entry.os,'getegid',return_value=0,create=True), \
+             patch.object(entry.socket,'gethostname',return_value='job-applier-db-staging-01'), \
+             patch.object(entry,'_load',return_value=activation) as load, \
+             patch.object(entry,'_native_dependencies') as dependencies,patch('sys.stdout',new_callable=io.StringIO):
+            self.assertEqual(entry.main(['legacy-pg-routing']),1)
+        load.assert_called_once_with('activation');dependencies.assert_not_called()
+    def test_legacy_object_guard_has_only_fixed_release_label_and_inherited_fds(self):
+        args = ['legacy-object-guard','--release','a'*40,'--backup-label','20261027-000000F',
+                '--maintenance-fd','8','--recovery-fd','9']
+        parsed = entry.parse_command(args)
+        self.assertEqual(parsed['maintenance_fd'],8);self.assertEqual(parsed['recovery_fd'],9)
+        self.assertEqual(parsed['role'],'web')
+        for index,bad in ((2,'../source'),(4,'latest'),(6,'3'),(8,'10')):
+            changed = list(args);changed[index]=bad
+            with self.assertRaises(entry.EntryRefused):entry.parse_command(changed)
+
+    def test_unselected_router_does_not_load_executor_or_require_active_baseline(self):
+        args = ['legacy-object-guard','--release','a'*40,'--backup-label','20261027-000000F',
+                '--maintenance-fd','8','--recovery-fd','9']
+        activation = SimpleNamespace(routing_state=lambda:None)
+        with patch.object(entry,'verify_install',return_value='a'*40), \
+             patch.object(entry.os,'geteuid',return_value=0,create=True), \
+             patch.object(entry.os,'getegid',return_value=0,create=True), \
+             patch.object(entry.socket,'gethostname',return_value='careertrellis-staging-web-1'), \
+             patch.object(entry,'_load',return_value=activation) as load, \
+             patch.object(entry,'_native_dependencies') as dependencies:
+            result = entry.route(args)
+        self.assertEqual(result['result'],'legacy_strategy_unselected')
+        load.assert_called_once_with('activation');dependencies.assert_not_called()
     def test_paired_namespace_requires_verified_package_without_sys_path_change(self):
         before=list(sys.path)
         prior=sys.modules.pop('paired_maintenance',None)

@@ -12,13 +12,23 @@ from pathlib import Path
 import re
 import stat
 import time
+import uuid
 
 from . import bundle, collector, common_io, coordinator as c, hydrate
 from . import local_restore_plan as plans, native_restore as native
 
 FIELDS = ('LoadState', 'ActiveState', 'SubState', 'MainPID', 'ControlPID', 'Job', 'ControlGroup')
-UNIT = re.compile(r'careertrellis-onedrive-bundle-(?:(?:hydrate|publish|prepare|retire)-collector-|(?:hydrate|publish|restore|prepare|retire|collector|identity)-)[0-9a-f]{32}(?:-[0-9]{2})?\.service\Z')
+UNIT = re.compile(r'careertrellis-onedrive-bundle-(?:(?:hydrate|publish|prepare|retire)-collector-|(?:hydrate|publish|restore|prepare|retire|collector|identity)-)[0-9a-f]{32}(?:-[0-9]{2})?\.service\Z'
+    r'|careertrellis-onedrive-pre-growth-(?:retire|watch)-[0-9a-f]{32}\.service\Z'
+    r'|careertrellis-onedrive-pre-growth-identity-[0-9a-f]{32}-[0-9a-f]{32}-(?:0[1-9]|[1-9][0-9])\.service\Z')
 STAGE_SECONDS = {'hydrate':32400, 'publish':21600, 'prepare':32400, 'retire':3600}
+NATIVE_OPERATIONS = frozenset(('legacy-object-guard','health-web','health-db','schedule-check','scheduled-run',
+    'activation-evidence-db','monitor-mode','evaluate-core','collect-identity','collect-stage','collect-native','web-run','db-stage'))
+
+
+def supports_operation(operation):
+    """Source dispatch capability, independent of parsing or activation claims."""
+    return type(operation) is str and operation in NATIVE_OPERATIONS
 
 
 def need(value):
@@ -29,6 +39,11 @@ def authenticated():
     from . import entry
     revision = entry.verify_install()
     return entry._native_dependencies(revision, 'db')
+
+
+def expiry_capability_idle(repository_fd):
+    from . import pre_growth_native
+    return pre_growth_native.expiry_capability_idle(repository_fd)
 
 
 def show(unit):
@@ -705,9 +720,78 @@ def dispatch_restore(transaction):
     return True
 
 
+def validate_scheduled_owner(state,pid):
+    """Pure proposed timer-owner profile; this validator dispatches no work."""
+    need(type(state) is dict and type(pid) is int and pid > 1
+         and state.get('LoadState') == 'loaded' and state.get('ActiveState') == 'active'
+         and state.get('SubState') == 'running' and state.get('MainPID') == str(pid)
+         and state.get('ControlPID') == '0' and state.get('Job') == ''
+         and state.get('User') == state.get('Group') == 'root' and state.get('UMask') == '0077'
+         and state.get('Type') == 'exec' and state.get('Restart') == 'no'
+         and state.get('RemainAfterExit') == 'no' and state.get('PrivateNetwork') == 'no'
+         and state.get('KillMode') == 'control-group' and state.get('SendSIGKILL') == 'yes'
+         and all(state.get(key) == '' for key in native.OWNER_HOOK_FIELDS)
+         and native.span_microseconds(state.get('RuntimeMaxUSec')) == 36*3600*1000000
+         and native.span_microseconds(state.get('TimeoutStartUSec')) == 30*1000000
+         and native.span_microseconds(state.get('TimeoutStopUSec')) == 90*1000000)
+    return state
+
+
+def require_scheduled_owner():
+    """Only the exact installed root service may choose a fresh scheduled TX."""
+    from . import entry,health
+    unit='careertrellis-onedrive-retention.service'
+    context=entry._native_dependencies(entry.verify_install(),'web')
+    need(context.role=='web' and os.geteuid()==os.getegid()==0)
+    raw=Path('/proc/self/cgroup').read_bytes()
+    need(raw==('0::/system.slice/'+unit+'\n').encode('ascii'))
+    command=Path('/proc/self/cmdline').read_bytes()
+    need(len(command)<=16384 and command.split(b'\0')==[
+        b'/usr/bin/python3',b'-I',b'-B',b'/usr/local/libexec/careertrellis/onedrive_retention/entry.py',
+        b'scheduled-run',b''])
+    need(os.readlink('/proc/self/exe')==str(Path('/usr/bin/python3').resolve()))
+    fields=tuple(dict.fromkeys((*FIELDS,*native.OWNER_FIELDS,'User','Group','UMask','InvocationID')))
+    state=common_io.read_unit_properties(unit,fields,
+        lambda args:hydrate.command(args,output=True,timeout=10))
+    validate_scheduled_owner(state,os.getpid())
+    need(state['ControlGroup']=='/system.slice/'+unit
+         and re.fullmatch('[0-9a-f]{32}',state['InvocationID'])
+         and os.environ.get('INVOCATION_ID')==state['InvocationID'])
+    plan,_receipt=health._installation(context)
+    health._service(unit,plan)
+    after=common_io.read_unit_properties(unit,fields,
+        lambda args:hydrate.command(args,output=True,timeout=10))
+    need(after==state)
+    return context
+
+
 def run_command(command):
     """Authenticated installed CLI only; no injected native IO or paths."""
     operation, tx = command['operation'], command['transaction']
+    if operation in ('pre-growth-owner','pre-growth-watch','pre-growth-identity'):
+        from . import pre_growth_native
+        need(pre_growth_native.native_routes_available())
+        if operation=='pre-growth-owner':return pre_growth_native.owner_main(tx)
+        if operation=='pre-growth-watch':return pre_growth_native.watcher_main(tx)
+        return pre_growth_native.identity_main(tx,command['source_transaction'],command['attempt'])
+    if operation == 'monitor-mode':
+        from . import health
+        return health.monitor_mode()
+    if operation == 'evaluate-core':
+        from . import health
+        import sys
+        return health.evaluate_core(sys.stdin.buffer.read(65537),unavailable=command['bundle_unavailable'])
+    if operation == 'activation-evidence-db':
+        from . import activation_readiness
+        from paired_maintenance import provider
+        with provider.repository_lock() as (fd,_identity):
+            return activation_readiness.native_replacements(fd)
+    if operation == 'legacy-object-guard':
+        from . import activation,baseline,guard
+        context = baseline.native_context()
+        activation.require_activated(context)
+        return guard.legacy_object_guard(command['release'],command['backup_label'],
+            command['maintenance_fd'],command['recovery_fd'])
     if operation in ('health-web','health-db','schedule-check'):
         from . import health
         if operation == 'health-web':return health.run_web_health()
@@ -719,10 +803,18 @@ def run_command(command):
         return identity_collect.collect(tx,command['attempt'],identity_collect.Native())
     if operation == 'collect-stage': return collect_stage(tx,command['stage'])
     if operation == 'collect-native': return collector.collect(tx, command['attempt'])
+    if operation == 'scheduled-run':
+        require_scheduled_owner()
+        policy=c.Policy(c.read_private(c.PRIVATE_POLICY))
+        # The fixed service selects no caller TX and cannot reach begin until
+        # scheduled preflight authenticates two real DB recovery acceptances.
+        return c.run(uuid.uuid4().hex,policy,c.NativeWEB(policy,scheduled=True))
     if operation == 'web-run':
         policy = c.Policy(c.read_private(c.PRIVATE_POLICY))
-        return c.run(tx, policy, c.NativeWEB(policy))
+        return c.run(tx, policy, c.NativeWEB(policy,command.get('expected_backup_label')))
     need(operation == 'db-stage')
+    from . import activation
+    activation.routing_state()
     stage = command['stage']
     require_stage_owner(tx, stage)
     if stage != 'restore':

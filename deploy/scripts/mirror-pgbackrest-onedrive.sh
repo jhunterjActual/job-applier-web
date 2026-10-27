@@ -28,6 +28,50 @@ readonly -a mutable_metadata_filters=(
     --include /backup/careertrellis/latest
 )
 
+# Only the accepted two-bundle activation selector retires this legacy route.
+# An installed policy alone preserves the existing mirror. Partial activation
+# is a failure fence and this helper never starts a replacement job itself.
+readonly retention_entry=/usr/local/libexec/careertrellis/onedrive_retention/entry.py
+readonly retention_selector=/etc/careertrellis/onedrive-retention/activation.json
+readonly retention_activation_intent=/etc/careertrellis/onedrive-retention/activation-intent.json
+readonly retention_pending=/etc/careertrellis/onedrive-retention/activation-pending.json
+readonly retention_finalized=/etc/careertrellis/onedrive-retention/activation-finalized.json
+retention_routing_guard() {
+if [[ -e ${retention_entry} || -L ${retention_entry} || -e ${retention_selector} || \
+      -L ${retention_selector} || -e ${retention_activation_intent} || -L ${retention_activation_intent} || \
+      -e ${retention_pending} || -L ${retention_pending} || -e ${retention_finalized} || -L ${retention_finalized} ]]; then
+    if [[ ! -f ${retention_entry} || -L ${retention_entry} || \
+          $(stat -c '%a:%U:%G' "${retention_entry}" 2>/dev/null || true) != 644:root:root ]]; then
+        echo "The installed backup routing guard is unavailable." >&2
+        exit 1
+    fi
+    if ! /usr/bin/python3 -I -B "${retention_entry}" legacy-pg-routing >/dev/null; then
+        echo "The legacy OneDrive mirror is retired or its routing cannot be verified." >&2
+        exit 1
+    fi
+else
+    if ! /usr/bin/python3 -I -B - <<'PY'
+import os, pathlib, stat
+paths = (pathlib.Path('/etc/careertrellis/onedrive-retention/activation.json'),
+         pathlib.Path('/etc/careertrellis/onedrive-retention/activation-intent.json'),
+         pathlib.Path('/etc/careertrellis/onedrive-retention/activation-pending.json'),
+         pathlib.Path('/etc/careertrellis/onedrive-retention/activation-finalized.json'))
+for path in paths:
+    for parent in reversed(path.parents):
+        try: meta = parent.lstat()
+        except FileNotFoundError: continue
+        assert stat.S_ISDIR(meta.st_mode) and meta.st_uid == 0 and not meta.st_mode & 0o022
+    try: path.lstat()
+    except FileNotFoundError: pass
+    else: raise SystemExit(1)
+PY
+    then
+        echo "Backup activation absence could not be verified safely." >&2
+        exit 1
+    fi
+fi
+}
+
 for command_path in /usr/bin/flock /usr/bin/grep /usr/bin/jq /usr/bin/pgbackrest /usr/bin/setpriv /usr/bin/python3; do
     if [[ ! -x ${command_path} ]]; then
         echo "A required mirror command is unavailable." >&2
@@ -79,6 +123,7 @@ if ! flock --nonblock 9; then
     echo "Another repository operation is active; this mirror was not started." >&2
     exit 75
 fi
+retention_routing_guard
 
 readonly started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 readonly started_epoch=$(date -u +%s)

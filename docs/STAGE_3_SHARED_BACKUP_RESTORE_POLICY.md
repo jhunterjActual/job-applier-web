@@ -68,3 +68,45 @@ This policy is fail-closed groundwork only. It does not flip
 or change the final data-authority cutover and rollback rules. Generated-object
 recovery remains an operator-only manual process; it is not a web fallback,
 timer, deployment action, or substitute for a reconciled PostgreSQL/R2 cutover.
+
+## Candidate OneDrive operational retention revision
+
+The reviewed operational source adds finite bundles of the encrypted pgBackRest
+repository and isolated restore verification for the independent OneDrive recovery copy. It
+does not change the application backup endpoints, database schema, application
+release pointers or ordinary R2 backup contract. Installation and activation
+remain separate from source tests and a draft pull request.
+
+The proposed policy preserves the newest two verified bundles, named holds and
+recovery dependencies. A candidate may expire only 48 hours after acceptance of
+the second newer verified bundle. Conditional permanent expiry requires the
+exact current provider object/eTag and a fresh verified synthetic
+capability witness; unknown outcomes block replay. Original INFO-only and legacy
+recovery copies do not become verified successors through new metadata.
+
+Before growth, current quota and allocation reads share one three-minute budget;
+child closure and fresh facts are mandatory. Guards reserve at least 20% of the
+account, account for four times expected peak allocation and enforce the 512 MiB
+bundle namespace ceiling without crediting predicted deletion. Holds and stricter
+accepted bounds cannot be weakened to make space checks pass.
+
+The candidate calendar is Monday–Saturday 06:00 UTC plus the existing Sunday
+paired opportunity. Monitoring checks aggregate upcoming coverage and the actual
+pgBackRest recovery point within 36 hours. It cannot substitute restore-test time
+for backup time. New native v2 completion receipts bind the successful INFO
+timestamp metadata digest through terminal and catalog evidence; historical v1
+records remain readable but cannot qualify through a later-added sidecar.
+Permanent expiry covers only accepted native bundles in the fixed new database
+namespace; legacy recovery trees, generated-object snapshots, R2 and receipts
+are outside that deletion scope.
+
+Current-source acceptance on October 27: 901 local cases (872 passes/29 platform
+skips), 427 backend cases (423 passes/four skips), syntax checks, independent
+reviews, and all 901 synthetic cases on target Python 3.12.3. Target source
+manifest: `83382b871a1c376a1d743541e687e9388bd62a8fdd90970f024e90f97f695594`;
+sealed terminal: `fb06ee68cc3b9b6e338c18cb7166635cd80a2e60417e16e7f4feaeb9b575323d`.
+These results are not physical PostgreSQL restore acceptance. Shared staging
+handoff, current preflight, installed-byte verification and two distinct real
+replacement restore acceptances are still required before the guarded writer
+transition and timer activation. Google Drive migration remains BKP-GDRIVE-001
+in the backlog; no Google Drive remote or destination is established.

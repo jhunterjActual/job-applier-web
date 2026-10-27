@@ -15,6 +15,14 @@ class Capture:
 
 
 class TypedPropertyTests(unittest.TestCase):
+    def test_only_fixed_scheduler_unit_and_closed_identity_scalars_are_added(self):
+        name = 'careertrellis-onedrive-retention.service'
+        capture = Capture(scalar=b'User=root\nGroup=root\nUMask=0077\n')
+        self.assertEqual(common.read_unit_properties(name,('User','Group','UMask'),capture),
+                         {'User':'root','Group':'root','UMask':'0077'})
+        for other in (name+'x',name.replace('retention','retention-preview'),
+                      'careertrellis-onedrive-retention@abc.service'):
+            with self.assertRaises(common.UnitPropertyRefused):common.unit_object_path(other)
     def test_scalar_query_excludes_hook_arrays_and_each_empty_hook_is_typed(self):
         capture = Capture()
         fields = ('LoadState', 'MainPID', 'Job', *sorted(common.HOOK_PROPERTIES))
@@ -22,7 +30,7 @@ class TypedPropertyTests(unittest.TestCase):
         self.assertEqual(result['Job'], '')
         self.assertEqual({key: result[key] for key in common.HOOK_PROPERTIES}, dict.fromkeys(common.HOOK_PROPERTIES, ''))
         self.assertEqual(capture.calls[0][-1], '--property=LoadState,MainPID,Job')
-        self.assertEqual(len(capture.calls), 6)
+        self.assertEqual(len(capture.calls), 1+len(common.HOOK_PROPERTIES))
         self.assertTrue(all(call[0] == '/usr/bin/busctl' for call in capture.calls[1:]))
     def test_object_path_uses_ascii_alnum_and_lowercase_hex_escaping(self):
         expected = '/org/freedesktop/systemd1/unit/careertrellis_2donedrive_2dbundle_2drestore_2d' + 'a'*32 + '_2d02_2eservice'

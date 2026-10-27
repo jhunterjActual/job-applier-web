@@ -2,7 +2,8 @@
 
 Native credentials remain in memory; namespace mapping, installed bindings,
 canonical lock and fresh byte/eTag witnesses are mandatory. Offline grants work
-only with explicit fake transports. No refresh, retry or permanent deletion.
+only with explicit fake transports. Permanent POST additionally requires current
+explicit policy and a sealed provider capability. No deletion retry or fallback.
 """
 from dataclasses import dataclass, field
 import json
@@ -33,6 +34,11 @@ class Refused(ValueError): pass
 class UnknownOutcome(Refused): pass
 
 
+def native_permanent_expiry_available():
+    """Implementation availability only; never provider-witness readiness."""
+    return True
+
+
 def need(value):
     if not value: raise Refused('graph_operation_refused')
 
@@ -54,13 +60,21 @@ class Grant:
     seal: object = field(default=None, repr=False)
     offline: bool = field(default=False, repr=False)
     read_only: bool = field(default=False, repr=False)
+    expiry_mode: str = field(default='recoverable_manual', repr=False)
+    expected_id: str = field(default='', repr=False)
+    capability_sha256: str = field(default='', repr=False)
+    configured_root: str = field(default='', repr=False)
+    custody: object = field(default=None, repr=False)
+    source_transaction: str = field(default='', repr=False)
+    verification: object = field(default=None, repr=False)
+    operation_transaction: str = field(default='', repr=False)
 
     def __repr__(self): return '<GraphGrant redacted>'
 
 
-def offline_grant(drive_id, root_id, archive_sha256, expected_etag, token='synthetic'):
+def offline_grant(drive_id, root_id, archive_sha256, expected_etag, token='synthetic', *, expiry_mode='recoverable_manual'):
     """Synthetic tests only; never accepted by the concrete HTTP transport."""
-    return Grant(drive_id, root_id, token, archive_sha256, expected_etag, seal=_SEAL, offline=True)
+    return Grant(drive_id, root_id, token, archive_sha256, expected_etag, seal=_SEAL, offline=True,expiry_mode=expiry_mode)
 
 
 def valid_etag(value):
@@ -192,8 +206,44 @@ def hashlib_sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+def _permanent_capability(drive,configured_root,revision):
+    """Fixed current sealed witness and explicit policy, never a caller grant."""
+    from . import coordinator,entry,hydrate,capture_plan
+    need('expiry_capability.py' in entry.FILES)
+    context=entry._native_dependencies(entry.verify_install(),'db')
+    expiry_capability=entry._load('expiry_capability')
+    need(Path(expiry_capability.__file__).absolute()==entry.ROOT/'expiry_capability.py')
+    need(context.revision==revision)
+    current=coordinator.Policy(json.loads(hydrate.protected(coordinator.PRIVATE_POLICY,0o600)[0]))
+    coordinator.native_policy_binding(current);current.require_active(dt.datetime.now(dt.timezone.utc))
+    need(current.data.get('expiry_mode')=='conditional_permanent'
+        and current.digest==context.bindings['standalone_policy_sha256'])
+    parser=configparser.ConfigParser(interpolation=None,strict=True)
+    parser.read_string(hydrate.protected(capture_plan.CONFIG,0o600)[0].decode('utf-8'))
+    need(not parser.defaults() and set(parser.sections())=={'r2','onedrive'}
+        and parser['onedrive'].get('type')=='onedrive' and parser['onedrive'].get('drive_id')==drive
+        and parser['onedrive'].get('root_folder_id','')==configured_root)
+    witness=expiry_capability.native_current()
+    expiry_capability.require_fresh(witness,drive,context.bindings)
+    need(type(witness) is expiry_capability.FreshWitness and witness.authenticated
+        and witness.revision==revision and re.fullmatch('[0-9a-f]{64}',witness.digest))
+    return witness.digest
+
+
+def _parent_authority(parent,transaction,verification,operation_transaction):
+    from . import entry,baseline
+    need('pre_growth_native.py' in entry.FILES)
+    entry.verify_install();pre_growth_native=entry._load('pre_growth_native')
+    need(Path(pre_growth_native.__file__).absolute()==entry.ROOT/'pre_growth_native.py')
+    pre_growth_native.require_parent(parent)
+    context=(parent.require_retirement(operation_transaction) if verification is None
+        else parent.require_identity(transaction,verification))
+    need(type(context) is baseline.AuthenticatedContext and context.authenticated and context.role=='db')
+    return context
+
+
 def native_grant(transaction=None, archive_sha256=None, repository_lock_fd=None, *, verification=None,
-                 operation_transaction=None):
+                 operation_transaction=None,expiry_mode='recoverable_manual',parent=None):
     """Fixed protected credentials/root mapping; no refresh or caller credentials.
 
     Numbered verification grants are read-only. A deletion grant additionally
@@ -202,14 +252,19 @@ def native_grant(transaction=None, archive_sha256=None, repository_lock_fd=None,
     from . import catalog, capture_plan, hydrate, entry
     need(catalog.hex_value(transaction, 32) and catalog.hex_value(archive_sha256))
     files = catalog.NativeFiles(repository_lock_fd)
-    revision = entry.verify_install(); entry._native_dependencies(revision, 'db')
+    revision = entry.verify_install(); context=entry._native_dependencies(revision, 'db')
+    if parent is not None:
+        authority=_parent_authority(parent,transaction,verification,operation_transaction)
+        need(authority.document==context.document and authority.bindings==context.bindings)
+    need(expiry_mode in ('recoverable_manual','conditional_permanent'))
+    need(verification is None or expiry_mode=='recoverable_manual')
     if verification is not None:
         need(type(verification) is int and 1 <= verification <= 99
-             and entry.identity_reverification_idle(transaction, verification) is True)
+             and (parent is not None or entry.identity_reverification_idle(transaction, verification) is True))
         etag = 'read-only'
     else:
         need(catalog.hex_value(operation_transaction, 32)
-             and entry.retention_idle(operation_transaction, 'retire') is True)
+             and (parent is not None or entry.retention_idle(operation_transaction, 'retire') is True))
         witness = catalog.read_identity(files,transaction)
         need(witness.get('schema') == 'careertrellis.onedrive-bundle-identity/v2'
              and witness.get('sha256') == archive_sha256
@@ -234,7 +289,9 @@ def native_grant(transaction=None, archive_sha256=None, repository_lock_fd=None,
         component(drive)
         if configured_root: component(configured_root)
         temporary = Grant(drive, configured_root or 'root', access_token,
-                          archive_sha256, etag, seal=_SEAL, read_only=True)
+                          archive_sha256, etag, seal=_SEAL, read_only=True,custody=parent,
+                          source_transaction=transaction,verification=verification,
+                          operation_transaction=operation_transaction or '')
         base = ORIGIN+'/drives/'+component(drive)
         root = '/items/'+component(configured_root) if configured_root else '/root'
         status, raw = HttpTransport().request('GET', base+root+':/'+NAMESPACE,
@@ -247,7 +304,12 @@ def native_grant(transaction=None, archive_sha256=None, repository_lock_fd=None,
         component(mapped['id']); files.require_repository_lock()
         need(hydrate.protected(capture_plan.CONFIG, 0o600) == config_snapshot)
         return Grant(drive, mapped['id'], temporary.token, archive_sha256, etag,
-                     seal=_SEAL, read_only=verification is not None)
+                     seal=_SEAL, read_only=verification is not None,expiry_mode=expiry_mode,
+                     expected_id=witness['object_id'] if verification is None else '',
+                     capability_sha256=_permanent_capability(drive,configured_root,revision)
+                         if expiry_mode=='conditional_permanent' else '',configured_root=configured_root,
+                     custody=parent,source_transaction=transaction,verification=verification,
+                     operation_transaction=operation_transaction or '')
     except Exception:
         raise Refused('native_graph_credentials_or_mapping_refused') from None
 
@@ -262,8 +324,17 @@ class HttpTransport:
 
     def request(self, method, url, headers, grant):
         need(type(grant) is Grant and grant.seal is _SEAL and not grant.offline)
-        need(method in ('GET', 'DELETE') and url.startswith(ORIGIN+'/drives/'))
+        if grant.custody is not None:
+            _parent_authority(grant.custody,grant.source_transaction,grant.verification,grant.operation_transaction)
+        need(method in ('GET', 'DELETE','POST') and url.startswith(ORIGIN+'/drives/'))
         need(method != 'DELETE' or grant.read_only is False)
+        if method=='POST':
+            need(grant.read_only is False and grant.expiry_mode=='conditional_permanent'
+                and re.fullmatch('[0-9a-f]{64}',grant.capability_sha256)
+                and url==ORIGIN+'/drives/'+component(grant.drive_id)+'/items/'+component(grant.expected_id)+'/permanentDelete'
+                and headers.get('If-Match')==grant.expected_etag
+                and headers.get('Authorization')=='Bearer '+grant.token)
+        if method=='DELETE':need(grant.expiry_mode=='recoverable_manual')
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(),
             urllib.request.HTTPSHandler(context=ssl.create_default_context()))
         request = urllib.request.Request(url, headers=headers, method=method)
@@ -292,6 +363,7 @@ class HttpTransport:
 class Client:
     def __init__(self, grant=None, transport=None):
         need(type(grant) is Grant and grant.seal is _SEAL and grant.namespace == NAMESPACE)
+        need(grant.expiry_mode in ('recoverable_manual','conditional_permanent'))
         component(grant.drive_id); component(grant.root_id)
         need(type(grant.archive_sha256) is str
              and re.fullmatch('[0-9a-f]{64}', grant.archive_sha256)
@@ -303,8 +375,65 @@ class Client:
         if grant.offline: need(getattr(transport, 'simulation', False) is True)
         else: need(type(transport) is HttpTransport)
         self._grant = grant; self._transport = transport
+        self._permanent_attempted=False
 
     def __repr__(self): return '<GraphDeleteClient redacted>'
+
+    def permanent_delete(self,archive_sha256,expected_id,expected_size):
+        """One exact-ID conditional POST; known success requires scoped absence."""
+        grant=self._grant
+        need(grant.read_only is False and grant.expiry_mode=='conditional_permanent'
+            and archive_sha256==grant.archive_sha256
+            and (grant.offline or expected_id==grant.expected_id))
+        need(self._permanent_attempted is False);self._permanent_attempted=True
+        component(expected_id);need(type(expected_size) is int and 0<expected_size<=2**50)
+        base=ORIGIN+'/drives/'+component(grant.drive_id)+'/items/'
+        path=base+component(grant.root_id)+':/'+archive_sha256+'/repository.tar'
+        headers={'Authorization':'Bearer '+grant.token,'Accept':'application/json'}
+        def get(url):
+            status,raw=self._transport.request('GET',url,headers,grant)
+            need(type(raw) is bytes and len(raw)<=MAX_RESPONSE)
+            return status,raw
+        def document(raw):
+            def unique(pairs):
+                result={}
+                for key,value in pairs:need(key not in result);result[key]=value
+                return result
+            value=json.loads(raw,object_pairs_hook=unique);need(type(value) is dict);return value
+        def folder(raw,parent):
+            value=document(raw)
+            need(value['id']==parent and value['name']==archive_sha256 and type(value['folder']) is dict
+                and not {'file','remoteItem','deleted'}&set(value)
+                and value['parentReference']['driveId']==grant.drive_id
+                and value['parentReference']['id']==grant.root_id)
+        try:
+            status,raw=get(path);need(status==200);value=document(raw)
+            need(value['id']==expected_id and value['name']=='repository.tar'
+                and type(value['size']) is int and value['size']==expected_size and type(value['file']) is dict
+                and not {'folder','remoteItem','deleted'}&set(value)
+                and value['parentReference']['driveId']==grant.drive_id and valid_etag(value['eTag']))
+            parent=value['parentReference']['id'];component(parent)
+            if value['eTag']!=grant.expected_etag:return 'changed_not_deleted'
+            status,raw=get(base+component(parent));need(status==200);folder(raw,parent)
+        except Exception:raise Refused('permanent_metadata_binding_refused') from None
+        try:
+            if not grant.offline:
+                from . import entry
+                need(_permanent_capability(grant.drive_id,grant.configured_root,entry.verify_install())==grant.capability_sha256)
+            status,raw=self._transport.request('POST',base+component(expected_id)+'/permanentDelete',
+                dict(headers,**{'If-Match':grant.expected_etag}),grant)
+        except Exception:raise UnknownOutcome('permanent_delete_outcome_unknown') from None
+        if status==412:return 'changed_not_deleted'
+        if status in (401,403):raise Refused('permanent_delete_access_refused')
+        if status!=204 or raw!=b'':raise UnknownOutcome('permanent_delete_outcome_unknown')
+        try:
+            # ID absence alone cannot prove the same scoped pathname was not
+            # replaced or moved. The unchanged parent and both paths must agree.
+            for target in (base+component(expected_id),base+component(parent)+':/repository.tar',path):
+                status,_raw=get(target);need(status==404)
+            status,raw=get(base+component(parent));need(status==200);folder(raw,parent)
+        except Exception:raise UnknownOutcome('permanent_delete_absence_unknown') from None
+        return 'permanent_delete_accepted'
 
     def metadata(self, expected_id, expected_size):
         """Bounded metadata for the exact archive path; private identifiers stay private."""
@@ -338,6 +467,7 @@ class Client:
         retirement receipt. Any unknown DELETE response requires reconciliation.
         """
         need(self._grant.read_only is False)
+        need(self._grant.expiry_mode=='recoverable_manual')
         need(type(archive_sha256) is str and re.fullmatch('[0-9a-f]{64}', archive_sha256))
         component(expected_id)
         need(type(expected_size) is int and 0 < expected_size <= 2**50)

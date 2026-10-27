@@ -4,6 +4,8 @@ import datetime as dt
 import hashlib
 import json
 import unittest
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch,Mock
 from pathlib import Path
 
@@ -100,6 +102,18 @@ def reconciled_retry():
 
 
 class CapacityTests(unittest.TestCase):
+    def test_v2_health_cache_history_normalizer_refuses_inconsistent_recovery_age(self):
+        from deploy.onedrive_retention import health,native_restore
+        from deploy.tests.test_onedrive_health import evidence,NOW as observed,BINDINGS,REV,RELEASE
+        cached=dict(health.evaluate(evidence(),observed),authenticated=True,baseline_bindings=BINDINGS,
+            artifact_revision=REV,application_release=RELEASE,activation_sha256='d'*64)
+        def normalize():
+            with patch.object(guard,'_history_names',return_value=[{'name':'current.json'}]),\
+                 patch.object(native_restore,'protected',return_value=bundle.canonical(cached)):
+                guard._endpoint_history([{'name':'health','directory':True}],'a'*32,'prepare',SimpleNamespace())
+        normalize()
+        cached['recovery_point_age_seconds']=True
+        with self.assertRaises(ValueError):normalize()
     def test_exact_rounding_and_four_times_larger_allocation(self):
         result = guard.capacity(101, 25, 1, 1, 0, 0)
         self.assertTrue(result['allowed']); self.assertEqual(result['reserve_bytes'], 21)
@@ -362,13 +376,16 @@ class PairedHistoryContractTests(unittest.TestCase):
             'paired_policy_sha256':key(4),'retention_policy_sha256':key(5),'release':'a'*40,
             'backup_label':capture['backup_label'],'capture_sha256':sha(capture),'publication_sha256':sha(publication),
             'parent_owner':parent,'parent_unit':'careertrellis-paired-maintenance.service',
-            'parent_invocation':'b'*32,'issued_at':NOW}
+            'parent_invocation':'b'*32,'issued_at':NOW,'maintenance_fd':10,
+            'maintenance_identity':{'device':1,'inode':2,'owner_pid':parent['pid']}}
         dispatched = {'schema':'careertrellis.paired-retention-child/v1','transaction':TX,
             'handoff_sha256':sha(handoff),'owner':child,'command':['/usr/bin/python3','-I','-B',
-                '/usr/local/libexec/careertrellis/onedrive_retention/entry.py','web-run','--transaction',TX]}
+                '/usr/local/libexec/careertrellis/onedrive_retention/entry.py','web-run','--transaction',TX,
+                '--expected-backup-label',capture['backup_label']]}
         docs = {'bundle-dispatch-intent.json':handoff,'bundle-child-dispatched.json':dispatched,
             'start-intent.json':{'transaction':TX,'policy_sha256':key(4),'identity':{
-                'release':'a'*40,'web_boot':parent['boot_id'],'web_invocation':'b'*32}},
+                'release':'a'*40,'web_boot':parent['boot_id'],'web_invocation':'b'*32},
+                'backup_strategy':{'mode':'native-bundle-v2','retention_policy_sha256':key(5),'activation_sha256':key(6)}},
             'capture-result.json':capture,'publication-result.json':publication,
             'writers-restored.json':{'services_restored':True,'capture_sha256':sha(capture)},
             'db-released.json':{'services_restored':True}}
@@ -380,6 +397,22 @@ class PairedHistoryContractTests(unittest.TestCase):
         self.assertEqual(result['result'],'consistent_post_restoration_handoff')
         self.assertFalse(result['authenticated']); self.assertFalse(result['continuation_authorized'])
         self.assertFalse(result['dispatch_authorized']); self.assertFalse(result['backup_accepted'])
+
+    def test_stale_handoff_cannot_be_readmitted_and_immutable_binding_is_not_authentication(self):
+        docs,parent,child = self.handoff()
+        later = '2026-10-27T05:00:00Z'
+        with self.assertRaises(guard.GuardRefused):
+            guard.validate_paired_handoff(docs,TX,key(4),key(5),'a'*40,parent,child,later)
+        structural = guard._paired_handoff_records(docs,TX,key(4),key(5),'a'*40,parent,child)
+        self.assertFalse(structural['authenticated']);self.assertFalse(structural['continuation_authorized'])
+        with self.assertRaises(guard.GuardRefused):guard.AuthenticatedPairedHandoff({})
+
+    def test_handoff_requires_protected_parent_lock_identity_and_bounded_descriptor(self):
+        for field,bad in (('maintenance_fd',True),('maintenance_fd',2),('maintenance_fd',1025),
+                          ('maintenance_identity',{'device':1,'inode':2,'owner_pid':999})):
+            docs,parent,child = self.handoff();docs['bundle-dispatch-intent.json'][field] = bad
+            with self.assertRaises(guard.GuardRefused):
+                guard.validate_paired_handoff(docs,TX,key(4),key(5),'a'*40,parent,child,NOW)
 
     def test_handoff_proposal_refuses_wrong_child_command_source_pair_or_unrestored_writers(self):
         for mutate in (lambda docs:docs['bundle-child-dispatched.json']['command'].__setitem__(-1,'f'*32),
@@ -433,6 +466,200 @@ class PairedHistoryContractTests(unittest.TestCase):
         docs = self.web_skipped(); docs['status.json']['policy_sha256'] = key(9)
         docs['complete.json']['policy_sha256'] = key(9)
         with self.assertRaises(guard.GuardRefused): guard.paired_run_claim('web',TX,docs,key(4),'a'*40)
+
+
+class EmptyPairedHistoryTests(unittest.TestCase):
+    def test_active_weekly_unit_without_matching_history_is_not_admitted(self):
+        import sys
+        from types import SimpleNamespace
+        from deploy import paired_maintenance as package
+        from deploy.paired_maintenance import entry as paired_entry,host,web_control
+        from deploy.onedrive_retention import entry
+        with patch.dict(sys.modules,{'paired_maintenance':package}), \
+             patch.object(paired_entry,'verify_install'), \
+             patch.object(entry,'PAIRED_ROOT',Path(host.__file__).absolute().parent), \
+             patch.object(guard,'native_paired_handoff',return_value=None), \
+             patch.object(guard,'_paired_unit_state',return_value={'ActiveState':'active'}), \
+             patch.object(guard,'_paired_unit_terminal'),self.assertRaises(guard.GuardRefused):
+            guard._paired_history('web',[],SimpleNamespace(),TX)
+
+
+class RetirementParentForwardingTests(unittest.TestCase):
+    def test_missing_rows_require_native_exact_absence_factory_with_same_parent(self):
+        from contextlib import nullcontext
+        path='b'*64+'/repository.tar';parent=object()
+        store=Mock();store.io.locked.side_effect=lambda:nullcontext()
+        store.records.return_value={'b'*64:{'entry':{'objects':[{'path':path,'object_id':'synthetic','size':1,'sha256':'b'*64}]}}}
+        store.retired.return_value=set()
+        with patch.object(guard.catalog,'NativeReadStore',return_value=store), \
+                patch.object(retire,'authenticated_retirement_absences',return_value=frozenset({path})) as authenticate:
+            accepted,held,candidate=guard._namespace_owners({'rows':{}},9,retirement_transaction=TX,retirement_parent=parent)
+        self.assertEqual((accepted,held,candidate),({},{},{}))
+        authenticate.assert_called_once_with(9,TX,{},parent=parent)
+
+    def test_parent_alone_does_not_authorize_provider_inventory(self):
+        with patch.object(guard,'collect_provider_facts') as provider,self.assertRaises(guard.GuardRefused):
+            guard.native_catalog_inventory(9,retirement_parent=object())
+        provider.assert_not_called()
+
+
+class ActivationWebHistoryTests(unittest.TestCase):
+    def test_empty_default_root_needs_no_unavailable_native_callback(self):
+        from deploy.onedrive_retention import activation_web as web
+        with patch.object(web,'history_complete',side_effect=AssertionError('no row exists')):
+            self.assertTrue(guard._activation_web_history([],TX,'hydrate',SimpleNamespace(role='web')))
+        self.assertIn(('activation_web','/var/lib/careertrellis/onedrive-retention/activation-web'),guard.HISTORY_ROOTS['web'])
+
+    def test_only_prepare_exact_actual_cgroup_selects_current_owner_callback(self):
+        from deploy.onedrive_retention import activation_web as web
+        rows=[{'name':TX,'directory':True},{'name':'b'*32,'directory':True}]
+        group='0::/system.slice/careertrellis-onedrive-activation@'+TX+'.service'
+        with patch.object(Path,'read_text',return_value=group),patch.object(web,'history_complete',return_value=True) as complete:
+            guard._activation_web_history(rows,TX,'prepare',SimpleNamespace(role='web'))
+            self.assertEqual(complete.call_args_list,[unittest.mock.call(TX,current_transaction=TX),
+                unittest.mock.call('b'*32,current_transaction=None)])
+        for stage,current_group in (('hydrate',group),('prepare','0::/system.slice/other.service')):
+            with self.subTest(stage=stage,group=current_group),patch.object(Path,'read_text',return_value=current_group),\
+                    patch.object(web,'history_complete',return_value=True) as complete:
+                guard._activation_web_history(rows[:1],TX,stage,SimpleNamespace(role='web'))
+                complete.assert_called_once_with(TX,current_transaction=None)
+
+    def test_wrong_current_owner_or_unknown_past_never_gets_fallback(self):
+        from deploy.onedrive_retention import activation_web as web
+        group='0::/system.slice/careertrellis-onedrive-activation@'+TX+'.service'
+        for name in (TX,'b'*32):
+            with self.subTest(name=name),patch.object(Path,'read_text',return_value=group),\
+                    patch.object(web,'history_complete',return_value=False) as complete:
+                with self.assertRaises(guard.GuardRefused):
+                    guard._activation_web_history([{'name':name,'directory':True}],TX,'prepare',SimpleNamespace(role='web'))
+                complete.assert_called_once_with(name,current_transaction=TX if name==TX else None)
+
+    def test_exhaustive_bad_file_orphan_name_duplicate_and_overflow_refuse(self):
+        from deploy.onedrive_retention import activation_web as web
+        bad_rows=([{'name':TX,'directory':False}],[{'name':'orphan','directory':True}],
+            [{'name':'0'*32,'directory':True}],[{'name':TX,'directory':True}]*2,
+            [{'name':TX,'directory':True}]*(guard.MAX_RECORDS+1))
+        with patch.object(Path,'read_text',return_value='0::/system.slice/other.service'),\
+                patch.object(web,'history_complete',return_value=True):
+            for rows in bad_rows:
+                with self.subTest(length=len(rows)),self.assertRaises(guard.GuardRefused):
+                    guard._activation_web_history(rows,TX,'prepare',SimpleNamespace(role='web'))
+
+
+class SharedProviderDeadlineTests(unittest.TestCase):
+    def provider(self,deadline=280):
+        # Structural unit fixture only: the native constructor is not admitted.
+        provider=object.__new__(guard.NativeProvider);provider.operation_deadline=deadline
+        provider.unchanged=Mock();provider.binary='fixture-rclone';provider.fd=42
+        provider.files=SimpleNamespace(repository_lock_fd=9);provider.context=SimpleNamespace(bindings={})
+        provider.account_scope='a'*64
+        provider.config=(('[r2]\ntype=s3\nprovider=Cloudflare\nendpoint=https://'+'f'*32+
+            '.r2.cloudflarestorage.com\n').encode(),None)
+        return provider
+
+    def test_source_count_quota_parent_inventory_share_one_deadline(self):
+        from deploy.onedrive_retention import hydrate
+        provider=self.provider();clock=[100.0];calls=[]
+        def capture(args,**kwargs):
+            calls.append((args[1],kwargs['timeout']));clock[0]+=30
+            if args[1]=='size':return b'{"bytes":100,"count":2}'
+            if args[1]=='about':return b'{"total":1000,"free":900}'
+            if '--dirs-only' in args:return b'[{"Path":"postgresql-bundles","IsDir":true}]'
+            return b'[]'
+        fcntl=SimpleNamespace(F_ADD_SEALS=1,F_SEAL_SEAL=2,F_SEAL_SHRINK=4,F_SEAL_GROW=8,F_SEAL_WRITE=16,fcntl=Mock())
+        with patch.object(guard.time,'monotonic',side_effect=lambda:clock[0]),patch.object(hydrate,'command',side_effect=capture),\
+                patch.dict(sys.modules,{'fcntl':fcntl}),patch.object(guard.os,'memfd_create',return_value=99,create=True),\
+                patch.object(guard.os,'MFD_ALLOW_SEALING',1,create=True),\
+                patch.object(guard.os,'write',side_effect=lambda fd,raw:len(raw)),patch.object(guard.os,'fchmod',create=True),\
+                patch.object(guard.os,'lseek'),patch.object(guard.os,'close'):
+            source,candidate=provider.source_allocation();provider.collect()
+        self.assertEqual(source,100);self.assertGreater(candidate,source)
+        self.assertEqual(calls,[('size',180),('about',150),('lsjson',120),('lsjson',90)])
+
+    def test_expired_budget_starts_no_child_and_default_remains_600(self):
+        from deploy.onedrive_retention import hydrate
+        provider=self.provider()
+        with patch.object(guard.time,'monotonic',return_value=280),patch.object(hydrate,'command') as child:
+            with self.assertRaises(guard.GuardRefused):provider.read('quota')
+            child.assert_not_called()
+        provider.operation_deadline=None
+        with patch.object(hydrate,'command',return_value=b'{}') as child:provider.read('quota')
+        self.assertEqual(child.call_args.kwargs['timeout'],600)
+
+    def test_command_timeout_or_late_return_never_returns_capacity_or_starts_next_read(self):
+        from deploy.onedrive_retention import hydrate
+        provider=self.provider()
+        with patch.object(guard.time,'monotonic',return_value=100),\
+                patch.object(hydrate,'command',side_effect=TimeoutError('synthetic known wait failure')) as child:
+            with self.assertRaises(TimeoutError):provider.collect()
+            child.assert_called_once()
+        clock=[100]
+        def late(*args,**kwargs):clock[0]=281;return b'{"total":1000,"free":900}'
+        with patch.object(guard.time,'monotonic',side_effect=lambda:clock[0]),patch.object(hydrate,'command',side_effect=late) as child:
+            with self.assertRaises(guard.GuardRefused):provider.collect()
+            child.assert_called_once()
+
+
+class DedicatedIdentityHistoryTests(unittest.TestCase):
+    def test_past_child_history_receives_exact_live_parent_context_for_owner_or_child2(self):
+        from deploy.onedrive_retention import pre_growth_native as p,preservation,publish
+        parent='b'*32;source='c'*32;root=Path('/var/lib/careertrellis/onedrive-bundles')/source
+        unit=p.identity_unit(parent,source,1)
+        owner={'pid':2,'start_ticks':3,'boot_id':'fixture','unit':unit,'invocation_id':'a'*32}
+        docs={'intent.json':{'schema':'careertrellis.onedrive-identity-intent/v1','transaction':source,'verification':1,'owner':owner},
+            'receipt.json':{'sha256':'e'*64,'size':100}}
+        names={'intent.json','receipt.json','archive.tar'}
+        for phase in ('stat-before','download','stat-after'):
+            names|={phase+'-'+suffix+'.json' for suffix in ('intent','child','terminal')}
+            docs[phase+'-child.json']={'pid':10,'start_ticks':11,'boot_id':'fixture'}
+            docs[phase+'-terminal.json']={'pid':10,'returncode':0}
+        def rows(path):
+            return [{'name':name} for name in (['identity-verification-01','bundle-object-identity-01.json'] if path==root else names)]
+        def protected(path,**kwargs):
+            return bundle.canonical(docs['receipt.json'] if path.name=='bundle-object-identity-01.json' else docs[path.name])
+        def exact_parent(tx,src,number,current,fd,**kwargs):
+            if (tx,src,number,current,fd)!=(parent,source,1,parent,9):raise p.PreGrowthNativeRefused('parent_not_terminal')
+            return True
+        for caller in ('actual_owner','actual_identity_child2'):
+            with self.subTest(caller=caller),patch.object(guard,'_pre_growth_identity_scope',return_value=None),\
+                    patch.object(guard,'_history_names',side_effect=rows),patch.object(guard.native_restore,'protected',side_effect=protected),\
+                    patch.object(preservation,'_terminal_birth'),patch.object(publish,'digest_file',return_value=('e'*64,100)),\
+                    patch.object(p,'identity_history_complete',side_effect=exact_parent) as completed:
+                guard._source_auxiliary_history(source,parent,9)
+                completed.assert_called_once_with(parent,source,1,parent,9,identity_owner=owner)
+                with self.assertRaises(p.PreGrowthNativeRefused):guard._source_auxiliary_history(source,None,9)
+
+    def test_wrong_current_kernel_owner_cannot_issue_partial_exception(self):
+        from deploy.onedrive_retention import pre_growth_native as p
+        group='0::/system.slice/'+p.identity_unit('b'*32,TX,1)
+        with patch.object(Path,'read_text',return_value=group),\
+                patch.object(p,'native_identity',side_effect=p.PreGrowthNativeRefused('wrong_owner')):
+            with self.assertRaises(p.PreGrowthNativeRefused):guard._pre_growth_identity_scope(TX)
+
+    def test_partial_attempt_requires_exact_owner_and_ordered_zero_exit_records(self):
+        from deploy.onedrive_retention import pre_growth_native as p
+        owner={'pid':2,'start_ticks':3,'boot_id':'fixture','unit':'fixture','invocation_id':'a'*32}
+        intent={'schema':'careertrellis.onedrive-identity-intent/v1','transaction':TX,'verification':1,
+            'archive_sha256':'a'*64,'archive_bytes':100,'download_receipt_sha256':'b'*64,'owner':owner,'started_at':NOW}
+        documents={'intent.json':intent};scope={'verification':1,'owner':owner,'cap':SimpleNamespace(require_identity=Mock())}
+        with patch.object(p,'require_parent'):
+            self.assertTrue(guard._current_identity_partial(Path('/fixture'),TX,1,{'intent.json'},scope,
+                lambda path:documents[path.name]))
+            for names in ({'intent.json','failed.json'},{'intent.json','download-terminal.json'}):
+                with self.assertRaises(guard.GuardRefused):guard._current_identity_partial(Path('/fixture'),TX,1,names,scope,
+                    lambda path:documents[path.name])
+            wrong=dict(scope,owner=dict(owner,pid=99))
+            with self.assertRaises(guard.GuardRefused):guard._current_identity_partial(Path('/fixture'),TX,1,{'intent.json'},wrong,
+                lambda path:documents[path.name])
+
+    def test_expiry_history_uses_closed_prior_proof_not_fresh_capability(self):
+        from deploy.onedrive_retention import expiry_capability as expiry
+        with patch.object(expiry,'_prior_history',return_value=(b'{}',{})) as prior,\
+                patch.object(expiry,'native_current',side_effect=AssertionError('must not issue a witness')):
+            context=object();self.assertTrue(guard._expiry_capability_history(context,[{'name':'latest.json'}]))
+            prior.assert_called_once_with(context,False)
+        with patch.object(expiry,'_prior_history',side_effect=expiry.CapabilityRefused('orphan')):
+            with self.assertRaises(expiry.CapabilityRefused):guard._expiry_capability_history(object(),[{'name':'checking'}])
 
 
 if __name__ == '__main__':

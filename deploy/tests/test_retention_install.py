@@ -2,10 +2,62 @@
 import copy
 from contextlib import contextmanager
 import datetime as dt
+import stat
 import unittest
 from unittest.mock import patch,Mock
 from types import SimpleNamespace
 from deploy import retention_install as i
+
+
+class OperationRootTests(unittest.TestCase):
+    def metadata(self,mode=0o700,kind=stat.S_IFDIR,uid=0,ino=1):
+        return SimpleNamespace(st_dev=1,st_ino=ino,st_uid=uid,st_gid=0,st_mode=kind|mode,
+            st_nlink=1,st_size=0,st_mtime_ns=1,st_ctime_ns=1)
+
+    def test_first_install_creates_exact_empty_siblings_and_second_check_is_idempotent(self):
+        existing={};stack=[]
+        @contextmanager
+        def directory(path,mode):
+            self.assertEqual(mode,0o700);stack.append(path)
+            try:yield 7 if path==i.STATE else 8
+            finally:stack.pop()
+        def current(name,**kwargs):
+            if name not in existing:raise FileNotFoundError(2,'absent')
+            return existing[name]
+        def mkdir(name,mode,**kwargs):
+            self.assertNotIn(name,existing);self.assertEqual(mode,0o700);self.assertEqual(kwargs,{'dir_fd':7})
+            existing[name]=self.metadata(ino=len(existing)+1)
+        with patch.object(i,'directory',directory),patch.object(i.os,'listdir',side_effect=lambda fd:list(existing) if fd==7 else []),\
+             patch.object(i.os,'stat',side_effect=current),patch.object(i.os,'fstat',side_effect=lambda fd:existing[stack[-1].name]),\
+             patch.object(i.os,'mkdir',side_effect=mkdir) as create,patch.object(i.os,'fsync'):
+            i.initialize_operation_roots();self.assertEqual(set(existing),set(i.OPERATION_ROOTS))
+            self.assertEqual(create.call_count,4)
+            i.initialize_operation_roots();self.assertEqual(create.call_count,4)
+
+    def test_unknown_or_unsafe_existing_state_is_preserved_before_any_creation(self):
+        @contextmanager
+        def directory(path,mode):yield 7 if path==i.STATE else 8
+        name=i.OPERATION_ROOTS[-1]
+        for unsafe in (self.metadata(mode=0o755),self.metadata(kind=stat.S_IFREG),
+                       self.metadata(kind=stat.S_IFLNK),self.metadata(uid=1000)):
+            def current(item,**kwargs):
+                if item!=name:raise FileNotFoundError(2,'absent')
+                return unsafe
+            with self.subTest(metadata=unsafe),patch.object(i,'directory',directory),\
+                 patch.object(i.os,'listdir',return_value=[name]),patch.object(i.os,'stat',side_effect=current),\
+                 patch.object(i.os,'mkdir') as create:
+                with self.assertRaises(i.Refused):i.initialize_operation_roots()
+                create.assert_not_called()
+        for unknown_parent in (True,False):
+            def current(item,**kwargs):
+                if item!=name:raise FileNotFoundError(2,'absent')
+                return self.metadata()
+            with patch.object(i,'directory',directory),patch.object(i.os,'listdir',side_effect=lambda fd:
+                    ['unknown'] if unknown_parent else ([name] if fd==7 else ['unrecognized-receipt.json'])),\
+                 patch.object(i.os,'stat',side_effect=current),patch.object(i.os,'fstat',return_value=self.metadata()),\
+                 patch.object(i.os,'mkdir') as create:
+                with self.assertRaises(i.Refused):i.initialize_operation_roots()
+                create.assert_not_called()
 
 NOW=dt.datetime(2026,10,27,14,tzinfo=dt.timezone.utc)
 
@@ -18,7 +70,10 @@ def plan():
          'paired_policy_sha256':i.sha(i.canonical(pair)),'reserve_percent':20,'peak_multiplier':4,
          'keep_verified':2,'grace_seconds':172800,'namespace_budget_bytes':512*1024**2}
     files={'/etc/systemd/system/'+name:{'source':'extras/'+name,'sha256':'4'*64,'mode':0o644}
-           for name in ('careertrellis-onedrive-retention.service','careertrellis-onedrive-retention.timer')}
+           for name in ('careertrellis-onedrive-retention.service','careertrellis-onedrive-retention.timer',
+                        'careertrellis-onedrive-retention-health.service','careertrellis-onedrive-retention-health.timer')}
+    files[i.PAIRED_RW_DROPIN]={'source':'extras/'+i.Path(i.PAIRED_RW_DROPIN).name,
+                             'sha256':i.sha(i.PAIRED_RW_BYTES),'mode':0o644}
     return {'schema':'careertrellis.retention-install-plan/v1','transaction':'c'*32,'role':'web',
         'revision':'a'*40,'created_at':NOW.isoformat(),'expires_at':(NOW+dt.timedelta(minutes=10)).isoformat(),
         'packet_sha256':'d'*64,'installer_sha256':'8'*64,'baseline':{'application_current':'b'*40,'application_previous':'e'*40,
@@ -31,6 +86,47 @@ def plan():
 
 
 class Tests(unittest.TestCase):
+    def test_source_install_requires_both_new_timers_disabled_and_idle(self):
+        with patch.object(i,'show',return_value={'ActiveState':'inactive','UnitFileState':'disabled','Job':''}) as show:
+            i.require_new_timers_disabled('web');self.assertEqual(show.call_count,2)
+            show.reset_mock();i.require_new_timers_disabled('db');show.assert_not_called()
+        for change in ({'ActiveState':'active'},{'UnitFileState':'enabled'},{'Job':'pending'}):
+            value=dict({'ActiveState':'inactive','UnitFileState':'disabled','Job':''},**change)
+            with patch.object(i,'show',return_value=value),self.assertRaises(i.Refused):
+                i.require_new_timers_disabled('web')
+
+    def test_paired_dropin_is_fixed_web_only_and_does_not_replace_old_dropins(self):
+        value=plan();i.validate_plan(value,NOW)
+        for mutation in ('missing','bytes','db'):
+            changed=copy.deepcopy(value)
+            if mutation=='missing':
+                del changed['files'][i.PAIRED_RW_DROPIN];del changed['baseline']['files'][i.PAIRED_RW_DROPIN]
+            elif mutation=='bytes':changed['files'][i.PAIRED_RW_DROPIN]['sha256']='0'*64
+            else:changed['role']='db'
+            with self.assertRaises(i.Refused):i.validate_plan(changed,NOW)
+        with patch.object(i.os.path,'lexists',return_value=False),patch.object(i,'mkdir') as mkdir, \
+             patch.object(i,'directory') as directory:
+            i.prepare_paired_dropin_parent(i.PAIRED_RW_DROPIN)
+            mkdir.assert_called_once_with(i.Path(i.PAIRED_RW_DROPIN).parent,0o755)
+        with patch.object(i,'mkdir') as mkdir,self.assertRaises(i.Refused):
+            i.prepare_paired_dropin_parent('/etc/systemd/system/caddy.service.d/override.conf')
+        mkdir.assert_not_called()
+
+    def test_dependency_proof_refuses_wrong_host_role_drift_or_mutation_claim(self):
+        value={'schema':'careertrellis.retention-prepared-dependencies/v1','result':'dependencies_verified',
+            'revision':'a'*40,'role':'web','native_actions':False,'provider_calls':0,
+            'application_services_restarted':False,'native_restore_accepted':False}
+        with patch.object(i,'command',return_value=i.canonical(value)) as command:
+            self.assertEqual(i.require_prepared_dependencies(plan()),i.canonical(value))
+        self.assertEqual(command.call_args.args[0][-1],'verify-prepared-install')
+        for changes in ({'role':'db'},{'revision':'b'*40},{'provider_calls':False},
+                        {'application_services_restarted':True},{'native_restore_accepted':True},
+                        {'result':'source_verified'},{'unchecked':True}):
+            with self.subTest(changes=changes),patch.object(i,'command',return_value=i.canonical(dict(value,**changes))), \
+                 self.assertRaises(i.Refused):i.require_prepared_dependencies(plan())
+        with patch.object(i,'command',side_effect=i.Refused('source_drift')),self.assertRaises(i.Refused):
+            i.require_prepared_dependencies(plan())
+
     def test_short_lived_exact_baseline_plan(self):
         value=plan();self.assertEqual(i.validate_plan(value,NOW),value)
         for mutate in (lambda p:p.update(expires_at=(NOW+dt.timedelta(minutes=16)).isoformat()),
@@ -101,13 +197,15 @@ class Tests(unittest.TestCase):
         def directory(*args,**kwargs):yield 7
         for role in ('web','db'):
             with patch.object(i,'directory',directory),patch.object(i.os,'listdir',return_value=[]), \
+                 patch.object(i,'initialize_operation_roots') as siblings, \
                  patch.object(i,'mkdir') as mkdir,patch.object(i,'write_once') as write:
                 i.initialize_state(role)
+                siblings.assert_called_once_with()
                 root=i.Path('/var/lib/careertrellis/onedrive-retention')/role
                 self.assertIn(((root/'control.lock',b''),{}),write.call_args_list)
                 if role=='db':
                     self.assertEqual({call.args[0] for call in mkdir.call_args_list},
-                        {root/'catalog',root/'retirements',root/'schedule'}|{root/'catalog'/name for name in
+                        {root/'catalog',root/'retirements',root/'schedule',root/'health'}|{root/'catalog'/name for name in
                          ('accepted','intents','complete','holds','tombstones','tombstone-intents','tombstone-complete')})
                     self.assertIn(((root/'catalog'/'catalog.lock',b''),{}),write.call_args_list)
                 else:self.assertEqual(mkdir.call_count,0)

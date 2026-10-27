@@ -1,7 +1,7 @@
 """Unprivileged forced-command gate; no caller-selected command or environment."""
 import subprocess
 
-from .client import COMMAND, RESPONSE_SCHEMA, decode, response
+from .client import COMMAND, RESPONSE_SCHEMA, decode, response, request_timeout
 from .common import canonical
 from .db_control import validate_request
 
@@ -18,7 +18,8 @@ def run(env, raw, runner=None):
         validate_request(candidate)
         request = candidate
         completed = (runner or subprocess.run)(list(ROOT_COMMAND), input=canonical(request),
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=35, check=False,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=request_timeout(request['operation'],endpoint=True,request=request), check=False,
                     env={'PATH': '/usr/bin:/bin', 'LANG': 'C'})
         if completed.returncode != 0:
             raise ValueError()

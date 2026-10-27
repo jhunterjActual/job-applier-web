@@ -69,6 +69,31 @@ def hex_value(value, length=64):
 def keys(value, expected): need(type(value) is dict and set(value) == set(expected))
 
 
+def retirement_expiry_mode(operation,complete):
+    """Bind receipt mode; old mode-less journals mean recoverable only."""
+    mode=operation.get('expiry_mode','recoverable_manual')
+    need(type(mode) is str and mode in ('recoverable_manual','conditional_permanent'),
+         'retirement_expiry_mode_mismatch')
+    tagged='expiry_mode' in operation
+    need(('expiry_mode' in complete)==tagged and complete.get('expiry_mode','recoverable_manual')==mode,
+         'retirement_expiry_mode_mismatch')
+    return mode
+
+
+def validate_retirement_object_mode(operation,intent,ack,terminal,object_id,request_sha256):
+    """Consistency only; caller must separately authenticate the native chain."""
+    mode=operation.get('expiry_mode','recoverable_manual');tagged='expiry_mode' in operation
+    need(mode in ('recoverable_manual','conditional_permanent'))
+    for value in (intent,terminal):
+        need(('expiry_mode' in value)==tagged and value.get('expiry_mode','recoverable_manual')==mode,
+             'retirement_expiry_mode_mismatch')
+    expected={'result':'deleted','object_id':object_id,'request_id':request_sha256,
+              'recoverable':mode=='recoverable_manual','permanent':mode=='conditional_permanent'}
+    if tagged:expected['expiry_mode']=mode
+    need(ack==expected and ack['recoverable'] is expected['recoverable']
+         and ack['permanent'] is expected['permanent'],'retirement_expiry_mode_mismatch')
+
+
 def read_identity(io, transaction):
     """Select latest immutable numbered witness, refusing later partial attempts."""
     need(hex_value(transaction,32)); source = SOURCE_ROOT/transaction
@@ -109,11 +134,14 @@ def acceptance_entry(plan, manifest, download_raw, native_raw, identity, accepte
         keys(download['quota_after'], ('total', 'free')); quota = download['quota_after']
         need(type(quota['total']) is int and type(quota['free']) is int
              and quota['total'] > 0 and 0 <= quota['free'] <= quota['total'])
+        native_v2 = native.get('schema') == 'careertrellis.onedrive-native-local-restore/v2'
         keys(native, ('schema', 'result', 'transaction', 'attempt', 'archive_sha256', 'generation_sha256',
             'backup_label', 'plan_sha256', 'download_receipt_sha256', 'prior_reconciliation_sha256',
             'native_restore_accepted', 'postmaster_terminal', 'checksums_verified', 'cleanup_performed',
-            'elapsed_seconds', 'completed_at'))
-        need(native['schema'] == 'careertrellis.onedrive-native-local-restore/v1'
+            'elapsed_seconds', 'completed_at') + (('info_metadata_sha256',) if native_v2 else ()))
+        if native_v2: need(hex_value(native['info_metadata_sha256']))
+        need(native['schema'] in ('careertrellis.onedrive-native-local-restore/v1',
+                                  'careertrellis.onedrive-native-local-restore/v2')
              and native['result'] == 'verified' and native['native_restore_accepted'] is True
              and native['postmaster_terminal'] is True and native['checksums_verified'] is True
              and native['cleanup_performed'] is False, 'actual_native_restore_receipt_required')
@@ -167,6 +195,9 @@ def acceptance_entry(plan, manifest, download_raw, native_raw, identity, accepte
 
 
 def verify_journals(io, root, ownership, native, native_raw, terminal_raw, now):
+    if native.get('schema') == 'careertrellis.onedrive-native-local-restore/v2':
+        need(hex_value(native.get('info_metadata_sha256'))
+             and sha(io.read(root / 'info-metadata.json')) == native['info_metadata_sha256'])
     keys(ownership, ('schema', 'owner', 'plan', 'plan_sha256', 'root_identity',
                      'download_receipt_sha256', 'web_preflight_sha256'))
     need(ownership['schema'] == 'careertrellis.native-local-restore-ownership/v1')
@@ -253,7 +284,8 @@ class Catalog:
                  and entry['dependencies_resolved'] is True)
             need(entry['download_sha256'] == entry['restore_archive_sha256'] == entry['archive_sha256']
                  and entry['native_restore_receipt_sha256'] == sha(bundle.canonical(evidence['native'])))
-            need(evidence['native']['schema'] == 'careertrellis.onedrive-native-local-restore/v1'
+            need(evidence['native']['schema'] in ('careertrellis.onedrive-native-local-restore/v1',
+                                                 'careertrellis.onedrive-native-local-restore/v2')
                  and evidence['native']['native_restore_accepted'] is True
                  and evidence['native']['result'] == 'verified'
                  and hex_value(evidence['terminal_proof_sha256']))
@@ -392,6 +424,7 @@ class Catalog:
             operation = decode(self.io.read_retirement(transaction, 'operation-intent.json'))
             complete_raw = self.io.read_retirement(transaction, 'operation-complete.json')
             complete = decode(complete_raw)
+            retirement_expiry_mode(operation,complete)
             need(operation.get('schema') == 'careertrellis.bundle-retirement-native-intent/v1'
                  and operation.get('transaction') == transaction and operation.get('simulation') is False
                  and operation.get('namespace') == NAMESPACE
@@ -424,14 +457,13 @@ class Catalog:
                     ack = decode(ack_raw); terminal_raw = self.io.read_retirement(transaction, prefix+'terminal.json')
                     terminal = decode(terminal_raw)
                     dispatch = decode(self.io.read_retirement(transaction, prefix+'dispatch.json'))
+                    validate_retirement_object_mode(operation,intent,ack,terminal,obj['object_id'],sha(intent_raw))
                     need(intent.get('schema') == 'careertrellis.bundle-object-retirement-intent/v1'
                          and intent.get('namespace') == NAMESPACE and intent.get('sequence') == count
                          and intent.get('operation_intent_sha256') == sha(bundle.canonical(operation))
                          and intent.get('transaction') == transaction and intent.get('object') == obj
                          and intent.get('bundle_id') == candidate['bundle_id'] and intent.get('simulation') is False
                          and dispatch == {'intent_sha256':sha(intent_raw), 'simulation':False}
-                         and ack == {'result':'deleted', 'object_id':obj['object_id'],
-                             'request_id':sha(intent_raw), 'recoverable':True, 'permanent':False}
                          and terminal.get('schema') == 'careertrellis.bundle-object-retirement-terminal/v1'
                          and terminal.get('transaction') == transaction and terminal.get('sequence') == count
                          and terminal.get('namespace') == NAMESPACE and terminal.get('bundle_id') == candidate['bundle_id']
@@ -557,7 +589,7 @@ class NativeFiles:
         source = re.fullmatch(re.escape(str(SOURCE_ROOT)) + r'/[0-9a-f]{32}/'
             r'(?:downloaded-receipt\.json|downloaded-manifest\.json|bundle-object-identity(?:-[0-9]{2})?\.json|identity-verification-[0-9]{2}/receipt\.json)', str(path))
         native = re.fullmatch(re.escape(str(RESTORE_ROOT)) + r'/[0-9a-f]{32}(?:-0[2-9])?/'
-            r'(?:complete|ownership|unit-terminal-proof|unit-stop-intent|(?:info|restore|start|probe|stop|checksums)-(?:intent|dispatch|terminal))\.json', str(path))
+            r'(?:complete|ownership|info-metadata|unit-terminal-proof|unit-stop-intent|(?:info|restore|start|probe|stop|checksums)-(?:intent|dispatch|terminal))\.json', str(path))
         need(source or native, 'catalog_evidence_path_refused')
         return self._protected(path, limit)
 
@@ -632,6 +664,41 @@ class NativeFiles:
             r'operation-(?:intent|complete)\.json|object-[0-9]{5}-(?:intent|dispatch|ack|terminal)\.json', name))
         self.require_repository_lock()
         return self._protected(ROOT.parent/'retirements'/transaction/name, MAX_RECORD)
+
+
+class ExistingNativeFiles(NativeFiles):
+    """Read-only evidence never initializes or repairs an absent catalog."""
+    @contextmanager
+    def locked(self):
+        import fcntl
+        self.require_repository_lock()
+        expected={'accepted','intents','complete','holds','tombstones',
+                  'tombstone-intents','tombstone-complete','catalog.lock'}
+        with self.directory(ROOT,private=True) as root:
+            need(set(os.listdir(root))==expected,'catalog_interruption_requires_reconciliation')
+            for name in sorted(expected-{'catalog.lock'}):
+                with self.directory(ROOT/name,private=True):pass
+            fd=os.open('catalog.lock',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=root)
+            try:
+                meta=os.fstat(fd)
+                need(stat.S_ISREG(meta.st_mode) and meta.st_uid==meta.st_gid==0
+                     and stat.S_IMODE(meta.st_mode)==0o600 and meta.st_nlink==1 and meta.st_size==0)
+                fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                yield
+                after=os.stat('catalog.lock',dir_fd=root,follow_symlinks=False)
+                need((after.st_dev,after.st_ino,after.st_mode,after.st_uid,after.st_gid,after.st_nlink,after.st_size)==
+                     (meta.st_dev,meta.st_ino,meta.st_mode,meta.st_uid,meta.st_gid,meta.st_nlink,meta.st_size)
+                     and set(os.listdir(root))==expected)
+                self.require_repository_lock()
+            finally:os.close(fd)
+
+    def write_store(self,*args,**kwargs):
+        raise CatalogRefused('read_only_catalog_refuses_writes')
+
+
+class NativeReadStore(Catalog):
+    def __init__(self,repository_lock_fd):
+        super().__init__(ExistingNativeFiles(repository_lock_fd))
 
 
 class NativeStore(Catalog):

@@ -414,6 +414,54 @@ source_root=${capture_root}/${snapshot_id}/objects
 marker_root=${capture_root}/${snapshot_id}/marker
 destination=${onedrive_remote}:${onedrive_root}/${backup_label}
 
+# The reviewed selector changes routing only after two accepted replacement
+# bundles. An installation/policy alone keeps the existing strategy. A partial
+# activation marker is a failure fence, never permission to fall back silently.
+retention_entry=/usr/local/libexec/careertrellis/onedrive_retention/entry.py
+retention_selector=/etc/careertrellis/onedrive-retention/activation.json
+retention_activation_intent=/etc/careertrellis/onedrive-retention/activation-intent.json
+retention_pending=/etc/careertrellis/onedrive-retention/activation-pending.json
+retention_finalized=/etc/careertrellis/onedrive-retention/activation-finalized.json
+if [[ -e ${retention_entry} || -L ${retention_entry} || -e ${retention_selector} || \
+      -L ${retention_selector} || -e ${retention_activation_intent} || -L ${retention_activation_intent} || \
+      -e ${retention_pending} || -L ${retention_pending} || -e ${retention_finalized} || -L ${retention_finalized} ]]; then
+    if [[ ! -f ${retention_entry} || -L ${retention_entry} || \
+          $(stat -c '%a:%U:%G' "${retention_entry}" 2>/dev/null || true) != 644:root:root ]]; then
+        echo "The installed backup retention guard is unavailable." >&2
+        exit 1
+    fi
+    maintenance_descriptor=8
+    if [[ ${CAREERTRELLIS_MAINTENANCE_LOCK_FD:-} == 10 ]]; then
+        maintenance_descriptor=10
+    fi
+    if ! /usr/bin/env -i PATH=/usr/bin:/bin "${python_command}" -I -B "${retention_entry}" \
+        legacy-object-guard --release "${release_revision}" --backup-label "${backup_label}" \
+        --maintenance-fd "${maintenance_descriptor}" --recovery-fd 9 >/dev/null; then
+        echo "OneDrive backup capacity could not be verified safely." >&2
+        exit 1
+    fi
+else
+    if ! /usr/bin/env -i PATH=/usr/bin:/bin "${python_command}" -I -B - <<'PY'
+import pathlib, stat
+paths = (pathlib.Path('/etc/careertrellis/onedrive-retention/activation.json'),
+         pathlib.Path('/etc/careertrellis/onedrive-retention/activation-intent.json'),
+         pathlib.Path('/etc/careertrellis/onedrive-retention/activation-pending.json'),
+         pathlib.Path('/etc/careertrellis/onedrive-retention/activation-finalized.json'))
+for path in paths:
+    for parent in reversed(path.parents):
+        try: meta = parent.lstat()
+        except FileNotFoundError: continue
+        assert stat.S_ISDIR(meta.st_mode) and meta.st_uid == 0 and not meta.st_mode & 0o022
+    try: path.lstat()
+    except FileNotFoundError: pass
+    else: raise SystemExit(1)
+PY
+    then
+        echo "Backup activation absence could not be verified safely." >&2
+        exit 1
+    fi
+fi
+
 # A successful mkdir followed by a successful empty inventory supports a fresh
 # OneDrive folder. Provider/auth failures are never interpreted as emptiness.
 rclone_fixed mkdir "${destination}" --stats 0 --log-level ERROR

@@ -64,6 +64,19 @@ class Fake:
 
 
 class IdentityTests(unittest.TestCase):
+    def test_existing_parent_rejects_claims_before_provider_or_collector(self):
+        with patch.object(identity,'collect') as collect,patch.object(identity.subprocess,'Popen') as spawn:
+            with self.assertRaises(identity.IdentityRefused):identity.collect_existing_for_parent(TX,1,{'authenticated':True})
+            collect.assert_not_called();spawn.assert_not_called()
+
+    def test_existing_parent_constructs_distinct_native_boundary_only_after_authority(self):
+        parent=object()
+        with patch.object(identity.graph_delete,'_parent_authority') as authority,patch.object(identity,'collect',return_value={'fixture':True}) as collect:
+            self.assertEqual(identity.collect_existing_for_parent(TX,2,parent),{'fixture':True})
+            authority.assert_called_once_with(parent,TX,2,None)
+            self.assertIs(type(collect.call_args.args[2]),identity.Native)
+            self.assertIs(collect.call_args.args[2].parent,parent)
+
     def native_contract_fixture(self,fake):
         native = identity.Native()
         for name in ('locked','preflight','download_receipt','begin','now','monotonic',
@@ -212,8 +225,13 @@ class IdentityTests(unittest.TestCase):
             'Job': '', 'KillMode': 'control-group', 'SendSIGKILL': 'yes', 'RuntimeMaxUSec': '15min',
             'TimeoutStartUSec': '30s', 'TimeoutStopUSec': '30s', 'InvocationID': 'e'*32,
             'ControlGroup': '/system.slice/'+unit,
-            'ExecCondition': '', 'ExecStartPre': '', 'ExecStartPost': '', 'ExecStop': '', 'ExecStopPost': ''}
+            'ExecCondition': '', 'ExecStartPre': '', 'ExecStartPost': '', 'ExecReload':'', 'ExecStop': '', 'ExecStopPost': ''}
         self.assertEqual(identity.validate_unit_profile(good, 123, unit), 'e'*32)
+        child='careertrellis-onedrive-pre-growth-identity-'+'b'*32+'-'+TX+'-01.service'
+        child_good=dict(good,ControlGroup='/system.slice/'+child)
+        self.assertEqual(identity.validate_unit_profile(child_good,123,child),'e'*32)
+        with self.assertRaises(identity.IdentityRefused):
+            identity.validate_unit_profile(dict(child_good,RemainAfterExit='yes'),123,child)
         with patch.object(identity.subprocess, 'Popen') as spawn:
             for key, value in (('Type', 'oneshot'), ('Restart', 'always'), ('RemainAfterExit', 'yes'),
                     ('Job', '123'), ('ControlPID', '124'), ('ActiveState', 'activating'),
@@ -243,7 +261,7 @@ class IdentityTests(unittest.TestCase):
         backend.system=capture
         values=backend.unit_profile()
         self.assertEqual(set(values),set(identity.PROFILE_FIELDS))
-        self.assertEqual(len(calls),6)
+        self.assertEqual(len(calls),1+len(identity.common_io.HOOK_PROPERTIES))
         for field in identity.common_io.HOOK_PROPERTIES:self.assertEqual(values[field],'')
         requested=calls[0][-1].removeprefix('--property=').split(',')
         self.assertFalse(set(requested)&identity.common_io.HOOK_PROPERTIES)

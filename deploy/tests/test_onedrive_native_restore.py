@@ -230,6 +230,12 @@ class NativeLifecycleTests(unittest.TestCase):
 
 
 class FiniteOwnerContractTests(unittest.TestCase):
+    def test_systemd_day_duration_remains_finite_and_exact(self):
+        self.assertEqual(native.span_microseconds('1d 12h'),36*3600*1000000)
+        for value in ('infinity','1d12h','1d\n','-1d','1w','1.5d'):
+            with self.subTest(value=value),self.assertRaises(native.NativeRefused):
+                native.span_microseconds(value)
+
     def valid(self):
         return {'MainPID': '123', 'Type': 'exec', 'Restart': 'no', 'RemainAfterExit': 'yes',
             'KillMode': 'control-group', 'SendSIGKILL': 'yes', 'TimeoutStartUSec': '30s',
@@ -471,6 +477,90 @@ class DisposableAutoFilesystemTests(unittest.TestCase):
             self.instance.replace_disposable_auto(self.data)
         self.assertEqual(target.read_bytes(), b'untouched')
         self.assertFalse((self.root / '.restored-auto-conf.original').exists())
+
+
+class InfoMetadataTests(unittest.TestCase):
+    def setUp(self):
+        self.plan = prepared()
+        self.now = dt.datetime(2026, 10, 27, tzinfo=dt.timezone.utc)
+        self.downloaded = self.now - dt.timedelta(minutes=1)
+        self.row = {'label': LABEL, 'info': {'size': 10},
+                    'timestamp': {'start': int(self.now.timestamp())-300,
+                                  'stop': int(self.now.timestamp())-120}}
+
+    def info(self, row=None):
+        return [{'name': 'careertrellis', 'status': {'code': 0},
+                 'backup': [self.row if row is None else row]}]
+
+    def test_selected_full_recovery_point_uses_actual_stop(self):
+        result = native._info_times(self.info(), self.plan, self.downloaded, self.now)
+        self.assertEqual(result, {'selected': self.row['timestamp'], 'full': self.row['timestamp']})
+
+    def test_missing_boolean_reversed_future_or_after_download_refuses(self):
+        stop = self.row['timestamp']['stop']
+        for times in (None, {'start': True, 'stop': stop}, {'start': stop+1, 'stop': stop},
+                      {'start': stop, 'stop': int(self.now.timestamp())+1},
+                      {'start': stop, 'stop': int(self.downloaded.timestamp())+1}):
+            row = dict(self.row, timestamp=times)
+            with self.subTest(times=times), self.assertRaises(native.NativeRefused):
+                native._info_times(self.info(row), self.plan, self.downloaded, self.now)
+
+    def test_actual_info_writes_exclusive_bound_sanitized_sidecar(self):
+        instance = object.__new__(native.Native)
+        instance.plan=self.plan;instance.root=Path('/fixed')
+        instance.download_raw=bundle.canonical({'completed_at':self.downloaded.isoformat()})
+        events=[];instance.event=lambda name,value:events.append((name,value))
+        with patch.object(native, 'protected', return_value=b'ownership'), \
+             patch.object(native, '_info_binding', return_value={'ownership_sha256':'a'*64}):
+            instance.local_info(bundle.canonical(self.info()))
+        name,value=events[0]
+        self.assertEqual(name,'info-metadata')
+        self.assertEqual(value['selected']['stop'],self.row['timestamp']['stop'])
+        self.assertEqual(value['info_sha256'],hashlib.sha256(bundle.canonical(self.info())).hexdigest())
+        self.assertNotIn('backup',value)
+
+    def test_failed_info_never_writes_metadata(self):
+        instance=object.__new__(native.Native);instance.plan=self.plan
+        instance.download_raw=bundle.canonical({'completed_at':self.downloaded.isoformat()})
+        instance.event=lambda *_:self.fail('metadata written for failed INFO')
+        with self.assertRaises(native.NativeRefused):instance.local_info(b'[]')
+
+    def test_accepted_reader_requires_original_sidecar_and_exact_binding(self):
+        binding={'plan_sha256':plans.digest(self.plan),'ownership_sha256':'a'*64,
+                 'download_receipt_sha256':'b'*64,'info_intent_sha256':'c'*64,
+                 'info_dispatch_sha256':'d'*64,'info_terminal_sha256':'e'*64}
+        receipt={'transaction':self.plan['transaction'],'attempt':1,'completed_at':self.now.isoformat()}
+        raw=bundle.canonical(receipt);terminal=b'{}'
+        record={'evidence':{'native':receipt,'terminal_proof_sha256':hashlib.sha256(terminal).hexdigest()},
+                'entry':{'native_restore_receipt_sha256':hashlib.sha256(raw).hexdigest(),
+                         'accepted_at':self.now.isoformat()}}
+        metadata=dict(binding,schema=native.INFO_METADATA_SCHEMA,transaction=self.plan['transaction'],
+            attempt=1,info_sha256='f'*64,selected=self.row['timestamp'],full=self.row['timestamp'],
+            observed_at=self.now.isoformat())
+        receipt['schema']='careertrellis.onedrive-native-local-restore/v2'
+        receipt['info_metadata_sha256']=hashlib.sha256(bundle.canonical(metadata)).hexdigest()
+        raw=bundle.canonical(receipt)
+        record['entry']['native_restore_receipt_sha256']=hashlib.sha256(raw).hexdigest()
+        files={'ownership.json':bundle.canonical({'plan':self.plan,'owner':{}}),
+               'complete.json':raw,'unit-terminal-proof.json':terminal,'unit-stop-intent.json':b'{}',
+               'downloaded-receipt.json':bundle.canonical({'completed_at':self.downloaded.isoformat()}),
+               'info-intent.json':bundle.canonical({'observed_at':self.downloaded.isoformat()})}
+        def read(path,**_):
+            if path.name=='info-metadata.json':return bundle.canonical(metadata)
+            return files[path.name]
+        with patch.object(native,'protected',side_effect=read), \
+             patch.object(native,'validate_terminal_proof'),patch.object(native,'_info_binding',return_value=binding):
+            self.assertEqual(native.accepted_backup_completed_at(record),
+                             dt.datetime.fromtimestamp(self.row['timestamp']['stop'],dt.timezone.utc).isoformat())
+            metadata['ownership_sha256']='0'*64
+            with self.assertRaises(native.NativeRefused):native.accepted_backup_completed_at(record)
+            receipt['schema']='careertrellis.onedrive-native-local-restore/v1'
+            # Attaching a valid-looking sidecar cannot upgrade an immutable v1 receipt.
+            with self.assertRaisesRegex(native.NativeRefused,'original_info_metadata_binding_required'):
+                native.accepted_backup_completed_at(record)
+        receipt['schema']='careertrellis.onedrive-native-local-restore/v2'
+        with patch.object(native,'protected',side_effect=FileNotFoundError),self.assertRaises(FileNotFoundError):
+            native.accepted_backup_completed_at(record)
 
 
 if __name__ == '__main__':

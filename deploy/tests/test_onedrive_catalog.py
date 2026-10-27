@@ -1,9 +1,11 @@
-"""Offline catalogs are explicitly synthetic; no native/provider operation runs."""
+"""Synthetic catalogs and disposable native-file fixtures; no live repositories."""
 import copy
 from contextlib import contextmanager
 import datetime as dt
+import os
 from pathlib import Path
 import unittest
+import tempfile
 from unittest.mock import patch
 
 from deploy.onedrive_retention import bundle, catalog, local_restore_plan as plans, native_restore
@@ -89,6 +91,37 @@ def inventory(memory, observed):
 
 
 class CatalogTests(unittest.TestCase):
+    def test_v2_acceptance_requires_exact_metadata_digest_field(self):
+        plan,manifest,download,native,identity=self.fixture
+        native=dict(native,schema='careertrellis.onedrive-native-local-restore/v2',
+                    info_metadata_sha256='f'*64)
+        catalog.acceptance_entry(plan,manifest,bundle.canonical(download),
+                                 bundle.canonical(native),identity,NOW.isoformat())
+        del native['info_metadata_sha256']
+        with self.assertRaises(catalog.CatalogRefused):
+            catalog.acceptance_entry(plan,manifest,bundle.canonical(download),
+                                     bundle.canonical(native),identity,NOW.isoformat())
+
+    def test_v2_journals_require_original_metadata_bytes(self):
+        root=catalog.RESTORE_ROOT/('c'*32)
+        raw=b'{"synthetic":"original"}\n'
+        self.memory.sources[str(root/'info-metadata.json')]=raw
+        native={'schema':'careertrellis.onedrive-native-local-restore/v2','info_metadata_sha256':'f'*64}
+        with self.assertRaises(catalog.CatalogRefused):
+            catalog.verify_journals(self.memory,root,{},native,b'',b'',NOW)
+
+    def test_native_reader_allows_only_exact_metadata_filename(self):
+        from pathlib import PurePosixPath
+        reader=object.__new__(catalog.NativeFiles)
+        with patch.object(reader,'_protected',return_value=b'original') as read, \
+             patch.object(catalog,'Path',PurePosixPath), \
+             patch.object(catalog,'RESTORE_ROOT',PurePosixPath('/fixed-restore')):
+            root=catalog.RESTORE_ROOT/('c'*32)
+            self.assertEqual(reader.read(root/'info-metadata.json'),b'original')
+            read.assert_called_once()
+            for name in ('info-metadata-extra.json','info-metadata.json.extra','metadata.json'):
+                with self.assertRaises(catalog.CatalogRefused):reader.read(root/name)
+
     def setUp(self):
         self.memory = Memory(); self.now = NOW
         self.store = catalog.Catalog(self.memory, lambda: self.now)
@@ -271,6 +304,86 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(catalog.CatalogRefused, 'native_terminal_proof_stale'):
             self.store.accept('a'*32)
         self.assertEqual(self.memory.store, {})
+
+
+class RetirementModeTests(unittest.TestCase):
+    def fixture(self,mode=None):
+        operation={} if mode is None else {'expiry_mode':mode}
+        complete=copy.deepcopy(operation);intent=copy.deepcopy(operation);terminal=copy.deepcopy(operation)
+        permanent=mode=='conditional_permanent'
+        ack={'result':'deleted','object_id':'synthetic-id','request_id':'a'*64,
+             'recoverable':not permanent,'permanent':permanent}
+        if mode is not None:ack['expiry_mode']=mode
+        return operation,complete,intent,ack,terminal
+
+    def test_old_manual_and_each_explicit_mode_keep_exact_ack_contract(self):
+        for mode in (None,'recoverable_manual','conditional_permanent'):
+            operation,complete,intent,ack,terminal=self.fixture(mode)
+            self.assertEqual(catalog.retirement_expiry_mode(operation,complete),mode or 'recoverable_manual')
+            catalog.validate_retirement_object_mode(operation,intent,ack,terminal,'synthetic-id','a'*64)
+
+    def test_permanent_receipt_cannot_be_mixed_with_legacy_or_recoverable_claims(self):
+        for change in ('legacy-ack','missing-complete','missing-intent','wrong-terminal','changed-not-deleted'):
+            operation,complete,intent,ack,terminal=self.fixture('conditional_permanent')
+            if change=='legacy-ack':ack.update(recoverable=True,permanent=False)
+            elif change=='missing-complete':complete.pop('expiry_mode')
+            elif change=='missing-intent':intent.pop('expiry_mode')
+            elif change=='wrong-terminal':terminal['expiry_mode']='recoverable_manual'
+            else:ack['result']='changed_not_deleted'
+            with self.subTest(change=change),self.assertRaises(catalog.CatalogRefused):
+                catalog.retirement_expiry_mode(operation,complete)
+                catalog.validate_retirement_object_mode(operation,intent,ack,terminal,'synthetic-id','a'*64)
+
+    def test_unrecognized_or_boolean_expiry_mode_refuses(self):
+        for mode in (True,'purge-all',''):
+            with self.assertRaises(catalog.CatalogRefused):catalog.retirement_expiry_mode({'expiry_mode':mode},{'expiry_mode':mode})
+
+    def test_numeric_acknowledgement_flags_are_not_boolean_proof(self):
+        operation,complete,intent,ack,terminal=self.fixture('conditional_permanent')
+        ack.update(recoverable=0,permanent=1)
+        with self.assertRaises(catalog.CatalogRefused):
+            catalog.validate_retirement_object_mode(operation,intent,ack,terminal,'synthetic-id','a'*64)
+
+
+class ExistingOnlyCatalogTests(unittest.TestCase):
+    def test_missing_catalog_never_creates_or_repairs_storage(self):
+        reader=object.__new__(catalog.ExistingNativeFiles)
+        with patch.dict('sys.modules',{'fcntl':object()}),patch.object(reader,'require_repository_lock'), \
+             patch.object(reader,'directory',side_effect=FileNotFoundError()), \
+             patch.object(catalog.os,'mkdir') as mkdir,self.assertRaises(FileNotFoundError):
+            with reader.locked():pass
+        mkdir.assert_not_called()
+
+    def test_read_only_catalog_cannot_write_an_acceptance_or_tombstone(self):
+        reader=object.__new__(catalog.ExistingNativeFiles)
+        with patch.object(catalog.os,'open') as opened,self.assertRaises(catalog.CatalogRefused):
+            reader.write_store('accepted/'+'a'*64+'.json',b'not evidence')
+        opened.assert_not_called()
+
+    @unittest.skipUnless(os.name=='posix' and getattr(os,'geteuid',lambda:-1)()==0,
+                         'requires disposable root-owned POSIX lock fixture')
+    def test_native_existing_lock_is_exclusive_without_initializing_missing_state(self):
+        import fcntl
+        with tempfile.TemporaryDirectory(prefix='ct-catalog-readonly-',dir='/') as temporary:
+            root=Path(temporary);lock=root/'repository.lock';lock.write_bytes(b'');lock.chmod(0o600)
+            fd=os.open(lock,os.O_RDWR|os.O_NOFOLLOW)
+            try:
+                fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                with patch.object(catalog,'ROOT',root/'catalog'), \
+                     patch.object(catalog,'REPOSITORY_LOCK',lock), \
+                     patch.object(catalog.socket,'gethostname',return_value='job-applier-db-staging-01'):
+                    reader=catalog.NativeReadStore(fd)
+                    with self.assertRaises(FileNotFoundError):
+                        with reader.io.locked():pass
+                    self.assertFalse((root/'catalog').exists())
+                    writer=catalog.NativeStore(fd)
+                    with writer.io.locked():pass
+                    before=sorted((root/'catalog').iterdir())
+                    with reader.io.locked():
+                        with self.assertRaises(BlockingIOError):
+                            with catalog.NativeReadStore(fd).io.locked():pass
+                    self.assertEqual(sorted((root/'catalog').iterdir()),before)
+            finally:os.close(fd)
 
 
 if __name__ == '__main__': unittest.main()

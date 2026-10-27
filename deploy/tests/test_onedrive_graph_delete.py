@@ -3,6 +3,8 @@ import json
 import unittest
 from unittest.mock import patch
 import os
+import datetime as dt
+from types import SimpleNamespace
 from deploy.onedrive_retention import graph_delete as g
 
 SHA = 'a'*64
@@ -23,6 +25,87 @@ class Fake:
 
 
 class Tests(unittest.TestCase):
+    def test_permanent_conditional_post_and_all_scoped_absences(self):
+        class Permanent(Fake):
+            def __init__(self,status=204,absent=True,replacement_path=False):
+                super().__init__(status);self.deleted=False;self.absent=absent;self.replacement_path=replacement_path
+                self.metadata['parentReference']['id']='archive-parent'
+            def request(self,method,url,headers,grant):
+                self.calls.append((method,url,dict(headers)))
+                if method=='POST':self.deleted=self.status==204;return self.status,b''
+                if url.endswith('/archive-parent'):
+                    return 200,json.dumps({'id':'archive-parent','name':SHA,'folder':{},
+                        'parentReference':{'id':'root/one','driveId':'drive/one'}}).encode()
+                if self.deleted and self.absent:
+                    if self.replacement_path and url.endswith(':/repository.tar'):return 200,json.dumps(self.metadata).encode()
+                    return 404,b''
+                return 200,json.dumps(self.metadata).encode()
+        def client(fake):return g.Client(g.offline_grant('drive/one','root/one',SHA,'"version-1"',
+            expiry_mode='conditional_permanent'),fake)
+        fake=Permanent();once=client(fake)
+        self.assertEqual(once.permanent_delete(SHA,'item/one',123),'permanent_delete_accepted')
+        calls=len(fake.calls)
+        with self.assertRaises(g.Refused):once.permanent_delete(SHA,'item/one',123)
+        self.assertEqual(len(fake.calls),calls)
+        posts=[call for call in fake.calls if call[0]=='POST'];self.assertEqual(len(posts),1)
+        self.assertTrue(posts[0][1].endswith('/items/item%2Fone/permanentDelete'))
+        self.assertEqual(posts[0][2]['If-Match'],'"version-1"')
+        self.assertEqual(sum(call[0]=='DELETE' for call in fake.calls),0)
+        for status in (412,302,429,500):
+            fake=Permanent(status)
+            if status==412:self.assertEqual(client(fake).permanent_delete(SHA,'item/one',123),'changed_not_deleted')
+            else:
+                with self.assertRaises(g.UnknownOutcome):client(fake).permanent_delete(SHA,'item/one',123)
+            self.assertEqual(sum(call[0]=='POST' for call in fake.calls),1)
+        fake=Permanent(absent=False)
+        with self.assertRaises(g.UnknownOutcome):client(fake).permanent_delete(SHA,'item/one',123)
+        self.assertEqual(sum(call[0]=='POST' for call in fake.calls),1)
+        fake=Permanent(replacement_path=True)
+        with self.assertRaises(g.UnknownOutcome):client(fake).permanent_delete(SHA,'item/one',123)
+        self.assertEqual(sum(call[0]=='POST' for call in fake.calls),1)
+        fake=Permanent();fake.metadata['eTag']='new-version'
+        self.assertEqual(client(fake).permanent_delete(SHA,'item/one',123),'changed_not_deleted')
+        self.assertFalse(any(call[0]=='POST' for call in fake.calls))
+
+    def test_soft_grant_never_permanent_and_permanent_grant_never_soft(self):
+        fake=Fake()
+        with self.assertRaises(g.Refused):self.client(fake).permanent_delete(SHA,'item/one',123)
+        client=g.Client(g.offline_grant('d','r',SHA,'tag',expiry_mode='conditional_permanent'),fake)
+        with self.assertRaises(g.Refused):client.soft_delete(SHA,'item/one',123)
+        self.assertEqual(fake.calls,[])
+        self.assertTrue(g.native_permanent_expiry_available())
+
+    def test_native_permanent_factory_requires_current_sealed_drive_policy_witness(self):
+        from deploy.onedrive_retention import expiry_capability as e,entry,coordinator,hydrate
+        bindings={'standalone_policy_sha256':'b'*64};revision='c'*40
+        context=SimpleNamespace(revision=revision,bindings=bindings)
+        policy=SimpleNamespace(data={'expiry_mode':'conditional_permanent'},digest='b'*64,require_active=lambda now:None)
+        witness=e.FreshWitness('d','a'*64,dt.datetime.now(dt.timezone.utc).isoformat(),bindings,revision,e._SEAL)
+        def protected(path,*args):
+            return ((b'[r2]\ntype=s3\n[onedrive]\ntype=onedrive\ndrive_id=d\n' if path!=coordinator.PRIVATE_POLICY else b'{}'),None)
+        with patch.object(entry,'verify_install',return_value=revision),patch.object(entry,'_native_dependencies',return_value=context),\
+             patch.object(entry,'FILES',set(entry.FILES)|{'expiry_capability.py'}),\
+             patch.object(entry,'ROOT',g.Path(g.__file__).absolute().parent),\
+             patch.object(entry,'_load',return_value=e),\
+             patch.object(e,'__file__',str(entry.ROOT/'expiry_capability.py')),\
+             patch.object(coordinator,'Policy',return_value=policy),patch.object(coordinator,'native_policy_binding'),\
+             patch.object(hydrate,'protected',side_effect=protected),patch.object(e,'native_current',return_value=witness) as current:
+            self.assertEqual(g._permanent_capability('d','',revision),'a'*64)
+            for invalid in ({'authenticated':True},e.FreshWitness('other','a'*64,witness.observed_at,bindings,revision,e._SEAL),
+                            e.FreshWitness('d','a'*64,(dt.datetime.now(dt.timezone.utc)-dt.timedelta(days=2)).isoformat(),bindings,revision,e._SEAL)):
+                current.return_value=invalid
+                with self.assertRaises(ValueError):g._permanent_capability('d','',revision)
+            current.return_value=witness;policy.data['expiry_mode']='recoverable_manual'
+            with self.assertRaises(ValueError):g._permanent_capability('d','',revision)
+
+    def test_native_transport_requires_permanent_mode_exact_id_and_capability(self):
+        grant=g.Grant('d','r','private',SHA,'tag',seal=g._SEAL,expiry_mode='conditional_permanent',
+            expected_id='i',capability_sha256='a'*64)
+        with patch.object(g.urllib.request,'build_opener') as opener:
+            for url,headers in ((g.ORIGIN+'/drives/d/items/other/permanentDelete',{'If-Match':'tag'}),
+                                (g.ORIGIN+'/drives/d/items/i/permanentDelete',{'If-Match':'wrong'})):
+                with self.assertRaises(g.Refused):g.HttpTransport().request('POST',url,headers,grant)
+            opener.assert_not_called()
     def client(self, fake):
         return g.Client(g.offline_grant('drive/one','root/one',SHA,'"version-1"'), fake)
 

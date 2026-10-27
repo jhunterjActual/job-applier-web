@@ -5,6 +5,10 @@ import threading
 import types
 import unittest
 import urllib.error
+import os
+import sys
+import tempfile
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from . import host, runtime
@@ -252,7 +256,9 @@ class HostTests(unittest.TestCase):
                     'egress_ipv4_cidr': '192.0.2.1/32'}
         value.client.call.return_value = {'ready': True}
         value.r.run.return_value = canonical({'operation': 'generated_object_mirror', 'result': 'ok', 'started_at': '2026-10-25T00:00:00Z'})
-        with patch.object(host, 'Journal', return_value=root), patch.object(runtime, 'Fence', side_effect=fence), patch.object(host.provider, 'web_facts', side_effect=facts):
+        with patch.object(host, 'Journal', return_value=root), patch.object(runtime, 'Fence', side_effect=fence), \
+                patch.object(host.provider, 'web_facts', side_effect=facts), \
+                patch.object(value,'retention_strategy',return_value={'mode':'legacy-mirror'}):
             self.assertTrue(value.preflight()['ready'])
         self.assertEqual(held, [])
 
@@ -738,6 +744,148 @@ class PrestartAbortTests(unittest.TestCase):
                  patch.object(host,'_journal_names',side_effect=lambda store,maximum=512:set(store.values)):
                 with self.assertRaises(Refused):value.prove_prestart_terminal(TX)
             self.assertFalse(value.store.exists('prestart-aborted.json'))
+
+
+class NativeBundleAcceptanceTests(unittest.TestCase):
+    def test_unconfirmed_online_child_keeps_original_fence_without_writer_recovery_or_redispatch(self):
+        value=backend();value.bundle_unconfirmed=True;value.restored=True
+        fence=types.SimpleNamespace(fd=7,check=Mock())
+        value.r.fence=fence;value.status=Mock()
+        controller=types.SimpleNamespace(run=Mock(return_value={'state':'operator_required','services_restored':True}))
+        class EndObservation(Exception):pass
+        with patch.object(host.time,'sleep',side_effect=EndObservation),patch.object(host,'public_marker') as marker:
+            with self.assertRaises(EndObservation):host._run_controller(controller,value,TX,False)
+        controller.run.assert_called_once_with(TX,recovery_only=False)
+        fence.check.assert_called_once();marker.assert_not_called()
+        value.status.assert_called_once_with('operator_required','failed',True)
+        value.client.call.assert_not_called()
+
+    def fixture(self):
+        captured=capture()
+        strategy={'mode':'native-bundle-v2','retention_policy_sha256':'d'*64,'activation_sha256':'e'*64}
+        def status(stage,facts):
+            return {'schema':'careertrellis.onedrive-stage-status/v1','capture_transaction':TX,
+                'retention_policy_sha256':'d'*64,'stage':stage,'state':'complete','receipt_sha256':'f'*64,'facts':facts}
+        facts={'archive_sha256':'1'*64,'archive_bytes':10240,'generation_sha256':'2'*64,
+               'backup_label':captured['backup_label']}
+        hydrate=status('hydrate',facts)
+        restored=status('restore',dict(facts,native_restore_accepted=True))
+        final=status('retire',{'catalog_sha256':'3'*64,'retired_count':0})
+        documents={'coordinator-intent.json':{'schema':'careertrellis.retention-coordinator/v1',
+            'transaction':TX,'retention_policy_sha256':'d'*64,'expected_backup_label':captured['backup_label']},
+            'hydrate-complete.json':hydrate,'restore-complete.json':restored,'retire-complete.json':final,
+            'coordinator-terminal.json':{'transaction':TX,'state':'complete','result':copy.deepcopy(final)}}
+        return captured,strategy,documents
+
+    def test_normalized_acceptance_binds_actual_same_transaction_restored_label_and_completion(self):
+        captured,strategy,documents=self.fixture()
+        accepted=host.native_bundle_acceptance(captured,strategy,TX,HASH,documents)
+        self.assertEqual(accepted['backup_label'],captured['backup_label'])
+        self.assertEqual(accepted['native_receipt_sha256'],documents['restore-complete.json']['receipt_sha256'])
+        self.assertEqual(accepted['bundle_completion_sha256'],digest(documents['coordinator-terminal.json']))
+        self.assertEqual(accepted['state'],'native_bundle_complete')
+
+    def test_missing_early_label_constraint_or_mismatched_native_evidence_refuses(self):
+        for change in (lambda d:d['coordinator-intent.json'].pop('expected_backup_label'),
+            lambda d:d['restore-complete.json'].update(capture_transaction='f'*32),
+            lambda d:d['restore-complete.json']['facts'].update(native_restore_accepted=False),
+            lambda d:d['restore-complete.json']['facts'].update(backup_label='20261027-001723F'),
+            lambda d:d['restore-complete.json']['facts'].update(archive_bytes=True),
+            lambda d:d['coordinator-terminal.json'].update(state='failed'),
+            lambda d:d['retire-complete.json']['facts'].update(retired_count=-1)):
+            captured,strategy,documents=self.fixture();change(documents)
+            with self.assertRaises(Refused):host.native_bundle_acceptance(captured,strategy,TX,HASH,documents)
+
+    def test_native_generation_requires_real_bundle_acceptance_and_actual_health_delivery(self):
+        value=backend();captured,strategy,documents=self.fixture()
+        accepted=host.native_bundle_acceptance(captured,strategy,TX,HASH,documents)
+        publication={key:captured[key] for key in ('authority','backup_label','manifest_sha256','release','snapshot_id')}
+        for name,record in {'capture-result.json':captured,
+            'publication-result.json':dict(publication,result='onedrive_snapshot_created'),
+            'writers-restored.json':{'services_restored':True,'capture_sha256':digest(captured)},
+            'db-released.json':{'services_restored':True},
+            'start-intent.json':{'backup_strategy':strategy},'db-bundle-accepted.json':accepted,
+            'db-health-accepted.json':{'state':'health_complete','transaction':TX,'policy_sha256':HASH,
+                                       'normal_report_accepted':True}}.items():value.store.write_once(name,record)
+        root=Store()
+        with patch.object(host,'Journal',return_value=root),patch.object(value,'_replace_generation_projection'):
+            value._record_verified_generation()
+        self.assertTrue(root.exists('verified-generation-'+TX+'.json'))
+        self.assertFalse(value.store.exists('db-mirror-accepted.json'))
+        value.store.values['db-health-accepted.json']['normal_report_accepted']=False
+        with self.assertRaises(Refused):value._record_verified_generation()
+
+    @unittest.skipUnless(os.name=='posix','requires POSIX descriptor fixture, no host services')
+    def test_fixed_child_inherits_same_fence_and_success_reads_real_bound_records(self):
+        self.wrapper_fixture(False)
+
+    @unittest.skipUnless(os.name=='posix','requires POSIX descriptor fixture, no host services')
+    def test_unknown_child_retains_fence_and_is_not_signalled_or_replayed(self):
+        self.wrapper_fixture(True)
+
+    def wrapper_fixture(self,unknown):
+        captured,strategy,documents=self.fixture();value=backend()
+        value.r.live_group.return_value=False;value.bundle_unconfirmed=False
+        value.retention_strategy=Mock(return_value=copy.deepcopy(strategy));value.status=Mock()
+        parent_pid=os.getpid();child_pid=parent_pid+10000
+        def identity(pid):return {'pid':pid,'start_ticks':123 if pid==parent_pid else 456,
+            'process_group':parent_pid if pid==parent_pid else child_pid,'boot_id':BOOT}
+        native=types.SimpleNamespace(process_identity=identity)
+        preservation=types.SimpleNamespace(require_owned_lock=lambda path,fd:{'device':1,'inode':2,'owner_pid':parent_pid})
+        coordinator=types.SimpleNamespace(STATE=Path('/fixed-retention'),
+            read_private=lambda path:copy.deepcopy(documents[path.name]))
+        entry=types.SimpleNamespace(verify_install=Mock(return_value='a'*40),
+            _load=lambda name:{'native_restore':native,'preservation':preservation,'coordinator':coordinator}[name])
+        package=types.ModuleType('onedrive_retention');package.entry=entry
+        parent_state={'ActiveState':'active','SubState':'running','MainPID':str(parent_pid),
+            'ControlPID':'0','Job':'','InvocationID':value.r.invocation}
+        value.r.state.return_value=parent_state
+        publication={key:captured[key] for key in ('release','backup_label','snapshot_id','manifest_sha256','authority')}
+        for name,record in {'start-intent.json':{'backup_strategy':strategy},
+            'writers-restored.json':{'services_restored':True,'capture_sha256':digest(captured)},
+            'db-released.json':{'services_restored':True},
+            'publication-result.json':dict(publication,result='onedrive_snapshot_created')}.items():
+            value.store.write_once(name,record)
+        class Proc:
+            pid=child_pid
+            def poll(self):return None if unknown else 0
+            def wait(self):return 0
+            terminate=Mock();kill=Mock()
+        process=Proc()
+        with tempfile.TemporaryDirectory(prefix='paired-native-child-') as temporary:
+            root=Path(temporary);value.store.root=root
+            class Fence:
+                def __init__(self):self.fd=os.open(root/'lock',os.O_RDWR|os.O_CREAT,0o600);self.closed=False
+                def acquire(self):return self
+                def check(self):pass
+                def close(self):os.close(self.fd);self.fd=None;self.closed=True
+            fence=Fence()
+            def spawn(command,**options):
+                self.assertEqual(command[-4:],['--transaction',TX,'--expected-backup-label',captured['backup_label']])
+                self.assertEqual(options['pass_fds'],(fence.fd,));self.assertTrue(options['start_new_session'])
+                self.assertEqual(options['stderr'],options['stdout'])
+                self.assertEqual(os.fstat(options['stdout']).st_mode&0o777,0o600)
+                os.write(options['stdout'],canonical(documents['retire-complete.json']))
+                return process
+            try:
+                with patch.dict(sys.modules,{'onedrive_retention':package}), \
+                    patch.object(host.runtime,'Fence',return_value=fence), \
+                    patch.object(host.subprocess,'Popen',side_effect=spawn) as dispatched, \
+                    patch.object(host.Path,'read_text',return_value='0::/system.slice/careertrellis-paired-maintenance.service'), \
+                    patch.object(host.runtime,'protected',side_effect=lambda path,*args:Path(path).read_bytes()), \
+                    patch.object(host.time,'monotonic',side_effect=[0,host.BUNDLE_ONLINE_SECONDS+1] if unknown else [0]):
+                    if unknown:
+                        with self.assertRaises(Refused):value.run_native_bundle(captured,strategy)
+                        self.assertTrue(value.bundle_unconfirmed);self.assertFalse(fence.closed)
+                        self.assertTrue(value.store.exists('bundle-child-unconfirmed.json'))
+                    else:
+                        accepted=value.run_native_bundle(captured,strategy)
+                        self.assertTrue(accepted['native_restore_accepted']);self.assertTrue(fence.closed)
+                        self.assertFalse(value.bundle_unconfirmed)
+                    dispatched.assert_called_once()
+                process.terminate.assert_not_called();process.kill.assert_not_called()
+            finally:
+                if fence.fd is not None:fence.close()
 
 
 if __name__ == '__main__': unittest.main()

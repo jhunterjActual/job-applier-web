@@ -19,6 +19,33 @@ def need(value):
         raise Refused('web_protocol_refused')
 
 
+def validate_backup_strategy(value):
+    need(type(value) is dict and value.get('mode') in ('legacy-mirror','native-bundle-v2'))
+    if value['mode'] == 'legacy-mirror': need(set(value) == {'mode'})
+    else:
+        need(set(value) == {'mode','retention_policy_sha256','activation_sha256'}
+             and hex_string(value['retention_policy_sha256'],64)
+             and hex_string(value['activation_sha256'],64))
+    return value
+
+
+def validate_bundle_acceptance(value, transaction, paired_policy_sha256, capture, strategy):
+    validate_backup_strategy(strategy)
+    need(strategy['mode'] == 'native-bundle-v2' and type(value) is dict
+         and set(value) == {'schema','state','transaction','policy_sha256','retention_policy_sha256',
+            'activation_sha256','backup_label','native_restore_accepted','archive_sha256',
+            'native_receipt_sha256','restore_status_sha256','bundle_completion_sha256'}
+         and value['schema'] == 'careertrellis.paired-native-bundle-accepted/v1'
+         and value['state'] == 'native_bundle_complete' and value['transaction'] == transaction
+         and value['policy_sha256'] == paired_policy_sha256
+         and value['retention_policy_sha256'] == strategy['retention_policy_sha256']
+         and value['activation_sha256'] == strategy['activation_sha256']
+         and value['backup_label'] == capture['backup_label'] and value['native_restore_accepted'] is True)
+    for key in ('archive_sha256','native_receipt_sha256','restore_status_sha256','bundle_completion_sha256'):
+        need(hex_string(value[key],64))
+    return value
+
+
 def slot_name(date, policy_sha256):
     need(isinstance(date,str) and re.fullmatch('[0-9]{8}',date)
          and hex_string(policy_sha256,64))
@@ -160,6 +187,7 @@ class WebControl:
             self.policy.require_new_start(self.backend.now())
             preflight = self.backend.preflight()
             need(preflight.get('ready') is True)
+            strategy = validate_backup_strategy(preflight.get('backup_strategy',{'mode':'legacy-mirror'}))
             if not self.policy.due(preflight['last_capture_started_at'], self.backend.now()):
                 self._status('fresh', 'skipped')
                 return {'state': 'skipped', 'services_restored': False}
@@ -167,7 +195,7 @@ class WebControl:
             need(type(identity) is dict and set(identity) == {'release', 'web_boot', 'web_invocation'})
             need(identity['release'] == self.policy.data['application_release'])
             self.store.write_once('start-intent.json', {'transaction': transaction,
-                'policy_sha256': self.policy.digest, 'identity': identity})
+                'policy_sha256': self.policy.digest, 'identity': identity,'backup_strategy':strategy})
             self._fence()
             self.store.write_once('db-begin-intent.json', identity)
             self.backend.peer('begin', identity)
@@ -204,9 +232,16 @@ class WebControl:
             need(all(publication.get(key) == capture[key] for key in
                 ('release', 'backup_label', 'snapshot_id', 'manifest_sha256', 'authority')))
             self.store.write_once('publication-result.json', publication)
-            self.backend.peer('mirror', {'release': identity['release'], 'backup_label': capture['backup_label'],
-                'publication_manifest_sha256': capture['manifest_sha256']})
-            self.backend.wait_mirror()
+            if strategy['mode'] == 'native-bundle-v2':
+                self.store.write_once('bundle-intent.json',{'capture_sha256':digest(capture),
+                    'publication_sha256':digest(publication),'backup_strategy':strategy})
+                accepted=self.backend.run_native_bundle(capture,strategy)
+                validate_bundle_acceptance(accepted,transaction,self.policy.digest,capture,strategy)
+                self.store.write_once('db-bundle-accepted.json',accepted)
+            else:
+                self.backend.peer('mirror', {'release': identity['release'], 'backup_label': capture['backup_label'],
+                    'publication_manifest_sha256': capture['manifest_sha256']})
+                self.backend.wait_mirror()
             self.backend.peer('health', {})
             self.backend.wait_health()
             self.backend.normal_reports()
