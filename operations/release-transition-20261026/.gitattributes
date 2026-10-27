@@ -52,3 +52,10 @@ tests/registry*.json -text
 tests/DEPENDENCIES.json -text
 tests/BASE_BYTES/native_backend.py -text whitespace=cr-at-eol
 tests/public-fixtures/prepare_release291d.py -text whitespace=cr-at-eol
+operator/drive.py -text
+tests/target-context-rebind/BASE_BYTES/accepted_pair_validator.py -text
+tests/target-context-rebind/BASE_BYTES/drive.py -text
+tests/target-context-rebind/TARGET_BYTES/accepted_pair_validator.py -text
+tests/target-context-rebind/TARGET_BYTES/drive.py -text
+tests/target-context-rebind/test_public_source_binding.py -text
+tests/target-context-rebind/test_target_rebind.py -text

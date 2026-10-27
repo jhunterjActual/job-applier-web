@@ -9,3 +9,7 @@ The original55th case requires an actual local291d Git object and remains extern
 Optional builder contract checks: python -B -m unittest discover -s tests -p 'builder_contract_checks.py'. Seven cases use mocked Git and synthetic tiny sources/outputs. They do not create an actual runtime manifest, prove actual Git ancestry or supply an operational commit. Actual builder generation still requires the reviewed source commit and every actual runtime/nested Git blob.
 
 Scoped .gitattributes is a proposal for byte preservation: exact source paths use -text; only actual rawCRLFpaths add cr-at-eol. No blanket whitespace or EOF exception is included. Authentic EOF/trailing-horizontal warnings require explicit parent review, not normalization.
+
+Current-target follow-up: accepted_pair_validator.py and operator/drive.py bind the corrected bc68 candidate. Historical baseline receipt hashes and all safety methods remain unchanged. The operator bridge is separate from the35-file runtime packet.
+
+Run the12 target-context regressions explicitly: python -B -m unittest discover -s tests/target-context-rebind -p 'test*.py'. These include actual published-byte bindings and the complete active-target audit; they do not invoke real paired receipts or hosts.
