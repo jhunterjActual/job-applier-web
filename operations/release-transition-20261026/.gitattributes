@@ -1,0 +1,54 @@
+accepted_pair_validator.py -text
+build_manifest.py -text whitespace=cr-at-eol
+canonical_primitives.py -text
+current_health_validator.py -text
+db_audit.py -text
+historical98_controls.py -text
+native_backend.py -text whitespace=cr-at-eol
+native_peer.py -text whitespace=cr-at-eol
+peer_server.py -text whitespace=cr-at-eol
+policy_encoding.py -text
+prepared97_checks.py -text
+prepared97_context.py -text
+prepared97_history.py -text
+prepared97_reader.py -text
+prepared97_records.py -text
+prepared97_sources.py -text
+prepared97_specs.py -text
+prepared98_history.py -text
+prepared_evidence.py -text
+prepared_reader.py -text
+prepared_registries.py -text
+prepared_sources.py -text
+prepared_types.py -text
+protected_state.py -text
+readiness_bridge.py -text whitespace=cr-at-eol
+release_transaction.py -text
+reviewed_probe.py -text
+terminal_validation.py -text
+web_coordinator.py -text
+one_shot_readiness/collector.py -text
+one_shot_readiness/installed493-pins.json -text
+one_shot_readiness/pair_boundary.py -text whitespace=cr-at-eol
+one_shot_readiness/SOURCE_MANIFEST.json -text
+one_shot_readiness/terminal493.py -text whitespace=cr-at-eol
+one_shot_readiness/transaction04-pins.json -text
+one_shot_readiness/transaction04.py -text
+policy-contract-fixtures/common_493.py -text
+policy-contract-fixtures/policy_example_493.json -text
+tests/test*.py text eol=lf
+tests/portable_bootstrap.py text eol=lf
+tests/synthetic97.py -text
+tests/fixture98.py -text
+tests/adapter.py -text
+tests/historical.py -text
+tests/checks97.py -text
+tests/qualified_specs.py -text
+tests/qualified97_records.py -text
+tests/historical98_controls.py -text
+tests/public-fixtures/** -text
+tests/BASE_BYTES/** -text
+tests/registry*.json -text
+tests/DEPENDENCIES.json -text
+tests/BASE_BYTES/native_backend.py -text whitespace=cr-at-eol
+tests/public-fixtures/prepare_release291d.py -text whitespace=cr-at-eol

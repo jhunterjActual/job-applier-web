@@ -1,0 +1,78 @@
+{
+  "schema": "careertrellis.corrected97-published-source-provenance/v1",
+  "source": "Parent authenticated published ops identity; exact LF candidate rawbytes retained; no host or private receipt",
+  "files": {
+    "public-fixtures/qualified97-source/accepted98_dependency.py": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/accepted98_dependency.py",
+      "sha256": "680451f765f3591594e0f1e16cb83fd055e13731f0cfa1def000a51e50adcf36"
+    },
+    "public-fixtures/qualified97-source/admission97.py": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/admission97.py",
+      "sha256": "47d7b90c14878a45180cecf26b6848f9765b545a8fffda936ffce99631929bc3"
+    },
+    "public-fixtures/qualified97-source/checks97.py": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/checks97.py",
+      "sha256": "23c667c24daf288c8f70540a2802a92e6bcbc82f46d848217c77f6ba3d4719d3"
+    },
+    "public-fixtures/qualified97-source/historical98_controls.py": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/historical98_controls.py",
+      "sha256": "dfc9246cf028a060af4e2b02db83305212ef5bc9671c8f3391fced75261bb7ed"
+    },
+    "public-fixtures/qualified97-source/materialize97.py": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/materialize97.py",
+      "sha256": "80b56a88483463b1c4512d8be97fab50bcbc959636dadd514e67fce17ccdd45c"
+    },
+    "public-fixtures/qualified97-source/native97_unit.py": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/native97_unit.py",
+      "sha256": "db8e79e8a280f906dd9b47bdb604e3d16342246da8a8899e4a3a8c55da8a7390"
+    },
+    "public-fixtures/qualified97-source/native_assertions97.py": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/native_assertions97.py",
+      "sha256": "ae0730b9b8f377875d9c1f4d76d134a853a9294a6f8d56a297f9c400f3b856bd"
+    },
+    "public-fixtures/qualified97-source/qualified97_records.py": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/qualified97_records.py",
+      "sha256": "a9be564f8842f67debe85a355107c0837b23305cfb6283de7321b2ace58d0aeb"
+    },
+    "public-fixtures/qualified97-source/qualified_entry.py": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/qualified_entry.py",
+      "sha256": "d9b9a9751371537c58e4392e50b74599da1d2359f60ea8c5e456c4ad4d2e4e4f"
+    },
+    "public-fixtures/qualified97-source/qualified_route.py": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/qualified_route.py",
+      "sha256": "65279f8ffac6467063d9b619bd5f6e98985f1b9a8553579d4b79eae9f1a4d67a"
+    },
+    "public-fixtures/qualified97-source/qualified_specs.py": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/qualified_specs.py",
+      "sha256": "8428bbc1e7cb81b53aacca92dae521df24024e260a8f24212f894f15ac0a187f"
+    },
+    "public-fixtures/qualified97-source/run_checks_qualified97.py": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/run_checks_qualified97.py",
+      "sha256": "50237771b54bdcc87b8e551d3f0bc42ea166c05b5edce5f273765d517b6b993f"
+    },
+    "public-fixtures/qualified97-source/source_boundary.py": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/source_boundary.py",
+      "sha256": "50b1c041fef2631817ec8eab4991237aba21ef14cd77f7bc01defb785ce15c99"
+    },
+    "public-fixtures/producer-registry97.json": {
+      "commit": "a62e3f1269df9390d075a263385dc024b2623d6a",
+      "git_path": "operations/release-transition-20261027/corrected97/SOURCE_REGISTRY.json",
+      "sha256": "7e28cdde03df61fad511d03fab77235fc458b22df222edfb0d78069fc2f8b5cf"
+    }
+  },
+  "same_commit_repair98_contract_sha256": "6eacc5f98edd31dfecf209f8e0692ab5ec993396fde6990e42e547cde598ce8f",
+  "future_acceptance_sha256": "UNALLOCATED"
+}
