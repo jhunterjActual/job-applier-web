@@ -1,0 +1,11 @@
+# Inactive correction98 repair
+
+This focused operational bundle repairs the synthetic native preparation fixture for correction release f70417d4bd70c3eb086ea63c90938dd2f43e0b99 (20261026.98). Application and test source remain unchanged. Exactly one reviewed test creates its temporary systemd verification root in the task's writable work directory while the release stays read-only. Both original positive and missing-helper negative systemd-analyze calls still execute.
+
+The seven runtime sources use independent preflight, retained owner/coordinator, and post-terminal seal entrypoints. Source readiness is enabled; invocation still requires protected exact source/Git bindings, fresh approved plan and decision hashes, the fixed staging host/paths, original failure evidence, full runtime/software verification and unchanged isolation. No operation starts at import. This bundle does not activate an app, change current/previous, alter backup policies, or approve a provider call.
+
+Run portable checks from this directory with the existing local Python: `python -B -m unittest discover -s . -p 'test*.py'`. Expected: 26 tests. These use synthetic boundaries and prove no native host acceptance. One original host-inventory-dependent test is retained outside Git as evidence; its exact omitted AST digest and counts are in EXTERNAL_EVIDENCE_TESTS.json. The only copied source fixture is public Git code from preparation commit291d.
+
+Native qualification is separate: the existing synthetic isolation evidence supports the unchanged property body; a repaired inactive98 attempt still needs its own source-stage, fresh plan, native tests, terminal proof and independent seal. Old failed attempts and plans are immutable. Unknown outcomes retain owner/captures and forbid replay. Deployment activation, target97 materialization and the two-host release protocol are separate boundaries.
+
+Code is staged root-owned outside nobody-writable work. Task logs and host inventories stay under the protected evidence domain and must not be committed. No installation, invocation, cleanup, push or PR creation is authorized by this README. Use the separately reviewed exact operator packet; do not handcraft or reuse an expired plan.
