@@ -1,0 +1,5 @@
+scripts/value_evaluation/fixtures/campaign_state_v1.py -text
+# Runtime source pins require exact historical Git blob bytes.
+scripts/value_evaluation/campaign_state.py -text
+scripts/value_evaluation/budget_guard.py -text
+scripts/value_evaluation/native_cost_envelope.py -text
