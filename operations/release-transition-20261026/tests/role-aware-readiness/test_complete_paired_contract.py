@@ -124,7 +124,7 @@ class UnitTests(unittest.TestCase):
     if name.endswith('.timer'):self.assertEqual(set(row),set(c.TIMER_UNIT_FIELDS));self.assertNotIn('MainPID',row)
     else:self.assertEqual(row['NRestarts'],'0')
  def test_separate_cadence_cache_and_original_ttl(self):
-  values={'TimersCalendar':'','TimersMonotonic':'audit','Persistent':'yes','RandomizedDelayUSec':'0','AccuracyUSec':'1s'}
+  values={'Persistent':'yes','RandomizedDelayUSec':'0','AccuracyUSec':'1s'}
   raw=''.join(k+'='+v+'\n' for k,v in values.items()).encode()
   with patch.object(c,'run',return_value=raw):
    r=c.Reader();self.assertEqual(r.timer_cadence('careertrellis-paired-recovery.timer'),values);r.stable()
@@ -172,7 +172,7 @@ class UnitTests(unittest.TestCase):
   def fn(raw,name):
    n=next(n for n in ast.parse(raw).body if isinstance(n,ast.FunctionDef) and n.name==name);return b''.join(raw.splitlines(True)[n.lineno-1:n.end_lineno])
   for name in ('archive','web_prestart_record','database_complete_record','private_complete_record','web_complete_proof','derived_complete_input','historical_terminal'):self.assertEqual(fn(original,name),fn(current,name))
-  source=(pb.ROOT/'one_shot_readiness/collector.py').read_text();self.assertIn("careertrellis.local-scheduler-coverage/v2",source)
+  source=(pb.ROOT/'one_shot_readiness/collector.py').read_text();self.assertIn("careertrellis.local-scheduler-coverage/v3",source)
  def test_actual_both_role_full_coverage_join_all_phases_and_failures(self):
   from datetime import datetime,timezone,timedelta
   from zoneinfo import ZoneInfo
@@ -192,7 +192,10 @@ class UnitTests(unittest.TestCase):
     if self.bad=='reload':row['NeedDaemonReload']='yes'
     if self.bad=='timerpid' and name.endswith('.timer'):row['MainPID']='0'
     return row
-   def timer_cadence(self,name):return {'TimersCalendar':'OnCalendar=Sun *-*-* 03:00:00 America/New_York','TimersMonotonic':'audit','Persistent':'yes','RandomizedDelayUSec':'0','AccuracyUSec':'1s'}
+   def timer_cadence(self,name):return {'Persistent':'yes','RandomizedDelayUSec':'0','AccuracyUSec':'1s'}
+   def timer_arrays(self,name):
+    from typed_timer_test_support import typed_arrays
+    return typed_arrays(name,self.timer_next(name,'NextElapseUSecRealtime'),self.timer_monotonic(name) if 'recovery' in name else None)
    def timer_monotonic(self,name):return c.parse_monotonic_timers(GOOD)
    def timer_next(self,name,prop):return int(candidate.timestamp())*1000000 if prop=='NextElapseUSecRealtime' else 2000000
   pins={'units':{'/etc/systemd/system/'+n:hashlib.sha256(('/etc/systemd/system/'+n).encode()).hexdigest() for n in (*c.WEB_SCHEDULER_UNITS,*c.DB_TEMPLATES)}}
@@ -204,7 +207,7 @@ class UnitTests(unittest.TestCase):
     binding={'nonce':'1'*64,'source_commit':'2'*40,'boots':{'web':'11111111-1111-1111-1111-111111111111','db':'22222222-2222-2222-2222-222222222222'},'issued_at':now.isoformat(),'phase':phase,'mode':{'preflight':'participant-preclaim','stopped':'owned-stopped','verifying':'owned-verifying','final':'owned-final'}[phase],'release':c.BASE,'build':'20261017.96','plan_sha256':'3'*64,'predecessor':c.BASE}
     values={role:c.local_scheduler_coverage(Reader(role),role,binding,{'mode':binding['mode'],'policy_sha256':'4'*64}) for role in ('web','db')}
     self.assertEqual(pair.check_scheduler_pair(values['web'],values['db'],binding,'f'*64,now=now)['result'],'scheduler_pair_bound')
-    self.assertEqual(values['db']['schema'],'careertrellis.local-scheduler-coverage/v2')
+    self.assertEqual(values['db']['schema'],'careertrellis.local-scheduler-coverage/v3')
     for row in values['web']['units'].values():self.assertEqual(set(row['state']),set(c.TIMER_UNIT_FIELDS if row['name'].endswith('.timer') else c.SERVICE_UNIT_FIELDS))
     for bad in ('fullactive','reload'):
      with self.subTest(phase=phase,bad=bad),self.assertRaises(c.Refused):c.local_scheduler_coverage(Reader('db',bad),'db',binding,{'mode':binding['mode'],'policy_sha256':'4'*64})

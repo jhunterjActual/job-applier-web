@@ -43,24 +43,24 @@ class Tests(unittest.TestCase):
    for args,maximum in show.calls:
     self.assertEqual(args.count('--all'),1);self.assertEqual(maximum,16384);self.assertEqual(set(next(a for a in args if a.startswith('--property=')).split('=',1)[1].split(',')),set(fields))
  def test_proposed_cadence_closed_filtered_empty_values_stable(self):
-  fields={'TimersCalendar','TimersMonotonic','Persistent','RandomizedDelayUSec','AccuracyUSec'}
+  fields={'Persistent','RandomizedDelayUSec','AccuracyUSec'}
   for name,empty in [('careertrellis-paired-recovery.timer','TimersCalendar'),('careertrellis-paired-maintenance.timer','TimersMonotonic')]:
    show=Show()
    with self.subTest(name=name),patch.object(c,'run',show):
-    reader=c.Reader();value=reader.timer_cadence(name);reader.stable();self.assertEqual(set(value),fields);self.assertEqual(value[empty],'')
+    reader=c.Reader();value=reader.timer_cadence(name);reader.stable();self.assertEqual(set(value),fields);self.assertNotIn(empty,value)
    for args,maximum in show.calls:
     self.assertEqual(args.count('--all'),1);self.assertEqual(maximum,16384);self.assertEqual(set(next(a for a in args if a.startswith('--property=')).split('=',1)[1].split(',')),fields)
  def test_all_still_refuses_actual_missing_or_unknown_keys(self):
-  for kind,name,omit in [('unit','careertrellis-web.service','Job'),('unit','careertrellis-web.service','InvocationID'),('unit','careertrellis-paired-recovery.timer','LoadState'),('timer_cadence','careertrellis-paired-recovery.timer','TimersCalendar')]:
+  for kind,name,omit in [('unit','careertrellis-web.service','Job'),('unit','careertrellis-web.service','InvocationID'),('unit','careertrellis-paired-recovery.timer','LoadState'),('timer_cadence','careertrellis-paired-recovery.timer','Persistent')]:
    with self.subTest(kind=kind,omit=omit),patch.object(c,'run',Show(omit=omit)),self.assertRaises(c.Refused):getattr(c.Reader(),kind)(name)
   for kind in ('unit','timer_cadence'):
    with patch.object(c,'run',Show(extra=True)),self.assertRaises(c.Refused):getattr(c.Reader(),kind)('careertrellis-paired-recovery.timer')
- def test_exact_two_argv_additions_all_other_ast_and_raw_unchanged(self):
-  old=(P/'fixtures/systemctl-preall-collector.reference.py').read_bytes();new=(pb.ROOT/'one_shot_readiness/collector.py').read_bytes();needle=b"'/usr/bin/systemctl','show','--all',name,"
-  self.assertEqual(new.count(needle),2);self.assertEqual(new.replace(needle,b"'/usr/bin/systemctl','show',name,"),old)
+ def test_reviewed_typed_delta_and_two_all_flags_source_bound(self):
+  new=(pb.ROOT/'one_shot_readiness/collector.py').read_bytes();self.assertEqual(new.count(b"'/usr/bin/systemctl','show','--all',name,"),2)
+  from contract03_test_support import actual_method_hash,typed_scope
+  for name,expected in typed_scope['collector']['raw_methods_after'].items():self.assertEqual(actual_method_hash(name),expected)
   def functions(raw):
    lines=raw.splitlines(True);return {n.name:b''.join(lines[n.lineno-1:n.end_lineno]) for n in ast.walk(ast.parse(raw)) if isinstance(n,ast.FunctionDef)}
-  a=functions(old);b=functions(new)
-  self.assertEqual({n for n in a if a[n]!=b[n]},{'unit','timer_cadence'})
-  self.assertEqual(a['unit_properties'],b['unit_properties']);self.assertEqual(a['read'],b['read']);self.assertEqual(a['read_artifact'],b['read_artifact']);self.assertEqual(a['effective_artifact_map'],b['effective_artifact_map'])
+  a=functions((P/'fixtures/systemctl-preall-collector.reference.py').read_bytes());b=functions(new)
+  for name in ('unit_properties','read','read_artifact','effective_artifact_map'):self.assertEqual(a[name],b[name])
 if __name__=='__main__':unittest.main()

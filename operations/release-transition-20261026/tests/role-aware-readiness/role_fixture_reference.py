@@ -19,10 +19,13 @@ class Reader:
   if str(path)==str(c.INSTALL/'runtime.py'):return (__import__('pathlib').Path(__file__).parent/'source-catalog493/runtime.py').read_bytes()
   return str(path).encode()
  def timer_monotonic(self,name):return [{'base':'OnBootUSec','offset_usec':30000000,'next_elapse_usec':30000000},{'base':'OnUnitActiveUSec','offset_usec':60000000,'next_elapse_usec':90000000}]
- def timer_cadence(self,name):return {'TimersCalendar':'OnCalendar=Sun *-*-* 03:00:00 America/New_York','TimersMonotonic':'audit only','Persistent':'yes','RandomizedDelayUSec':'0','AccuracyUSec':'1s'}
+ def timer_cadence(self,name):return {'Persistent':'yes','RandomizedDelayUSec':'0','AccuracyUSec':'1s'}
  def read_artifact(self,path,pin):
   assert path=='/etc/systemd/system/careertrellis-pgbackrest-full.service' and pin==c.FULL_SERVICE_PIN
   return b'SYNTHETIC_FULL_SERVICE'
+ def timer_arrays(self,name):
+  from typed_timer_test_support import typed_arrays
+  return typed_arrays(name,self.timer_next(name,'NextElapseUSecRealtime'),self.timer_monotonic(name) if 'recovery' in name else None)
  def timer_next(self,name,prop):return 1736064000000000 if prop=='NextElapseUSecRealtime'else 2000000
 class Tests(unittest.TestCase):
  def setUp(self):

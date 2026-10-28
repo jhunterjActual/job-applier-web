@@ -38,7 +38,7 @@ def public_document(name):
     return decode(PUBLIC_FILES[name] if name in PUBLIC_FILES else (Path(__file__).parent/name).read_bytes())
 
 class Reader:
-    def __init__(self):self.observed={};self.start=time.monotonic();self.units={};self.directories={};self.timer_properties={};self.timer_cadences={};self.cadences={};self.artifact_pins={};self.artifacts={};self.checks=[]
+    def __init__(self):self.observed={};self.start=time.monotonic();self.units={};self.directories={};self.timer_properties={};self.timer_cadences={};self.cadences={};self.timer_array_records={};self.artifact_pins={};self.artifacts={};self.checks=[]
     def read(self,path,mode=0o600,maximum=1048576):
         path=Path(path)
         for parent in path.parents:
@@ -77,7 +77,7 @@ class Reader:
 
     def timer_cadence(self,name,remember=True):
         need(type(name) is str and name in ('careertrellis-paired-maintenance.timer','careertrellis-paired-recovery.timer'))
-        keys=('TimersCalendar','TimersMonotonic','Persistent','RandomizedDelayUSec','AccuracyUSec')
+        keys=('Persistent','RandomizedDelayUSec','AccuracyUSec')
         raw=run(['/usr/bin/systemctl','show','--all',name,'--property='+','.join(keys)],maximum=16384)
         value=unit_properties(raw,keys)
         if remember:
@@ -93,8 +93,13 @@ class Reader:
         for name,value in list(self.timer_cadences.items()):need(timer_monotonic(name)==value)
         for name,value in list(self.cadences.items()):need(self.timer_cadence(name,False)==value)
         for path,(expected,maximum,identity,raw) in list(self.artifacts.items()):need(self.read_artifact(path,expected,maximum)==raw)
+        for name,record in list(self.timer_array_records.items()):need(timer_array_record(name)==record)
         for check in self.checks:check()
         need(time.monotonic()-self.start<=30)
+    def timer_arrays(self,name):
+        record=timer_array_record(name);previous=self.timer_array_records.get(name)
+        need(previous is None or previous==record);self.timer_array_records[name]=record
+        return {'calendar_timers':record[2],'monotonic_timers':record[3]}
     def timer_next(self,name,property_name):
         value=timer_next(name,property_name);key=(name,property_name)
         previous=self.timer_properties.get(key);need(previous is None or previous==value);self.timer_properties[key]=value;return value
@@ -351,16 +356,15 @@ def web_standing_scheduler(reader):
             need(value['FragmentPath']==path and value['DropInPaths']=='' and sha(reader.read(path,0o644))==pins['units'][path])
             if suffix=='.service':need(value['ActiveState']=='inactive' and value['MainPID']==value['ControlPID']=='0' and value['Job']=='')
             else:
-                cadence=reader.timer_cadence(name)
+                cadence=reader.timer_cadence(name);arrays=reader.timer_arrays(name);validate_unit_timer_arrays(name,arrays)
                 need(value['ActiveState']=='active' and value['SubState']=='waiting' and value['UnitFileState']=='enabled'
                     and value['Job']=='' and cadence['RandomizedDelayUSec']=='0' and cadence['AccuracyUSec']=='1s')
                 if stem.endswith('maintenance'):
-                    need('OnCalendar=Sun *-*-* 03:00:00 America/New_York' in cadence['TimersCalendar'] and cadence['Persistent']=='yes')
+                    need(cadence['Persistent']=='yes')
                     local=now.astimezone(ZoneInfo('America/New_York'));candidate=local.replace(hour=3,minute=0,second=0,microsecond=0)+timedelta(days=(6-local.weekday())%7)
                     if candidate<=local:candidate+=timedelta(days=7)
-                    need(reader.timer_next(name,'NextElapseUSecRealtime')==int(candidate.timestamp())*1000000)
+                    need(arrays['calendar_timers'][0]['next_elapse_usec']==reader.timer_next(name,'NextElapseUSecRealtime')==int(candidate.timestamp())*1000000)
                 else:
-                    validate_monotonic_timers(reader.timer_monotonic(name))
                     tick=reader.timer_next(name,'NextElapseUSecMonotonic');need(time.monotonic_ns()//1000<=tick<=time.monotonic_ns()//1000+61000000)
     if reader.role=='db':
         legacy=reader.unit('careertrellis-pgbackrest-full.timer')
@@ -631,8 +635,8 @@ def local_scheduler_coverage(reader,role,binding,custody):
         for name in WEB_SCHEDULER_UNITS:
             if not name.endswith('.timer'):continue
             value=reader.timer_cadence(name);prop='NextElapseUSecRealtime' if 'maintenance' in name else 'NextElapseUSecMonotonic'
-            schedule[name]={k:value[k] for k in ('TimersCalendar','TimersMonotonic','Persistent','RandomizedDelayUSec','AccuracyUSec')}
-            schedule[name].update(property=prop,next_value=reader.timer_next(name,prop),monotonic_observed_us=time.monotonic_ns()//1000,monotonic_timers=reader.timer_monotonic(name) if prop=='NextElapseUSecMonotonic' else None)
+            schedule[name]={k:value[k] for k in ('Persistent','RandomizedDelayUSec','AccuracyUSec')}
+            schedule[name].update(property=prop,next_value=reader.timer_next(name,prop),monotonic_observed_us=time.monotonic_ns()//1000,**reader.timer_arrays(name))
     else:
         registered=db_registered_templates();paths=db_unit_search_paths()
         reader.checks.append(lambda:need(db_registered_templates()==registered and db_unit_search_paths()==paths))
@@ -644,12 +648,12 @@ def local_scheduler_coverage(reader,role,binding,custody):
             # A493 paired worker is not the source-bound app packet participant.
             need(value['state']['ActiveState']=='inactive' and value['state']['MainPID']==value['state']['ControlPID']=='0' and value['state']['Job']=='' and value['state']['Result'] in ('','success'));instances.append(value)
         legacy=retired_full_coverage(reader)
-    value={'schema':'careertrellis.local-scheduler-coverage/v2','role':role,'binding':binding,'collector_manifest_sha256':VERIFIED_SOURCE_MANIFEST,'observed_at':utc().isoformat(),'policy_sha256':custody['policy_sha256'],'mode':custody['mode'],'units':units,'instances':instances,'legacy_full_timer':legacy,'web_schedule':schedule,'scheduler_verified':False}
+    value={'schema':'careertrellis.local-scheduler-coverage/v3','role':role,'binding':binding,'collector_manifest_sha256':VERIFIED_SOURCE_MANIFEST,'observed_at':utc().isoformat(),'policy_sha256':custody['policy_sha256'],'mode':custody['mode'],'units':units,'instances':instances,'legacy_full_timer':legacy,'web_schedule':schedule,'scheduler_verified':False}
     validate_local_coverage(value,role,custody);return value
 
 def validate_local_coverage(value,role,custody):
     need(type(value) is dict and set(value)=={'schema','role','binding','collector_manifest_sha256','observed_at','policy_sha256','mode','units','instances','legacy_full_timer','web_schedule','scheduler_verified'})
-    need(value['schema']=='careertrellis.local-scheduler-coverage/v2' and value['role']==role and value['policy_sha256']==custody['policy_sha256'] and value['mode']==custody['mode'] and value['scheduler_verified'] is False)
+    need(value['schema']=='careertrellis.local-scheduler-coverage/v3' and value['role']==role and value['policy_sha256']==custody['policy_sha256'] and value['mode']==custody['mode'] and value['scheduler_verified'] is False)
     need(type(value['units']) is dict and set(value['units'])==set(WEB_SCHEDULER_UNITS if role=='web' else DB_TEMPLATES))
 
 def collect_preplan(role,binding,reader=None):
@@ -740,7 +744,7 @@ def parse_monotonic_timers(raw):
     matched=re.fullmatch(r'a\(stt\) 2 "([A-Za-z]+)" ([0-9]+) ([0-9]+) "([A-Za-z]+)" ([0-9]+) ([0-9]+)',text)
     need(matched is not None)
     rows=[{'base':matched[i],'offset_usec':int(matched[i+1]),'next_elapse_usec':int(matched[i+2])} for i in (1,4)]
-    validate_monotonic_timers(rows);return sorted(rows,key=lambda row:row['base'])
+    validate_monotonic_timers(rows);return rows
 
 def timer_monotonic(name):
     need(type(name) is str and name=='careertrellis-paired-recovery.timer')
@@ -774,3 +778,45 @@ def retired_full_coverage(reader):
     need(sha(reader.read_artifact(path,pin))==pin)
     return {'timer':{'name':'careertrellis-pgbackrest-full.timer','state':{k:timer[k] for k in TIMER_UNIT_FIELDS}},
         'service':{'name':'careertrellis-pgbackrest-full.service','sha256':pin,'state':{k:service[k] for k in SERVICE_UNIT_FIELDS}}}
+
+CALENDAR_SPEC='Sun *-*-* 03:00:00 America/New_York'
+
+def parse_monotonic_array(raw):
+    need(type(raw) is bytes and len(raw)<=1024)
+    if raw.strip()==b'a(stt) 0':return []
+    return parse_monotonic_timers(raw)
+
+def parse_calendar_array(raw):
+    need(type(raw) is bytes and len(raw)<=4096)
+    if raw.strip()==b'a(sst) 0':return []
+    try:text=raw.decode('ascii').strip()
+    except UnicodeDecodeError:need(False)
+    match=re.fullmatch(r'a\(sst\) 1 "([A-Za-z]+)" "([^"\\\x00-\x1f]+)" ([0-9]+)',text)
+    need(match is not None)
+    value=[{'base':match[1],'specification':match[2],'next_elapse_usec':int(match[3])}]
+    validate_calendar_array(value);return value
+
+def validate_calendar_array(value):
+    need(type(value) is list and len(value)==1)
+    row=value[0];need(type(row) is dict and set(row)=={'base','specification','next_elapse_usec'})
+    need(type(row['base']) is str and row['base']=='OnCalendar' and type(row['specification']) is str and row['specification']==CALENDAR_SPEC)
+    need(type(row['next_elapse_usec']) is int and 0<=row['next_elapse_usec']<2**64)
+    return value
+
+def validate_unit_timer_arrays(name,value):
+    need(type(value) is dict and set(value)=={'calendar_timers','monotonic_timers'})
+    if name=='careertrellis-paired-maintenance.timer':
+        validate_calendar_array(value['calendar_timers']);need(type(value['monotonic_timers']) is list and value['monotonic_timers']==[])
+    else:
+        need(name=='careertrellis-paired-recovery.timer');validate_monotonic_timers(value['monotonic_timers'])
+        need(type(value['calendar_timers']) is list and value['calendar_timers']==[])
+    return value
+
+def timer_array_record(name):
+    need(type(name) is str and name in ('careertrellis-paired-maintenance.timer','careertrellis-paired-recovery.timer'))
+    encoded=''.join(c if c.isalnum() else '_'+format(ord(c),'02x') for c in name)
+    def query(property_name,maximum):
+        return run(['/usr/bin/busctl','--system','get-property','org.freedesktop.systemd1',
+            '/org/freedesktop/systemd1/unit/'+encoded,'org.freedesktop.systemd1.Timer',property_name],maximum=maximum)
+    calendar_raw=query('TimersCalendar',4096);monotonic_raw=query('TimersMonotonic',1024)
+    return (calendar_raw,monotonic_raw,parse_calendar_array(calendar_raw),parse_monotonic_array(monotonic_raw))

@@ -74,7 +74,7 @@ class TimerTests(unittest.TestCase):
  def test_typed_format_and_reversed_order(self):
   value=c.parse_monotonic_timers(GOOD);self.assertEqual(len(value),2);self.assertEqual(value[0],{'base':'OnBootUSec','offset_usec':30000000,'next_elapse_usec':30000000})
   reverse=b'a(stt) 2 "OnUnitActiveUSec" 60000000 90000000 "OnBootUSec" 30000000 30000000'
-  self.assertEqual(c.parse_monotonic_timers(reverse),value)
+  self.assertEqual(c.parse_monotonic_timers(reverse),list(reversed(value)))
  def test_bad_formats_duplicates_units_and_uint64(self):
   bad=[GOOD.replace(b'a(stt)',b'a(st)'),GOOD.replace(b' 2 ',b' 1 ',1),GOOD.replace(b'OnUnitActiveUSec',b'OnBootUSec'),GOOD.replace(b'OnBootUSec',b'OnBootSec'),GOOD.replace(b'30000000',b'30',1),GOOD.replace(b'60000000',b'60000001',1),GOOD.replace(b'90000000',b'-1'),GOOD.replace(b'90000000',str(2**64).encode()),GOOD+b'extra',b'\xff',GOOD.decode(),True]
   for raw in bad:
@@ -97,17 +97,19 @@ class TimerTests(unittest.TestCase):
    reader=c.Reader();reader.timer_monotonic('careertrellis-paired-recovery.timer')
    with self.assertRaises(c.Refused):reader.stable()
  def test_pair_typed_coverage_required_and_tick_guard(self):
+  from typed_timer_test_support import typed_arrays
   now=datetime(2026,10,28,12,tzinfo=timezone.utc);local=now.astimezone(__import__('zoneinfo').ZoneInfo('America/New_York'));candidate=local.replace(hour=3,minute=0,second=0,microsecond=0)+__import__('datetime').timedelta(days=(6-local.weekday())%7)
   if candidate<=local:candidate+=__import__('datetime').timedelta(days=7)
-  maintenance={'TimersCalendar':'OnCalendar=Sun *-*-* 03:00:00 America/New_York','TimersMonotonic':'','Persistent':'yes','RandomizedDelayUSec':'0','AccuracyUSec':'1s','property':'NextElapseUSecRealtime','next_value':int(candidate.timestamp())*1000000,'monotonic_observed_us':100,'monotonic_timers':None}
-  recovery=dict(maintenance,TimersCalendar='',TimersMonotonic='audit-only-no-substring',property='NextElapseUSecMonotonic',next_value=1000000,monotonic_timers=c.parse_monotonic_timers(GOOD))
+  maintenance={'Persistent':'yes','RandomizedDelayUSec':'0','AccuracyUSec':'1s','property':'NextElapseUSecRealtime','next_value':int(candidate.timestamp())*1000000,'monotonic_observed_us':100}
+  maintenance.update(typed_arrays('careertrellis-paired-maintenance.timer',maintenance['next_value']))
+  recovery={'Persistent':'no','RandomizedDelayUSec':'0','AccuracyUSec':'1s','property':'NextElapseUSecMonotonic','next_value':1000000,'monotonic_observed_us':100};recovery.update(typed_arrays('careertrellis-paired-recovery.timer',maintenance['next_value']))
   schedule={'careertrellis-paired-maintenance.timer':maintenance,'careertrellis-paired-recovery.timer':recovery};pair._web_schedule(schedule,now)
   for kind in ('missing','duplicate','tick','maintenance_extra'):
    bad=copy.deepcopy(schedule)
    if kind=='missing':bad['careertrellis-paired-recovery.timer'].pop('monotonic_timers')
    elif kind=='duplicate':bad['careertrellis-paired-recovery.timer']['monotonic_timers'][1]['base']='OnBootUSec'
    elif kind=='tick':bad['careertrellis-paired-recovery.timer']['next_value']=61000101
-   else:bad['careertrellis-paired-maintenance.timer']['monotonic_timers']=[]
+   else:bad['careertrellis-paired-maintenance.timer']['monotonic_timers']=copy.deepcopy(recovery['monotonic_timers'])
    with self.subTest(kind=kind),self.assertRaises(c.Refused):pair._web_schedule(bad,now)
  def test_actual_web_scheduler_preserves_existing_guards(self):
   now=datetime(2026,10,28,12,tzinfo=timezone.utc);local=now.astimezone(__import__('zoneinfo').ZoneInfo('America/New_York'));candidate=local.replace(hour=3,minute=0,second=0,microsecond=0)+__import__('datetime').timedelta(days=(6-local.weekday())%7)
@@ -124,9 +126,14 @@ class TimerTests(unittest.TestCase):
     if self.bad=='servicepid' and name.endswith('.service'):value['MainPID']='123'
     return value
    def timer_cadence(self,name):
-    value={'TimersCalendar':'OnCalendar=Sun *-*-* 03:00:00 America/New_York','TimersMonotonic':'audit only','Persistent':'yes','RandomizedDelayUSec':'0','AccuracyUSec':'1s'}
-    for bad,key,v in [('delay','RandomizedDelayUSec','1s'),('accuracy','AccuracyUSec','2s'),('persistent','Persistent','no'),('calendar','TimersCalendar','wrong')]:
+    value={'Persistent':'yes','RandomizedDelayUSec':'0','AccuracyUSec':'1s'}
+    for bad,key,v in [('delay','RandomizedDelayUSec','1s'),('accuracy','AccuracyUSec','2s'),('persistent','Persistent','no')]:
      if self.bad==bad:value[key]=v
+    return value
+   def timer_arrays(self,name):
+    from typed_timer_test_support import typed_arrays
+    value=typed_arrays(name,self.timer_next(name,'NextElapseUSecRealtime'),self.timer_monotonic(name) if 'recovery' in name else None)
+    if self.bad=='calendar' and 'maintenance' in name:value['calendar_timers'][0]['specification']='wrong'
     return value
    def timer_next(self,name,prop):
     if prop=='NextElapseUSecRealtime':return int(candidate.timestamp())*1000000

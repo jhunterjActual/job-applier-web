@@ -1,7 +1,7 @@
 """Pure binding/expiry helper; cannot authenticate transport or authorize actions."""
 from datetime import datetime,timedelta,timezone
 import re
-from collector import need,SPECS,request,scheduler_binding,validate_local_coverage,WEB_SCHEDULER_UNITS,DB_TEMPLATES,UNIT_FIELDS,SERVICE_UNIT_FIELDS,TIMER_UNIT_FIELDS,FULL_SERVICE_PIN,public_document,sha,canonical,validate_monotonic_timers
+from collector import need,SPECS,request,scheduler_binding,validate_local_coverage,WEB_SCHEDULER_UNITS,DB_TEMPLATES,UNIT_FIELDS,SERVICE_UNIT_FIELDS,TIMER_UNIT_FIELDS,FULL_SERVICE_PIN,public_document,sha,canonical,validate_monotonic_timers,validate_unit_timer_arrays
 def stamp(value):
     t=datetime.fromisoformat(value.replace('Z','+00:00'));need(t.tzinfo is not None and t.utcoffset()==timedelta(0));return t
 def check_pair(web,db,binding,manifest_sha256,*,now,qualified_database=None):
@@ -90,14 +90,15 @@ def _web_schedule(value,observed):
     names={name for name in WEB_SCHEDULER_UNITS if name.endswith('.timer')}
     need(type(value) is dict and set(value)==names)
     for name,row in value.items():
-        need(type(row) is dict and set(row)=={'TimersCalendar','TimersMonotonic','Persistent','RandomizedDelayUSec','AccuracyUSec','property','next_value','monotonic_observed_us','monotonic_timers'})
-        need(all(type(row[k]) is str for k in ('TimersCalendar','TimersMonotonic','Persistent','RandomizedDelayUSec','AccuracyUSec','property')))
+        need(type(row) is dict and set(row)=={'Persistent','RandomizedDelayUSec','AccuracyUSec','property','next_value','monotonic_observed_us','calendar_timers','monotonic_timers'})
+        need(all(type(row[k]) is str for k in ('Persistent','RandomizedDelayUSec','AccuracyUSec','property')))
         need(row['RandomizedDelayUSec']=='0' and row['AccuracyUSec']=='1s' and type(row['next_value']) is int and type(row['monotonic_observed_us']) is int)
+        validate_unit_timer_arrays(name,{'calendar_timers':row['calendar_timers'],'monotonic_timers':row['monotonic_timers']})
         if 'maintenance' in name:
-            need(row['monotonic_timers'] is None and row['property']=='NextElapseUSecRealtime' and 'OnCalendar=Sun *-*-* 03:00:00 America/New_York' in row['TimersCalendar'] and row['Persistent']=='yes')
+            need(row['property']=='NextElapseUSecRealtime' and row['Persistent']=='yes')
             local=observed.astimezone(ZoneInfo('America/New_York'));candidate=local.replace(hour=3,minute=0,second=0,microsecond=0)+timedelta(days=(6-local.weekday())%7)
             if candidate<=local:candidate+=timedelta(days=7)
-            need(row['next_value']==int(candidate.timestamp())*1000000)
+            need(row['calendar_timers'][0]['next_elapse_usec']==row['next_value']==int(candidate.timestamp())*1000000)
         else:
             validate_monotonic_timers(row['monotonic_timers'])
             need(row['property']=='NextElapseUSecMonotonic' and 0<=row['next_value']-row['monotonic_observed_us']<=61000000)

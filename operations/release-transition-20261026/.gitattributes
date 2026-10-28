@@ -144,3 +144,7 @@ tests/role-aware-readiness/contract03_test_support.py -text
 tests/role-aware-readiness/fixtures/systemctl-preall-collector.reference.py -text
 tests/role-aware-readiness/test_systemctl_empty_properties.py -text
 tests/role-aware-readiness/SYSTEMCTL_EMPTY_QUERY_SCOPE.json -text
+tests/role-aware-readiness/TYPED_TIMER_ARRAY02_SCOPE.json -text
+tests/role-aware-readiness/fixtures/pre-typed-array-collector.reference.py -text
+tests/role-aware-readiness/test_typed_timer_arrays.py -text
+tests/role-aware-readiness/typed_timer_test_support.py -text

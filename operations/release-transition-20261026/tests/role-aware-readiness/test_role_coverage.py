@@ -20,10 +20,13 @@ class Reader:
   if str(path)==str(c.INSTALL/'runtime.py'):return (__import__('pathlib').Path(__file__).parent/'source-catalog493/runtime.py').read_bytes()
   return str(path).encode()
  def timer_monotonic(self,name):return [{'base':'OnBootUSec','offset_usec':30000000,'next_elapse_usec':30000000},{'base':'OnUnitActiveUSec','offset_usec':60000000,'next_elapse_usec':90000000}]
- def timer_cadence(self,name):return {'TimersCalendar':'OnCalendar=Sun *-*-* 03:00:00 America/New_York','TimersMonotonic':'audit only','Persistent':'yes','RandomizedDelayUSec':'0','AccuracyUSec':'1s'}
+ def timer_cadence(self,name):return {'Persistent':'yes','RandomizedDelayUSec':'0','AccuracyUSec':'1s'}
  def read_artifact(self,path,pin):
   assert path=='/etc/systemd/system/careertrellis-pgbackrest-full.service' and pin==c.FULL_SERVICE_PIN
   return b'SYNTHETIC_FULL_SERVICE'
+ def timer_arrays(self,name):
+  from typed_timer_test_support import typed_arrays
+  return typed_arrays(name,self.timer_next(name,'NextElapseUSecRealtime'),self.timer_monotonic(name) if 'recovery' in name else None)
  def timer_next(self,name,prop):return 1736064000000000 if prop=='NextElapseUSecRealtime'else 2000000
 class Tests(unittest.TestCase):
  def setUp(self):
@@ -78,6 +81,6 @@ class Tests(unittest.TestCase):
    reader=Reader('db');name='careertrellis-paired-db@'+'a'*32+'.service';reader.unit(name)[key]=value
    with patch.object(c,'db_instance_names',lambda:[name]),self.assertRaises(c.Refused):c.local_scheduler_coverage(reader,'db',self.binding(planless=True),{'mode':'idle','policy_sha256':'8'*64})
  def test_reviewed_web_scheduler_delta_source_bound(self):
-  from contract03_test_support import actual_method_hash,scope
-  self.assertEqual(actual_method_hash('web_standing_scheduler'),scope['collector']['raw_methods_after']['web_standing_scheduler'])
+  from contract03_test_support import actual_method_hash,expected_method_hash
+  self.assertEqual(actual_method_hash('web_standing_scheduler'),expected_method_hash('web_standing_scheduler'))
 if __name__=='__main__':unittest.main()

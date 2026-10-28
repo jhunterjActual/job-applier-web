@@ -1,23 +1,22 @@
 {
   "one_shot_readiness/collector.py": {
-    "kind": "filtered_systemctl_show_all_empty_properties",
-    "basis_sha256": "f3d3593c5a8fba82988b0fe2dc38426b579f314a7f85aed7959f18683e664f6a",
-    "proposed_sha256": "de4b3b72fbf5d783050991c43be66645bed9ff0317c7630efd129abd44f8bd04",
-    "source_freeze": "cf41eed0a4e3aacd8e58c6f9cf18f6c88245fa62a9968f238c8d1335c24f1b99",
-    "delta": "Reader.unit + timer_cadence query --all only; --property filtering/strict parser unchanged",
-    "previous_contract": "complete15artifacts/modes/private600/service13timer8/cadence5/historical05 unchanged",
-    "native_actual_missing_key": "UNKNOWN/no source cause claim",
+    "kind": "typed_timer_arrays_source02",
+    "basis_sha256": "de4b3b72fbf5d783050991c43be66645bed9ff0317c7630efd129abd44f8bd04",
+    "proposed_sha256": "cd65155fdac21b823268832b931500184865cfd955647c2bf8675cca0f4077f5",
+    "source_freeze": "8352904bd95664efc6476cb0d02bcb5ca806fe0d7b51ff0ad30b3a37e57da960",
+    "delta": "scalar3 + raw typed arrays + closedcoveragev3; changed-method identity explicit",
+    "native_values": "UNOBSERVED; actual prior names-only evidence external",
+    "preserved": "privateReader/unit13timer8/artifact15/history05/authority/custody",
     "publication_commit": "UNALLOCATED_PRIMARY_OWNED"
   },
   "one_shot_readiness/pair_boundary.py": {
-    "kind": "complete_artifact_protected_mode_typed_unit_contract03",
-    "basis_sha256": "30e782ab4ebdc48cab0e542d8b56fb70d48f235045c79af7d3a5b7b85755299b",
-    "proposed_sha256": "ed95a0347cb68b26fc10925e7907d5c459cb91759829b4dc13763c3d37e90736",
-    "source_freeze": "0b226b5af1f583f164ca5989675b3e9c85467d12113a1c8ebafacb525eaa22b4",
-    "changed_methods": "explicit FUNCTION_SCOPE, Reader.unit intentionally changed; no old whole-method identity claim",
-    "raw_preserved": "private Reader.read and seven historical05 functions",
-    "old_six_DB_completeness_claim": "withdrawn",
-    "native_status": "UNOBSERVED/source-only",
+    "kind": "typed_timer_arrays_source02",
+    "basis_sha256": "ed95a0347cb68b26fc10925e7907d5c459cb91759829b4dc13763c3d37e90736",
+    "proposed_sha256": "035a8eb086005d15b3375be4337672d757870220157065a44215caec87ebc836",
+    "source_freeze": "8352904bd95664efc6476cb0d02bcb5ca806fe0d7b51ff0ad30b3a37e57da960",
+    "delta": "scalar3 + raw typed arrays + closedcoveragev3; changed-method identity explicit",
+    "native_values": "UNOBSERVED; actual prior names-only evidence external",
+    "preserved": "privateReader/unit13timer8/artifact15/history05/authority/custody",
     "publication_commit": "UNALLOCATED_PRIMARY_OWNED"
   },
   "readiness_bridge.py": {
