@@ -1,16 +1,20 @@
 {
   "one_shot_readiness/collector.py": {
-    "kind": "historical_policy_production_contract05",
-    "basis_template_sha256": "77b814c7f84e6eea977190ecb15d4e6e2a22697fd5e999744e18973c04fd825b",
-    "proposed_sha256": "4480402e08c953758f2e7129f3b82b87f3f1d4e540259a9a024395d58a5c94a4",
-    "publication_commit": "UNALLOCATED_PRIMARY_OWNED",
-    "source_contract": "historical-policy-production-contract-proposal05",
-    "native_evidence": "HISTORICAL_POLICY_PROPOSAL_NATIVE_WEB_02.json + HISTORICAL_POLICY_PROPOSAL_NATIVE_DB_02.json"
+    "kind": "effective_artifact_typed_timer_contract06",
+    "basis_sha256": "4480402e08c953758f2e7129f3b82b87f3f1d4e540259a9a024395d58a5c94a4",
+    "proposed_sha256": "ba313b404ac65d594ed064cac361b5e2d51b577d629bb4d80d8e822b1047ffc8",
+    "source_proposal_freeze": "6be9ff850dcd474608d3cf356303f4e6ceeeaa8f258e887e63b8ef8554cad9ff",
+    "historical_policy05_functions_raw_unchanged": true,
+    "native_status": "UNOBSERVED/source06_only",
+    "publication_commit": "UNALLOCATED_PRIMARY_OWNED"
   },
   "one_shot_readiness/pair_boundary.py": {
-    "kind": "proposed_db_template_registration_source",
-    "basis_8853_sha256": "d9dd9121d21e486a7fe8c8fd0c58baf8a785e253f87fb45d5a18104a3cbf3d15",
-    "proposed_sha256": "59fb0b698e8845731624b8de313fb19f99a2ffa8aef5900d33b4e3cc7e6d9caa",
+    "kind": "effective_artifact_typed_timer_contract06",
+    "basis_sha256": "59fb0b698e8845731624b8de313fb19f99a2ffa8aef5900d33b4e3cc7e6d9caa",
+    "proposed_sha256": "30e782ab4ebdc48cab0e542d8b56fb70d48f235045c79af7d3a5b7b85755299b",
+    "source_proposal_freeze": "6be9ff850dcd474608d3cf356303f4e6ceeeaa8f258e887e63b8ef8554cad9ff",
+    "historical_policy05_functions_raw_unchanged": true,
+    "native_status": "UNOBSERVED/source06_only",
     "publication_commit": "UNALLOCATED_PRIMARY_OWNED"
   },
   "readiness_bridge.py": {

@@ -16,6 +16,7 @@ class Reader:
   if name=='careertrellis-pgbackrest-full.timer':v.update(ActiveState='inactive',UnitFileState='disabled')
   self.values[name]=v;return v
  def read(self,path,mode=0o600):return str(path).encode()
+ def timer_monotonic(self,name):return [{'base':'OnBootUSec','offset_usec':30000000,'next_elapse_usec':30000000},{'base':'OnUnitActiveUSec','offset_usec':60000000,'next_elapse_usec':90000000}]
  def timer_next(self,name,prop):return 1736064000000000 if prop=='NextElapseUSecRealtime'else 2000000
 class Tests(unittest.TestCase):
  def setUp(self):
@@ -69,5 +70,5 @@ class Tests(unittest.TestCase):
    reader=Reader('db');name='careertrellis-paired-db@'+'a'*32+'.service';reader.unit(name)[key]=value
    with patch.object(c,'db_instance_names',lambda:[name]),self.assertRaises(c.Refused):c.local_scheduler_coverage(reader,'db',self.binding(planless=True),{'mode':'idle','policy_sha256':'8'*64})
  def test_web_scheduler_original_body_preserved(self):
-  before=ast.parse((__import__('pathlib').Path(pb.FIXTURES)/'collector.py.baseline.txt').read_bytes());after=ast.parse((__import__('pathlib').Path(pb.ROOT)/'one_shot_readiness/collector.py').read_bytes());old=next(n for n in before.body if isinstance(n,ast.FunctionDef)and n.name=='standing_scheduler');new=next(n for n in after.body if isinstance(n,ast.FunctionDef)and n.name=='web_standing_scheduler');new.name=old.name;self.assertEqual(ast.dump(old,include_attributes=False),ast.dump(new,include_attributes=False))
+  before=ast.parse((__import__('pathlib').Path(pb.FIXTURES)/'collector.py.baseline.txt').read_bytes());after_raw=(__import__('pathlib').Path(pb.ROOT)/'one_shot_readiness/collector.py').read_bytes().decode();self.assertEqual(after_raw.count('validate_monotonic_timers(reader.timer_monotonic(name))'),1);after=ast.parse(after_raw.replace('validate_monotonic_timers(reader.timer_monotonic(name))',"need('OnBootUSec=30s' in value['TimersMonotonic'] and 'OnUnitActiveUSec=1min' in value['TimersMonotonic'])"));old=next(n for n in before.body if isinstance(n,ast.FunctionDef)and n.name=='standing_scheduler');new=next(n for n in after.body if isinstance(n,ast.FunctionDef)and n.name=='web_standing_scheduler');new.name=old.name;self.assertEqual(ast.dump(old,include_attributes=False),ast.dump(new,include_attributes=False))
 if __name__=='__main__':unittest.main()

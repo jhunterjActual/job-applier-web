@@ -49,6 +49,7 @@ class Tests(unittest.TestCase):
     with self.subTest(key=key),self.assertRaises(c.Refused):self.coverage(reader=r)
  def test_web_scheduler_and_reader_source_bodies_unchanged(self):
   old=(Path(__file__).parent/'fixtures/template-baseline-collector.py.txt').read_bytes().decode();new=(pb.ROOT/'one_shot_readiness/collector.py').read_bytes().decode()
+  self.assertEqual(new.count('validate_monotonic_timers(reader.timer_monotonic(name))'),1);new=new.replace('validate_monotonic_timers(reader.timer_monotonic(name))',"need('OnBootUSec=30s' in value['TimersMonotonic'] and 'OnUnitActiveUSec=1min' in value['TimersMonotonic'])")
   for name in ('web_standing_scheduler','scheduler_unit_record','unit','read'):
    def part(text):return ast.get_source_segment(text,next(n for n in ast.walk(ast.parse(text)) if isinstance(n,ast.FunctionDef) and n.name==name))
    self.assertEqual(part(old),part(new))

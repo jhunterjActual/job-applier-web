@@ -6,7 +6,7 @@ traverses providers, or edits a persisted snapshot. Unsupported custody REFUSES.
 from datetime import datetime,timezone,timedelta
 from zoneinfo import ZoneInfo
 import ast,hashlib,json,os,re,socket,stat,subprocess,sys,time,types
-from pathlib import Path
+from pathlib import Path,PurePosixPath
 
 ROOT=Path('/var/lib/careertrellis/paired-maintenance')
 INSTALL=Path('/usr/local/libexec/careertrellis/paired_maintenance')
@@ -38,7 +38,7 @@ def public_document(name):
     return decode(PUBLIC_FILES[name] if name in PUBLIC_FILES else (Path(__file__).parent/name).read_bytes())
 
 class Reader:
-    def __init__(self):self.observed={};self.start=time.monotonic();self.units={};self.directories={};self.timer_properties={};self.checks=[]
+    def __init__(self):self.observed={};self.start=time.monotonic();self.units={};self.directories={};self.timer_properties={};self.timer_cadences={};self.checks=[]
     def read(self,path,mode=0o600,maximum=1048576):
         path=Path(path)
         for parent in path.parents:
@@ -61,10 +61,14 @@ class Reader:
         for name,value in list(self.units.items()):need(self.unit(name,False)==value)
         for path,(mode,names) in list(self.directories.items()):self.directory(path,mode);need(self.directories[path][1]==names)
         for key,value in list(self.timer_properties.items()):need(timer_next(*key)==value)
+        for name,value in list(self.timer_cadences.items()):need(timer_monotonic(name)==value)
         for check in self.checks:check()
     def timer_next(self,name,property_name):
         value=timer_next(name,property_name);key=(name,property_name)
         previous=self.timer_properties.get(key);need(previous is None or previous==value);self.timer_properties[key]=value;return value
+    def timer_monotonic(self,name):
+        value=timer_monotonic(name);previous=self.timer_cadences.get(name)
+        need(previous is None or previous==value);self.timer_cadences[name]=value;return value
     def json(self,path,mode=0o600):return decode(self.read(path,mode))
     def path(self,path):return Path(path)
     def directory(self,path,mode):
@@ -143,6 +147,8 @@ def native_custody(reader,role,binding,sources):
     # Integration-incomplete branches REFUSE rather than treating caller flags
     # or an old health snapshot as actual scheduler/transaction evidence.
     common=module('_one_shot_common493',sources['common.py'])
+    artifact_policy=common.Policy(decode(reader.read('/etc/careertrellis/paired-maintenance/policy.json')))
+    verify_effective_artifacts(reader,artifact_policy,role)
     # A source-bound participant can already hold fences at PRECLAIM. This
     # mode validates actual kernel owners; it never fabricates an intent.
     held=False;rows=Path('/proc/locks').read_text().splitlines()
@@ -173,9 +179,6 @@ def native_custody(reader,role,binding,sources):
         and status['release']==BASE and status['phase'] in ('idle','complete') and status['result']=='ok' and status['services_restored'] is True)
     reader.role=role;reader.boot=binding['boots'][role]
     historical_terminal(reader,policy,status,now)
-    for path,expected in d['artifact_hashes'][role].items():
-        mode=0o755 if path.startswith('/usr/local/sbin/') else 0o644
-        need(sha(reader.read(path,mode))==expected)
     # Kernel-owned lock metadata is observed, never flocked. No owner may be
     # guessed stale or removed; any matching holder refuses idle admission.
     locks=Path('/proc/locks').read_text().splitlines()
@@ -324,7 +327,7 @@ def web_standing_scheduler(reader):
                     if candidate<=local:candidate+=timedelta(days=7)
                     need(reader.timer_next(name,'NextElapseUSecRealtime')==int(candidate.timestamp())*1000000)
                 else:
-                    need('OnBootUSec=30s' in value['TimersMonotonic'] and 'OnUnitActiveUSec=1min' in value['TimersMonotonic'])
+                    validate_monotonic_timers(reader.timer_monotonic(name))
                     tick=reader.timer_next(name,'NextElapseUSecMonotonic');need(time.monotonic_ns()//1000<=tick<=time.monotonic_ns()//1000+61000000)
     if reader.role=='db':
         legacy=reader.unit('careertrellis-pgbackrest-full.timer')
@@ -593,7 +596,7 @@ def local_scheduler_coverage(reader,role,binding,custody):
             if not name.endswith('.timer'):continue
             value=reader.unit(name);prop='NextElapseUSecRealtime' if 'maintenance' in name else 'NextElapseUSecMonotonic'
             schedule[name]={k:value[k] for k in ('TimersCalendar','TimersMonotonic','Persistent','RandomizedDelayUSec','AccuracyUSec')}
-            schedule[name].update(property=prop,next_value=reader.timer_next(name,prop),monotonic_observed_us=time.monotonic_ns()//1000)
+            schedule[name].update(property=prop,next_value=reader.timer_next(name,prop),monotonic_observed_us=time.monotonic_ns()//1000,monotonic_timers=reader.timer_monotonic(name) if prop=='NextElapseUSecMonotonic' else None)
     else:
         registered=db_registered_templates();paths=db_unit_search_paths()
         reader.checks.append(lambda:need(db_registered_templates()==registered and db_unit_search_paths()==paths))
@@ -639,3 +642,66 @@ def reevaluate_database(raw,binding,reader=None):
     for key in ('mode','policy_sha256','owner'):need(again.get(key)==current.get(key))
     reader.stable();need(Path('/proc/sys/kernel/random/boot_id').read_text().strip()==reader.boot and time.monotonic()<RUN_DEADLINE)
     return {'derived_snapshot':snapshot,'derived_snapshot_sha256':sha(canonical(snapshot)),'derived_result':result,'derived_result_sha256':sha(canonical(result)),'core_sha256':SPECS['db'][2],'inventory_before_sha256':before_sha,'inventory_after_sha256':after_sha,'reevaluated_at':utc().isoformat()}
+
+def effective_artifact_map(reader,policy,role):
+    """Execute only exact493 pure constants/configure, never its module imports."""
+    need(type(role) is str and role in ('web','db'))
+    raw=reader.read(INSTALL/'runtime.py',0o644)
+    need(sha(raw)=='0a62282a15f62b2103f88bdfe195f961cbbe4ae815fee02bac764398858f5604')
+    tree=ast.parse(raw);required={'OPS','HELPER','CORE','PINS','STATE_ROOT','_BASE_PINS','_BASE_OPS'}
+    selected=[];found=set()
+    for node in tree.body:
+        if isinstance(node,ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Name) and node.targets[0].id in required:
+            need(node.targets[0].id not in found);found.add(node.targets[0].id);selected.append(node)
+        elif isinstance(node,ast.FunctionDef) and node.name=='configure':selected.append(node)
+    need(found==required and sum(isinstance(n,ast.FunctionDef) for n in selected)==1)
+    data=policy.data;need(type(data) is dict)
+    for name in ('application_release','ops_release'):
+        need(type(data[name]) is str and re.fullmatch('[0-9a-f]{40}',data[name]) is not None)
+    overrides=data.get('artifact_hashes',{});need(type(overrides) is dict and set(overrides)<= {'web','db'})
+    for values in overrides.values():
+        need(type(values) is dict)
+        for path,pin in values.items():
+            need(type(path) is str and type(pin) is str and re.fullmatch('[0-9a-f]{64}',pin) is not None)
+    scope={'__builtins__':{},'Path':PurePosixPath,'dict':dict,'require':lambda value,*unused:need(value)}
+    exec(compile(ast.Module(body=selected,type_ignores=[]),'authenticated493-pure-configure','exec'),scope)
+    # Unknown roles/paths are refused by the genuine source configure body.
+    try:scope['configure'](policy,role)
+    except (KeyError,TypeError):need(False)
+    result=scope['PINS'];need(type(result) is dict and set(result)=={'web','db'})
+    need(all(type(values) is dict and len(values)>0 for values in result.values()))
+    return result
+
+def verify_effective_artifacts(reader,policy,role):
+    values=effective_artifact_map(reader,policy,role)[role]
+    for path,expected in values.items():
+        mode=0o755 if path.startswith('/usr/local/sbin/') else 0o644
+        need(sha(reader.read(path,mode))==expected)
+    return values
+
+def validate_monotonic_timers(value):
+    """Closed JSON representation of systemd Timer.TimersMonotonic a(stt)."""
+    need(type(value) is list and len(value)==2)
+    expected={'OnBootUSec':30000000,'OnUnitActiveUSec':60000000};found=set()
+    for row in value:
+        need(type(row) is dict and set(row)=={'base','offset_usec','next_elapse_usec'})
+        base=row['base'];need(type(base) is str and base in expected and base not in found);found.add(base)
+        need(type(row['offset_usec']) is int and row['offset_usec']==expected[base])
+        need(type(row['next_elapse_usec']) is int and 0<=row['next_elapse_usec']<2**64)
+    need(found==set(expected));return value
+
+def parse_monotonic_timers(raw):
+    need(type(raw) is bytes and len(raw)<=1024)
+    try:text=raw.decode('ascii').strip()
+    except UnicodeDecodeError:need(False)
+    matched=re.fullmatch(r'a\(stt\) 2 "([A-Za-z]+)" ([0-9]+) ([0-9]+) "([A-Za-z]+)" ([0-9]+) ([0-9]+)',text)
+    need(matched is not None)
+    rows=[{'base':matched[i],'offset_usec':int(matched[i+1]),'next_elapse_usec':int(matched[i+2])} for i in (1,4)]
+    validate_monotonic_timers(rows);return sorted(rows,key=lambda row:row['base'])
+
+def timer_monotonic(name):
+    need(type(name) is str and name=='careertrellis-paired-recovery.timer')
+    encoded=''.join(c if c.isalnum() else '_'+format(ord(c),'02x') for c in name)
+    raw=run(['/usr/bin/busctl','--system','get-property','org.freedesktop.systemd1',
+        '/org/freedesktop/systemd1/unit/'+encoded,'org.freedesktop.systemd1.Timer','TimersMonotonic'],maximum=1024)
+    return parse_monotonic_timers(raw)

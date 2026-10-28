@@ -14,6 +14,7 @@ class Reader:
   if name=='careertrellis-pgbackrest-full.timer':v.update(ActiveState='inactive',UnitFileState='disabled')
   self.values[name]=v;return v
  def read(self,path,mode=0o600):return str(path).encode()
+ def timer_monotonic(self,name):return [{'base':'OnBootUSec','offset_usec':30000000,'next_elapse_usec':30000000},{'base':'OnUnitActiveUSec','offset_usec':60000000,'next_elapse_usec':90000000}]
  def timer_next(self,name,prop):return 1736064000000000 if prop=='NextElapseUSecRealtime'else 2000000
 class Tests(unittest.TestCase):
  def setUp(self):

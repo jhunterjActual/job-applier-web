@@ -7,7 +7,7 @@ CACHE_SHA='bb45c3cfc9076b745a0e3f1467996467e12d59ced5c70f17c26e15aea510e815'
 NESTED=('collector.py','terminal493.py','transaction04.py','pair_boundary.py')
 MODULES=('policy_encoding', 'release_transaction', 'protected_state', 'terminal_validation', 'readiness_bridge', 'native_peer', 'canonical_primitives', 'accepted_pair_validator', 'current_health_validator', 'prepared_types', 'historical98_controls', 'prepared98_history', 'prepared97_specs', 'prepared97_records', 'prepared97_checks', 'prepared_reader', 'prepared_sources', 'prepared97_reader', 'prepared97_sources', 'prepared97_history', 'prepared97_context', 'prepared_registries', 'prepared_evidence', 'native_backend')
 SCRIPTS=('peer_server.py', 'web_coordinator.py', 'db_audit.py', 'reviewed_probe.py')
-NESTED_APPROVED={'collector.py': '4480402e08c953758f2e7129f3b82b87f3f1d4e540259a9a024395d58a5c94a4', 'terminal493.py': '7eaf8d1c98a5049d8554291600bf6212ed9e5bc54bb4e62faafaaf09bcb9b919', 'transaction04.py': '7a4bfa56c0ebcea9683c3556a46c4a610363bc522787060b2766ab1323efcb82', 'pair_boundary.py': '59fb0b698e8845731624b8de313fb19f99a2ffa8aef5900d33b4e3cc7e6d9caa'}
+NESTED_APPROVED={'collector.py': 'ba313b404ac65d594ed064cac361b5e2d51b577d629bb4d80d8e822b1047ffc8', 'terminal493.py': '7eaf8d1c98a5049d8554291600bf6212ed9e5bc54bb4e62faafaaf09bcb9b919', 'transaction04.py': '7a4bfa56c0ebcea9683c3556a46c4a610363bc522787060b2766ab1323efcb82', 'pair_boundary.py': '30e782ab4ebdc48cab0e542d8b56fb70d48f235045c79af7d3a5b7b85755299b'}
 class Refused(RuntimeError):pass
 def need(v):
  if not v:raise Refused('READINESS_JSON_GENERATOR_REFUSED')

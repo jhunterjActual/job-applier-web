@@ -135,3 +135,4 @@ tests/role-aware-readiness/source-catalog493/db_host.py -text
 tests/role-aware-readiness/source-catalog493/host.py -text
 tests/role-aware-readiness/source-catalog493/runtime.py -text
 tests/role-aware-readiness/source-catalog493/web_control.py -text
+tests/role-aware-readiness/test_effective_artifact_timer_contract.py -text
