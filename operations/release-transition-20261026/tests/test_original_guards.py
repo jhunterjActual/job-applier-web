@@ -22,9 +22,27 @@ class OriginalGuardTests(unittest.TestCase):
         for lhs, rhs in zip(old.body, new.body):
             if isinstance(lhs, ast.FunctionDef) and lhs.name == 'verify_prepared':
                 continue
+            if isinstance(lhs, ast.FunctionDef) and lhs.name == 'verify_fresh_proofs':
+                self.assertEqual(hashlib.sha256(ast.get_source_segment(after.decode(), rhs).encode()).hexdigest(), 'bd2bbab044d90c3b6d330c54dc5d125974c959ff77cb0ca18bb5842e5e485702')
+                continue
             self.assertEqual(ast.dump(lhs), ast.dump(rhs))
         marker = b'            # Every venv/cache file is bound'
-        self.assertEqual(before.split(marker, 1)[1], after.split(marker, 1)[1])
+        # Tail includes the separately exact-pinned changed readiness method.
+        def without_approved_readiness_method(raw):
+            lines = raw.decode().splitlines(keepends=True)
+            node = next(n for n in ast.walk(ast.parse(raw)) if isinstance(n, ast.FunctionDef) and n.name == 'verify_fresh_proofs')
+            span = ''.join(lines[node.lineno - 1:node.end_lineno]).encode()
+            expected = '05b02355d55a27bc1fbdc46ca6d9e3d3a9e96082b5de213b7ec3d557a6bba620' if raw is before else 'b26406f712517f96ca50cbfb77a315578d53995dcb43f85bf85068e35741cf1c'
+            self.assertEqual(hashlib.sha256(span).hexdigest(), expected)
+            return ''.join(lines[:node.lineno - 1] + lines[node.end_lineno:]).encode()
+        old_tail = without_approved_readiness_method(before).split(marker, 1)[1]
+        new_tail = without_approved_readiness_method(after).split(marker, 1)[1]
+        self.assertEqual(hashlib.sha256(old_tail).hexdigest(), 'd9692d0514f456c082846d3400eb21e7a306d8eba7b1452cedb892071eeac483')
+        self.assertEqual(hashlib.sha256(new_tail).hexdigest(), '89f21b71f33d91a84fbdfac55632d8ea2773197a584e3d6fd12ef1458a072124')
+        self.assertNotIn(b'\r', new_tail)
+        self.assertEqual(old_tail.replace(b'\r\n', b'\n'), new_tail)
+        prefix = b'class Tail:\n    def scanner(self):\n        if True:\n' + marker
+        self.assertEqual(ast.dump(ast.parse(prefix + old_tail)), ast.dump(ast.parse(prefix + new_tail)))
 
     def test_actual_full_runtime_guard_rejects_metadata_without_matching_files(self):
         tree = ast.parse(sources['native_backend.py'])

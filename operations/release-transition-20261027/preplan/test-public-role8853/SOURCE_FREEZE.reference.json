@@ -1,0 +1,31 @@
+{
+  "schema": "careertrellis.scheduler-role-coverage-source-proposal/v1",
+  "files": {
+    "API_AND_CALLGRAPH.md": "bb7a87a935b8838f9f406d4c5d22d6ff4249cadabb97cac2195ae387b588b841",
+    "CHECKPOINT.json": "f516e9be2a76a1bf8ade7658718140690223ada87b1ef6ccecd1a3be21491adf",
+    "CHECKPOINT01_PRESERVED.json": "eb65e5be02e2eda5e848f4909f145062c64f03563bbbaf61a40d49351639bf38",
+    "collector.py": "759608f43399a7e50a6a2eff9033248545d2a45d6e38067a5153dab0d84bcfe9",
+    "collector.py.baseline.txt": "2c2c972d8f9020efd20e00770160fd464433a05b9c52f5ef1719514f72d94b9e",
+    "db_core.reference.py": "8d2facf6d71bf985c1c0ffe8b6a661fc9a9699548b6bb81163cd787f53ba97fa",
+    "native_backend.py": "e7bda6e9504baedd9a734d97b6fc252ad31d755b63bf77da64495a111a2370a9",
+    "native_backend.py.baseline.txt": "5c86f98fe6059330d5025a7d0041015a44fa406963cac8b137fe1e6c0a1b4c03",
+    "pair_boundary.py": "d9dd9121d21e486a7fe8c8fd0c58baf8a785e253f87fb45d5a18104a3cbf3d15",
+    "pair_boundary.py.baseline.txt": "558757f8a298ecf7a96fe56aadd08867fda93538400087ac9c9fd69c8c70de09",
+    "peer_server.py": "c19faaffd23f6cfe6b41b46179858f05a5cc96e0d7065e188be49a1443d6ebbc",
+    "peer_server.py.baseline.txt": "9a6cb34398171315c654ebca0191d9dd4f67a307f9665fb5e351106e31495631",
+    "PUBLIC_FIXTURE_PROVENANCE.json": "9feedf9dc8714523c2e66b85610dd2383a07954de1998c433ae1378f4d1b49ae",
+    "public_schema_fixtures.py": "84c1fbc4ad9174b8df9feb09c0810baef714e6fec9f5bf043189c4c2497088bf",
+    "readiness_bridge.py": "d1a12d97331fc560db844e819e79c40ef1b514342db7dcade68d9e5477a67888",
+    "readiness_bridge.py.baseline.txt": "63c4be748600f5f22e0a6058cfac7c6d98ba59016e74da0e59f5975ffd7f4eb6",
+    "ROLE_EVIDENCE493.json": "b955e567b4e5b4464f247c63f68eaf7b42715fdf743e504760be70cacfc4eb8c",
+    "SOURCE_CONTRACT_MAP.json": "43b7c6b5a55bcc5aa6723e98c55a5c5dcfe2cdc8bed0130d6f22e24b9faecb2c",
+    "SOURCE_DELTA.patch": "70c25dd4ff9bb1e102d07e6334f741b50a7f58f5610f2cfeb2975437856aeea1",
+    "test_consumer_token.py": "9bdc1212ca71c00d591659af3c5bc492ea9239a70d8071e345a8f3a770c8217b",
+    "test_qualification.py": "9a4d19398be1b84eb52fd47ac97c9e60a2d4a7579c0e787b40c60e9df815dcf9",
+    "test_real_db_core.py": "dcd1aafd8d710e7eec653143b61278906ef3cc7d070a3679b75be3997b9f9de7",
+    "TEST_RECEIPT_FINAL.json": "4c29d6b2bcdfccac13bb43b43d6c8e2f4f46bfb43d8328c7defb75153512ba22",
+    "test_role_coverage.py": "bc59a4c0f8e1dc9696a37f1347af56e1eb597167f1f9690cd528bee5fdc357d8"
+  },
+  "source_only": true,
+  "native_verification": false
+}

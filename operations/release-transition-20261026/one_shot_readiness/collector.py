@@ -72,7 +72,7 @@ class Reader:
         names=sorted(x.name for x in p.iterdir());need(len(names)<=2048)
         previous=self.directories.get(str(p));need(previous is None or previous==(mode,names));self.directories[str(p)]=(mode,names)
     def unit(self,name,remember=True):
-        need(re.fullmatch('careertrellis-[a-z-]+\\.(service|timer)',name))
+        need(type(name) is str and (re.fullmatch('careertrellis-[a-z-]+\\.(service|timer)',name) or re.fullmatch(r'careertrellis-paired-db(?:-recovery)?@(?:[0-9a-f]{32})?\.service',name)))
         keys='LoadState,ActiveState,SubState,UnitFileState,MainPID,ControlPID,Job,Result,InvocationID,NRestarts,FragmentPath,DropInPaths,NeedDaemonReload,TimersCalendar,TimersMonotonic,Persistent,RandomizedDelayUSec,AccuracyUSec'
         value=dict(line.split('=',1) for line in run(['/usr/bin/systemctl','show',name,'--property='+keys]).decode().splitlines())
         need(value['LoadState']=='loaded' and value['NeedDaemonReload']=='no')
@@ -148,10 +148,12 @@ def native_custody(reader,role,binding,sources):
     for path in (ROOT/role/'control.lock',Path('/run/lock/careertrellis-maintenance.lock')):
         s=path.lstat();key=f'{os.major(s.st_dev):02x}:{os.minor(s.st_dev):02x}:{s.st_ino}'
         held|=any(len(x.split())>=6 and x.split()[5].lower()==key.lower() for x in rows)
+    if binding.get('schema')=='careertrellis.preplan-scheduler-binding/v1':need(not held)
     if binding['phase']!='preflight' or held:
         from transaction04 import collect as collect_transaction
-        standing_scheduler(reader)
         result=collect_transaction(reader,role,binding,common)
+        result['scheduler_verified']=False
+        result['scheduler_coverage']=local_scheduler_coverage(reader,role,binding,result)
         if role=='web' and binding['phase'] in ('preflight','verifying','final'):
             for name in ('careertrellis-web.service','careertrellis-worker.service','careertrellis-erasure-worker.service'):
                 unit=reader.unit(name);need(unit['ActiveState']=='active' and unit['SubState']=='running' and unit['Result']=='success' and unit['Job']=='')
@@ -173,25 +175,6 @@ def native_custody(reader,role,binding,sources):
     for path,expected in d['artifact_hashes'][role].items():
         mode=0o755 if path.startswith('/usr/local/sbin/') else 0o644
         need(sha(reader.read(path,mode))==expected)
-    pins=public_document('installed493-pins.json')
-    for name in ('careertrellis-paired-maintenance','careertrellis-paired-recovery'):
-        service=reader.unit(name+'.service');timer=reader.unit(name+'.timer')
-        need(service['ActiveState']=='inactive' and service['MainPID']==service['ControlPID']=='0' and service['Job']=='')
-        need(timer['ActiveState']=='active' and timer['SubState']=='waiting' and timer['UnitFileState']=='enabled' and timer['Job']=='')
-        for unit,value in ((name+'.service',service),(name+'.timer',timer)):
-            path='/etc/systemd/system/'+unit
-            need(value['FragmentPath']==path and value['DropInPaths']=='' and sha(reader.read(path,0o644))==pins['units'][path])
-        need(timer['RandomizedDelayUSec']=='0' and timer['AccuracyUSec']=='1s')
-        if name.endswith('maintenance'):
-            need('OnCalendar=Sun *-*-* 03:00:00 America/New_York' in timer['TimersCalendar'] and timer['Persistent']=='yes')
-            local=now.astimezone(ZoneInfo('America/New_York'))
-            candidate=local.replace(hour=3,minute=0,second=0,microsecond=0)+timedelta(days=(6-local.weekday())%7)
-            if candidate<=local:candidate+=timedelta(days=7)
-            need(reader.timer_next(name+'.timer','NextElapseUSecRealtime')==int(candidate.timestamp())*1000000)
-        else:
-            need('OnBootUSec=30s' in timer['TimersMonotonic'] and 'OnUnitActiveUSec=1min' in timer['TimersMonotonic'])
-            next_tick=reader.timer_next(name+'.timer','NextElapseUSecMonotonic')
-            need(time.monotonic_ns()//1000<=next_tick<=time.monotonic_ns()//1000+61000000)
     # Kernel-owned lock metadata is observed, never flocked. No owner may be
     # guessed stale or removed; any matching holder refuses idle admission.
     locks=Path('/proc/locks').read_text().splitlines()
@@ -213,8 +196,10 @@ def native_custody(reader,role,binding,sources):
     else:
         timer=reader.unit('careertrellis-pgbackrest-full.timer')
         need(timer['ActiveState']=='inactive' and timer['UnitFileState']=='disabled' and timer['Job']=='')
-    return {'scheduler_verified':True,'mode':'idle','policy_sha256':policy.digest,'manifest_revision':REVISION,
+    result={'scheduler_verified':False,'mode':'idle','policy_sha256':policy.digest,'manifest_revision':REVISION,
         'schema_revision':d['schema_revision']}
+    result['scheduler_coverage']=local_scheduler_coverage(reader,role,binding,result)
+    return result
 
 def historical_terminal(reader,policy,status,now):
     """Exact493 closure rules, same approved original binding in EVERY mode."""
@@ -248,7 +233,7 @@ def historical_run(reader,original_policy,prior,transaction,now):
     # temporary historical view does not rewrite a file/current boot/generation.
     terminal(HistoricalView(),original_policy,projection,now)
 
-def standing_scheduler(reader):
+def web_standing_scheduler(reader):
     """Actual unchanged493 scheduler units/next triggers, including transition."""
     pins=public_document('installed493-pins.json')
     now=utc()
@@ -295,8 +280,9 @@ def inventory_digest(health,inventory):
         value['receipts'][operation]=sorted(sha(health.serialize_operation_receipt(x)) for x in receipts)
     return sha(canonical(value))
 
-def original_units(reader,role,health,inventory,scheduler_verified):
-    need(scheduler_verified is True) # produced only by local native custody
+def original_units(reader,role,health,inventory,custody):
+    coverage=custody['scheduler_coverage'];validate_local_coverage(coverage,role,custody)
+    need(custody['scheduler_verified'] is False) # Cross-host join is still required
     roots={'web':'objects','db':'database'}
     alerts=Path('/var/lib/careertrellis/backup-health')/roots[role]/'unit-alerts'
     reader.directory(alerts,0o700)
@@ -316,7 +302,7 @@ def original_units(reader,role,health,inventory,scheduler_verified):
             stem=DB_UNITS[operation];service=reader.unit(stem+'.service');timer=reader.unit(stem+'.timer')
             if service['Result'] not in ('','success'):last='failed'
             missed=not(timer['ActiveState']=='active' and timer['UnitFileState']=='enabled')
-            if operation=='full_backup':missed=not scheduler_verified
+            if operation=='full_backup':missed=True # Retired timer qualification remains provisional until shared join
             if any(p.name==stem+'.service.alert.json' for p in entries):last='failed'
         elif entries:last='failed' # actual health-service alert wins all object inputs
         if operation in inventory.invalid_operations:last='failed'
@@ -387,7 +373,7 @@ def fresh_snapshot(reader,role,health,custody):
             if path.name.startswith(('lock-timeout-','verified-generation')):reader.read(path)
     before=health.scan_receipts(root=RECEIPTS);before_sha=inventory_digest(health,before)
     snapshot={'schema':health.SNAPSHOT_SCHEMA,'surface':SPECS[role][1],'observed_at':utc().strftime('%Y-%m-%dT%H:%M:%SZ'),
-        'units':original_units(reader,role,health,before,custody['scheduler_verified'])}
+        'units':original_units(reader,role,health,before,custody)}
     latest_receipts=verify_inventory_generation(health,before,SPECS[role][1],snapshot['observed_at'])
     if role=='db':snapshot.update(database_fields(reader))
     # Exact installed canonical evaluator scans original receipt inventory itself.
@@ -397,11 +383,12 @@ def fresh_snapshot(reader,role,health,custody):
     need(after==before and after_sha==before_sha and evaluated['evaluated_at']==snapshot['observed_at'])
     return snapshot,evaluated,before_sha,after_sha,latest_receipts
 
-def collect(role,binding):
+def collect(role,binding,reader=None):
     global RUN_DEADLINE
-    request(binding);need(role in SPECS and os.geteuid()==0 and socket.gethostname()==SPECS[role][0])
+    scheduler_binding(binding);need(role in SPECS and os.geteuid()==0 and socket.gethostname()==SPECS[role][0])
     issued=datetime.fromisoformat(binding['issued_at'].replace('Z','+00:00'));RUN_DEADLINE=time.monotonic()+30-(utc()-issued).total_seconds()
-    reader=Reader();reader.role=role;observed=utc();boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip();reader.boot=boot
+    if reader is None:reader=Reader()
+    need(type(reader) is Reader);reader.role=role;observed=utc();boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip();reader.boot=boot
     need(boot==binding['boots'][role])
     clock=run(['/usr/bin/timedatectl','show','--property=NTPSynchronized,Timezone']).decode()
     need(set(clock.splitlines())=={'NTPSynchronized=yes','Timezone=Etc/UTC'})
@@ -419,7 +406,7 @@ def collect(role,binding):
         'snapshot_sha256':sha(canonical(snapshot)),'result_sha256':sha(canonical(evaluated)),
         'inventory_before_sha256':before_sha,'inventory_after_sha256':after_sha,
         'evaluated_at':evaluated['evaluated_at'],'failure_count':evaluated['failure_count']}
-    return {'binding':binding,'role':role,'observed_at':observed.isoformat(),'boot':boot,'core_sha256':SPECS[role][2],
+    value={'binding':binding,'role':role,'observed_at':observed.isoformat(),'boot':boot,'core_sha256':SPECS[role][2],
         'custody':custody,
         'authority':authority_result,
         'snapshot_sha256':sha(canonical(snapshot)),'result_sha256':sha(canonical(evaluated)),
@@ -431,3 +418,151 @@ def collect(role,binding):
         'inventory_verified':True,'evaluation_generation_current':True,'evaluation_generation':generation,
         'evaluation_generation_sha256':sha(canonical(generation)),
         'persisted_status':persisted,'persisted_status_unchanged':True}
+
+    need(len(canonical(value))<=262144) # ASCII JSON including LF, before transport
+    return value
+
+
+WEB_SCHEDULER_UNITS=tuple('careertrellis-paired-'+stem+suffix for stem in ('maintenance','recovery') for suffix in ('.service','.timer'))
+DB_TEMPLATES=('careertrellis-paired-db@.service','careertrellis-paired-db-recovery@.service')
+UNIT_FIELDS=('LoadState','ActiveState','SubState','MainPID','ControlPID','Job','Result','FragmentPath','DropInPaths','NeedDaemonReload')
+def scheduler_binding(value):
+    need(type(value) is dict)
+    if value.get('schema')=='careertrellis.preplan-scheduler-binding/v1':
+        need(set(value)=={'schema','nonce','source_commit','boots','issued_at','phase','mode','release','build'} and value['phase']=='preflight' and value['mode']=='idle' and value['release']==BASE and value['build']=='20261017.96')
+        need(type(value['nonce']) is str and re.fullmatch('[0-9a-f]{64}',value['nonce']) and type(value['source_commit']) is str and re.fullmatch('[0-9a-f]{40}',value['source_commit']))
+        need(type(value['boots']) is dict and set(value['boots'])=={'web','db'} and all(type(v) is str and re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',v) for v in value['boots'].values()))
+        t=datetime.fromisoformat(value['issued_at'].replace('Z','+00:00'));need(t.utcoffset()==timedelta(0) and 0<=(utc()-t).total_seconds()<=30)
+    else:request(value)
+    return value
+
+def db_instance_names():
+    raw=run(['/usr/bin/systemctl','list-units','--all','--type=service','--no-legend','--no-pager','--plain','careertrellis-paired-db@*.service','careertrellis-paired-db-recovery@*.service'],65536)
+    names=[]
+    for line in raw.decode('utf-8').splitlines():
+        need(line and len(line)<=4096);name=line.split()[0]
+        need(re.fullmatch(r'careertrellis-paired-db(?:-recovery)?@[0-9a-f]{32}\.service',name) is not None);names.append(name)
+    need(len(names)<=32 and len(set(names))==len(names));return sorted(names)
+
+def db_registered_templates():
+    # Bare templates have unit-file registration, not operative runtime state.
+    raw=run(['/usr/bin/systemctl','list-unit-files','--no-legend','--no-pager','--full',*DB_TEMPLATES],16384)
+    rows={}
+    for line in raw.decode('ascii').splitlines():
+        fields=line.split();need(len(fields)==3)
+        name,state,preset=fields;need(name in DB_TEMPLATES and name not in rows and state=='static' and preset=='-')
+        rows[name]={'state':state,'preset':preset}
+    need(set(rows)==set(DB_TEMPLATES));return rows
+
+def db_unit_search_paths():
+    raw=run(['/usr/bin/systemctl','show','--property=UnitPath','--value'],16384)
+    paths=raw.decode('ascii').split();need(0<len(paths)<=32 and len(set(paths))==len(paths))
+    allowed=r'/(?:etc/systemd/system(?:\.(?:control|attached))?|run/systemd/(?:system(?:\.(?:control|attached))?|transient|generator(?:\.(?:early|late))?)|usr/(?:local/)?lib/systemd/system|lib/systemd/system)'
+    need(all(re.fullmatch(allowed,name) for name in paths) and '/etc/systemd/system' in paths)
+    return sorted(paths)
+
+def template_dropin_snapshot(name,paths):
+    # No following unknown links. Only the explicitly verified merged-/usr alias
+    # /lib -> usr/lib (or /usr/lib) is accepted, with stable target identity.
+    fields=('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink','st_size','st_mtime_ns','st_ctime_ns')
+    identity=lambda value:tuple(getattr(value,k) for k in fields)
+    observed={}
+    lib=Path('/lib');before=lib.lstat()
+    if stat.S_ISLNK(before.st_mode):
+        target=os.readlink(lib);need(before.st_uid==before.st_gid==0 and target in ('usr/lib','/usr/lib'))
+        for parent in (Path('/'),Path('/usr')):
+            ancestor=parent.lstat();need(stat.S_ISDIR(ancestor.st_mode) and ancestor.st_uid==ancestor.st_gid==0 and not ancestor.st_mode&0o022)
+        canonical=Path('/usr/lib').lstat();need(stat.S_ISDIR(canonical.st_mode) and canonical.st_uid==canonical.st_gid==0 and not canonical.st_mode&0o022)
+        opened=lib.stat();need((opened.st_dev,opened.st_ino)==(canonical.st_dev,canonical.st_ino))
+        need(identity(lib.lstat())==identity(before) and os.readlink(lib)==target and identity(Path('/usr/lib').lstat())==identity(canonical))
+        observed['/lib-alias']=(identity(before),target,identity(canonical))
+    suffixes=['service.d','careertrellis-.service.d','careertrellis-paired-.service.d',name+'.d']
+    if '-recovery@' in name:suffixes.append('careertrellis-paired-db-.service.d')
+    for root in paths:
+        base=Path(root)
+        for parent in (base,*base.parents):
+            if str(parent)=='/lib' and stat.S_ISLNK(before.st_mode):continue
+            try:value=parent.lstat()
+            except FileNotFoundError:continue
+            need(stat.S_ISDIR(value.st_mode) and value.st_uid==value.st_gid==0 and not value.st_mode&0o022)
+            observed[str(parent)]=identity(value)
+        if root!='/etc/systemd/system':
+            try:(base/name).lstat()
+            except FileNotFoundError:pass
+            else:need(False) # No alternate full template or mask can shadow it.
+        for leaf in suffixes:
+            path=base/leaf
+            try:path.lstat()
+            except FileNotFoundError:continue
+            need(False) # Existing directory, file, link or mask is unqualified.
+    return observed
+
+def scheduler_template_record(reader,name,pins,registration,paths):
+    path='/etc/systemd/system/'+name;digest=sha(reader.read(path,0o644));need(digest==pins['units'][path])
+    snapshot=template_dropin_snapshot(name,paths)
+    reader.checks.append(lambda:need(template_dropin_snapshot(name,paths)==snapshot))
+    return {'name':name,'template':name,'sha256':digest,'registration':registration,'unit_paths':paths,'dropin_paths':[]}
+
+def scheduler_unit_record(reader,name,template,pins):
+    value=reader.unit(name);path='/etc/systemd/system/'+template
+    need(value['FragmentPath']==path and value['DropInPaths']=='' and value['NeedDaemonReload']=='no' and value['LoadState']=='loaded')
+    digest=sha(reader.read(path,0o644));need(digest==pins['units'][path])
+    return {'name':name,'template':template,'sha256':digest,'state':{k:value[k] for k in UNIT_FIELDS}}
+
+def local_scheduler_coverage(reader,role,binding,custody):
+    scheduler_binding(binding);need(role in ('web','db') and custody['mode']==binding['mode'])
+    pins=public_document('installed493-pins.json');units={};instances=[];legacy=None;schedule=None
+    if role=='web':
+        web_standing_scheduler(reader)
+        for name in WEB_SCHEDULER_UNITS:units[name]=scheduler_unit_record(reader,name,name,pins)
+        schedule={}
+        for name in WEB_SCHEDULER_UNITS:
+            if not name.endswith('.timer'):continue
+            value=reader.unit(name);prop='NextElapseUSecRealtime' if 'maintenance' in name else 'NextElapseUSecMonotonic'
+            schedule[name]={k:value[k] for k in ('TimersCalendar','TimersMonotonic','Persistent','RandomizedDelayUSec','AccuracyUSec')}
+            schedule[name].update(property=prop,next_value=reader.timer_next(name,prop),monotonic_observed_us=time.monotonic_ns()//1000)
+    else:
+        registered=db_registered_templates();paths=db_unit_search_paths()
+        reader.checks.append(lambda:need(db_registered_templates()==registered and db_unit_search_paths()==paths))
+        for name in DB_TEMPLATES:units[name]=scheduler_template_record(reader,name,pins,registered[name],paths)
+        names=db_instance_names();reader.checks.append(lambda:need(db_instance_names()==names))
+        for name in names:
+            template='careertrellis-paired-db-recovery@.service' if name.startswith('careertrellis-paired-db-recovery@') else 'careertrellis-paired-db@.service'
+            value=scheduler_unit_record(reader,name,template,pins)
+            # A493 paired worker is not the source-bound app packet participant.
+            need(value['state']['ActiveState']=='inactive' and value['state']['MainPID']==value['state']['ControlPID']=='0' and value['state']['Job']=='' and value['state']['Result'] in ('','success'));instances.append(value)
+        legacy=reader.unit('careertrellis-pgbackrest-full.timer');need(legacy['ActiveState']=='inactive' and legacy['UnitFileState']=='disabled' and legacy['MainPID']==legacy['ControlPID']=='0' and legacy['Job']=='')
+        legacy={k:legacy[k] for k in ('ActiveState','UnitFileState','MainPID','ControlPID','Job')}
+    value={'schema':'careertrellis.local-scheduler-coverage/v1','role':role,'binding':binding,'collector_manifest_sha256':VERIFIED_SOURCE_MANIFEST,'observed_at':utc().isoformat(),'policy_sha256':custody['policy_sha256'],'mode':custody['mode'],'units':units,'instances':instances,'legacy_full_timer':legacy,'web_schedule':schedule,'scheduler_verified':False}
+    validate_local_coverage(value,role,custody);return value
+
+def validate_local_coverage(value,role,custody):
+    need(type(value) is dict and set(value)=={'schema','role','binding','collector_manifest_sha256','observed_at','policy_sha256','mode','units','instances','legacy_full_timer','web_schedule','scheduler_verified'})
+    need(value['schema']=='careertrellis.local-scheduler-coverage/v1' and value['role']==role and value['policy_sha256']==custody['policy_sha256'] and value['mode']==custody['mode'] and value['scheduler_verified'] is False)
+    need(type(value['units']) is dict and set(value['units'])==set(WEB_SCHEDULER_UNITS if role=='web' else DB_TEMPLATES))
+
+def collect_preplan(role,binding,reader=None):
+    need(type(binding) is dict and binding.get('schema')=='careertrellis.preplan-scheduler-binding/v1')
+    return collect(role,binding,reader=reader)
+
+def reevaluate_database(raw,binding,reader=None):
+    """DB-only real-root reevaluation, no mutation/provider traversal or new nonce."""
+    scheduler_binding(binding);need(os.geteuid()==0 and socket.gethostname()==SPECS['db'][0] and raw['binding']==binding and raw['boot']==binding['boots']['db'])
+    if reader is None:reader=Reader()
+    need(type(reader) is Reader);reader.role='db';reader.boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip();need(reader.boot==binding['boots']['db'])
+    original_snapshot=canonical(raw['original_snapshot']);original_result=canonical(raw['canonical_evaluation'])
+    sources=installed493(reader);health=core(reader,'db');need(authority(reader,'db')==raw['authority'])
+    current=native_custody(reader,'db',binding,sources)
+    for key in ('mode','policy_sha256','owner'):
+        need(current.get(key)==raw['custody'].get(key))
+    before=health.scan_receipts(root=RECEIPTS);before_sha=inventory_digest(health,before);need(before_sha==raw['receipt_inventory_sha256'])
+    snapshot=decode(original_snapshot);need(snapshot['units']['full_backup']['missed'] is True)
+    snapshot['units']['full_backup']['missed']=False
+    result=health.evaluate_backup_health(snapshot,receipt_root=RECEIPTS)
+    need(result['result']=='ok' and result['failure_codes']==[] and result['failure_count']==0)
+    after=health.scan_receipts(root=RECEIPTS);after_sha=inventory_digest(health,after)
+    need(after==before and after_sha==before_sha and original_snapshot==canonical(raw['original_snapshot']) and original_result==canonical(raw['canonical_evaluation']))
+    need(authority(reader,'db')==raw['authority']);again=native_custody(reader,'db',binding,sources)
+    for key in ('mode','policy_sha256','owner'):need(again.get(key)==current.get(key))
+    reader.stable();need(Path('/proc/sys/kernel/random/boot_id').read_text().strip()==reader.boot and time.monotonic()<RUN_DEADLINE)
+    return {'derived_snapshot':snapshot,'derived_snapshot_sha256':sha(canonical(snapshot)),'derived_result':result,'derived_result_sha256':sha(canonical(result)),'core_sha256':SPECS['db'][2],'inventory_before_sha256':before_sha,'inventory_after_sha256':after_sha,'reevaluated_at':utc().isoformat()}

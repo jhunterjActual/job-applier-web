@@ -10,7 +10,7 @@ class PublicSourceTests(unittest.TestCase):
  def test_actual_public_pair_source_matches_exact_reviewed_fixture(self):
   raw=(PUBLIC/'accepted_pair_validator.py').read_bytes();self.assertEqual(hashlib.sha256(raw).hexdigest(),'e4384b6ed229f5b03e3773e12549bb849bca898dac4eb4c1465ef8d3697c1b8b');self.assertEqual(raw,(HERE/'TARGET_BYTES/accepted_pair_validator.py').read_bytes())
  def test_actual_public_operator_matches_exact_reviewed_fixture(self):
-  raw=(PUBLIC/'operator/drive.py').read_bytes();self.assertEqual(hashlib.sha256(raw).hexdigest(),'905c048358aafc5278feb01a22c7ec34d0d0d3849d36e00a6cdbe911ebbd8f98');self.assertEqual(raw,(HERE/'TARGET_BYTES/drive.py').read_bytes())
+  raw=(PUBLIC/'operator/drive.py').read_bytes();self.assertEqual(hashlib.sha256(raw).hexdigest(),'f166f00ce55220bdf2590ea14dd380605584ce455c4f8c48f1d7f7e61dfc61ae');self.assertEqual(raw,(HERE/'FRAMING_BYTES/drive.py').read_bytes())
  def test_complete35_membership_active_python_target_consistency(self):
   tree=ast.parse((PUBLIC/'peer_server.py').read_bytes());values={}
   for node in tree.body:

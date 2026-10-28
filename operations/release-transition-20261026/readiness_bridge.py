@@ -2,7 +2,7 @@
 
 No channel/key/store/install, persisted-alert override, status write or retry.
 Collector identity is an explicit plan/packet binding, never a hardcoded digest
-that would create source→pinJSON→manifest→source hash recursion.
+that would create sourceÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢pinJSONÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢manifestÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢source hash recursion.
 """
 from datetime import datetime,timezone,timedelta
 import hashlib,json,re,sys,time,types
@@ -45,37 +45,38 @@ def binding(plan,source_commit,nonce,phase,release,predecessor,issued_at):
     return {'nonce':nonce,'plan_sha256':digest(plan),'release':release,'build':plan['builds'][release],
         'phase':phase,'mode':mode,'predecessor':predecessor,'boots':dict(plan['boots']),
         'source_commit':source_commit,'issued_at':issued_at}
-def collect_local(role,plan,source_commit,request):
+def collect_local(role,plan,source_commit,request,reader=None):
     from release_transaction import digest
     need(type(request) is dict and request['plan_sha256']==digest(plan) and request['boots']==plan['boots']
         and request['source_commit']==source_commit and request['release'] in plan['builds']
         and request['build']==plan['builds'][request['release']])
     modules=load(plan,source_commit);collector=modules['collector'];collector.request(request)
-    result=collector.collect(role,request)
+    result=collector.collect(role,request,reader=reader)
     result['collector_manifest_sha256']=plan['readiness_manifest_sha256']
     return result
 
-def verify_generation(value,plan,request,role,collector,*,now):
+def verify_raw_context(value,request,role,collector,manifest_sha256,*,now):
     """Verify explicit fresh evaluation generation, NEVER old status flag."""
+    need(type(value) is dict and len(collector.canonical(value))<=262144)
     need(value['binding']==request and value['role']==role and value['boot']==request['boots'][role]
         and value['core_sha256']==collector.SPECS[role][2]
-        and value['collector_manifest_sha256']==plan['readiness_manifest_sha256'])
+        and value['collector_manifest_sha256']==manifest_sha256)
     generation=value['evaluation_generation']
     need(set(generation)=={'binding','core_sha256','collector_manifest_sha256','snapshot_sha256','result_sha256',
          'inventory_before_sha256','inventory_after_sha256','evaluated_at','failure_count'})
     need(generation['binding']==request and generation['core_sha256']==value['core_sha256']
-        and generation['collector_manifest_sha256']==plan['readiness_manifest_sha256']
+        and generation['collector_manifest_sha256']==manifest_sha256
         and generation['inventory_before_sha256']==generation['inventory_after_sha256']==value['receipt_inventory_sha256'])
     need(generation['snapshot_sha256']==value['snapshot_sha256']==sha(collector.canonical(value['original_snapshot']))
         and generation['result_sha256']==value['result_sha256']==sha(collector.canonical(value['canonical_evaluation']))
         and value['evaluation_generation_sha256']==sha(collector.canonical(generation)))
-    result=value['canonical_evaluation'];evaluation=collector.datetime.fromisoformat(generation['evaluated_at'].replace('Z','+00:00'))
+    result=value['canonical_evaluation'];need(type(result) is dict and type(result['failure_count']) is int and result['failure_count']>=0 and type(result['failure_codes']) is list and all(type(code) is str for code in result['failure_codes']) and len(set(result['failure_codes']))==len(result['failure_codes'])==result['failure_count'] and result['result'] in ('ok','alert') and (result['result']=='ok')==(result['failure_count']==0))
+    evaluation=collector.datetime.fromisoformat(generation['evaluated_at'].replace('Z','+00:00'))
     need(result['evaluated_at']==generation['evaluated_at']==value['original_snapshot']['observed_at']
         and result['surface']==value['original_snapshot']['surface']==collector.SPECS[role][1]
         and evaluation.tzinfo is not None and 0<=(now-evaluation).total_seconds()<=30)
-    need(value['inventory_verified'] is True and value['evaluation_generation_current'] is True
-         and value['persisted_status_unchanged'] is True and generation['failure_count']==result['failure_count']==value['failure_count']==0
-         and result['result']==value['result']=='ok' and result['failure_codes']==value['failure_codes']==[])
+    need(value['inventory_verified'] is True and value['evaluation_generation_current'] is True and value['persisted_status_unchanged'] is True
+         and generation['failure_count']==result['failure_count']==value['failure_count'] and result['result']==value['result'] and result['failure_codes']==value['failure_codes'])
     operations=set(collector.DB_UNITS) if role=='db' else {'generated_object_mirror','generated_object_restore'}
     need(set(value['latest_receipts'])==operations)
     for summary in value['latest_receipts'].values():
@@ -84,6 +85,50 @@ def verify_generation(value,plan,request,role,collector,*,now):
         completed=collector.datetime.fromisoformat(summary['completed_at'].replace('Z','+00:00'))
         need(completed.tzinfo is not None and completed<=evaluation)
     collector.persisted_status_qualifies(role,value['persisted_status'],now)
+
+
+def verify_generation_structure(value,plan,request,role,collector,*,now):
+    return verify_raw_context(value,request,role,collector,plan['readiness_manifest_sha256'],now=now)
+
+def verify_generation(value,plan,request,role,collector,*,now):
+    if type(value) is dict and value.get('schema')=='careertrellis.qualified-database-generation/v1':
+        need(role=='db');return verify_qualified_context(value,request,collector,plan['readiness_manifest_sha256'],now=now)
+    verify_generation_structure(value,plan,request,role,collector,now=now)
+    need(value['failure_count']==0 and value['canonical_evaluation']['failure_count']==0 and value['result']=='ok' and value['canonical_evaluation']['result']=='ok' and value['failure_codes']==value['canonical_evaluation']['failure_codes']==[])
+
+ENVELOPE_KEYS={'schema','binding','boot','raw_web','raw_db','raw_web_generation_sha256','raw_db_generation_sha256','coverage','derived_snapshot','derived_snapshot_sha256','derived_result','derived_result_sha256','core_sha256','inventory_before_sha256','inventory_after_sha256','reevaluated_at'}
+def verify_qualified_context(value,binding,collector,manifest_sha256,*,now):
+    need(type(value) is dict and len(collector.canonical(value))<=2097152)
+    need(type(value) is dict and set(value)=={'schema','binding','evaluation_generation_sha256','envelope'} and value['schema']=='careertrellis.qualified-database-generation/v1' and value['binding']==binding)
+    envelope=value['envelope'];need(type(envelope) is dict and set(envelope)==ENVELOPE_KEYS and envelope['schema']=='careertrellis.database-joint-qualification/v1' and envelope['binding']==binding and envelope['boot']==binding['boots']['db'])
+    need(value['evaluation_generation_sha256']==sha(collector.canonical(envelope)))
+    web,db=envelope['raw_web'],envelope['raw_db']
+    verify_raw_context(web,binding,'web',collector,manifest_sha256,now=now);verify_raw_context(db,binding,'db',collector,manifest_sha256,now=now)
+    need(web['result']=='ok' and web['failure_codes']==[] and web['failure_count']==0)
+    need(db['result']=='alert' and db['failure_codes']==['full_backup_unit_missed'] and db['failure_count']==1)
+    need(envelope['raw_web_generation_sha256']==web['evaluation_generation_sha256'] and envelope['raw_db_generation_sha256']==db['evaluation_generation_sha256'])
+    import pair_boundary
+    joint=pair_boundary.check_scheduler_pair(web['custody']['scheduler_coverage'],db['custody']['scheduler_coverage'],binding,manifest_sha256,now=now)
+    need(envelope['coverage']==joint and envelope['core_sha256']==collector.SPECS['db'][2])
+    expected=collector.decode(collector.canonical(db['original_snapshot']));need(expected['units']['full_backup']['missed'] is True);expected['units']['full_backup']['missed']=False
+    need(envelope['derived_snapshot']==expected and envelope['derived_snapshot_sha256']==sha(collector.canonical(expected)))
+    # Validation of exact deterministic result delta; DB derivation itself MUST run the unchanged core on its actual protected receipt root.
+    expected_result=collector.decode(collector.canonical(db['canonical_evaluation']));expected_result.update(result='ok',failure_codes=[],failure_count=0)
+    need(envelope['derived_result']==expected_result and envelope['derived_result_sha256']==sha(collector.canonical(expected_result)))
+    need(envelope['inventory_before_sha256']==envelope['inventory_after_sha256']==db['receipt_inventory_sha256'])
+    when=collector.datetime.fromisoformat(envelope['reevaluated_at'].replace('Z','+00:00'));need(when.tzinfo is not None and 0<=(now-when).total_seconds()<=30 and collector.datetime.fromisoformat(binding['issued_at'].replace('Z','+00:00'))<=when)
+    return envelope
+
+def qualify_local_database(web,db,binding,collector,manifest_sha256,reader=None):
+    now=datetime.now(timezone.utc);verify_raw_context(web,binding,'web',collector,manifest_sha256,now=now);verify_raw_context(db,binding,'db',collector,manifest_sha256,now=now)
+    need(web['result']=='ok' and web['failure_count']==0 and web['failure_codes']==[] and db['result']=='alert' and db['failure_count']==1 and db['failure_codes']==['full_backup_unit_missed'])
+    import pair_boundary
+    joint=pair_boundary.check_scheduler_pair(web['custody']['scheduler_coverage'],db['custody']['scheduler_coverage'],binding,manifest_sha256,now=now)
+    derived=collector.reevaluate_database(db,binding,reader=reader)
+    envelope={'schema':'careertrellis.database-joint-qualification/v1','binding':binding,'boot':binding['boots']['db'],'raw_web':web,'raw_db':db,'raw_web_generation_sha256':web['evaluation_generation_sha256'],'raw_db_generation_sha256':db['evaluation_generation_sha256'],'coverage':joint,**derived}
+    value={'schema':'careertrellis.qualified-database-generation/v1','binding':binding,'evaluation_generation_sha256':sha(collector.canonical(envelope)),'envelope':envelope}
+    need(len(collector.canonical(value))<=2097152)
+    verify_qualified_context(value,binding,collector,manifest_sha256,now=datetime.now(timezone.utc));return value
 
 def verify_repository_binding(repository,health,accepted_label,accepted_full_sha256):
     """Retain BOTH actual ANY equality and actual FULL binding; one info read."""
@@ -100,7 +145,10 @@ def admit(web,db,plan,source_commit,request,*,started_monotonic):
     now=datetime.now(timezone.utc)
     verify_generation(web,plan,request,'web',modules['collector'],now=now)
     verify_generation(db,plan,request,'db',modules['collector'],now=now)
-    result=modules['pair_boundary'].check_pair(web,db,request,plan['readiness_manifest_sha256'],now=datetime.now(timezone.utc))
+    if type(db) is dict and db.get('schema')=='careertrellis.qualified-database-generation/v1':
+        envelope=verify_qualified_context(db,request,modules['collector'],plan['readiness_manifest_sha256'],now=datetime.now(timezone.utc))
+        result=modules['pair_boundary'].check_pair(web,envelope['raw_db'],request,plan['readiness_manifest_sha256'],now=datetime.now(timezone.utc),qualified_database=db)
+    else:result=modules['pair_boundary'].check_pair(web,db,request,plan['readiness_manifest_sha256'],now=datetime.now(timezone.utc))
     need(0<=time.monotonic()-started_monotonic<=30)
     return result
 

@@ -41,6 +41,9 @@ jobs:
           python -B -m unittest discover -s tests -p 'test*.py'
           python -B -m unittest discover -s tests -p 'builder_contract_checks.py'
           python -B -m unittest discover -s tests/target-context-rebind -p 'test*.py'
+          python -B -m unittest discover -s tests/role-aware-readiness -p 'test_*.py'
+          python -B -m unittest discover -s tests/rpc-framing -p 'test_*.py'
+          python -B -m unittest discover -s ../release-transition-20261027/preplan -p 'test_*.py'
       - name: Run evaluation budget controls
         working-directory: ${{ github.workspace }}/scripts/value_evaluation
         run: python -B -m unittest -v test_budget_guard test_ct_budget_transport

@@ -1,0 +1,12 @@
+{
+  "ast_semantic_sha256": "ada7e86ac3a2a6022ea9d232209790871f82add2aa187b4d2108aa0d94aebfb4",
+  "current_commit_packet_profile": "UNALLOCATED",
+  "current_method_raw_sha256": "ee449a8f96d564a3eaeb3f053c4182c441ce778fb8bb1f25c4e0e1b9c7850788",
+  "current_whole_sha256": "92bc552a30ab992d4dd0d038d26e7315b3164ba332ecadbbed6a234c23e28ef7",
+  "equivalence_kind": "CRLF-to-LF-only/v1",
+  "original_history_unchanged": true,
+  "original_method_raw_sha256": "4eb39281876ab1bfd3411cf7753d9bf42dca9ad828c538f19a9703d856a6a4b5",
+  "original_whole_sha256": "5c86f98fe6059330d5025a7d0041015a44fa406963cac8b137fe1e6c0a1b4c03",
+  "schema": "careertrellis.preplan-current-scanner-rebind/v1",
+  "source_review_status": "PROPOSED_EXACT_SOURCE_REBIND_NOT_NATIVE_ACCEPTANCE"
+}

@@ -3,10 +3,21 @@ build_manifest.py -text whitespace=cr-at-eol
 canonical_primitives.py -text
 current_health_validator.py -text
 db_audit.py -text
+generate_readiness_json.py -text
 historical98_controls.py -text
-native_backend.py -text whitespace=cr-at-eol
+native_backend.py -text
 native_peer.py -text whitespace=cr-at-eol
-peer_server.py -text whitespace=cr-at-eol
+one_shot_readiness/collector.py -text
+one_shot_readiness/installed493-pins.json -text
+one_shot_readiness/pair_boundary.py -text
+one_shot_readiness/SOURCE_MANIFEST.json -text
+one_shot_readiness/terminal493.py -text whitespace=cr-at-eol
+one_shot_readiness/transaction04-pins.json -text
+one_shot_readiness/transaction04.py -text
+operator/drive.py -text
+peer_server.py -text
+policy-contract-fixtures/common_493.py -text
+policy-contract-fixtures/policy_example_493.json -text
 policy_encoding.py -text
 prepared97_checks.py -text
 prepared97_context.py -text
@@ -22,40 +33,95 @@ prepared_registries.py -text
 prepared_sources.py -text
 prepared_types.py -text
 protected_state.py -text
-readiness_bridge.py -text whitespace=cr-at-eol
+PUBLIC_FIXTURE_PROVENANCE.json -text
+PUBLIC_RUNTIME_SOURCE_PINS.json -text whitespace=cr-at-eol
+readiness_bridge.py -text
+README.md -text
 release_transaction.py -text
 reviewed_probe.py -text
+RPC_METHOD_SCOPE.json -text
 terminal_validation.py -text
-web_coordinator.py -text
-one_shot_readiness/collector.py -text
-one_shot_readiness/installed493-pins.json -text
-one_shot_readiness/pair_boundary.py -text whitespace=cr-at-eol
-one_shot_readiness/SOURCE_MANIFEST.json -text
-one_shot_readiness/terminal493.py -text whitespace=cr-at-eol
-one_shot_readiness/transaction04-pins.json -text
-one_shot_readiness/transaction04.py -text
-policy-contract-fixtures/common_493.py -text
-policy-contract-fixtures/policy_example_493.json -text
-tests/test*.py text eol=lf
-tests/portable_bootstrap.py text eol=lf
-tests/synthetic97.py -text
-tests/fixture98.py -text
 tests/adapter.py -text
-tests/historical.py -text
-tests/checks97.py -text
-tests/qualified_specs.py -text
-tests/qualified97_records.py -text
-tests/historical98_controls.py -text
-tests/public-fixtures/** -text
-tests/BASE_BYTES/** -text
-tests/registry*.json -text
-tests/DEPENDENCIES.json -text
 tests/BASE_BYTES/native_backend.py -text whitespace=cr-at-eol
+tests/builder_contract_checks.py -text
+tests/checks97.py -text
+tests/DEPENDENCIES.json -text
+tests/fixture98.py -text
+tests/historical.py -text
+tests/historical98_controls.py -text
+tests/portable_bootstrap.py -text
+tests/public-fixtures/corrected-test_campaign_transport.py.source -text
+tests/public-fixtures/corrected-test_p0_regressions.py.source -text
 tests/public-fixtures/prepare_release291d.py -text whitespace=cr-at-eol
-operator/drive.py -text
+tests/public-fixtures/producer-registry97.json -text
+tests/public-fixtures/qualified97-source/accepted98_dependency.py -text
+tests/public-fixtures/qualified97-source/admission97.py -text
+tests/public-fixtures/qualified97-source/checks97.py -text
+tests/public-fixtures/qualified97-source/historical98_controls.py -text
+tests/public-fixtures/qualified97-source/materialize97.py -text
+tests/public-fixtures/qualified97-source/native97_unit.py -text
+tests/public-fixtures/qualified97-source/native_assertions97.py -text
+tests/public-fixtures/qualified97-source/qualified97_records.py -text
+tests/public-fixtures/qualified97-source/qualified_entry.py -text
+tests/public-fixtures/qualified97-source/qualified_route.py -text
+tests/public-fixtures/qualified97-source/qualified_specs.py -text
+tests/public-fixtures/qualified97-source/run_checks_qualified97.py -text
+tests/public-fixtures/qualified97-source/source_boundary.py -text
+tests/public-fixtures/repair98-source/fixture_relocation.py -text
+tests/public-fixtures/repair98-source/repair_contract.py -text
+tests/public-fixtures/repair98-source/repair_coordinator.py -text
+tests/public-fixtures/repair98-source/repair_owner.py -text
+tests/public-fixtures/repair98-source/repair_preflight.py -text
+tests/public-fixtures/repair98-source/repair_seal.py -text
+tests/public-fixtures/repair98-source/run_checks_repair98.py -text
+tests/public-fixtures/target97-deploy-release.sh -text
+tests/PUBLISHED_PUBLIC_SOURCE_PROVENANCE.json -text
+tests/qualified97_records.py -text
+tests/qualified_specs.py -text
+tests/registry.snapshot.json -text
+tests/registry97.snapshot.json -text
+tests/role-aware-readiness/fixtures/collector.py.baseline.txt -text
+tests/role-aware-readiness/fixtures/db_core.reference.py -text
+tests/role-aware-readiness/fixtures/git504/native_peer.py -text whitespace=cr-at-eol
+tests/role-aware-readiness/fixtures/git504/release_transaction.py -text
+tests/role-aware-readiness/fixtures/readiness_bridge.py.baseline.txt -text whitespace=cr-at-eol
+tests/role-aware-readiness/fixtures/role493/build_bundle.py -text
+tests/role-aware-readiness/fixtures/role493/install_bundle.py -text
+tests/role-aware-readiness/fixtures/role493/ROLE_EVIDENCE.json -text
+tests/role-aware-readiness/portable_bootstrap.py -text
+tests/role-aware-readiness/public_schema_fixtures.py -text
+tests/role-aware-readiness/PUBLIC_SOURCE_PROVENANCE.json -text
+tests/role-aware-readiness/README.md -text
+tests/role-aware-readiness/test_consumer_token.py -text
+tests/role-aware-readiness/test_orchestration.py -text
+tests/role-aware-readiness/test_qualification.py -text
+tests/role-aware-readiness/test_real_db_core.py -text
+tests/role-aware-readiness/test_role_coverage.py -text
+tests/role-aware-readiness/test_rpc_sequence.py -text
+tests/rpc-framing/README.md -text
+tests/rpc-framing/test_framing.py -text
+tests/synthetic97.py -text
 tests/target-context-rebind/BASE_BYTES/accepted_pair_validator.py -text
 tests/target-context-rebind/BASE_BYTES/drive.py -text
+tests/target-context-rebind/FRAMING_BYTES/drive.py -text
 tests/target-context-rebind/TARGET_BYTES/accepted_pair_validator.py -text
 tests/target-context-rebind/TARGET_BYTES/drive.py -text
 tests/target-context-rebind/test_public_source_binding.py -text
 tests/target-context-rebind/test_target_rebind.py -text
+tests/test_corrected_native_history.py -text
+tests/test_corrected_sources.py -text
+tests/test_cross_generation_actors.py -text
+tests/test_occurrences97.py -text
+tests/test_original_guards.py -text
+tests/test_published_source_rebind.py -text
+tests/test_pure_qualifications.py -text
+tests/test_qualified97_history.py -text
+tests/test_release_transaction.py -text
+tests/test_within97_actors.py -text
+web_coordinator.py -text
+tests/role-aware-readiness/PUBLIC493_TEMPLATE_PROVENANCE.json -text
+tests/role-aware-readiness/fixtures/template-baseline-collector.py.txt -text
+tests/role-aware-readiness/public493/careertrellis-paired-db-recovery@.service -text
+tests/role-aware-readiness/public493/careertrellis-paired-db@.service -text
+tests/role-aware-readiness/role_fixture_reference.py -text whitespace=cr-at-eol
+tests/role-aware-readiness/test_db_template_registration.py -text

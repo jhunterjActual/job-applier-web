@@ -42,7 +42,7 @@ def command(role,commit,digest):
 def start(role,commit,digest):
     # Never print stderr: provider/config diagnostics cannot enter public logs.
     return subprocess.Popen(command(role,commit,digest),stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,encoding='utf-8',bufsize=1)
+        stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
 
 class Reader:
     def __init__(self,stream):
@@ -50,7 +50,7 @@ class Reader:
         def collect():
             try:
                 while True:
-                    raw=stream.readline(65537);self.items.put(raw)
+                    raw=stream.readline(3145729);self.items.put(raw)
                     if not raw:return
             except BaseException:self.items.put(None)
         threading.Thread(target=collect,daemon=True).start()
@@ -73,7 +73,7 @@ def drive(commit,digest,receipt):
             record({'phase':'started','web_transport_pid':web.pid})
             while True:
                 raw=web_reader.read()
-                need(raw and len(raw)<=65536 and raw.endswith('\n'))
+                need(type(raw) is bytes and raw and raw.isascii() and b'\r' not in raw and len(raw)<=3145728 and raw.endswith(b'\n') and raw.count(b'\n')==1)
                 frame=decode(raw)
                 if frame.get('kind')=='owner':
                     need(set(frame)=={'kind','role','pid','boot'} and frame['role']=='web'
@@ -94,15 +94,27 @@ def drive(commit,digest,receipt):
                     db_reader=Reader(db.stdout)
                 # Confidential frame is forwarded in memory only. No journal,
                 # print, error interpolation or command-line policy values.
-                db.stdin.write(json.dumps(request,separators=(',',':'))+'\n');db.stdin.flush()
+                request_wire=(json.dumps(request,separators=(',',':'),ensure_ascii=True)+'\n').encode('ascii')
+                need(len(request_wire)<=3145728)
+                offset=0
+                while offset<len(request_wire):
+                    count=db.stdin.write(request_wire[offset:])
+                    need(type(count) is int and 0<count<=len(request_wire)-offset)
+                    offset+=count
+                db.stdin.flush()
                 response=db_reader.read()
-                need(response and len(response)<=65536 and response.endswith('\n'))
+                need(type(response) is bytes and response and response.isascii() and b'\r' not in response and len(response)<=3145728 and response.endswith(b'\n') and response.count(b'\n')==1)
                 value=decode(response);need(value.get('seq')==seq and type(value.get('ok')) is bool)
                 if request['action']=='ping' and value['ok'] is True:
                     owner=value['value'];need(set(owner)=={'pid','role','boot'} and owner['role']=='db'
                         and type(owner['pid']) is int and owner['pid']>0 and type(owner['boot']) is str)
                     record({'phase':'remote_db_owner','pid':owner['pid'],'boot':owner['boot']})
-                web.stdin.write(response);web.stdin.flush();seq+=1
+                offset=0
+                while offset<len(response):
+                    count=web.stdin.write(response[offset:])
+                    need(type(count) is int and 0<count<=len(response)-offset)
+                    offset+=count
+                web.stdin.flush();seq+=1
                 record({'phase':'db_rpc_completed','sequence':seq,'ok':value['ok']})
             code=web.wait(timeout=20)
             dbcode=0
