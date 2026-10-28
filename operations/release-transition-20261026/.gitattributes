@@ -136,3 +136,8 @@ tests/role-aware-readiness/source-catalog493/host.py -text
 tests/role-aware-readiness/source-catalog493/runtime.py -text
 tests/role-aware-readiness/source-catalog493/web_control.py -text
 tests/role-aware-readiness/test_effective_artifact_timer_contract.py -text
+tests/role-aware-readiness/PAIRED_CONTRACT03_ORACLE.json -text
+tests/role-aware-readiness/PAIRED_CONTRACT03_SCOPE.json -text
+tests/role-aware-readiness/fixtures/paired-contract06-collector.reference.py -text
+tests/role-aware-readiness/test_complete_paired_contract.py -text
+tests/role-aware-readiness/contract03_test_support.py -text

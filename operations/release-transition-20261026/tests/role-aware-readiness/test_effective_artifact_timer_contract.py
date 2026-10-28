@@ -14,21 +14,17 @@ class SourceReader:
  def __init__(self,raw=RAW):self.raw=raw;self.calls=[]
  def read(self,path,mode):self.calls.append((str(path),mode));return self.raw
 def configured(data,role):
- # Independently compile original assignment statements preceding configure,
- # including its original full constant namespace; never imports/classes/actions.
- tree=ast.parse(RAW);nodes=[]
- for n in tree.body:
-  if isinstance(n,ast.Assign) and len(n.targets)==1 and isinstance(n.targets[0],ast.Name) and n.targets[0].id in {'RELEASE','OPS','BUILD','BASE','HELPER','CORE','PINS','STATE_ROOT','MAX_CAPTURE_OBJECTS','MAX_CAPTURE_BYTES','_BASE_PINS','_BASE_OPS'}:nodes.append(n)
-  elif isinstance(n,ast.FunctionDef) and n.name=='configure':nodes.append(n);break
- scope={'Path':PurePosixPath,'require':lambda v,*_:c.need(v)}
- exec(compile(ast.Module(body=nodes,type_ignores=[]),'actual493-configure-test','exec'),scope)
- scope['configure'](types.SimpleNamespace(data=data),role);return scope['PINS']
+ # Independently written literal15 oracle; the previous assignment selector was incomplete.
+ values=json.loads((Path(__file__).parent/'PAIRED_CONTRACT03_ORACLE.json').read_bytes())
+ values={key:{path.replace('/OPS/','/'+data['ops_release']+'/'):pin for path,pin in rows.items()} for key,rows in values.items()}
+ for key,rows in data.get('artifact_hashes',{}).items():values[key].update(rows)
+ return values
 class ArtifactTests(unittest.TestCase):
  def test_actual_configure_default_both_roles_complete(self):
   for role in ('web','db'):
    with self.subTest(role=role):
     reader=SourceReader();actual=c.effective_artifact_map(reader,types.SimpleNamespace(data=copy.deepcopy(DATA)),role)
-    self.assertEqual(actual,configured(DATA,role));self.assertEqual(set(actual),{'web','db'});self.assertEqual({k:len(v) for k,v in actual.items()},{'web':5,'db':6})
+    self.assertEqual(actual,configured(DATA,role));self.assertEqual(set(actual),{'web','db'});self.assertEqual({k:len(v) for k,v in actual.items()},{'web':5,'db':10})
     self.assertEqual(reader.calls,[(str(c.INSTALL/'runtime.py'),0o644)])
     self.assertIn('/opt/careertrellis/staging/releases/'+'b'*40+'/backend/admission_operations.py',actual['db'])
     self.assertEqual(actual['web']['/usr/local/libexec/careertrellis/backup_health.py'],'e143adbeea83df31d4fc4b5c1b25f0f4972dad7dbeef1b427688ca09e468ee91')
@@ -41,7 +37,7 @@ class ArtifactTests(unittest.TestCase):
  def test_empty_overrides_are_not_empty_maps(self):
   for overrides in ({},{'web':{}},{'db':{}},{'web':{},'db':{}}):
    data=dict(DATA,artifact_hashes=overrides);actual=c.effective_artifact_map(SourceReader(),types.SimpleNamespace(data=data),'db')
-   self.assertEqual(len(actual['db']),6);self.assertEqual(len(actual['web']),5)
+   self.assertEqual(len(actual['db']),10);self.assertEqual(len(actual['web']),5)
  def test_source_role_path_pin_failures(self):
   with self.assertRaises(c.Refused):c.effective_artifact_map(SourceReader(RAW+b'\n'),types.SimpleNamespace(data=DATA),'web')
   for role in ('other',None,True):
@@ -54,10 +50,10 @@ class ArtifactTests(unittest.TestCase):
   mapping={k:hashlib.sha256(v).hexdigest() for k,v in leaves.items()}
   for role in ('web','db'):
    class Reader:
-    def __init__(self,bad=None):self.calls=[];self.bad=bad
-    def read(self,path,mode):self.calls.append((path,mode));return b'changed' if path==self.bad else leaves[path]
+    def __init__(self,bad=None):self.calls=[];self.bad=bad;self.artifact_pins={}
+    def read_artifact(self,path,pin):self.calls.append((path,pin));return b'changed' if path==self.bad else leaves[path]
    with patch.object(c,'effective_artifact_map',return_value={role:mapping}):
-    r=Reader();self.assertEqual(c.verify_effective_artifacts(r,None,role),mapping);self.assertEqual(r.calls,[(p,0o755 if p.startswith('/usr/local/sbin/') else 0o644) for p in leaves])
+    r=Reader();self.assertEqual(c.verify_effective_artifacts(r,None,role),mapping);self.assertEqual(r.calls,[(p,mapping[p]) for p in leaves])
     for bad in leaves:
      with self.subTest(role=role,bad=bad),self.assertRaises(c.Refused):c.verify_effective_artifacts(Reader(bad),None,role)
  def test_all_custody_phases_guard_before_branch(self):
@@ -126,6 +122,11 @@ class TimerTests(unittest.TestCase):
     failures={'dropin':('DropInPaths','/foreign'),'fragment':('FragmentPath','/foreign'),'job':('Job','42'),'delay':('RandomizedDelayUSec','1s'),'accuracy':('AccuracyUSec','2s'),'timerstate':('ActiveState','inactive'),'enabled':('UnitFileState','disabled'),'persistent':('Persistent','no'),'calendar':('TimersCalendar','wrong')}
     if self.bad in failures and name.endswith('.timer'):key,v=failures[self.bad];value[key]=v
     if self.bad=='servicepid' and name.endswith('.service'):value['MainPID']='123'
+    return value
+   def timer_cadence(self,name):
+    value={'TimersCalendar':'OnCalendar=Sun *-*-* 03:00:00 America/New_York','TimersMonotonic':'audit only','Persistent':'yes','RandomizedDelayUSec':'0','AccuracyUSec':'1s'}
+    for bad,key,v in [('delay','RandomizedDelayUSec','1s'),('accuracy','AccuracyUSec','2s'),('persistent','Persistent','no'),('calendar','TimersCalendar','wrong')]:
+     if self.bad==bad:value[key]=v
     return value
    def timer_next(self,name,prop):
     if prop=='NextElapseUSecRealtime':return int(candidate.timestamp())*1000000

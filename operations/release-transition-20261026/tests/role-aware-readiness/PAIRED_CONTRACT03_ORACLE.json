@@ -1,0 +1,21 @@
+{
+  "web": {
+    "/usr/local/sbin/careertrellis-mirror-generated-objects": "d52b86a3a3c10fa50ce9befe353e33c489053ced56040864be1cddb609197890",
+    "/usr/local/libexec/careertrellis/generated_object_recovery.py": "866a054532b2a8a7def685168d7783eaf2dbdf80701191dd922b646f7aa77d30",
+    "/usr/local/libexec/careertrellis/maintenance-lock.sh": "d6e448f41dd3d6932bce4c0e87a9aa676b4de6e15111aa53aca3a576f40d7cc1",
+    "/usr/local/sbin/careertrellis-authority": "07399780faffbc8a761b558f3d116e0fd7d0cf2d1bb0226de987c5455ad45206",
+    "/usr/local/libexec/careertrellis/backup_health.py": "e143adbeea83df31d4fc4b5c1b25f0f4972dad7dbeef1b427688ca09e468ee91"
+  },
+  "db": {
+    "/usr/local/sbin/careertrellis-run-pgbackrest-backup": "70d95eafce97e6bae0ba6cf28b61c9d764a7b82ce9bd4fb67843bedf642ec25e",
+    "/usr/local/libexec/careertrellis/backup_health.py": "8d2facf6d71bf985c1c0ffe8b6a661fc9a9699548b6bb81163cd787f53ba97fa",
+    "/opt/careertrellis/staging/releases/OPS/backend/admission_operations.py": "47fc77170563d7c2067de1f88907d398db386b331fc8969f891654d35244d582",
+    "/opt/careertrellis/staging/releases/OPS/backend/admission_purge.py": "f0759546d8c9de5025b59c00e48fd533594af3efb8605b76d094bd3e91ea54b2",
+    "/opt/careertrellis/staging/releases/OPS/backend/totp_cleanup_operations.py": "31f02a03181d7705b6493111c61aeb33245abe799042fa87c90cb929861dd954",
+    "/opt/careertrellis/staging/releases/OPS/backend/totp_cleanup.py": "8f4c24f926e314f22c5ee66097547ba2316faa42f55702bbc7d9501f1171d471",
+    "/opt/careertrellis/staging/releases/OPS/deploy/scripts/manage-admission-purge.sh": "d48596d04cc9696449f2aa7034f077a4341f95b16a2925fc91cbf7933f5c2363",
+    "/opt/careertrellis/staging/releases/OPS/deploy/scripts/manage-totp-cleanup.sh": "256ec8183f0a6cc21f50a8ecc601fe1b6146ed3d7dc63b7beb643d3b45a709b1",
+    "/etc/systemd/system/careertrellis-admission-purge@.service": "fe26678673fbd3d768374d693741c8cd169545df8cafddbeefe30ba8c61e6237",
+    "/etc/systemd/system/careertrellis-totp-cleanup@.service": "71ecea1cbfe770544424376ff236741b6852b2b201c57095daf60ae685cd627d"
+  }
+}

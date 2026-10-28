@@ -38,7 +38,7 @@ def public_document(name):
     return decode(PUBLIC_FILES[name] if name in PUBLIC_FILES else (Path(__file__).parent/name).read_bytes())
 
 class Reader:
-    def __init__(self):self.observed={};self.start=time.monotonic();self.units={};self.directories={};self.timer_properties={};self.timer_cadences={};self.checks=[]
+    def __init__(self):self.observed={};self.start=time.monotonic();self.units={};self.directories={};self.timer_properties={};self.timer_cadences={};self.cadences={};self.artifact_pins={};self.artifacts={};self.checks=[]
     def read(self,path,mode=0o600,maximum=1048576):
         path=Path(path)
         for parent in path.parents:
@@ -55,6 +55,35 @@ class Reader:
         finally:os.close(fd)
         previous=self.observed.get(str(path));need(previous is None or previous==(mode,maximum,raw))
         self.observed[str(path)]=(mode,maximum,raw);return raw
+    def read_artifact(self,path,expected,maximum=1048576):
+        need(type(maximum) is int and 0<maximum<=1048576)
+        need(type(path) is str and str(PurePosixPath(path))==path and path.startswith('/') and '..' not in PurePosixPath(path).parts)
+        need(type(expected) is str and re.fullmatch('[0-9a-f]{64}',expected) and self.artifact_pins.get(path)==expected)
+        p=Path(path)
+        for parent in p.parents:
+            s=parent.lstat();need(stat.S_ISDIR(s.st_mode) and s.st_uid==0 and not s.st_mode&0o022)
+        fields=('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink','st_size','st_mtime_ns','st_ctime_ns')
+        identity=lambda s:tuple(getattr(s,k) for k in fields)
+        before=p.lstat();need(stat.S_ISREG(before.st_mode) and before.st_uid==before.st_gid==0 and before.st_nlink==1
+            and stat.S_IMODE(before.st_mode) in (0o600,0o644,0o755) and 0<before.st_size<=maximum)
+        fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+        try:
+            need(identity(os.fstat(fd))==identity(before))
+            with os.fdopen(fd,'rb',closefd=False) as f:raw=f.read(maximum+1)
+            need(len(raw)==before.st_size and identity(os.fstat(fd))==identity(before) and identity(p.lstat())==identity(before) and sha(raw)==expected)
+        finally:os.close(fd)
+        record=(expected,maximum,identity(before),raw);previous=self.artifacts.get(path);need(previous is None or previous==record)
+        self.artifacts[path]=record;return raw
+
+    def timer_cadence(self,name,remember=True):
+        need(type(name) is str and name in ('careertrellis-paired-maintenance.timer','careertrellis-paired-recovery.timer'))
+        keys=('TimersCalendar','TimersMonotonic','Persistent','RandomizedDelayUSec','AccuracyUSec')
+        raw=run(['/usr/bin/systemctl','show',name,'--property='+','.join(keys)],maximum=16384)
+        value=unit_properties(raw,keys)
+        if remember:
+            previous=self.cadences.get(name);need(previous is None or previous==value);self.cadences[name]=value
+        return value
+
     def stable(self):
         need(time.monotonic()-self.start<=30)
         for path,(mode,maximum,raw) in list(self.observed.items()):need(self.read(path,mode,maximum)==raw)
@@ -62,7 +91,10 @@ class Reader:
         for path,(mode,names) in list(self.directories.items()):self.directory(path,mode);need(self.directories[path][1]==names)
         for key,value in list(self.timer_properties.items()):need(timer_next(*key)==value)
         for name,value in list(self.timer_cadences.items()):need(timer_monotonic(name)==value)
+        for name,value in list(self.cadences.items()):need(self.timer_cadence(name,False)==value)
+        for path,(expected,maximum,identity,raw) in list(self.artifacts.items()):need(self.read_artifact(path,expected,maximum)==raw)
         for check in self.checks:check()
+        need(time.monotonic()-self.start<=30)
     def timer_next(self,name,property_name):
         value=timer_next(name,property_name);key=(name,property_name)
         previous=self.timer_properties.get(key);need(previous is None or previous==value);self.timer_properties[key]=value;return value
@@ -77,8 +109,8 @@ class Reader:
         previous=self.directories.get(str(p));need(previous is None or previous==(mode,names));self.directories[str(p)]=(mode,names)
     def unit(self,name,remember=True):
         need(type(name) is str and (re.fullmatch('careertrellis-[a-z-]+\\.(service|timer)',name) or re.fullmatch(r'careertrellis-paired-db(?:-recovery)?@(?:[0-9a-f]{32})?\.service',name)))
-        keys='LoadState,ActiveState,SubState,UnitFileState,MainPID,ControlPID,Job,Result,InvocationID,NRestarts,FragmentPath,DropInPaths,NeedDaemonReload,TimersCalendar,TimersMonotonic,Persistent,RandomizedDelayUSec,AccuracyUSec'
-        value=dict(line.split('=',1) for line in run(['/usr/bin/systemctl','show',name,'--property='+keys]).decode().splitlines())
+        fields=TIMER_UNIT_FIELDS if name.endswith('.timer') else SERVICE_UNIT_FIELDS+('InvocationID','NRestarts','UnitFileState')
+        value=unit_properties(run(['/usr/bin/systemctl','show',name,'--property='+','.join(fields)],maximum=16384),fields)
         need(value['LoadState']=='loaded' and value['NeedDaemonReload']=='no')
         if remember:
             old=self.units.get(name);need(old is None or old==value);self.units[name]=value
@@ -319,10 +351,11 @@ def web_standing_scheduler(reader):
             need(value['FragmentPath']==path and value['DropInPaths']=='' and sha(reader.read(path,0o644))==pins['units'][path])
             if suffix=='.service':need(value['ActiveState']=='inactive' and value['MainPID']==value['ControlPID']=='0' and value['Job']=='')
             else:
+                cadence=reader.timer_cadence(name)
                 need(value['ActiveState']=='active' and value['SubState']=='waiting' and value['UnitFileState']=='enabled'
-                    and value['Job']=='' and value['RandomizedDelayUSec']=='0' and value['AccuracyUSec']=='1s')
+                    and value['Job']=='' and cadence['RandomizedDelayUSec']=='0' and cadence['AccuracyUSec']=='1s')
                 if stem.endswith('maintenance'):
-                    need('OnCalendar=Sun *-*-* 03:00:00 America/New_York' in value['TimersCalendar'] and value['Persistent']=='yes')
+                    need('OnCalendar=Sun *-*-* 03:00:00 America/New_York' in cadence['TimersCalendar'] and cadence['Persistent']=='yes')
                     local=now.astimezone(ZoneInfo('America/New_York'));candidate=local.replace(hour=3,minute=0,second=0,microsecond=0)+timedelta(days=(6-local.weekday())%7)
                     if candidate<=local:candidate+=timedelta(days=7)
                     need(reader.timer_next(name,'NextElapseUSecRealtime')==int(candidate.timestamp())*1000000)
@@ -501,7 +534,10 @@ def collect(role,binding,reader=None):
 
 WEB_SCHEDULER_UNITS=tuple('careertrellis-paired-'+stem+suffix for stem in ('maintenance','recovery') for suffix in ('.service','.timer'))
 DB_TEMPLATES=('careertrellis-paired-db@.service','careertrellis-paired-db-recovery@.service')
-UNIT_FIELDS=('LoadState','ActiveState','SubState','MainPID','ControlPID','Job','Result','FragmentPath','DropInPaths','NeedDaemonReload')
+SERVICE_UNIT_FIELDS=('LoadState','ActiveState','SubState','MainPID','ControlPID','Job','Result','FragmentPath','DropInPaths','NeedDaemonReload')
+TIMER_UNIT_FIELDS=('LoadState','ActiveState','SubState','UnitFileState','Job','FragmentPath','DropInPaths','NeedDaemonReload')
+UNIT_FIELDS=SERVICE_UNIT_FIELDS
+FULL_SERVICE_PIN='63ee2e6c6430d80c50364fd1560c489ae3ea8d221f45e8ae92f11e0d2c29e9bd'
 def scheduler_binding(value):
     need(type(value) is dict)
     if value.get('schema')=='careertrellis.preplan-scheduler-binding/v1':
@@ -583,7 +619,7 @@ def scheduler_unit_record(reader,name,template,pins):
     value=reader.unit(name);path='/etc/systemd/system/'+template
     need(value['FragmentPath']==path and value['DropInPaths']=='' and value['NeedDaemonReload']=='no' and value['LoadState']=='loaded')
     digest=sha(reader.read(path,0o644));need(digest==pins['units'][path])
-    return {'name':name,'template':template,'sha256':digest,'state':{k:value[k] for k in UNIT_FIELDS}}
+    return {'name':name,'template':template,'sha256':digest,'state':{k:value[k] for k in (TIMER_UNIT_FIELDS if name.endswith('.timer') else SERVICE_UNIT_FIELDS)}}
 
 def local_scheduler_coverage(reader,role,binding,custody):
     scheduler_binding(binding);need(role in ('web','db') and custody['mode']==binding['mode'])
@@ -594,7 +630,7 @@ def local_scheduler_coverage(reader,role,binding,custody):
         schedule={}
         for name in WEB_SCHEDULER_UNITS:
             if not name.endswith('.timer'):continue
-            value=reader.unit(name);prop='NextElapseUSecRealtime' if 'maintenance' in name else 'NextElapseUSecMonotonic'
+            value=reader.timer_cadence(name);prop='NextElapseUSecRealtime' if 'maintenance' in name else 'NextElapseUSecMonotonic'
             schedule[name]={k:value[k] for k in ('TimersCalendar','TimersMonotonic','Persistent','RandomizedDelayUSec','AccuracyUSec')}
             schedule[name].update(property=prop,next_value=reader.timer_next(name,prop),monotonic_observed_us=time.monotonic_ns()//1000,monotonic_timers=reader.timer_monotonic(name) if prop=='NextElapseUSecMonotonic' else None)
     else:
@@ -607,14 +643,13 @@ def local_scheduler_coverage(reader,role,binding,custody):
             value=scheduler_unit_record(reader,name,template,pins)
             # A493 paired worker is not the source-bound app packet participant.
             need(value['state']['ActiveState']=='inactive' and value['state']['MainPID']==value['state']['ControlPID']=='0' and value['state']['Job']=='' and value['state']['Result'] in ('','success'));instances.append(value)
-        legacy=reader.unit('careertrellis-pgbackrest-full.timer');need(legacy['ActiveState']=='inactive' and legacy['UnitFileState']=='disabled' and legacy['MainPID']==legacy['ControlPID']=='0' and legacy['Job']=='')
-        legacy={k:legacy[k] for k in ('ActiveState','UnitFileState','MainPID','ControlPID','Job')}
-    value={'schema':'careertrellis.local-scheduler-coverage/v1','role':role,'binding':binding,'collector_manifest_sha256':VERIFIED_SOURCE_MANIFEST,'observed_at':utc().isoformat(),'policy_sha256':custody['policy_sha256'],'mode':custody['mode'],'units':units,'instances':instances,'legacy_full_timer':legacy,'web_schedule':schedule,'scheduler_verified':False}
+        legacy=retired_full_coverage(reader)
+    value={'schema':'careertrellis.local-scheduler-coverage/v2','role':role,'binding':binding,'collector_manifest_sha256':VERIFIED_SOURCE_MANIFEST,'observed_at':utc().isoformat(),'policy_sha256':custody['policy_sha256'],'mode':custody['mode'],'units':units,'instances':instances,'legacy_full_timer':legacy,'web_schedule':schedule,'scheduler_verified':False}
     validate_local_coverage(value,role,custody);return value
 
 def validate_local_coverage(value,role,custody):
     need(type(value) is dict and set(value)=={'schema','role','binding','collector_manifest_sha256','observed_at','policy_sha256','mode','units','instances','legacy_full_timer','web_schedule','scheduler_verified'})
-    need(value['schema']=='careertrellis.local-scheduler-coverage/v1' and value['role']==role and value['policy_sha256']==custody['policy_sha256'] and value['mode']==custody['mode'] and value['scheduler_verified'] is False)
+    need(value['schema']=='careertrellis.local-scheduler-coverage/v2' and value['role']==role and value['policy_sha256']==custody['policy_sha256'] and value['mode']==custody['mode'] and value['scheduler_verified'] is False)
     need(type(value['units']) is dict and set(value['units'])==set(WEB_SCHEDULER_UNITS if role=='web' else DB_TEMPLATES))
 
 def collect_preplan(role,binding,reader=None):
@@ -649,12 +684,20 @@ def effective_artifact_map(reader,policy,role):
     raw=reader.read(INSTALL/'runtime.py',0o644)
     need(sha(raw)=='0a62282a15f62b2103f88bdfe195f961cbbe4ae815fee02bac764398858f5604')
     tree=ast.parse(raw);required={'OPS','HELPER','CORE','PINS','STATE_ROOT','_BASE_PINS','_BASE_OPS'}
-    selected=[];found=set()
+    selected=[];found=set();constructors={'for':0,'update':0};snapshot=False
     for node in tree.body:
         if isinstance(node,ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Name) and node.targets[0].id in required:
+            if node.targets[0].id=='_BASE_PINS':snapshot=True
             need(node.targets[0].id not in found);found.add(node.targets[0].id);selected.append(node)
+        elif not snapshot and isinstance(node,ast.For) and any(isinstance(n,ast.Name) and n.id=='PINS' for n in ast.walk(node)):
+            need(len(node.body)==1 and isinstance(node.body[0],ast.Assign) and not node.orelse)
+            constructors['for']+=1;selected.append(node)
+        elif not snapshot and isinstance(node,ast.Expr) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Attribute) and node.value.func.attr=='update' and any(isinstance(n,ast.Name) and n.id=='PINS' for n in ast.walk(node)):
+            constructors['update']+=1;selected.append(node)
+        elif not snapshot and isinstance(node,(ast.Assign,ast.AugAssign,ast.For,ast.While,ast.If,ast.Expr)) and any(isinstance(n,ast.Name) and n.id=='PINS' for n in ast.walk(node)):
+            need(False)
         elif isinstance(node,ast.FunctionDef) and node.name=='configure':selected.append(node)
-    need(found==required and sum(isinstance(n,ast.FunctionDef) for n in selected)==1)
+    need(found==required and constructors=={'for':1,'update':1} and sum(isinstance(n,ast.FunctionDef) for n in selected)==1)
     data=policy.data;need(type(data) is dict)
     for name in ('application_release','ops_release'):
         need(type(data[name]) is str and re.fullmatch('[0-9a-f]{40}',data[name]) is not None)
@@ -669,14 +712,14 @@ def effective_artifact_map(reader,policy,role):
     try:scope['configure'](policy,role)
     except (KeyError,TypeError):need(False)
     result=scope['PINS'];need(type(result) is dict and set(result)=={'web','db'})
-    need(all(type(values) is dict and len(values)>0 for values in result.values()))
+    need(all(type(values) is dict for values in result.values()) and len(result['web'])==5 and len(result['db'])==10)
     return result
 
 def verify_effective_artifacts(reader,policy,role):
     values=effective_artifact_map(reader,policy,role)[role]
     for path,expected in values.items():
-        mode=0o755 if path.startswith('/usr/local/sbin/') else 0o644
-        need(sha(reader.read(path,mode))==expected)
+        previous=reader.artifact_pins.get(path);need(previous is None or previous==expected);reader.artifact_pins[path]=expected
+        need(sha(reader.read_artifact(path,expected))==expected)
     return values
 
 def validate_monotonic_timers(value):
@@ -705,3 +748,29 @@ def timer_monotonic(name):
     raw=run(['/usr/bin/busctl','--system','get-property','org.freedesktop.systemd1',
         '/org/freedesktop/systemd1/unit/'+encoded,'org.freedesktop.systemd1.Timer','TimersMonotonic'],maximum=1024)
     return parse_monotonic_timers(raw)
+
+def unit_properties(raw,fields):
+    need(type(raw) is bytes and len(raw)<=16384)
+    try:lines=raw.decode('utf-8').splitlines()
+    except UnicodeDecodeError:need(False)
+    value={}
+    for line in lines:
+        need('=' in line);key,item=line.split('=',1);need(key in fields and key not in value);value[key]=item
+    need(set(value)==set(fields));return value
+
+def full_service_pin(reader):
+    raw=reader.read(INSTALL/'runtime.py',0o644);need(sha(raw)=='0a62282a15f62b2103f88bdfe195f961cbbe4ae815fee02bac764398858f5604')
+    tree=ast.parse(raw);values=[ast.literal_eval(n.value) for n in tree.body if isinstance(n,ast.Assign) and len(n.targets)==1 and isinstance(n.targets[0],ast.Name) and n.targets[0].id=='UNIT_PINS']
+    need(len(values)==1 and values[0]['careertrellis-pgbackrest-full.service']==(FULL_SERVICE_PIN,None));return FULL_SERVICE_PIN
+
+def retired_full_coverage(reader):
+    timer=reader.unit('careertrellis-pgbackrest-full.timer')
+    need(timer['ActiveState']=='inactive' and timer['UnitFileState']=='disabled' and timer['Job']=='')
+    service=reader.unit('careertrellis-pgbackrest-full.service')
+    need(service['ActiveState']=='inactive' and service['MainPID']==service['ControlPID']=='0' and service['Job']=='' and service['Result'] in ('','success'))
+    path='/etc/systemd/system/careertrellis-pgbackrest-full.service';pin=full_service_pin(reader)
+    need(service['FragmentPath']==path and service['DropInPaths']=='' and service['LoadState']=='loaded' and service['NeedDaemonReload']=='no')
+    previous=reader.artifact_pins.get(path);need(previous is None or previous==pin);reader.artifact_pins[path]=pin
+    need(sha(reader.read_artifact(path,pin))==pin)
+    return {'timer':{'name':'careertrellis-pgbackrest-full.timer','state':{k:timer[k] for k in TIMER_UNIT_FIELDS}},
+        'service':{'name':'careertrellis-pgbackrest-full.service','sha256':pin,'state':{k:service[k] for k in SERVICE_UNIT_FIELDS}}}

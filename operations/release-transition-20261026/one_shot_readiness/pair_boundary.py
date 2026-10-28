@@ -1,7 +1,7 @@
 """Pure binding/expiry helper; cannot authenticate transport or authorize actions."""
 from datetime import datetime,timedelta,timezone
 import re
-from collector import need,SPECS,request,scheduler_binding,validate_local_coverage,WEB_SCHEDULER_UNITS,DB_TEMPLATES,UNIT_FIELDS,public_document,sha,canonical,validate_monotonic_timers
+from collector import need,SPECS,request,scheduler_binding,validate_local_coverage,WEB_SCHEDULER_UNITS,DB_TEMPLATES,UNIT_FIELDS,SERVICE_UNIT_FIELDS,TIMER_UNIT_FIELDS,FULL_SERVICE_PIN,public_document,sha,canonical,validate_monotonic_timers
 def stamp(value):
     t=datetime.fromisoformat(value.replace('Z','+00:00'));need(t.tzinfo is not None and t.utcoffset()==timedelta(0));return t
 def check_pair(web,db,binding,manifest_sha256,*,now,qualified_database=None):
@@ -67,7 +67,7 @@ def check_scheduler_pair(web,db,binding,manifest_sha256,*,now):
                 need(row['template']==template);_scheduler_unit(row,pins);state=row['state']
                 need(state['ActiveState']=='inactive' and state['MainPID']==state['ControlPID']=='0' and state['Job']=='' and state['Result'] in ('','success'));names.append(name)
             need(len(set(names))==len(names))
-            need(value['legacy_full_timer']=={'ActiveState':'inactive','UnitFileState':'disabled','MainPID':'0','ControlPID':'0','Job':''})
+            _retired_full(value['legacy_full_timer'])
     need(web['policy_sha256']==db['policy_sha256'] and type(web['policy_sha256']) is str and re.fullmatch('[0-9a-f]{64}',web['policy_sha256']) is not None)
     need(web['mode']==db['mode']==binding['mode'] and (max(times)-min(times)).total_seconds()<=30 and 0<=(now-stamp(binding['issued_at'])).total_seconds()<=30)
     return {'schema':'careertrellis.scheduler-pair-coverage/v1','result':'scheduler_pair_bound','binding_sha256':sha(canonical(binding)),'collector_manifest_sha256':manifest_sha256,'web_coverage_sha256':sha(canonical(web)),'db_coverage_sha256':sha(canonical(db)),'policy_sha256':web['policy_sha256'],'expires_at':(min(min(times),stamp(binding['issued_at']))+timedelta(seconds=30)).isoformat(),'canonical_health_qualified':False}
@@ -81,7 +81,7 @@ def _scheduler_template(name,row,pins):
     need(all(re.fullmatch(allowed,path) for path in paths))
 
 def _scheduler_unit(row,pins):
-    state=row['state'];need(type(state) is dict and all(type(k) is str and type(v) is str for k,v in state.items()) and set(state)==set(UNIT_FIELDS))
+    state=row['state'];need(type(state) is dict and all(type(k) is str and type(v) is str for k,v in state.items()) and set(state)==set(TIMER_UNIT_FIELDS if row['name'].endswith('.timer') else SERVICE_UNIT_FIELDS))
     path='/etc/systemd/system/'+row['template']
     need(state['LoadState']=='loaded' and state['NeedDaemonReload']=='no' and state['FragmentPath']==path and state['DropInPaths']=='' and row['sha256']==pins['units'][path])
 
@@ -101,3 +101,13 @@ def _web_schedule(value,observed):
         else:
             validate_monotonic_timers(row['monotonic_timers'])
             need(row['property']=='NextElapseUSecMonotonic' and 0<=row['next_value']-row['monotonic_observed_us']<=61000000)
+
+
+def _retired_full(value):
+    need(type(value) is dict and set(value)=={'timer','service'})
+    for kind,fields,name in [('timer',TIMER_UNIT_FIELDS,'careertrellis-pgbackrest-full.timer'),('service',SERVICE_UNIT_FIELDS,'careertrellis-pgbackrest-full.service')]:
+        row=value[kind];need(type(row) is dict and set(row)==({'name','state'} if kind=='timer' else {'name','state','sha256'}) and row['name']==name)
+        state=row['state'];need(type(state) is dict and set(state)==set(fields) and all(type(v) is str for v in state.values()))
+        need(state['LoadState']=='loaded' and state['NeedDaemonReload']=='no' and state['DropInPaths']=='' and state['FragmentPath']=='/etc/systemd/system/'+name and state['ActiveState']=='inactive' and state['Job']=='')
+        if kind=='timer':need(state['UnitFileState']=='disabled')
+        else:need(row['sha256']==FULL_SERVICE_PIN and state['MainPID']==state['ControlPID']=='0' and state['Result'] in ('','success'))

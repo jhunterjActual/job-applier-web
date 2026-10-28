@@ -1,20 +1,24 @@
 {
   "one_shot_readiness/collector.py": {
-    "kind": "effective_artifact_typed_timer_contract06",
-    "basis_sha256": "4480402e08c953758f2e7129f3b82b87f3f1d4e540259a9a024395d58a5c94a4",
-    "proposed_sha256": "ba313b404ac65d594ed064cac361b5e2d51b577d629bb4d80d8e822b1047ffc8",
-    "source_proposal_freeze": "6be9ff850dcd474608d3cf356303f4e6ceeeaa8f258e887e63b8ef8554cad9ff",
-    "historical_policy05_functions_raw_unchanged": true,
-    "native_status": "UNOBSERVED/source06_only",
+    "kind": "complete_artifact_protected_mode_typed_unit_contract03",
+    "basis_sha256": "ba313b404ac65d594ed064cac361b5e2d51b577d629bb4d80d8e822b1047ffc8",
+    "proposed_sha256": "f3d3593c5a8fba82988b0fe2dc38426b579f314a7f85aed7959f18683e664f6a",
+    "source_freeze": "0b226b5af1f583f164ca5989675b3e9c85467d12113a1c8ebafacb525eaa22b4",
+    "changed_methods": "explicit FUNCTION_SCOPE, Reader.unit intentionally changed; no old whole-method identity claim",
+    "raw_preserved": "private Reader.read and seven historical05 functions",
+    "old_six_DB_completeness_claim": "withdrawn",
+    "native_status": "UNOBSERVED/source-only",
     "publication_commit": "UNALLOCATED_PRIMARY_OWNED"
   },
   "one_shot_readiness/pair_boundary.py": {
-    "kind": "effective_artifact_typed_timer_contract06",
-    "basis_sha256": "59fb0b698e8845731624b8de313fb19f99a2ffa8aef5900d33b4e3cc7e6d9caa",
-    "proposed_sha256": "30e782ab4ebdc48cab0e542d8b56fb70d48f235045c79af7d3a5b7b85755299b",
-    "source_proposal_freeze": "6be9ff850dcd474608d3cf356303f4e6ceeeaa8f258e887e63b8ef8554cad9ff",
-    "historical_policy05_functions_raw_unchanged": true,
-    "native_status": "UNOBSERVED/source06_only",
+    "kind": "complete_artifact_protected_mode_typed_unit_contract03",
+    "basis_sha256": "30e782ab4ebdc48cab0e542d8b56fb70d48f235045c79af7d3a5b7b85755299b",
+    "proposed_sha256": "ed95a0347cb68b26fc10925e7907d5c459cb91759829b4dc13763c3d37e90736",
+    "source_freeze": "0b226b5af1f583f164ca5989675b3e9c85467d12113a1c8ebafacb525eaa22b4",
+    "changed_methods": "explicit FUNCTION_SCOPE, Reader.unit intentionally changed; no old whole-method identity claim",
+    "raw_preserved": "private Reader.read and seven historical05 functions",
+    "old_six_DB_completeness_claim": "withdrawn",
+    "native_status": "UNOBSERVED/source-only",
     "publication_commit": "UNALLOCATED_PRIMARY_OWNED"
   },
   "readiness_bridge.py": {
