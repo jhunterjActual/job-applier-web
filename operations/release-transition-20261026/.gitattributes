@@ -125,3 +125,13 @@ tests/role-aware-readiness/public493/careertrellis-paired-db-recovery@.service -
 tests/role-aware-readiness/public493/careertrellis-paired-db@.service -text
 tests/role-aware-readiness/role_fixture_reference.py -text whitespace=cr-at-eol
 tests/role-aware-readiness/test_db_template_registration.py -text
+tests/role-aware-readiness/historical_policy05_fixture.py -text
+tests/role-aware-readiness/test_historical_policy_contract.py -text
+tests/role-aware-readiness/public-fixtures/common.py -text
+tests/role-aware-readiness/public-fixtures/policy-example.json -text
+tests/role-aware-readiness/public-fixtures/terminal493.py -text whitespace=cr-at-eol
+tests/role-aware-readiness/source-catalog493/common.py -text
+tests/role-aware-readiness/source-catalog493/db_host.py -text
+tests/role-aware-readiness/source-catalog493/host.py -text
+tests/role-aware-readiness/source-catalog493/runtime.py -text
+tests/role-aware-readiness/source-catalog493/web_control.py -text

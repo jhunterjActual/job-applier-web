@@ -1,9 +1,11 @@
 {
   "one_shot_readiness/collector.py": {
-    "kind": "proposed_db_template_registration_source",
-    "basis_8853_sha256": "759608f43399a7e50a6a2eff9033248545d2a45d6e38067a5153dab0d84bcfe9",
-    "proposed_sha256": "77b814c7f84e6eea977190ecb15d4e6e2a22697fd5e999744e18973c04fd825b",
-    "publication_commit": "UNALLOCATED_PRIMARY_OWNED"
+    "kind": "historical_policy_production_contract05",
+    "basis_template_sha256": "77b814c7f84e6eea977190ecb15d4e6e2a22697fd5e999744e18973c04fd825b",
+    "proposed_sha256": "4480402e08c953758f2e7129f3b82b87f3f1d4e540259a9a024395d58a5c94a4",
+    "publication_commit": "UNALLOCATED_PRIMARY_OWNED",
+    "source_contract": "historical-policy-production-contract-proposal05",
+    "native_evidence": "HISTORICAL_POLICY_PROPOSAL_NATIVE_WEB_02.json + HISTORICAL_POLICY_PROPOSAL_NATIVE_DB_02.json"
   },
   "one_shot_readiness/pair_boundary.py": {
     "kind": "proposed_db_template_registration_source",

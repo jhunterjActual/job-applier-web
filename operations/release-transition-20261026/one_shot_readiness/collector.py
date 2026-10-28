@@ -87,8 +87,9 @@ def run(args,maximum=1048576):
     need(p.returncode==0 and len(p.stdout)<=maximum);return p.stdout
 
 def module(name,raw):
-    value=types.ModuleType(name);value.__file__=str(CORE);sys.modules[name]=value
-    exec(compile(raw,str(CORE),'exec'),value.__dict__);return value
+    source=INSTALL/'common.py' if name=='_one_shot_common493' else CORE
+    value=types.ModuleType(name);value.__file__=str(source);sys.modules[name]=value
+    exec(compile(raw,str(source),'exec'),value.__dict__);return value
 
 def runtime_identity_function(raw):
     # Extract only original readonly identity-probe declarations; never load the
@@ -201,37 +202,109 @@ def native_custody(reader,role,binding,sources):
     result['scheduler_coverage']=local_scheduler_coverage(reader,role,binding,result)
     return result
 
+SOURCE_CATALOG493={'runtime.py': '0a62282a15f62b2103f88bdfe195f961cbbe4ae815fee02bac764398858f5604', 'host.py': 'b9b8d1869c8b5199f6c56889ce836e178911e45c2e4365b406d3544ba45c10b2', 'web_control.py': 'f2e0902257df78dcca0a9b17049bb76160cc39a997fcbfbe86d4f5b726f3c594', 'common.py': 'b1b14dc5ac8c824836d1342291de83ba747f902f7398dd9af244544face2cb44'}
+ARCHIVE_KEYS={'release', 'old_policy_sha256', 'role', 'result', 'prepared_at', 'new_policy_sha256', 'boot_id', 'installed_revision', 'schema'}
+ARCHIVE_FILES={'intent.json','success.json','old-policy.json','old-status.json'}
+from itertools import islice
+def stamp(value):
+ need(type(value)is str);t=datetime.fromisoformat(value.replace('Z','+00:00'));need(t.tzinfo is not None);return t
+
+class HistoricalView:
+ def __init__(self,reader,boot):self.reader=reader;self.boot=boot
+ def __getattr__(self,name):return getattr(self.reader,name)
+
+def archive(reader,common,terminal,role,path,revision,now):
+ reader.directory(path,0o700);need({leaf.name for leaf in islice(reader.path(path).iterdir(),5)}==ARCHIVE_FILES)
+ intent=reader.json(path/'intent.json');success=reader.json(path/'success.json');old=common.Policy(reader.json(path/'old-policy.json'));status=reader.json(path/'old-status.json')
+ need(type(intent)is dict and set(intent)==ARCHIVE_KEYS and intent['schema']=='careertrellis.paired-policy-transition/v1' and intent['role']==role and intent['new_policy_sha256']==path.name and intent['old_policy_sha256']==old.digest and intent['old_policy_sha256']!=intent['new_policy_sha256'] and type(intent['installed_revision'])is str and re.fullmatch('[0-9a-f]{40}',intent['installed_revision']) and old.data.get('manifest_revision')==intent['installed_revision'] and type(intent['release'])is str and re.fullmatch('[0-9a-f]{40}',intent['release']) and intent['result']=='prepared')
+ need(success==dict(intent,result='applied') and type(intent['boot_id'])is str and re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',intent['boot_id']) and stamp(status['observed_at'])<=stamp(intent['prepared_at'])<=now)
+ need(type(status['boot_id'])is str and re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',status['boot_id']))
+ need(reader.read(path/'old-policy.json')==common.canonical(old.data))
+ terminal(HistoricalView(reader,status['boot_id']),old,status,now)
+ return old,status,intent
+
+def web_prestart_record(reader,policy,prior,path,now):
+    keys={'state','transaction','policy_sha256','release','boot_id','worker_invocation','observed_at','result','services_restored'}
+    need(type(prior)is dict and set(prior)==keys)
+    for key in keys-{'services_restored'}:need(type(prior[key])is str)
+    need(prior['state'] in ('preflight','blocked','operator_required','failed') and prior['result'] in ('running','failed','blocked') and prior['services_restored']is True)
+    need(prior['transaction']==path.name and re.fullmatch('[0-9a-f]{32}',prior['transaction']) and prior['policy_sha256']==policy.digest and prior['release']==policy.data['application_release'] and re.fullmatch('[0-9a-f]{32}',prior['worker_invocation']) and re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',prior['boot_id']) and stamp(prior['observed_at'])<=now)
+    raw=reader.read(path/'status.json');snapshot=reader.read(path/'prestart-original-status.json');record=reader.json(path/'prestart-aborted.json')
+    need(raw==snapshot and sha(raw)==record.get('original_status_sha256'))
+
+def database_complete_record(policy,prior,path):
+    keys={'state','transaction','policy_sha256','release','boot_id','services_restored','worker_invocation'}
+    need(type(prior)is dict and set(prior)==keys)
+    for key in keys-{'services_restored'}:need(type(prior[key])is str)
+    need(prior['state']=='complete' and prior['services_restored']is True and prior['transaction']==path.name and re.fullmatch('[0-9a-f]{32}',prior['transaction']) and re.fullmatch('[0-9a-f]{32}',prior['worker_invocation']))
+    need(prior['policy_sha256']==policy.digest and prior['release']==policy.data['application_release'] and re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',prior['boot_id']))
+
+def private_complete_record(policy,prior,path,now):
+    keys={'state','transaction','policy_sha256','release','boot_id','worker_invocation','observed_at','result','services_restored'}
+    need(type(prior)is dict and set(prior)==keys)
+    for key in ('state','transaction','policy_sha256','release','boot_id','worker_invocation','observed_at','result'):need(type(prior[key])is str)
+    need(prior['state']=='complete' and prior['result']=='ok' and prior['services_restored']is True)
+    need(prior['transaction']==path.name and re.fullmatch('[0-9a-f]{32}',prior['transaction']) and re.fullmatch('[0-9a-f]{32}',prior['worker_invocation']))
+    need(prior['policy_sha256']==policy.digest and prior['release']==policy.data['application_release'] and re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',prior['boot_id']))
+    need(stamp(prior['observed_at'])<=now)
+
+def web_complete_proof(reader,policy,path,ordered=True):
+    complete=reader.json(path/'complete.json');need(type(complete)is dict and set(complete)=={'state','transaction','policy_sha256','services_restored','backup_label','manifest_sha256'})
+    need(complete['state']=='complete' and complete['transaction']==path.name and complete['policy_sha256']==policy.digest and complete['services_restored']is True)
+    need(type(complete['backup_label'])is str and re.fullmatch('[0-9]{8}-[0-9]{6}F(?:_[0-9]{8}-[0-9]{6}[DI])?',complete['backup_label']) and type(complete['manifest_sha256'])is str and re.fullmatch('[0-9a-f]{64}',complete['manifest_sha256']))
+    if ordered:
+        a=reader.path(path/'complete.json').lstat();b=reader.path(path/'status.json').lstat();need(a.st_mtime_ns<=b.st_mtime_ns)
+        reader.checks.append(lambda:need(reader.path(path/'complete.json').lstat().st_mtime_ns==a.st_mtime_ns and reader.path(path/'status.json').lstat().st_mtime_ns==b.st_mtime_ns))
+
+def derived_complete_input(reader,terminal,policy,prior,path,now,revision):
+    # Pure declared-format interpretation; not an original global snapshot or execution attestation.
+    for name,expected in SOURCE_CATALOG493.items():need(sha(reader.read(INSTALL/name,0o644))==expected)
+    need(policy.data.get('manifest_revision')==revision);private_complete_record(policy,prior,path,now)
+    view={'schema':'careertrellis.paired-maintenance-status/v1','transaction':prior['transaction'],'policy_sha256':prior['policy_sha256'],'release':prior['release'],'boot_id':prior['boot_id'],'phase':prior['state'],'result':prior['result'],'services_restored':prior['services_restored'],'observed_at':prior['observed_at']}
+    web_complete_proof(reader,policy,path)
+    terminal(HistoricalView(reader,prior['boot_id']),policy,view,now)
+    return {'interpretation':'DERIVED_INPUT','original_global_snapshot':False,'readiness_authority':False}
+
 def historical_terminal(reader,policy,status,now):
-    """Exact493 closure rules, same approved original binding in EVERY mode."""
     from terminal493 import terminal,prior_intents
     terminal(reader,policy,status,now);prior_intents(reader)
-    reader.directory(ROOT/reader.role/'runs',0o700)
-    for path in (ROOT/reader.role/'runs').iterdir():
+    pins=public_document('installed493-pins.json');common_raw=reader.read(INSTALL/'common.py',0o644);need(sha(common_raw)==pins['files']['common.py']);common=module('_one_shot_common493',common_raw)
+    bodies={policy.digest:policy};statuses=[status]
+    root=ROOT/reader.role/'policy-transitions'
+    if os.path.lexists(reader.path(root)):
+        reader.directory(root,0o700);entries=list(islice(reader.path(root).iterdir(),129));need(len(entries)<=128)
+        for path in entries:
+            need(re.fullmatch('[0-9a-f]{64}',path.name));old,original,intent=archive(reader,common,terminal,reader.role,path,REVISION,now)
+            bodies[old.digest]=old;statuses.append(original)
+    else:reader.checks.append(lambda:need(not os.path.lexists(reader.path(root))))
+    runs=ROOT/reader.role/'runs';reader.directory(runs,0o700);entries=list(islice(reader.path(runs).iterdir(),2049));need(len(entries)<=2048)
+    for path in entries:
         need(re.fullmatch('[0-9a-f]{32}',path.name));reader.directory(path,0o700)
         if path.name==status.get('transaction'):continue
-        prior=reader.json(path/'status.json')
-        historical_run(reader,policy,prior,path.name,now)
+        prior=reader.json(path/'status.json');need(type(prior)is dict and type(prior.get('policy_sha256'))is str and prior['policy_sha256'] in bodies);original_policy=bodies[prior['policy_sha256']]
+        candidates=[x for x in statuses if x.get('transaction')==path.name and x.get('policy_sha256')==original_policy.digest]
+        if candidates:
+            original=candidates[0]
+            need(stamp(original['observed_at'])<=now)
+            if reader.role=='web' and original['phase'] in ('failed','blocked','preflight'):
+                need(original['result']=='failed' and original['services_restored']is True);web_prestart_record(reader,original_policy,prior,path,now)
+            else:
+                need(original['phase']=='complete' and original['result']=='ok' and original['services_restored']is True and stamp(original['observed_at'])<=now)
+                if reader.role=='web':
+                    private_complete_record(original_policy,prior,path,now)
+                    known493=original_policy.data.get('manifest_revision')==REVISION
+                    if known493:
+                        for name,expected in SOURCE_CATALOG493.items():need(sha(reader.read(INSTALL/name,0o644))==expected)
+                        need(stamp(original['observed_at'])<=stamp(prior['observed_at']))
+                    web_complete_proof(reader,original_policy,path,known493)
+                else:
+                    need(reader.role=='db');database_complete_record(original_policy,prior,path)
+                    complete=reader.json(path/'complete-result.json');need(type(complete)is dict and set(complete)=={'transaction','policy_sha256','backup_label','manifest_sha256'} and complete['transaction']==path.name and complete['policy_sha256']==original_policy.digest)
+                    need(type(complete['backup_label'])is str and re.fullmatch('[0-9]{8}-[0-9]{6}F(?:_[0-9]{8}-[0-9]{6}[DI])?',complete['backup_label']) and type(complete['manifest_sha256'])is str and re.fullmatch('[0-9a-f]{64}',complete['manifest_sha256']))
+            need(prior['boot_id']==original['boot_id'] and prior['release']==original['release']);terminal(HistoricalView(reader,original['boot_id']),original_policy,original,now)
+        else:
+            need(reader.role=='web');derived_complete_input(reader,terminal,original_policy,prior,path,now,REVISION)
 
-def historical_run(reader,original_policy,prior,transaction,now):
-    """Historical closure uses ORIGINAL policy and ORIGINAL boot, never97.
-
-    A policy different from the authenticated saved baseline needs its own
-    protected original policy snapshot; a digest/healthy flag is insufficient.
-    """
-    from terminal493 import terminal
-    if prior.get('policy_sha256')!=original_policy.digest:
-        raise Refused('historical_original_policy_snapshot_required')
-    need(prior.get('state',prior.get('phase'))=='complete' and prior['release']==original_policy.data['application_release']
-        and type(prior['boot_id']) is str and re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',prior['boot_id']))
-    class HistoricalView:
-        boot=prior['boot_id']
-        def __getattr__(self,key):return getattr(reader,key)
-    projection={'schema':'careertrellis.paired-maintenance-status/v1','transaction':transaction,
-        'policy_sha256':prior['policy_sha256'],'boot_id':prior['boot_id'],'release':prior['release'],
-        'phase':'complete','result':'ok','services_restored':True,'observed_at':prior['observed_at']}
-    # Original worker/started/complete records must prove this projection. The
-    # temporary historical view does not rewrite a file/current boot/generation.
-    terminal(HistoricalView(),original_policy,projection,now)
 
 def web_standing_scheduler(reader):
     """Actual unchanged493 scheduler units/next triggers, including transition."""
