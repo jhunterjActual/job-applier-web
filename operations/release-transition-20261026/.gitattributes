@@ -141,3 +141,6 @@ tests/role-aware-readiness/PAIRED_CONTRACT03_SCOPE.json -text
 tests/role-aware-readiness/fixtures/paired-contract06-collector.reference.py -text
 tests/role-aware-readiness/test_complete_paired_contract.py -text
 tests/role-aware-readiness/contract03_test_support.py -text
+tests/role-aware-readiness/fixtures/systemctl-preall-collector.reference.py -text
+tests/role-aware-readiness/test_systemctl_empty_properties.py -text
+tests/role-aware-readiness/SYSTEMCTL_EMPTY_QUERY_SCOPE.json -text

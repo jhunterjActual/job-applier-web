@@ -78,7 +78,7 @@ class Reader:
     def timer_cadence(self,name,remember=True):
         need(type(name) is str and name in ('careertrellis-paired-maintenance.timer','careertrellis-paired-recovery.timer'))
         keys=('TimersCalendar','TimersMonotonic','Persistent','RandomizedDelayUSec','AccuracyUSec')
-        raw=run(['/usr/bin/systemctl','show',name,'--property='+','.join(keys)],maximum=16384)
+        raw=run(['/usr/bin/systemctl','show','--all',name,'--property='+','.join(keys)],maximum=16384)
         value=unit_properties(raw,keys)
         if remember:
             previous=self.cadences.get(name);need(previous is None or previous==value);self.cadences[name]=value
@@ -110,7 +110,7 @@ class Reader:
     def unit(self,name,remember=True):
         need(type(name) is str and (re.fullmatch('careertrellis-[a-z-]+\\.(service|timer)',name) or re.fullmatch(r'careertrellis-paired-db(?:-recovery)?@(?:[0-9a-f]{32})?\.service',name)))
         fields=TIMER_UNIT_FIELDS if name.endswith('.timer') else SERVICE_UNIT_FIELDS+('InvocationID','NRestarts','UnitFileState')
-        value=unit_properties(run(['/usr/bin/systemctl','show',name,'--property='+','.join(fields)],maximum=16384),fields)
+        value=unit_properties(run(['/usr/bin/systemctl','show','--all',name,'--property='+','.join(fields)],maximum=16384),fields)
         need(value['LoadState']=='loaded' and value['NeedDaemonReload']=='no')
         if remember:
             old=self.units.get(name);need(old is None or old==value);self.units[name]=value

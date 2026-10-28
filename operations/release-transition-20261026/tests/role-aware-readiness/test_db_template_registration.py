@@ -51,9 +51,9 @@ class Tests(unittest.TestCase):
   old=(Path(__file__).parent/'fixtures/template-baseline-collector.py.txt').read_bytes().decode();new=(pb.ROOT/'one_shot_readiness/collector.py').read_bytes().decode()
   def part(text):return ast.get_source_segment(text,next(n for n in ast.walk(ast.parse(text)) if isinstance(n,ast.FunctionDef) and n.name=='read'))
   self.assertEqual(part(old),part(new))
-  from contract03_test_support import actual_method_hash,scope
+  from contract03_test_support import actual_method_hash,expected_method_hash
   for name in ('web_standing_scheduler','scheduler_unit_record','Reader.unit'):
-   self.assertEqual(actual_method_hash(name),scope['collector']['raw_methods_after'][name])
+   self.assertEqual(actual_method_hash(name),expected_method_hash(name))
  def test_binding_role_nonce_policy_source_stale_and_unitpath_mix_refuse(self):
   for kind in ('role','nonce','boot','policy','source','stale','paths'):
    binding,r,db=self.coverage();_,_,web=self.coverage('web')
