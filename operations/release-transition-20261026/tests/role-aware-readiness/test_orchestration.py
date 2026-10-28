@@ -19,13 +19,15 @@ class Tests(unittest.TestCase):
   if change=='owner_after':custodies[1]['owner']='changed'
   if change=='authority_before':authority=iter([{'domain':'changed'}])
   custody=iter(custodies)
+  original_os=c.os;original_geteuid=getattr(original_os,'geteuid',None)
   def evaluate(snapshot,receipt_root):
+   self.assertIs(h.os,original_os);self.assertIs(getattr(h.os,'geteuid',None),original_geteuid)
    calls.append('actual-evaluator');result=h.evaluate_backup_health(snapshot,receipt_root=receipt_root)
    if change=='inventory_after':next(self.root.glob('*-pgbackrest_inventory-*.sha256')).write_bytes(b'changed-synthetic-manifest')
    return result
   core=types.SimpleNamespace(scan_receipts=h.scan_receipts,serialize_operation_receipt=h.serialize_operation_receipt,evaluate_backup_health=evaluate)
   if change=='inventory_before':next(self.root.glob('*-pgbackrest_inventory-*.sha256')).write_bytes(b'changed-synthetic-manifest')
-  with patch.object(c.os,'geteuid',lambda:0,create=True),patch.object(c.socket,'gethostname',lambda:c.SPECS['db'][0]),patch.object(c,'Path',path),patch.object(c,'installed493',lambda _:{}),patch.object(c,'core',lambda *a:core),patch.object(c,'authority',lambda *a:next(authority)),patch.object(c,'native_custody',lambda *a:next(custody)),patch.object(c,'RECEIPTS',self.root),patch.object(c,'RUN_DEADLINE',-1 if change=='deadline'else time.monotonic()+30):
+  with patch.object(c,'os',types.SimpleNamespace(**dict(vars(c.os),geteuid=lambda:0))),patch.object(c.socket,'gethostname',lambda:c.SPECS['db'][0]),patch.object(c,'Path',path),patch.object(c,'installed493',lambda _:{}),patch.object(c,'core',lambda *a:core),patch.object(c,'authority',lambda *a:next(authority)),patch.object(c,'native_custody',lambda *a:next(custody)),patch.object(c,'RECEIPTS',self.root),patch.object(c,'RUN_DEADLINE',-1 if change=='deadline'else time.monotonic()+30):
    try:return c.reevaluate_database(raw,raw['binding'],reader=reader),raw,original,calls,reader
    finally:self.assertEqual(raw,original)
  def test_actual_reevaluator_positive_real_core_and_raw_unchanged(self):
@@ -36,6 +38,15 @@ class Tests(unittest.TestCase):
     with self.assertRaises(c.Refused):self.actual_method(kind)
  def test_actual_reevaluator_real_after_inventory_change(self):
   with self.assertRaises(c.Refused):self.actual_method('inventory_after')
+ def test_collector_root_identity_seam_leaves_real_core_owner_unchanged(self):
+  original_os=c.os;original_geteuid=getattr(original_os,'geteuid',None);expected=real.Tests.h._expected_owner(self.root)
+  facade=types.SimpleNamespace(**dict(vars(original_os),geteuid=lambda:0))
+  with patch.object(c,'os',facade):
+   self.assertIsNot(c.os,real.Tests.h.os);self.assertEqual(c.os.geteuid(),0)
+   self.assertIs(real.Tests.h.os,original_os)
+   self.assertIs(getattr(real.Tests.h.os,'geteuid',None),original_geteuid)
+   self.assertEqual(real.Tests.h._expected_owner(self.root),expected)
+  self.actual_method()
  def backend(self,result='alert',response='known'):
   source=(pb.ROOT/'native_backend.py').read_bytes();fn=next(n for n in ast.walk(ast.parse(source))if isinstance(n,ast.FunctionDef)and n.name=='verify_fresh_proofs');calls=[];admissions=[];now=datetime.now(timezone.utc);request={'nonce':'a'*64,'phase':'preflight','plan_sha256':'b'*64};blob=b'{}';pin=hashlib.sha256(blob).hexdigest();health={'result':result,'observed_at':now.isoformat(),'evaluation_generation_sha256':'d'*64,'latest_receipts':{'full_backup':{'receipt_sha256':'f'*64}}};web=dict(health,result='ok',evaluation_generation_sha256='c'*64);repository={'checked_at':now.isoformat()};qualified={'evaluation_generation_sha256':'e'*64}
   bridge=types.ModuleType('readiness_bridge');bridge.binding=lambda *a:request;bridge.collect_local=lambda *a:web;bridge.verify_repository_binding=lambda *a:None;bridge.verify_generation_structure=lambda *a,**k:None;bridge.verify_generation=lambda *a,**k:None;bridge.load=lambda *a:{'collector':None}
