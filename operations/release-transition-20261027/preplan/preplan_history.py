@@ -59,6 +59,7 @@ def _inspect_preplan_history(c,packet_raw,protected_read,git_blob,*,test_only=Fa
  """
  validate_context(c,test_only=test_only)
  with authenticated_modules(packet_raw,git_blob) as m:
+  protected_read=historical_read_adapter(protected_read,m,test_only=test_only)
   a=m['prepared_types'];q=m['prepared97_history'];reg98=m['prepared_registries'].REGISTRY98;reg97=m['prepared_registries'].REGISTRY97
   bundle=m['prepared97_reader'].snapshot(protected_read);old=m['prepared_reader'].snapshot_protected_history(protected_read,reg98)
   need(sha(bundle['accepted.json'])==c['prepared_receipts'][TARGET] and sha(old['accepted.json'])==c['prepared_receipts'][CORRECTION])
@@ -71,6 +72,27 @@ def _inspect_preplan_history(c,packet_raw,protected_read,git_blob,*,test_only=Fa
   # Old runtime map is already inside the completely validated dependency DAG.
   old_runtime=a.decode(old['runtime-manifest.json']);need(type(old_runtime) is dict and old_runtime)
   return {'schema':'careertrellis.preplan-historical-result/v1','runtime_source_commit':OPS,'packet_sha256':PACKET_SHA,'historical':result['historical'],'runtime_maps':{TARGET:result['runtime_map'],CORRECTION:old_runtime},'validated_layers':('fixed_protected_double_snapshot','exact_public_git35_and_historical_sources','full_corrected97_and_dependency98_historical_dag','original_private_failure_bytes_and_semantics'),'unresolved_contracts':('actual_reader_and_ssh_bootstrap_source_authentication','complete_current_archive_venv_cache_runtime_equality','installed_authority_source_and_state','actual_prior_intent_owner_global_terminal_custody','fresh_native_backup_database_health_and_plan_bound_admission'),'ready_for_plan':False}
+
+def historical_read_adapter(protected_read,modules,*,test_only=False):
+ # Called ONLY inside authenticated_modules, after full original504 Git35
+ # source+packet+registry bytes were verified; never a caller-provided path list.
+ from native_io import ProtectedReader,HistoricalReadAdapter,HISTORICAL_LARGE_PATHS
+ need(type(test_only) is bool and type(modules) is dict and set(modules)==set(PURE))
+ need(all(type(value) is types.ModuleType and sys.modules.get(name) is value for name,value in modules.items()))
+ reg97=modules['prepared_registries'].REGISTRY97;reg98=modules['prepared_registries'].REGISTRY98
+ need(type(reg97) is bytes and sha(reg97)=='90c3beced0522633947c39f398ae21254de7f8990e336738bac36460f6b78e7f')
+ need(type(reg98) is bytes and sha(reg98)=='18c97f07801ca83c05d1c434be829b5d894ffcd8dd7d905715e0bebc805a4901')
+ domain97=modules['prepared97_reader'].DOMAIN;names=modules['prepared97_reader'].NAMES;domain98=modules['prepared_types'].REPAIR_ROOT
+ need(type(domain97) is str and type(domain98) is str and type(names) is frozenset and all(type(name) is str for name in names))
+ need(sha(json.dumps(sorted(names),separators=(',',':')).encode())=='302b5ad043f8e7244ea966bfc3cd29f87cf7cd54cb7fcc950cc19048c2ebd935')
+ r97=decode(reg97);r98=decode(reg98);need(r97['domain']+'/'==domain97 and r98['domain']+'/'==domain98)
+ leaves={'runtime-before.json','runtime-manifest.json'};need(leaves<=names and set(r98['plain_full_maps'])==leaves)
+ derived={domain97+name for name in leaves}|{r98['plain_full_maps'][name] for name in leaves}
+ need(all(r98['plain_full_maps'][name]==domain98+name for name in leaves) and derived==HISTORICAL_LARGE_PATHS)
+ if test_only and type(protected_read) is not ProtectedReader:
+  # Existing explicitly synthetic pure-history test callback, never production.
+  return protected_read
+ return HistoricalReadAdapter(protected_read)
 
 def main(argv=None):
  # Actual collection/assembler wiring stays held; no bootstrap/clock/private IO.

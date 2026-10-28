@@ -139,3 +139,20 @@ def public_failure(error):
 
 def validate_public_failure(value):
  need(type(value)is dict and set(value)=={'schema','phase','origin','line','category'} and value['schema']=='careertrellis.preplan-public-failure/v1' and type(value['phase'])is str and value['phase'] in PUBLIC_PHASES and type(value['origin'])is str and value['origin'] in PUBLIC_ORIGINS+('PUBLIC_PROGRAM',) and type(value['line'])is int and 0<=value['line']<=100000 and type(value['category'])is str and value['category'] in ('REFUSED','IO','TIMEOUT','VALUE','TYPE','OTHER'));return dict(value)
+
+# Only the four authenticated original504 full-map leaves have the original
+# historical snapshot16MiB contract. Generic protected reads remain2MiB.
+HISTORICAL_LARGE_PATHS=frozenset({
+ '/var/backups/careertrellis/preparation97-corrected-20261027/corrected97-fixture-g1/runtime-before.json',
+ '/var/backups/careertrellis/preparation97-corrected-20261027/corrected97-fixture-g1/runtime-manifest.json',
+ '/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/runtime-before.json',
+ '/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/runtime-manifest.json'})
+
+class HistoricalReadAdapter:
+ def __init__(self,reader):
+  need(type(reader) is ProtectedReader);self.reader=reader
+ def __call__(self,path):
+  need(type(path) is str and path.startswith('/') and not path.startswith('//') and '\\' not in path and ':' not in path)
+  p=PurePosixPath(path);need(str(p)==path and '..' not in p.parts)
+  maximum=16777216 if path in HISTORICAL_LARGE_PATHS else 2097152
+  return self.reader.read(path,maximum,(0o600,))
