@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 from contextlib import ExitStack
+from pathlib import Path
 import json
 import os
 import unittest
@@ -107,6 +108,7 @@ SHARED_ROUTE_POLICIES: dict[str, set[tuple[str, str]]] = {
         ("GET", "/api/jobs/{job_id}/materials/resume"),
         ("GET", "/api/jobs/{job_id}/materials/resume.docx"),
         ("GET", "/api/jobs/{job_id}/materials/cover-letter"),
+        ("GET", "/api/jobs/{job_id}/materials/cover-letter.pdf"),
         ("GET", "/api/jobs/{job_id}/apply-manually"),
     },
     "application-workspace": {
@@ -203,6 +205,17 @@ class SearchPlanRoutePolicyTests(unittest.TestCase):
                 self.assertEqual(200, response.status_code, response.text)
                 self.assertEqual(expected, response.json())
         self.assert_no_work()
+
+    def test_cover_pdf_missing_session_stops_before_materials_or_renderer(self) -> None:
+        with (
+            patch.object(app_module, "_application_materials") as materials,
+            patch.object(app_module, "generate_cover_letter_pdf") as renderer,
+        ):
+            response = self.client.get("/api/jobs/1/materials/cover-letter.pdf")
+        self.assertEqual(401, response.status_code)
+        materials.assert_not_called()
+        renderer.assert_not_called()
+        self.authorization.assert_not_called()
 
     def test_invalid_alternatives_rejected_without_work(self) -> None:
         self.authenticate(101)
@@ -552,6 +565,27 @@ class PostgreSQLCutoverRouteQualificationTests(unittest.TestCase):
             "user_tenant_two", f"/api/private-objects/{owner_one_object}"
         )
         self.assertEqual(404, cross_owner_download.status_code)
+        self.sqlite_fallback.assert_not_called()
+
+    def test_cover_pdf_routes_decrypt_only_the_authenticated_owners_object(self) -> None:
+        rendered = []
+        def render(letter, output):
+            rendered.append(letter)
+            Path(output).write_bytes(b"%PDF-synthetic-owner-scope")
+        with patch.object(app_module, "generate_cover_letter_pdf", side_effect=render):
+            for identity, owner, own_job, other_job in (
+                ("user_tenant_one", self.user_one, self.job_one, self.job_two),
+                ("user_tenant_two", self.user_two, self.job_two, self.job_one),
+            ):
+                with self.subTest(owner=owner):
+                    own = self._get(identity, f"/api/jobs/{own_job}/materials/cover-letter.pdf")
+                    self.assertEqual(200, own.status_code, own.text)
+                    self.assertEqual("application/pdf", own.headers["content-type"])
+                    self.assertEqual(f"Private material for owner {owner}", rendered[-1])
+                    count = len(rendered)
+                    other = self._get(identity, f"/api/jobs/{other_job}/materials/cover-letter.pdf")
+                    self.assertEqual(404, other.status_code, other.text)
+                    self.assertEqual(count, len(rendered))
         self.sqlite_fallback.assert_not_called()
 
     def test_provider_routes_use_owner_profile_before_mocked_external_calls(self) -> None:

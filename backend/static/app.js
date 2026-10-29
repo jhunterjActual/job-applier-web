@@ -253,6 +253,7 @@ const saveMaterialsBtn = document.getElementById("save-materials-btn");
 const downloadResumeBtn = document.getElementById("download-resume-btn");
 const downloadResumeDocxBtn = document.getElementById("download-resume-docx-btn");
 const downloadCoverLetterBtn = document.getElementById("download-cover-letter-btn");
+const downloadCoverLetterPdfBtn = document.getElementById("download-cover-letter-pdf-btn");
 const openManualApplicationBtn = document.getElementById("open-manual-application-btn");
 const markAppliedFromMaterialsBtn = document.getElementById("mark-applied-from-materials-btn");
 const materialsActionStatus = document.getElementById("materials-action-status");
@@ -1313,6 +1314,7 @@ function showTailorModal(resumeMarkdown, coverLetterText, jobId) {
     downloadResumeBtn.href = `${API_URL}/api/jobs/${jobId}/materials/resume`;
     downloadResumeDocxBtn.href = `${API_URL}/api/jobs/${jobId}/materials/resume.docx`;
     downloadCoverLetterBtn.href = `${API_URL}/api/jobs/${jobId}/materials/cover-letter`;
+    downloadCoverLetterPdfBtn.href = `${API_URL}/api/jobs/${jobId}/materials/cover-letter.pdf`;
     openManualApplicationBtn.href = `${API_URL}/api/jobs/${jobId}/apply-manually`;
     const job = currentJobs.get(Number(jobId));
     markAppliedFromMaterialsBtn.hidden = !job
@@ -4132,6 +4134,11 @@ async function loadLogs() {
                 resumeDocxLink.append(createElement("i", "fa-solid fa-file-word"), document.createTextNode(" Accessible DOCX"));
                 fileActions.appendChild(resumeDocxLink);
                 if (log.cover_letter_download_available) {
+                    const coverLetterPdfLink = createElement("a", "btn btn-secondary btn-sm");
+                    coverLetterPdfLink.href = `${API_URL}/api/jobs/${log.job_id}/materials/cover-letter.pdf`;
+                    coverLetterPdfLink.download = "";
+                    coverLetterPdfLink.append(createElement("i", "fa-solid fa-file-pdf"), document.createTextNode(" Cover Letter PDF"));
+                    fileActions.appendChild(coverLetterPdfLink);
                     const coverLetterLink = createElement("a", "btn btn-secondary btn-sm");
                     coverLetterLink.href = `${API_URL}/api/jobs/${log.job_id}/materials/cover-letter`;
                     coverLetterLink.download = "";
