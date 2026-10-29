@@ -35,7 +35,7 @@ def verify_sources(manifest_raw,approved_sha,raws,git_blob=None):
   def blob(self,commit,path):
    from preplan_history import OPS,PREFIX
    need(commit==m['runtime']['source_commit'] and path.startswith(PREFIX));return raws['public-runtime35/'+path[len(PREFIX):]]
- need(sha(raws['historical_packet_manifest.json'])=='8014c138db42ec3d4ea5d4d2c0e0e0ae9ef11e7b9da98238ae4ec5c7e3360e17')
+ need(sha(raws['historical_packet_manifest.json'])=='625dac8c93b87853bf4e5473902f9426924c151f2fc208bf02f01b090eefb649')
  current=public_sources(raws['packet_manifest.json'],CapsuleGit(),runtime_profile=m['runtime'])
  from native_runtime import methods,PINS
  methods(current,{name:raws['scanner-original-'+name] for name in PINS},m['runtime']['scanner_methods'])

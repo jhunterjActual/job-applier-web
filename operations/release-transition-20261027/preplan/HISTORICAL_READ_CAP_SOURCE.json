@@ -8,7 +8,7 @@
     },
     "preplan_history.py": {
       "basis_sha256": "715fa28c48a446dabd5833129273143402755c238f4203299afeed4698354e77",
-      "proposed_sha256": "70538a5d3e8d1f788818604bcbed3ecdbb7847a0897756beea72af8b557645d3"
+      "proposed_sha256": "0c330ba90f07e92e9196f4fad234eceacf973fbebf1bb68d9611f99423e5830a"
     }
   },
   "scope": "original504-authenticated four full maps only16MiB; generic2MiB/aggregate64MiB and entireProtectedReaderraw unchanged",
