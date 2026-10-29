@@ -39,23 +39,37 @@ jobs:
       - name: Verify packages
         run: python -m pip check
       - name: Run P0 regressions
-        run: python -m unittest test_p0_regressions.py test_smartrecruiters_metadata.py test_feedback.py test_feedback_browser.py test_caddy_feedback_ops.py test_backup_health.py test_pilot_acceptance.py test_pilot_acceptance_receipts.py test_search_runs.py test_scheduled_search_dispatch.py
+        run: python -m unittest unittest test_p0_regressions.py test_smartrecruiters_metadata.py test_feedback.py test_feedback_browser.py test_caddy_feedback_ops.py test_caddy_hostname_privacy.py test_backup_health.py test_pilot_acceptance.py test_pilot_acceptance_receipts.py test_search_runs.py test_scheduled_search_dispatch.py
       - name: Run private object-storage regressions
         run: python -m unittest test_object_store.py test_object_import.py test_stored_objects.py
       - name: Run evaluation budget controls
         working-directory: ${{ github.workspace }}/scripts/value_evaluation
-        run: python -B -m unittest -v test_budget_guard test_ct_budget_transport
+        run: python -B -m unittest -v test_budget_guard test_ct_budget_transport test_campaign_state test_study_upstream test_study_native_corrections
       - name: Run analytics regressions
         run: python -m unittest test_analytics.py
+      - name: Verify credential-link browser privacy
+        run: python -B -m unittest -v test_provider_credential_links_browser
       - name: Run final PDF byte diagnostics
         working-directory: ${{ github.workspace }}
         run: python -B -m unittest discover -s scripts -p test_document_quality.py
+      - name: Verify native comparison cost arithmetic
+        working-directory: ${{ github.workspace }}/scripts/value_evaluation
+        run: python -B -m unittest -v test_native_cost_envelope
       - name: Run observability regressions
         run: python -m unittest test_observability.py
+      - name: Verify identity-withheld packet preparation
+        working-directory: ${{ github.workspace }}/scripts/value_evaluation
+        run: python -B -m unittest -v test_blind_packets
       - name: Run evaluation evidence checks
         working-directory: ${{ github.workspace }}
         run: python -B -m unittest discover -s scripts -p test_value_evidence.py
+      - name: Run study freeze readiness checks
+        working-directory: ${{ github.workspace }}
+        run: python -B -m unittest discover -s scripts -p test_study_readiness.py
       - name: Run search review regressions
         run: python -m unittest test_search_review.py test_role_plan_browser.py test_coverage_diagnostics.py test_search_completion_browser.py
+      - name: Verify CT normal-route controller seam
+        working-directory: ${{ github.workspace }}/scripts/value_evaluation
+        run: python -B -m unittest -v test_study_ct
       - name: Check Python syntax
         run: python -m compileall -q .

@@ -1,5 +1,38 @@
 # Product Backlog
 
+## October 24 — evidence checkpoint before the next application study
+
+Source baseline: hosted main `dcde53417a24ab494ddb780bc03372b364ac1130`,
+including merged PRs 91–97. This checkpoint reconciles delivered slices with
+their remaining acceptance. It does not attest to a deployed revision or grant
+funding, deployment, merge, participant or provider authorization.
+
+| Item | Delivered evidence | Remaining acceptance |
+|---|---|---|
+| VALUE-001 | [October 23 synthetic pilot](docs/value-evaluation/PILOT_20261023.md), [budget controls](docs/value-evaluation/tooling.md), and [artifact-evidence checks](docs/value-evaluation/evidence-tooling.md) are recorded in source. | A fresh pre-frozen, complete application comparison; common factual calibration and independent review; actual PDF delivery; separate cost/time/effort measurements; owner decision. Discovery and consenting-user observations remain separately scoped. |
+| QUALITY-002 | [Final-byte PDF diagnostics](scripts/document_quality.py) and [synthetic regressions](scripts/test_document_quality.py) check bounded final bytes, extraction, page policy, expected text and page-boundary overflow. | Real product download paths and final-byte evidence; manual every-page inspection for reading order, internal clipping, headings and gaps; template-sensitive acceptance. Diagnostic success alone does not complete this item. |
+| DOC-001 | [Storage boundaries](docs/PRODUCT_STORAGE_BOUNDARIES.md), linked from README, distinguish standalone SQLite/files from hosted PostgreSQL/encrypted objects and operator recovery. | Further current-product wording review and exact-release evidence for any deployed-version claim. Historical rollout documents retain their original scope; their no-activation wording must not be treated as current live-state evidence. |
+
+All three umbrella items remain open. The published pilot's three-case checkpoint
+is partial operational evidence, not a product ranking or a completed twelve-case
+study. In that checkpoint, native configuration changed after initial outputs;
+the CareerTrellis cover letters were TXT, no complete upstream packet or
+authenticated browser download was established, and factual failures/unknown
+charges remained retained. Later task-local campaign receipts record all 24 fit
+and 12 material attempts terminal; terminal attempts do not establish complete
+acceptance, and factual failures and unknown charges remain preserved. Consult
+those later records before drawing whole-campaign conclusions; the linked early
+report does not replace them. A newer
+candidate or delivery feature cannot retroactively repair those historical floors.
+
+The next application phase evaluates completed native product output before
+human corrections, allowing ordinary resumes of one or two pages while reporting
+each product's native page-policy compliance separately. It requires real resume
+and cover-letter PDFs, a reviewed candidate and frozen settings, and a complete-batch
+funding decision before paid dispatch. Actual human editing remains unmeasured
+until a human editor and measurement procedure are arranged. Broad expansion
+continues to wait for the product-value decision.
+
 ## October 19 — product value and selective upstream adoption
 
 Owner: Hunter / CareerTrellis product and engineering. The
@@ -35,7 +68,8 @@ Task status remains canonical here; the roadmap is a sequencing view.
   commit/configuration, comparable results with denominators, limitations, and an
   owner-recorded continue/revise/stop decision. Real profiles, participant activity,
   provider spending and live operations require their applicable authorization.
-  See the assessment for the protocol; no trial has been run.
+  See the assessment for the original plan and the October 24 checkpoint above
+  for the partial pilot and remaining comparison gates.
 - [ ] **QUALITY-001 (P1): Add bounded application-material critique.** Owner:
   AI/application engineering. Build on AI-001/004 and existing tailoring; provide
   an optional review step with proposed edits and accept/reject controls. Check
@@ -68,8 +102,8 @@ Task status remains canonical here; the roadmap is a sequencing view.
   unchanged until explicit regeneration and approval. Avoid inferred personality
   scoring and sensitive behavioral profiling.
 - [ ] **DOC-001 (P1, bounded): Reconcile current product documentation.** Owner:
-  maintainer. README mixes standalone-only data claims with hosted documentation;
-  root build metadata and recent release worktrees also differ. Acceptance:
+  maintainer. The storage-boundary slice is recorded above. Continue auditing
+  current README wording and root/release metadata against their intended modes. Acceptance:
   clearly distinguish local and hosted storage/features, preserve historical
   receipts, and bind any current deployed claim to fresh exact-release evidence.
   Do not change version metadata or rewrite historical records to make them agree.
@@ -95,7 +129,11 @@ These additions extend those items rather than replacing their open acceptance.
   Acceptance: exact complementary matcher/header assertions, existing auth/log
   privacy guards retained, feedback API/browser/ingress modules included in both
   explicit CI suites, and all GitHub checks passing on the corrected PR head.
-  Current slice: test and CI correction prepared; hosted CI acceptance pending.
+  PR #88 delivered the core P0 matcher assertions and feedback modules in both
+  explicit CI suites. The separate hostname-privacy module still contained a
+  stale blanket assertion and was omitted from those lists. A bounded test-only
+  correction now checks the exact complementary policies and includes that
+  module in both suites; corrected-head hosted CI acceptance remains pending.
   This does not close the separate historical access-log privacy audit.
 
 ## October 7 — current product priorities and delivery order
@@ -1179,7 +1217,7 @@ coverage acceptance and the independent reference benchmark remain open.
 - [ ] Before public launch, complete professional trademark, corporate-name, app-store, domain, and social-handle clearance for CareerTrellis; secure the selected properties and then decide whether to rename the GitHub repository and legacy compatibility identifiers.
 - [ ] Treat CareerTrellis as a working name and make public-facing branding replaceable before launch. Centralize the product name, title, tagline, support identity, domains, analytics labels, document metadata, user-agent string, manifest metadata, and brand assets instead of adding new hard-coded references. Provide and test a rename/migration path that can change repository, package, service, environment-variable, filesystem, database/export, and backup identifiers while preserving backward compatibility for existing installations and backups.
 - [x] Show a privacy-safe "Maps API key saved" state and replacement guidance in Profile & Resume, matching the existing Gemini-key experience without revealing either stored key.
-- [ ] Add contextual links beside every API-key entry or saved-key status control that open the provider's current official page for creating, viewing, rotating, or revoking credentials. Show the link for the selected AI or maps provider, distinguish credential management from general documentation or billing, centralize and periodically verify the allowlisted HTTPS destinations so provider URL changes do not leave stale links, open external pages without granting opener access, and never place a credential or other user data in a link, query string, analytics event, or referrer.
+- [ ] **Credential-management links — implementation delivered; broader verification open.** Profile & Resume already has contextual Gemini, OpenAI, Claude and Google Places links from a centralized fixed HTTPS allowlist, with new-tab accessibility text and opener/referrer safeguards. October 24 synthetic Chromium coverage verifies empty/saved key states, pending replacements, cleared entry fields, provider switching, unavailable Claude, keyless maps visibility and sixteen keyboard-opened popups with no opener/referrer or sentinel interpolation. See [the maintained link contract and evidence limits](docs/PROVIDER_CREDENTIAL_LINKS.md). Retain pre-release/periodic official-destination review, Google authenticated destination equivalence, other-browser and assistive-technology acceptance as open; these controls do not create/revoke credentials or establish provider-account access.
 - [x] Add an AI-provider abstraction with securely stored bring-your-own keys, model selection, capability validation, and clear provider-specific errors; support providers beyond Gemini without exposing secrets to the browser.
 - [x] Add a geocoding/maps-provider abstraction with provider selection, securely stored credentials, validation, rate-limit handling, and support for alternatives to Google Maps.
 - [x] Polish the cleanup-preview modal action bar: prevent Restore counts and labels from wrapping awkwardly, use consistent button sizing and icon alignment, establish a clearer primary/secondary/destructive hierarchy, and stack actions cleanly at narrow widths.

@@ -47,6 +47,35 @@ Screenshots and receipts remain in `artifacts/ux002-provider-focus-20261013/`.
 Actual assistive-technology, physical-device and hosted acceptance remain open.
 Claude live verification remains deferred.
 
+## October 24 — synthetic credential-link browser matrix
+
+The current product already implements all four contextual management links.
+`backend/test_provider_credential_links_browser.py` adds focused Chromium browser
+coverage using the real static UI and synthetic profile/API responses. Every
+request is intercepted, including popup first navigations; official account pages
+are replaced by fixed synthetic documents in the test context.
+
+The matrix checks empty/saved configured-key flags, typed pending replacements,
+and cleared entry fields for every link. Sixteen popups are opened by keyboard;
+their exact fixed URL, `window.opener === null` and absent Referer header are
+checked. Synthetic name/email/key sentinels stay out of destinations. Cleared
+means an entry field was emptied, not that a stored credential was revoked.
+Separate controls cover AI-provider switching, unavailable Claude and hiding the
+Google credential group when keyless OpenStreetMap is selected. These interactions
+produce no profile/secret saves or provider-validation dispatches.
+
+This verifies client behavior in bundled headless Chromium. Real authentication,
+provider-account management, server secret handling, other browser brands and
+assistive-technology acceptance remain separate. The [OpenAI quickstart](https://developers.openai.com/api/docs/quickstart)
+and [Claude key guidance](https://platform.claude.com/docs/en/get-api-key) confirm
+the existing management URLs. [Gemini key guidance](https://ai.google.dev/gemini-api/docs/api-key)
+identifies Google AI Studio; authenticated destination behavior remains unverified.
+[Google Maps guidance](https://developers.google.com/maps/api-security-best-practices) also advertises a Maps-specific
+credential route; equivalence with the existing generic Cloud Console credential
+page after authentication remains unverified. The current URLs and allowlist
+review dates are unchanged. This bounded matrix does not complete the entire
+backlog item or refresh every destination's authenticated acceptance.
+
 ## Review cadence
 
 Reconfirm every destination against the provider's official documentation before a public release and at least every six months. Check that the page still supports credential management rather than only general documentation or billing. Update the centralized `PROVIDER_CREDENTIAL_LINKS` allowlist and `PROVIDER_CREDENTIAL_LINKS_REVIEWED_ON` date in `backend/static/app.js` together, then run the frontend credential-link regression coverage.
