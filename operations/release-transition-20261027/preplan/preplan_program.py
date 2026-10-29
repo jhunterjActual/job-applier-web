@@ -100,4 +100,4 @@ class PreparedFacts:
  def private_proof(self):
   need(self.raw is not None)
   proof={'schema':'careertrellis.preplan-protected-source-proof/v1','program_sha256':self.web.program_sha,'runtime_profile':self.web.profile,'original_scan_started_at':self.web.started,'original_scan_finished_at':self.web.finished,'complete_current_runtime':{k:v['snapshot'] for k,v in self.web.current['releases'].items()},'complete_browser':self.web.current['browser'],'interpreter':self.web.current['interpreter'],'scanner_source_lineage':self.web.current['scanner_source_lineage'],'historical_bindings':HISTORY,'web_original_challenge':self.web.challenge_result,'db_original_challenge':self.db_capsule,'joined_health':self.web.idle.health_evidence,'database_generation':self.web.idle.accepted_generation}
-  raw=canonical(proof);need(len(raw)<=8*1024**2);return raw
+  raw=canonical(proof);need(len(raw)<=32*1024**2);return raw

@@ -138,7 +138,7 @@ def terminal_actor(record,current_boot):
 
 def packet_records(role,profile,program_sha,current_boot,reader,approved_intent_sha=None):
  intent=RECEIPTS/('app-public-packet-'+profile['packet_sha256']+'-'+role+'-intent.json');ir=reader.read(intent,65536);sr=reader.read(intent.with_name(intent.name.replace('-intent.json','-success.json')),65536);i=decode(ir);success=decode(sr)
- need(type(i)is dict and set(i)=={'schema','role','boot','actor','source_commit','packet_sha256','program_sha256'} and i['schema']=='careertrellis.app-public-packet-intent/v1' and i['role']==role and i['source_commit']==profile['source_commit'] and i['packet_sha256']==profile['packet_sha256'] and i['program_sha256']==program_sha)
+ need(type(i)is dict and set(i)=={'schema','role','boot','actor','source_commit','packet_sha256','program_sha256'} and i['schema']=='careertrellis.app-public-packet-intent/v1' and i['role']==role and i['source_commit']==profile['source_commit'] and i['packet_sha256']==profile['packet_sha256'] and (approved_intent_sha is None and bool(re.fullmatch('[0-9a-f]{64}',i['program_sha256'])) or i['program_sha256']==program_sha))
  need(approved_intent_sha is None or sha(ir)==approved_intent_sha);need(success==dict(i,schema='careertrellis.app-public-packet-success/v1',intent_sha256=sha(ir),files=36));terminal_actor(i,current_boot);return i,sha(ir),sha(sr)
 
 def readback_packet(role,manifest_raw,approved_sha,caps,approved_intent_sha):

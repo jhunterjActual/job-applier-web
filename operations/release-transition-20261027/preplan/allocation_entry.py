@@ -13,7 +13,7 @@ def allocate_bound(session,contract,lifetime_seconds=3600):
  need(os.geteuid()==0 and type(lifetime_seconds) is int and 0<lifetime_seconds<=3600)
  session.authenticate(session.facts,contract);nonce=session.facts['nonce'];need(re.fullmatch('[0-9a-f]{64}',nonce));parent=BASE/('preplan-app-'+nonce);intent=BASE/('preplan-app-'+nonce+'-materialization-intent.json');terminal=BASE/('preplan-app-'+nonce+'-materialization-terminal.json')
  parents(parent);parents(intent);need(not any(os.path.lexists(p) for p in (parent,intent,terminal)))
- raw=canonical(session.facts);context_raw=canonical(contract);proof_raw=session.private_proof();need(len(raw)<=65536 and len(proof_raw)<=8*1024**2)
+ raw=canonical(session.facts);context_raw=canonical(contract);proof_raw=session.private_proof();need(len(raw)<=65536 and len(proof_raw)<=32*1024**2)
  fs=os.statvfs(BASE);need(fs.f_bavail*fs.f_frsize-len(raw)-len(proof_raw)-len(context_raw)-131072>=5*1024**3 and fs.f_favail>=4096);current_boot=boot();actor=process_identity(os.getpid());claimed=False;directory_fd=None
  with deferred_child_signals():
   try:
