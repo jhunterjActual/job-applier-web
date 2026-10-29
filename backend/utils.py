@@ -218,6 +218,10 @@ def markdown_to_html(md_text: str) -> str:
         output.append("</section>")
     return "\n".join(output)
 
+class PdfPageLimitError(ValueError):
+    """The complete document cannot fit the selected page policy."""
+
+
 def generate_pdf_from_html(
     html_content: str,
     output_pdf_path: str,
@@ -355,7 +359,7 @@ def generate_pdf_from_html(
                     output_path.parent.mkdir(parents=True, exist_ok=True)
                     output_path.write_bytes(pdf_bytes)
                     return {"page_count": page_count, "compact": compact}
-            raise ValueError(
+            raise PdfPageLimitError(
                 f"Generated document exceeds the {max_pages}-page limit after compact formatting. "
                 "Shorten the source content and regenerate it."
             )

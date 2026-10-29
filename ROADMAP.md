@@ -1,12 +1,22 @@
 # CareerTrellis product roadmap
 
-Updated October 19, 2026. Owner: Hunter / CareerTrellis product and engineering.
+Updated October 24, 2026. Owner: Hunter / CareerTrellis product and engineering.
 
 Continue as a browser-based job-search product while testing whether its ease of
 use, search results and application materials justify ongoing development. The
 [comparison with ai-job-search](docs/AI_JOB_SEARCH_ASSESSMENT_20261019.md) supports
 selective adoption rather than replacing the hosted platform. It does not yet
 establish comparative performance or commercial demand.
+
+The [October 24 backlog checkpoint](PRODUCT_BACKLOG.md#october-24--evidence-checkpoint-before-the-next-application-study)
+records merged foundations and remaining acceptance. The
+[October 23 pilot](docs/value-evaluation/PILOT_20261023.md) provides partial
+source-level application evidence; it leaves the comparative decision open.
+Next, deliver real cover-letter PDFs, review and freeze the next candidate and
+native workflow, then obtain the complete-batch funding decision before paid
+execution. Score completed native output before human corrections; report
+quality, native-policy compliance, cost, time and effort separately. Discovery
+and consenting-user studies remain later, separately scoped work.
 
 ## Delivery sequence
 

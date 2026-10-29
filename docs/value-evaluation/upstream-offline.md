@@ -42,7 +42,7 @@ fast mode, nonessential traffic and unreviewed settings/MCP sources are disabled
 This is application/process configuration, not an operating-system firewall
 guarantee; independently verify the actual route and disclose observation limits.
 
-Fit-only V07ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“V12 materials refuse before process creation. The controller admits
+Fit-only V07–V12 materials refuse before process creation. The controller admits
 the exact frozen stage/order and every scripted model request. Parent drafting,
 tool continuations and the named reviewer share stage and packet request caps.
 There is no separate reviewer budget. Exact original body bytes are saved and

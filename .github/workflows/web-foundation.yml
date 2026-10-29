@@ -33,17 +33,28 @@ jobs:
         working-directory: ${{ github.workspace }}/scripts/value_evaluation
         run: python -B -m unittest -v test_budget_guard test_ct_budget_transport test_campaign_state test_study_upstream test_study_native_corrections
       - name: Run regressions
-        run: python -m unittest test_p0_regressions.py test_feedback.py test_feedback_browser.py test_caddy_feedback_ops.py test_account_choice.py test_backup_health.py test_pilot_acceptance.py test_pilot_acceptance_receipts.py test_search_runs.py test_scheduled_search_dispatch.py test_role_queries.py test_title_compatibility_audit.py test_managed_search_reporting.py test_discovery_sources.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_generated_materials.py test_dependent_job_deletion.py test_dependent_bulk_cleanup.py test_postgres_cutover_routes.py test_cutover_rehearsal.py test_final_cutover_coordinator.py test_generated_object_recovery.py test_generated_object_capture.py test_generated_object_phases.py test_analytics.py test_observability.py
+        run: python -m unittest test_p0_regressions.py test_feedback.py test_feedback_browser.py test_caddy_feedback_ops.py test_caddy_hostname_privacy.py test_account_choice.py test_backup_health.py test_pilot_acceptance.py test_pilot_acceptance_receipts.py test_search_runs.py test_scheduled_search_dispatch.py test_role_queries.py test_title_compatibility_audit.py test_managed_search_reporting.py test_discovery_sources.py test_account_erasure.py test_object_store.py test_object_import.py test_import_reconciliation.py test_stored_objects.py test_generated_materials.py test_dependent_job_deletion.py test_dependent_bulk_cleanup.py test_postgres_cutover_routes.py test_cutover_rehearsal.py test_final_cutover_coordinator.py test_generated_object_recovery.py test_generated_object_capture.py test_generated_object_phases.py test_analytics.py test_observability.py
       - name: Run search review regressions
         run: python -m unittest test_search_review.py test_role_plan_browser.py test_coverage_diagnostics.py test_search_completion_browser.py
+      - name: Verify credential-link browser privacy
+        run: python -B -m unittest -v test_provider_credential_links_browser
       - name: Run final PDF byte diagnostics
         working-directory: ${{ github.workspace }}
         run: python -B -m unittest discover -s scripts -p test_document_quality.py
+      - name: Verify native comparison cost arithmetic
+        working-directory: ${{ github.workspace }}/scripts/value_evaluation
+        run: python -B -m unittest -v test_native_cost_envelope
       - name: Check Python syntax
         run: python -m compileall -q .
+      - name: Verify identity-withheld packet preparation
+        working-directory: ${{ github.workspace }}/scripts/value_evaluation
+        run: python -B -m unittest -v test_blind_packets
       - name: Run evaluation evidence checks
         working-directory: ${{ github.workspace }}
         run: python -B -m unittest discover -s scripts -p test_value_evidence.py
+      - name: Run study freeze readiness checks
+        working-directory: ${{ github.workspace }}
+        run: python -B -m unittest discover -s scripts -p test_study_readiness.py
       - name: Exercise staging worker entrypoint
         env:
           CAREERTRELLIS_ENVIRONMENT: staging
@@ -55,6 +66,9 @@ jobs:
           CAREERTRELLIS_DATA_DIR: ${{ runner.temp }}/careertrellis-account-erasure
           CAREERTRELLIS_ACCOUNT_ERASURE_WORKER_ENABLED: "false"
         run: python account_erasure_worker.py --once
+      - name: Verify CT normal-route controller seam
+        working-directory: ${{ github.workspace }}/scripts/value_evaluation
+        run: python -B -m unittest -v test_study_ct
       - name: Check deployment shell syntax
         working-directory: ${{ github.workspace }}
         run: bash -n deploy/scripts/*.sh
