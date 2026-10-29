@@ -62,14 +62,14 @@ The application features a **FastAPI backend** that doubles as a static file ser
    - **Batch AI Matching**: Groups discovered job listings into a single structured-output request to reduce provider quota usage.
    - **Keyword Caching**: Analyzes your resume to auto-suggest and store search terms, preventing redundant API calls.
 
-3. **Combined Resume & Cover Letter Tailoring (50% Quota Savings)**:
+3. **Combined Resume & Cover Letter Tailoring**:
    - Rewrites your resume highlights for specific postings and drafts custom cover letters.
-   - Uses a single consolidated, schema-validated provider request returning JSON instead of separate resume and cover-letter calls.
-   - Converts Markdown and plain text outputs into polished, print-ready PDF files using Playwright.
+   - Uses a single consolidated, schema-validated provider request returning JSON for drafting the resume and cover letter. Other workflow steps, including an unverified headquarters lookup's AI fallback, can make additional provider requests.
+   - Renders resume Markdown and plain text as PDF using Playwright and provides an explicit Cover Letter TXT download.
 
 4. **Provider-Selectable Headquarters Resolution**:
    - Automatically queries and logs the full street address (including ZIP code/international details) of company headquarters.
-   - Supports bring-your-own-key **Google Places** or rate-limited **OpenStreetMap Nominatim**, with successful OpenStreetMap results cached locally and provider attribution retained in application history.
+   - Supports bring-your-own-key **Google Places** or rate-limited **OpenStreetMap Nominatim**, with successful OpenStreetMap results cached in the installation's selected data store and provider attribution retained in application history.
    - Uses the selected AI provider only as a clearly labeled, verify-before-filing fallback when the maps lookup cannot verify an address.
 
 5. **Guided Manual Applications**:
@@ -195,7 +195,7 @@ If you prefer setting up manually or are on macOS/Linux:
    - Save the settings, then use **Test Saved AI Provider** to validate the stored key, selected model, and structured-output capability before starting a long search.
    - Use **Test Saved Maps Provider** for a small, user-triggered capability check. The public Nominatim option identifies the app, sends at most one request per second, caches successful results, and must not be used for bulk or autocomplete traffic. Set `NOMINATIM_BASE_URL` to an approved self-hosted/third-party endpoint when public-service limits do not fit your use.
    - Keep **Prefer a U.S. headquarters address** selected when U.S. unemployment reporting requires a domestic employer address; clear it to prefer the employer's primary global headquarters.
-   - Select an existing named base resume or use **New**/**Duplicate** to maintain role-specific starting points. Import a `.txt`, `.md`, `.docx`, or `.pdf` file, or copy-paste content directly. Text, Markdown, DOCX, and text-based PDF extraction stay local.
+   - Select an existing named base resume or use **New**/**Duplicate** to maintain role-specific starting points. Import a `.txt`, `.md`, `.docx`, or `.pdf` file, or copy-paste content directly. Text, Markdown, DOCX, and text-based PDF extraction run in the application process: on your computer for a standalone installation, or on the service host in hosted mode.
    - Scanned or image-only PDF pages are never sent to an AI provider by default. To use OCR, select **Allow my selected AI provider to OCR scanned PDF pages** before importing; only pages without readable embedded text are sent as images to the selected provider. Review the transcription before saving it.
    - Click **Save Settings**. Meaningful name, mode, or content changes create a new version; unchanged saves do not duplicate history.
    - Use **History** to preview earlier versions and restore one non-destructively. A restore becomes a new version, and the app prevents deletion of your last base resume.
@@ -239,7 +239,7 @@ do not expose the dependent action.
 
 - Use **Mark Applied** on a matched or tailored job to record a manually completed application with its date, method, notes, and follow-up date.
 - Use **Update Status** to record interviews, offers, rejections, withdrawals, or closed roles. **Undo Last Change** restores the previous recorded state.
-- From **Application Logs**, open **People & Steps** to record recruiters, hiring managers, referrals, networking contacts, assessments, and their next actions. These records are deliberately manual and local; CareerTrellis does not contact anyone or access email on your behalf.
+- From **Application Logs**, open **People & Steps** to record recruiters, hiring managers, referrals, networking contacts, assessments, and their next actions. These records are entered manually and kept in the installation's selected data store; CareerTrellis does not contact anyone or access email on your behalf.
 - Save frequently used keyword/location combinations above the search form. Use the score, status, and sort controls to focus the active list.
 - Saved searches can optionally provide daily or weekly local reminders while the app is running; rerunning the saved search advances its next reminder.
 - Use the circular-arrow action on a job row to recheck whether the employer posting remains available.
@@ -251,7 +251,9 @@ do not expose the dependent action.
 - Select the named base resume and its resume mode under **Profile & Resume** before tailoring. The selected resume and version are recorded with newly generated materials for future outcome analysis. Generated resume and cover-letter text can be edited in **View Materials**; **Save Edits** regenerates both downloadable artifacts.
 - Each resume mode uses a deterministic section template before PDF generation. Manual application dates accept direct `MM/DD/YYYY` or `YYYY-MM-DD` entry and also provide a calendar picker.
 
-The app is designed for local access at `127.0.0.1`. It rejects non-loopback Host headers and cross-site state-changing browser requests, while still allowing local command-line clients that do not send browser-origin headers. Resume uploads are streamed; text and Markdown are limited to 2 MB, while bounded DOCX/PDF imports are limited to 10 MB, 12 PDF pages, and 50 MB of expanded DOCX content. Job-page browser navigation validates the initial URL, redirects, and subresources against resolved public HTTP(S) addresses so manual imports cannot reach loopback, private, link-local, or reserved network services. Cross-origin browser access is intentionally disabled, and profile reads return only API-key configuration flags—not stored key values. Do not bind the current single-user application to a public or shared network interface; public hosting requires authentication, per-user authorization, isolated files/data, and protected secret storage first.
+Standalone local mode listens at `127.0.0.1` and rejects non-loopback Host headers. Keep that single-user mode on loopback. Hosted mode instead requires configured public hosts, trusted ingress, authentication, per-user authorization and the reviewed PostgreSQL/encrypted-storage boundaries; follow the [storage-mode guide](docs/PRODUCT_STORAGE_BOUNDARIES.md) and applicable deployment runbooks. This describes source capabilities, not a particular deployed release or its acceptance.
+
+Cross-site state-changing browser requests are rejected; local command-line clients without browser-origin headers remain supported in standalone mode. Resume uploads are streamed; text and Markdown are limited to 2 MB, while bounded DOCX/PDF imports are limited to 10 MB, 12 PDF pages, and 50 MB of expanded DOCX content. Job-page browser navigation validates the initial URL, redirects, and subresources against resolved public HTTP(S) addresses so manual imports cannot reach loopback, private, link-local, or reserved network services. Cross-origin browser access is intentionally disabled, and profile reads return only API-key configuration flags—not stored key values.
 
 ### Optional anonymous analytics
 
