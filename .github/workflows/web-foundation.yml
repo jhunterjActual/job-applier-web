@@ -41,6 +41,9 @@ jobs:
         run: python -B -m unittest discover -s scripts -p test_document_quality.py
       - name: Check Python syntax
         run: python -m compileall -q .
+      - name: Verify identity-withheld packet preparation
+        working-directory: ${{ github.workspace }}/scripts/value_evaluation
+        run: python -B -m unittest -v test_blind_packets
       - name: Run evaluation evidence checks
         working-directory: ${{ github.workspace }}
         run: python -B -m unittest discover -s scripts -p test_value_evidence.py
