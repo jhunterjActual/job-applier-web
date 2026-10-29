@@ -1183,6 +1183,163 @@ class ApplicationMaterialsSafetyTests(unittest.TestCase):
             self.assertEqual("tailored", connection.execute("SELECT status FROM applications WHERE job_id = 1").fetchone()[0])
             connection.close()
 
+class CoverLetterPdfDeliveryTests(unittest.TestCase):
+    def setUp(self):
+        self.material = {
+            "cover_letter_object_id": "synthetic-object", "cover_letter_path": None,
+            "cover_letter": "Dear Hiring Team,\n\nSynthetic saved letter.",
+            "company": "Example Corp", "position": "Engineer",
+            "job_company": "Example Corp", "job_title": "Engineer",
+            "candidate_name": "Alex Example", "job_source": "lever",
+        }
+
+    def render(self, text, output):
+        self.rendered_text = text
+        self.rendered_path = Path(output)
+        self.rendered_path.write_bytes(b"%PDF-synthetic-test")
+
+    def test_local_download_returns_pdf_attachment_and_removes_temporary_files(self):
+        with (
+            patch.object(app_module, "_application_materials", return_value=self.material),
+            patch.object(app_module, "data_store_kind", return_value="local"),
+            patch.object(app_module, "generate_cover_letter_pdf", side_effect=self.render),
+            patch.object(app_module, "capture_event") as event,
+        ):
+            response = app_module.download_cover_letter_pdf(1)
+        self.assertEqual(b"%PDF-synthetic-test", response.body)
+        self.assertEqual("application/pdf", response.media_type)
+        self.assertIn("alex-example-example-corp-engineer-cover-letter.pdf", response.headers["content-disposition"])
+        self.assertIn("no-store", response.headers["cache-control"])
+        self.assertEqual(self.material["cover_letter"], self.rendered_text)
+        self.assertFalse(self.rendered_path.parent.exists())
+        event.assert_called_once()
+
+    def test_local_pdf_uses_same_saved_file_as_text_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.material["cover_letter_path"] = persist_cover_letter(1, "Saved file version.", root)
+            with (
+                patch.object(app_module, "_application_materials", return_value=self.material),
+                patch.object(app_module, "data_store_kind", return_value="local"),
+                patch.object(materials_module.config, "OUTPUT_DIR", root),
+                patch.object(app_module, "generate_cover_letter_pdf", side_effect=self.render),
+                patch.object(app_module, "capture_event"),
+            ):
+                app_module.download_cover_letter_pdf(1)
+            self.assertEqual("Saved file version.\n", self.rendered_text)
+            self.assertEqual("Saved file version.\n", Path(self.material["cover_letter_path"]).read_text())
+
+    def test_hosted_download_authorizes_and_decrypts_saved_object_before_rendering(self):
+        with (
+            patch.object(app_module, "_application_materials", return_value=self.material),
+            patch.object(app_module, "data_store_kind", return_value=app_module.SHARED_DATA_STORE),
+            patch.object(app_module, "current_owner_user_id", return_value=42),
+            patch.object(app_module, "download_stored_object", return_value=SimpleNamespace(
+                content=b"Authoritative encrypted object text.", content_type="text/plain; charset=utf-8",
+            )) as download,
+            patch.object(app_module, "generate_cover_letter_pdf", side_effect=self.render),
+            patch.object(app_module, "capture_event"),
+        ):
+            app_module.download_cover_letter_pdf(1)
+        download.assert_called_once_with(42, "synthetic-object")
+        self.assertEqual("Authoritative encrypted object text.", self.rendered_text)
+
+    def test_missing_or_deleted_hosted_object_never_renders_database_text(self):
+        for object_id in (None, "synthetic-object"):
+            with (
+                self.subTest(object_id=object_id),
+                patch.object(app_module, "_application_materials", return_value={**self.material, "cover_letter_object_id": object_id}),
+                patch.object(app_module, "data_store_kind", return_value=app_module.SHARED_DATA_STORE),
+                patch.object(app_module, "current_owner_user_id", return_value=42),
+                patch.object(app_module, "download_stored_object", side_effect=app_module.StoredObjectNotFound()),
+                patch.object(app_module, "generate_cover_letter_pdf") as render,
+            ):
+                with self.assertRaises(app_module.HTTPException) as error:
+                    app_module.download_cover_letter_pdf(1)
+                self.assertEqual(404, error.exception.status_code)
+                render.assert_not_called()
+
+    def test_unknown_owner_job_stops_before_object_or_renderer_access(self):
+        with (
+            patch.object(app_module, "_application_materials", side_effect=app_module.HTTPException(status_code=404)),
+            patch.object(app_module, "download_stored_object") as download,
+            patch.object(app_module, "generate_cover_letter_pdf") as render,
+        ):
+            with self.assertRaises(app_module.HTTPException):
+                app_module.download_cover_letter_pdf(999)
+        download.assert_not_called()
+        render.assert_not_called()
+
+    def test_corrupt_local_source_does_not_fall_back_to_stale_database_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "cover_letter_1.txt"
+            path.write_bytes(b"\xffinvalid UTF-8")
+            with (
+                patch.object(app_module, "_application_materials", return_value={**self.material, "cover_letter_path": str(path)}),
+                patch.object(app_module, "data_store_kind", return_value="local"),
+                patch.object(materials_module.config, "OUTPUT_DIR", root),
+                patch.object(app_module, "generate_cover_letter_pdf") as render,
+            ):
+                with self.assertRaises(app_module.HTTPException) as error:
+                    app_module.download_cover_letter_pdf(1)
+            self.assertEqual(503, error.exception.status_code)
+            render.assert_not_called()
+
+    def test_invalid_hosted_object_type_or_encoding_is_unavailable(self):
+        for content, content_type in ((b"%PDF-bad-object", "application/pdf"), (b"\xff", "text/plain")):
+            with (
+                self.subTest(content_type=content_type),
+                patch.object(app_module, "_application_materials", return_value=self.material),
+                patch.object(app_module, "data_store_kind", return_value=app_module.SHARED_DATA_STORE),
+                patch.object(app_module, "current_owner_user_id", return_value=42),
+                patch.object(app_module, "download_stored_object", return_value=SimpleNamespace(content=content, content_type=content_type)),
+                patch.object(app_module, "generate_cover_letter_pdf") as render,
+            ):
+                with self.assertRaises(app_module.HTTPException) as error:
+                    app_module.download_cover_letter_pdf(1)
+                self.assertEqual(503, error.exception.status_code)
+                render.assert_not_called()
+
+    def test_other_renderer_value_errors_do_not_claim_page_overflow(self):
+        with (
+            patch.object(app_module, "_application_materials", return_value=self.material),
+            patch.object(app_module, "data_store_kind", return_value="local"),
+            patch.object(app_module, "generate_cover_letter_pdf", side_effect=ValueError("private malformed PDF")),
+        ):
+            with self.assertRaises(app_module.HTTPException) as error:
+                app_module.download_cover_letter_pdf(1)
+        self.assertEqual(503, error.exception.status_code)
+
+    def test_render_failure_cleans_files_and_returns_sanitized_error(self):
+        def fail(text, output):
+            self.render(text, output)
+            raise RuntimeError("private letter and internal renderer details")
+        with (
+            patch.object(app_module, "_application_materials", return_value=self.material),
+            patch.object(app_module, "data_store_kind", return_value="local"),
+            patch.object(app_module, "generate_cover_letter_pdf", side_effect=fail),
+            patch.object(app_module, "capture_event") as event,
+        ):
+            with self.assertRaises(app_module.HTTPException) as error:
+                app_module.download_cover_letter_pdf(1)
+        self.assertEqual(503, error.exception.status_code)
+        self.assertNotIn("private", error.exception.detail)
+        self.assertFalse(self.rendered_path.parent.exists())
+        event.assert_not_called()
+
+    def test_page_limit_failure_is_actionable_without_silent_truncation(self):
+        with (
+            patch.object(app_module, "_application_materials", return_value=self.material),
+            patch.object(app_module, "data_store_kind", return_value="local"),
+            patch.object(app_module, "generate_cover_letter_pdf", side_effect=app_module.PdfPageLimitError("page limit")),
+        ):
+            with self.assertRaises(app_module.HTTPException) as error:
+                app_module.download_cover_letter_pdf(1)
+        self.assertEqual(422, error.exception.status_code)
+        self.assertIn("one-page", error.exception.detail)
+
+
 class ResumeDocumentInteroperabilityTests(unittest.TestCase):
     def test_docx_import_preserves_semantic_headings_lists_and_table_text(self) -> None:
         document = WordDocument()

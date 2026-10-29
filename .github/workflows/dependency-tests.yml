@@ -50,11 +50,20 @@ jobs:
       - name: Run final PDF byte diagnostics
         working-directory: ${{ github.workspace }}
         run: python -B -m unittest discover -s scripts -p test_document_quality.py
+      - name: Verify native comparison cost arithmetic
+        working-directory: ${{ github.workspace }}/scripts/value_evaluation
+        run: python -B -m unittest -v test_native_cost_envelope
       - name: Run observability regressions
         run: python -m unittest test_observability.py
+      - name: Verify identity-withheld packet preparation
+        working-directory: ${{ github.workspace }}/scripts/value_evaluation
+        run: python -B -m unittest -v test_blind_packets
       - name: Run evaluation evidence checks
         working-directory: ${{ github.workspace }}
         run: python -B -m unittest discover -s scripts -p test_value_evidence.py
+      - name: Run study freeze readiness checks
+        working-directory: ${{ github.workspace }}
+        run: python -B -m unittest discover -s scripts -p test_study_readiness.py
       - name: Run search review regressions
         run: python -m unittest test_search_review.py test_role_plan_browser.py test_coverage_diagnostics.py test_search_completion_browser.py
       - name: Check Python syntax
