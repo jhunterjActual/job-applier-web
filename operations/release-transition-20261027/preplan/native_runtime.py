@@ -90,6 +90,6 @@ def collect_current(public,reader,git,historical,lineage,original_public):
   runtime={p:r['sha256'] for p,r in before.items() if r['kind']=='file' and (p.startswith('backend/venv/') or '__pycache__' in PurePosixPath(p).parts)};need(runtime==historical['runtime_maps'][revision])
   for prefix in ('backend/venv/lib/python3.12/site-packages/','backend/venv/lib64/python3.12/site-packages/'):
    package={path[len(prefix):]:{'sha256':r['sha256'],'bytes':r['size'],'executable':bool(r['mode']&0o111)} for path,r in before.items() if path.startswith(prefix) and r['kind']=='file'};need(package==provenance['site_packages'])
-  for name,pin in provenance['requirements'].items():need(sha(reader.read(root/name,2097152,(0o640,0o600,0o644)))==pin)
+  for name,pin in provenance['requirements'].items():need(sha(reader.read(root/name,2097152,(0o600,0o640,0o644,0o750,0o755)))==pin)
   result[revision]={'snapshot':before,'runtime_count':len(runtime)}
  need(scanner.snapshot(BROWSER)==browser_before);scanner.stable();return {'releases':result,'browser':browser_before,'interpreter':interpreter,'scanner':scanner,'provenance_sha256':PROVENANCE_SHA,'scanner_source_lineage':scanner.source_attestation}

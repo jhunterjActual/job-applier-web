@@ -20,13 +20,13 @@ class Tests(unittest.TestCase):
    if name!='SOURCE_MANIFEST.json':outer['readiness'][name]=n.sha(public['one_shot_readiness/'+name])
   public['one_shot_readiness/SOURCE_MANIFEST.json']=n.canonical({'schema':'careertrellis.one-shot-readiness-source/v1','files':{name:pin for name,pin in outer['readiness'].items() if name!='SOURCE_MANIFEST.json'}});outer['readiness']['SOURCE_MANIFEST.json']=n.sha(public['one_shot_readiness/SOURCE_MANIFEST.json']);raw=n.canonical(outer);profile={'source_commit':'c'*40,'packet_sha256':n.sha(raw),'readiness_manifest_sha256':outer['readiness']['SOURCE_MANIFEST.json'],'scanner_methods':r.EXPECTED_SCANNER_LINEAGE};return public,outer,raw,profile
  def test_synthetic_profile_full_source_and_original_scanners(self):
-  public,_,raw,profile=self.profile_fixture();self.assertEqual(len(p.public_sources(raw,capsule=public,runtime_profile=profile)),35);self.assertTrue(hasattr(r.methods(public,{name:(D/'public-runtime35'/name).read_bytes() for name in r.PINS},r.EXPECTED_SCANNER_LINEAGE),'runtime_digest'));self.assertNotEqual(n.sha(public['native_backend.py']),r.PINS['native_backend.py'])
+  public,_,raw,profile=self.profile_fixture();self.assertEqual(len(p.public_sources(raw,capsule=public,runtime_profile=profile)),35);self.assertTrue(hasattr(r.methods(public,{name:(D/('scanner-original-'+name)).read_bytes() for name in r.PINS},r.EXPECTED_SCANNER_LINEAGE),'runtime_digest'));self.assertNotEqual(n.sha(public['native_backend.py']),r.PINS['native_backend.py'])
  def test_nested_transaction_pins_not_merely_outer_hashes(self):
   public,outer,_,profile=self.profile_fixture();public['one_shot_readiness/transaction04-pins.json']=n.canonical({'files':{}});outer['readiness']['transaction04-pins.json']=n.sha(public['one_shot_readiness/transaction04-pins.json']);nested=n.decode(public['one_shot_readiness/SOURCE_MANIFEST.json']);nested['files']['transaction04-pins.json']=outer['readiness']['transaction04-pins.json'];public['one_shot_readiness/SOURCE_MANIFEST.json']=n.canonical(nested);outer['readiness']['SOURCE_MANIFEST.json']=n.sha(public['one_shot_readiness/SOURCE_MANIFEST.json']);raw=n.canonical(outer);profile['packet_sha256']=n.sha(raw);profile['readiness_manifest_sha256']=outer['readiness']['SOURCE_MANIFEST.json'];self.assertRaises(n.Refused,p.public_sources,raw,None,public,profile)
  def test_method_raw_body_change_refused_despite_new_profile(self):
-  public,_,_,_=self.profile_fixture();public['native_backend.py']=public['native_backend.py'].replace(b'512*1024**2',b'513*1024**2');self.assertRaises(n.Refused,r.methods,public,{name:(D/'public-runtime35'/name).read_bytes() for name in r.PINS},r.EXPECTED_SCANNER_LINEAGE)
+  public,_,_,_=self.profile_fixture();public['native_backend.py']=public['native_backend.py'].replace(b'512*1024**2',b'513*1024**2');self.assertRaises(n.Refused,r.methods,public,{name:(D/('scanner-original-'+name)).read_bytes() for name in r.PINS},r.EXPECTED_SCANNER_LINEAGE)
  def test_method_location_only_lineage_is_explicit(self):
-  public,_,_,_=self.profile_fixture();public['native_backend.py']=b'# SYNTHETIC location-only\n'+public['native_backend.py'];self.assertRaises(n.Refused,r.methods,public,{name:(D/'public-runtime35'/name).read_bytes() for name in r.PINS},r.EXPECTED_SCANNER_LINEAGE)
+  public,_,_,_=self.profile_fixture();public['native_backend.py']=b'# SYNTHETIC location-only\n'+public['native_backend.py'];self.assertRaises(n.Refused,r.methods,public,{name:(D/('scanner-original-'+name)).read_bytes() for name in r.PINS},r.EXPECTED_SCANNER_LINEAGE)
  def manifest_fixture(self):
   public,_,packet,profile=self.profile_fixture();raws={name:(D/name).read_bytes() for name in b.PROGRAM_FILES};raws.update({'public-runtime35/'+name:raw for name,raw in public.items()});raws['packet_manifest.json']=packet;raws['historical_packet_manifest.json']=(D/'historical_packet_manifest.json').read_bytes();raws.update({'scanner-original-'+name:(D/('scanner-original-'+name)).read_bytes() for name in r.PINS});m={'schema':'careertrellis.preplan-source-package/v1','program_commit':'d'*40,'prefix':b.PREFIX,'runtime':profile,'files':{name:{'sha256':n.sha(raw),'bytes':len(raw)} for name,raw in raws.items()}};raw=n.canonical(m);return raws,m,raw
  def test_acyclic_package_checks_real_source_domains_not_git_packet_selfcycle(self):
@@ -34,7 +34,7 @@ class Tests(unittest.TestCase):
   def git(commit,path):
    requests.append((commit,path))
    if commit==m['program_commit']:return raws[path[len(b.PREFIX):]]
-   if commit==p.OPS and path.rsplit('/',1)[-1] in r.PINS:return raws['scanner-original-'+path.rsplit('/',1)[-1]]
+   if commit==n.OPS and path.rsplit('/',1)[-1] in r.PINS:return raws['scanner-original-'+path.rsplit('/',1)[-1]]
    self.assertEqual(commit,m['runtime']['source_commit']);return raws['public-runtime35/'+path[len(p.history.PREFIX):]]
   self.assertEqual(b.verify_sources(raw,n.sha(raw),raws,git),m);self.assertFalse(any(path.endswith('packet_manifest.json') for _,path in requests))
  def test_source_scalar_hooks_and_missing_program_refuse(self):
@@ -59,7 +59,7 @@ class Tests(unittest.TestCase):
   with patch.object(ingress,'pointer_state',return_value={'build':'20261017.96'}),patch.object(ingress,'boot',return_value='synthetic'),patch.object(ingress,'unit',return_value={'MainPID':'123'}),patch.object(ingress,'caddy_actor',return_value={'pid':123,'birth':'456'}),patch.object(ingress,'listener_owned',return_value='socket'),patch.object(ingress,'http',return_value=(403,'',b'PRIVATE')) as request:self.assertRaises(n.Refused,ingress.collect,789);self.assertEqual(request.call_count,1)
 
  def test_explicit_lineage_rejects_generic_either_hash_or_other_whitespace(self):
-  public,_,_,_=self.profile_fixture();original={name:(D/'public-runtime35'/name).read_bytes() for name in r.PINS}
+  public,_,_,_=self.profile_fixture();original={name:(D/('scanner-original-'+name)).read_bytes() for name in r.PINS}
   for change in ('loneCR','mixed','comment','indent','token'):
    bad=dict(public);raw=bad['native_backend.py']
    if change=='loneCR':raw=raw.replace(b'\n',b'\r',1)

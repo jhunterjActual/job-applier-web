@@ -1,3 +1,4 @@
+import time
 """Fixed native participant RPC. No network dialing or arbitrary command payloads.
 
 Requires a separately installed, source-commit-bound packet and exact approved
@@ -106,17 +107,20 @@ def _serve(peer,plan,readline,write,hold_owner):
              'read_policy':(), 'write_marker':('marker',), 'read_marker':(),
              'restore':(), 'finish':('revision','result','healthy_proven'),
              'project_verifying':('revision','proof'),
-             'assert_known':(), 'assert_preserved':(), 'backup_proofs':('binding',), 'release':('result',),
+             'assert_known':(), 'assert_preserved':(), 'backup_proofs':('binding',), 'qualify_backup_proofs':('binding','web_health'), 'release':('result',),
              'phase':('phase','revision'), 'audit':('nonce','stage'),
              'recovery_started':('record',),'global_terminal':('record',),'global_readback':('record',),
              'commit_release_decision':('prepared','binding','generations','expires_at')}
     while True:
-        raw=readline(32769)
+        raw=readline(3145729)
         if not raw:
             if peer.claimed:hold_owner(peer)
             return
         try:
-            need(len(raw)<=32768 and raw.endswith('\n'))
+            # Fixture callback compatibility only; actual main reads binary stdin.
+            if type(raw) is str:
+                need(raw.isascii());raw=raw.encode('ascii')
+            need(type(raw) is bytes and raw.isascii() and b'\r' not in raw and len(raw)<=3145728 and raw.endswith(b'\n') and raw.count(b'\n')==1)
             msg=decode(raw);need(set(msg)=={'seq','plan_sha256','action','args'})
             need(msg['seq']==seq and msg['plan_sha256']==token and msg['action'] in actions)
             args=msg['args'];action=msg['action'];need(type(args) is dict and set(args)==set(actions[action]))
@@ -147,7 +151,11 @@ def _serve(peer,plan,readline,write,hold_owner):
                 value=peer.commit_release_decision(args['prepared'],args['binding'],args['generations'],args['expires_at'])
             elif action=='backup_proofs':
                 need(peer.role=='db');peer.assert_preserved()
-                health=sys.modules['readiness_bridge'].collect_local('db',plan,sys.modules['native_peer'].VERIFIED_SOURCE_COMMIT,args['binding'])
+                need(not peer.release_started and peer.release_decision is None)
+                seen=getattr(peer,'readiness_challenges',set());need(args['binding']['nonce'] not in seen and len(seen)<16)
+                seen.add(args['binding']['nonce']);peer.readiness_challenges=seen
+                bridge=sys.modules['readiness_bridge'];collector=bridge.load(plan,peer.source_commit)['collector'];reader=collector.Reader()
+                health=bridge.collect_local('db',plan,sys.modules['native_peer'].VERIFIED_SOURCE_COMMIT,args['binding'],reader=reader)
                 pair=sys.modules['accepted_pair_validator']
                 receipt=protected('/var/backups/careertrellis/paired-restore-receipts/retained-'+pair.TRANSACTION+'.json',0o600)
                 need(hashlib.sha256(receipt).hexdigest()==pair.DB_DIGEST)
@@ -160,12 +168,23 @@ def _serve(peer,plan,readline,write,hold_owner):
                     group=fields['ControlGroup']
                     if group:need(not (Path('/sys/fs/cgroup')/group.lstrip('/')/'cgroup.procs').read_text().strip())
                 bridge=sys.modules['readiness_bridge']
-                bridge.verify_generation(health,plan,args['binding'],'db',bridge.load(plan,peer.source_commit)['collector'],
+                bridge.verify_generation_structure(health,plan,args['binding'],'db',bridge.load(plan,peer.source_commit)['collector'],
                     now=__import__('datetime').datetime.now(__import__('datetime').timezone.utc))
-                peer.final_readiness=health if args['binding']['phase']=='final' else None
+                peer.pending_raw_readiness=health;peer.pending_readiness_reader=reader;peer.qualified_nonce=None
+                peer.final_readiness=health if args['binding']['phase']=='final' and health['result']=='ok' else None
                 peer.final_readiness_deadline=bridge.load(plan,peer.source_commit)['collector'].RUN_DEADLINE
                 current=health['repository']
                 value={'health':health,'receipt_hex':receipt.hex(),'repository':current,'cleanup_owner_absent':True}
+            elif action=='qualify_backup_proofs':
+                need(peer.role=='db' and not peer.release_started and peer.release_decision is None and peer.qualified_nonce is None)
+                raw=peer.pending_raw_readiness;need(raw['binding']==args['binding'])
+                peer.qualified_nonce=args['binding']['nonce'] # attempt once even on ambiguous/failure
+                bridge=sys.modules['readiness_bridge'];collector=bridge.load(plan,peer.source_commit)['collector']
+                need(time.monotonic()<peer.final_readiness_deadline)
+                qualified=bridge.qualify_local_database(args['web_health'],raw,args['binding'],collector,plan['readiness_manifest_sha256'],reader=peer.pending_readiness_reader)
+                need(time.monotonic()<peer.final_readiness_deadline)
+                peer.final_readiness=qualified if args['binding']['phase']=='final' else None
+                value={'health':qualified}
             elif action=='phase':
                 need(peer.claimed and args['phase']=='policy_selected' and args['revision'] in (plan['target'],plan['correction']))
                 peer.create(sys.modules['native_peer'].JOURNAL+'/'+args['phase']+'-'+args['revision']+'.json',
@@ -222,7 +241,16 @@ def main():
     need(hashlib.sha256(plan).hexdigest()==a.approved_plan_sha256)
     value=decode(plan);engine.validate_plan(value,engine.datetime.now(engine.timezone.utc))
     peer=native.NativePeer(a.role,value).acquire()
-    serve(peer,value,sys.stdin.readline,lambda v:print(json.dumps(v,separators=(',',':')),flush=True))
+    def write_response(value):
+        raw=(json.dumps(value,separators=(',',':'),ensure_ascii=True)+'\n').encode('ascii')
+        need(len(raw)<=3145728)
+        offset=0
+        while offset<len(raw):
+            count=sys.stdout.buffer.write(raw[offset:])
+            need(type(count) is int and 0<count<=len(raw)-offset)
+            offset+=count
+        sys.stdout.buffer.flush()
+    serve(peer,value,sys.stdin.buffer.readline,write_response)
 
 if __name__=='__main__':
     try:main()

@@ -32,13 +32,20 @@ class DBProxy:
         deadline=time.monotonic()+120 if _deadline is None else _deadline
         try:
             need(deadline>time.monotonic())
-            print(json.dumps({'kind':'db_rpc','request':value},separators=(',',':')),flush=True)
+            frame=(json.dumps({'kind':'db_rpc','request':value},separators=(',',':'),ensure_ascii=True)+'\n').encode('ascii')
+            need(len(frame)<=3145728)
+            offset=0
+            while offset<len(frame):
+                count=sys.stdout.buffer.write(frame[offset:])
+                need(type(count) is int and 0<count<=len(frame)-offset)
+                offset+=count
+            sys.stdout.buffer.flush()
             raw=b'';fd=sys.stdin.fileno()
             while b'\n' not in raw:
                 remaining=deadline-time.monotonic();need(remaining>0)
                 need(bool(select.select([fd],[],[],remaining)[0]))
-                chunk=os.read(fd,65537-len(raw));need(bool(chunk));raw+=chunk;need(len(raw)<=65536)
-            need(raw.endswith(b'\n') and raw.count(b'\n')==1)
+                chunk=os.read(fd,3145729-len(raw));need(bool(chunk));raw+=chunk;need(len(raw)<=3145728)
+            need(raw.isascii() and b'\r' not in raw and raw.endswith(b'\n') and raw.count(b'\n')==1)
             response=decode(raw);need(set(response)=={'seq','ok','value'}
                 and response['seq']==self.seq and response['ok'] is True)
         except BaseException:
@@ -213,16 +220,22 @@ class Backend(legacy.LinuxHost):
             # are proved by the source-bound fresh generation, not deleted.
             # Whole original checked_status is equal before/after and retained;
             # only exact sole DB legacy full-timer alert may qualify this route.
-            readiness.verify_generation(value,plan,request,role,
+            readiness.verify_generation_structure(value,plan,request,role,
                 readiness.load(plan,self.source_commit)['collector'],now=now)
             age=(now-timestamp(value['observed_at'])).total_seconds();need(0<=age<=30)
         validate_pair(web_raw,bytes.fromhex(db['receipt_hex']),{
             'baseline':BASE,'target':TARGET,'correction':plan['correction'],
             'accepted_backup_label':LABEL,'checked_at':current['checked_at']},now=now)
-        self.last_readiness=readiness.admit(web_health,db['health'],plan,self.source_commit,request,started_monotonic=started)
+        readiness.verify_generation(web_health,plan,request,'web',readiness.load(plan,self.source_commit)['collector'],now=datetime.now(timezone.utc))
+        db_ready=db['health']
+        if db_ready['result']!='ok':
+            qualified=self.db.call('qualify_backup_proofs',binding=request,web_health=web_health,_deadline=started+30)
+            need(type(qualified) is dict and set(qualified)=={'health'})
+            db_ready=qualified['health']
+        self.last_readiness=readiness.admit(web_health,db_ready,plan,self.source_commit,request,started_monotonic=started)
         self.last_readiness_binding=request
         self.last_readiness_deadline_monotonic=started+30
-        self.last_generation_hashes={'web':web_health['evaluation_generation_sha256'],'db':db['health']['evaluation_generation_sha256']}
+        self.last_generation_hashes={'web':web_health['evaluation_generation_sha256'],'db':db_ready['evaluation_generation_sha256']}
         self.assert_preserved()
     def assert_readiness_current(self,phase,revision,predecessor):
         b=self.last_readiness_binding;r=self.last_readiness;now=datetime.now(timezone.utc)

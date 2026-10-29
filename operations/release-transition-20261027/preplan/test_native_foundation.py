@@ -5,7 +5,7 @@ import native_runtime as r
 D=pathlib.Path(__file__).parent
 class Tests(unittest.TestCase):
  def test_exact_reviewed_scanners_compile_without_live_backend(self):
-  original={name:(D/'public-runtime35'/name).read_bytes() for name in r.PINS};public=dict(original);public['native_backend.py']=(D/'test-public-rpc92bc/native_backend.py').read_bytes();cls=r.methods(public,original,r.EXPECTED_SCANNER_LINEAGE);self.assertEqual(set(k for k in cls.__dict__ if not k.startswith('__')),{'source','runtime_digest'})
+  original={name:(D/('scanner-original-'+name)).read_bytes() for name in r.PINS};public=dict(original);public['native_backend.py']=(D/'test-public-rpc92bc/native_backend.py').read_bytes();cls=r.methods(public,original,r.EXPECTED_SCANNER_LINEAGE);self.assertEqual(set(k for k in cls.__dict__ if not k.startswith('__')),{'source','runtime_digest'})
   public['native_backend.py']=public['native_backend.py'].replace(b'512*1024**2',b'513*1024**2');self.assertRaises(n.Refused,r.methods,public,original,r.EXPECTED_SCANNER_LINEAGE)
  def test_bootstrap_scalar_hooks_not_called(self):
   class Evil(str):
