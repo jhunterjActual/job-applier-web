@@ -201,7 +201,8 @@ def _unit97(unit,post,intent_sha):
  import copy
  need(unit['unit']==unit['execution']['unit']==UNIT and unit['execution']['state']['Description']=='careertrellis-qualified97:'+intent_sha)
  path='/system.slice/'+UNIT+'.service';old='/system.slice/'+history98.UNIT+'.service'
- for group in (unit['execution']['cgroup'],unit['cgroup_after'],post['cgroup_after']):need(group['path']==path)
+ for group in (unit['execution']['cgroup'],unit['cgroup_after']):need(group['path']==path)
+ need(post['cgroup_after']['path'] in (path,'/sys/fs/cgroup'+path))
  for state in (unit['execution']['state'],unit['after'],post['unit']):need(state.get('ControlGroup','') in ('',path))
  need(post['cgroup_after']['exists'] is False and not post['unit'].get('InvocationID'))
  if unit['after'].get('LoadState')=='not-found':need(not unit['after'].get('InvocationID'))

@@ -2,7 +2,7 @@
   "one_shot_readiness/collector.py": {
     "kind": "typed_timer_arrays_source02",
     "basis_sha256": "de4b3b72fbf5d783050991c43be66645bed9ff0317c7630efd129abd44f8bd04",
-    "proposed_sha256": "cd65155fdac21b823268832b931500184865cfd955647c2bf8675cca0f4077f5",
+    "proposed_sha256": "b73a840773ee31de63cef05136e69fcdcd6f3b40f3749cdd2bdffcff3bbaba0c",
     "source_freeze": "8352904bd95664efc6476cb0d02bcb5ca806fe0d7b51ff0ad30b3a37e57da960",
     "delta": "scalar3 + raw typed arrays + closedcoveragev3; changed-method identity explicit",
     "native_values": "UNOBSERVED; actual prior names-only evidence external",

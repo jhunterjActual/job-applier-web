@@ -1,7 +1,7 @@
 {
   "collector": {
     "before_sha256": "de4b3b72fbf5d783050991c43be66645bed9ff0317c7630efd129abd44f8bd04",
-    "after_sha256": "cd65155fdac21b823268832b931500184865cfd955647c2bf8675cca0f4077f5",
+    "after_sha256": "b73a840773ee31de63cef05136e69fcdcd6f3b40f3749cdd2bdffcff3bbaba0c",
     "changed_existing": [
       "Reader.__init__",
       "Reader.timer_cadence",
@@ -9,7 +9,8 @@
       "web_standing_scheduler",
       "local_scheduler_coverage",
       "validate_local_coverage",
-      "parse_monotonic_timers"
+      "parse_monotonic_timers",
+      "collect"
     ],
     "added": [
       "Reader.timer_arrays",
@@ -129,7 +130,7 @@
       "verify_inventory_generation": "040d3e9717af4be3b67e1af57ec041b073767da2c5833b51f34e4bb73a77fc4f",
       "persisted_status_qualifies": "5ea9dbb1fc1707309703b3d147155ebe1c6ecbe344d15a3974b9298af876e6c8",
       "fresh_snapshot": "ef5c842724a43b3fee89f1305102ea3ae82025770da68caf3e1fea626022c896",
-      "collect": "727092155e5275d9f063b5eb4a46e9b50e6a47c5e98d85aa778f4ef3a08ff45a",
+      "collect": "4ba9c63d739993755da9515d7bc47ae98afea132de3d5d04710ce7aee8b68839",
       "scheduler_binding": "f0714e1ec7145f4f405eb668584a7917a0a6e3bbdc36446b6fd1b29a4380df9b",
       "db_instance_names": "16aa72b40eab68d35102cb0c6e17cfd274da8ddce689a3c333b96dfa9f6377d3",
       "db_registered_templates": "f0a2f8532651c0eb75d594eefcf8d18d5aa898d9d535a0edd3b908bc257c5390",

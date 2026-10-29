@@ -503,7 +503,7 @@ def collect(role,binding,reader=None):
     if reader is None:reader=Reader()
     need(type(reader) is Reader);reader.role=role;observed=utc();boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip();reader.boot=boot
     need(boot==binding['boots'][role])
-    clock=run(['/usr/bin/timedatectl','show','--property=NTPSynchronized,Timezone']).decode()
+    clock=run(['/usr/bin/timedatectl','show','--property=NTPSynchronized','--property=Timezone']).decode()
     need(set(clock.splitlines())=={'NTPSynchronized=yes','Timezone=Etc/UTC'})
     sources=installed493(reader);health=core(reader,role)
     authority_result=authority(reader,role)
@@ -520,6 +520,7 @@ def collect(role,binding,reader=None):
         'inventory_before_sha256':before_sha,'inventory_after_sha256':after_sha,
         'evaluated_at':evaluated['evaluated_at'],'failure_count':evaluated['failure_count']}
     value={'binding':binding,'role':role,'observed_at':observed.isoformat(),'boot':boot,'core_sha256':SPECS[role][2],
+        'collector_manifest_sha256':VERIFIED_SOURCE_MANIFEST,
         'custody':custody,
         'authority':authority_result,
         'snapshot_sha256':sha(canonical(snapshot)),'result_sha256':sha(canonical(evaluated)),
