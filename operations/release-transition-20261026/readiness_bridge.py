@@ -133,7 +133,8 @@ def qualify_local_database(web,db,binding,collector,manifest_sha256,reader=None)
 def verify_repository_binding(repository,health,accepted_label,accepted_full_sha256):
     """Retain BOTH actual ANY equality and actual FULL binding; one info read."""
     need(set(repository)=={'latest_backup_label','latest_full_backup_label','checked_at'})
-    need(repository['latest_backup_label']==health['latest_accepted_full_label']==accepted_label
+    need(bool(re.fullmatch(re.escape(accepted_label)+r'(?:_[0-9]{8}-[0-9]{6}[DI])?',repository['latest_backup_label']))
+        and health['latest_accepted_full_label']==accepted_label
         and repository['latest_full_backup_label']==accepted_label
         and health['original_snapshot']['latest_backup_label']==repository['latest_backup_label']
         and health['latest_receipts']['full_backup']['backup_label']==accepted_label

@@ -22,7 +22,7 @@
   "readiness_bridge.py": {
     "kind": "reviewed_framing_proposal_source",
     "basis_8853_sha256": "d1a12d97331fc560db844e819e79c40ef1b514342db7dcade68d9e5477a67888",
-    "proposed_sha256": "c3f10844b85dc6176eb6011b753e2fdc5fc52bde200f57c9f4c01fe6cc13641f",
+    "proposed_sha256": "0e7a5a0650f3c2edd23b23a3b3c9cd640f92f6c49841a9f2089cde4e58f4afe4",
     "publication_commit": "UNALLOCATED_PRIMARY_OWNED"
   },
   "peer_server.py": {
