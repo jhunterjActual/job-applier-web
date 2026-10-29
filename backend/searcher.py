@@ -759,6 +759,101 @@ def _supplement_feed_metadata(details: dict, candidate: dict) -> dict:
     return supplemented
 
 
+def _smartrecruiters_posting_key(value: object) -> tuple[str, str] | None:
+    if not isinstance(value, str) or len(value) > 4096:
+        return None
+    match = re.fullmatch(
+        r"https://jobs\.smartrecruiters\.com/([^/]+)/([0-9]+)(?:-[a-zA-Z0-9_-]+)?",
+        canonicalize_job_url(value),
+    )
+    return (match[1].casefold(), match[2]) if match else None
+
+
+def _smartrecruiters_structured_metadata(page, url: str) -> dict:
+    """Optional missing fields from one unambiguous, same-posting JSON-LD object."""
+    target = _smartrecruiters_posting_key(url)
+    if target is None:
+        return {}
+
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("Duplicate JSON-LD key")
+            value[key] = item
+        return value
+
+    def nonfinite(_):
+        raise ValueError("Nonfinite JSON-LD value")
+
+    try:
+        scripts = page.query_selector_all('script[type="application/ld+json"]')
+    except Exception:
+        return {}
+    if not isinstance(scripts, list) or len(scripts) > 32:
+        return {}
+    matches, total_bytes, nodes = [], 0, 0
+    for script in scripts:
+        try:
+            raw = script.text_content()
+        except Exception:
+            continue
+        try:
+            if not isinstance(raw, str):
+                continue
+            size = len(raw.encode("utf-8"))
+            total_bytes += size
+            if size > 256 * 1024 or total_bytes > 512 * 1024:
+                return {}
+            parsed = json.loads(raw, object_pairs_hook=unique_object, parse_constant=nonfinite)
+        except (ValueError, TypeError, UnicodeError, RecursionError):
+            continue
+        pending = [(parsed, 0)]
+        while pending:
+            value, depth = pending.pop()
+            nodes += 1
+            if nodes > 1024 or depth > 16:
+                return {}
+            if isinstance(value, list):
+                pending.extend((item, depth + 1) for item in value)
+            elif isinstance(value, dict):
+                types = value.get("@type")
+                if (types == "JobPosting" or isinstance(types, list) and "JobPosting" in types):
+                    if _smartrecruiters_posting_key(value.get("url")) == target:
+                        matches.append(value)
+                        if len(matches) > 1:
+                            return {}
+                if "@graph" in value:
+                    pending.append((value["@graph"], depth + 1))
+    if len(matches) != 1:
+        return {}
+    posting = matches[0]
+    locations = posting.get("jobLocation")
+    if isinstance(locations, (str, dict)):
+        locations = [locations]
+    location = ""
+    if isinstance(locations, list) and len(locations) <= 32:
+        try:
+            location = _job_location_from_json_ld({"jobLocation": locations})
+        except (ValueError, TypeError, AttributeError, IndexError, RecursionError):
+            pass
+    employment = posting.get("employmentType")
+    values = employment if isinstance(employment, list) else [employment]
+    aliases = {"FULL_TIME": "full_time", "PART_TIME": "part_time", "CONTRACTOR": "contract",
+               "CONTRACT": "contract", "TEMPORARY": "temporary", "INTERN": "internship", "INTERNSHIP": "internship"}
+    normalized = set()
+    if 0 < len(values) <= 8:
+        for value in values:
+            key = re.sub(r"[\s-]+", "_", value.strip().upper()) if isinstance(value, str) else ""
+            normalized.add(aliases.get(key, ""))
+    return {
+        "location": " ".join(location.split())[:240],
+        "employment_type": next(iter(normalized)) if len(normalized) == 1 else "",
+        "work_arrangement": "remote" if isinstance(posting.get("jobLocationType"), str)
+        and posting["jobLocationType"].strip().upper() == "TELECOMMUTE" else "",
+    }
+
+
 def is_specific_job_url(url: str) -> bool:
     """
     Validates if a Lever, Greenhouse, Ashby, or SmartRecruiters URL is a
@@ -1174,6 +1269,7 @@ def _scrape_job_details_browser(url: str, allow_partial: bool = False, diagnosti
         "compensation": "",
         "source": provider if provider != "unknown" else hostname,
     }
+    smartrecruiters_metadata = {}
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -1323,6 +1419,8 @@ def _scrape_job_details_browser(url: str, allow_partial: bool = False, diagnosti
                 location_match = re.search(r"(?im)^Location\s*\n+([^\n]+)", body_text)
                 details["location"] = location_match.group(1).strip() if location_match else ""
 
+                smartrecruiters_metadata = _smartrecruiters_structured_metadata(page, details["url"])
+
             elif hostname == "workforcenow.adp.com":
                 details.update(_adp_job_details(page))
 
@@ -1371,6 +1469,8 @@ def _scrape_job_details_browser(url: str, allow_partial: bool = False, diagnosti
     for key, value in metadata.items():
         if key == 'work_arrangement' and not details.get(key) and value:
             details['_work_arrangement_from_text'] = True
+        details[key] = details.get(key) or value
+    for key, value in smartrecruiters_metadata.items():
         details[key] = details.get(key) or value
 
     # Reject generic/error pages and content that cannot support a real match.
