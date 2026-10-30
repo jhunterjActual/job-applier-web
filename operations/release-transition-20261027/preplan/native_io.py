@@ -30,7 +30,8 @@ def bootstrap(role):
 def process_identity(pid):
  need(type(pid) is int and pid>1);base=Path('/proc')/str(pid)
  raw=(base/'stat').read_text();tail=raw[raw.rfind(')')+2:].split();status=(base/'status').read_text();uids=next(x.split()[1:] for x in status.splitlines() if x.startswith('Uid:'))
- need(uids==['0']*4);again=(base/'stat').read_text();need(again==raw)
+ need(uids==['0']*4);again=(base/'stat').read_text();tail_again=again[again.rfind(')')+2:].split()
+ need(tail[19]==tail_again[19] and tail[1]==tail_again[1] and raw[:raw.rfind(')')+1]==again[:again.rfind(')')+1])
  return {'pid':pid,'parent_pid':int(tail[1]),'birth':tail[19],'state':tail[0]}
 def parents(path):
  for p in Path(path).parents:

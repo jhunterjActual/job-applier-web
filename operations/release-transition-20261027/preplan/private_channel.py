@@ -163,7 +163,10 @@ def relay(program_sha,mode,runtime_profile,custody_receipt=None):
      if custody_receipt is not None:create_custody_receipt(custody_receipt,proof);custody_written=True
      need(mode!='allocate' or custody_written)
     if db is None:db=subprocess.Popen(command('db',program_sha,'inspect'),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL);dr=Reader(db.stdout)
-    send(db.stdin,request);response=decode(dr.read());need(type(response)is dict and set(response)=={'seq','ok','value'} and type(response['seq'])is int and response['seq']==seq and response['ok'] is True)
+    send(db.stdin,request);response=decode(dr.read());need(type(response)is dict)
+    if response.get('kind')=='unknown':
+     need(set(response)=={'kind','no_replay','failure'} and response['no_replay'] is True);remote_failure=validate_public_failure(response['failure']);raise PublicSessionUnknown(remote_failure)
+    need(set(response)=={'seq','ok','value'} and type(response['seq'])is int and response['seq']==seq and response['ok'] is True)
     if seq==0:
      from preplan_program import validate_peer
      db_hello=validate_peer(response['value'],'db',program_sha,runtime_profile);actor(db_hello['actor']);boot_id(db_hello['boot_id'])
