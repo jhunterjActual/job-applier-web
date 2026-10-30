@@ -1,0 +1,15 @@
+{
+  "schema": "careertrellis.filtered-empty-properties-source/v1",
+  "source_freeze": "cf41eed0a4e3aacd8e58c6f9cf18f6c88245fa62a9968f238c8d1335c24f1b99",
+  "baseline_sha256": "f3d3593c5a8fba82988b0fe2dc38426b579f314a7f85aed7959f18683e664f6a",
+  "proposed_sha256": "de4b3b72fbf5d783050991c43be66645bed9ff0317c7630efd129abd44f8bd04",
+  "raw_method_before": {
+    "Reader.timer_cadence": "e4eea2aaae9b29edceff21a4aca893daa170bf95eb755e926cfea9c2e4688338",
+    "Reader.unit": "3f8786800c48303bac912b97053f254b4f64eee9821b9538701dacf88e6e1dda"
+  },
+  "raw_method_after": {
+    "Reader.timer_cadence": "8662e904aecb0c8944b1905b5a28506f9c02bc85f686098e4bf6e62a83099fb9",
+    "Reader.unit": "2c325022cdc7beca4de0346d425fdb71e11ef48cf46909614ac0b6427d39ca8f"
+  },
+  "delta": "exactly two filtered --all argv additions; strict parser unchanged"
+}

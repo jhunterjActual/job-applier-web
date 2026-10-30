@@ -1,0 +1,19 @@
+{
+  "schema": "careertrellis.historical-read-cap-source/v1",
+  "source_freeze": "f2fe430fa3ba8b797e0d6c5a52f9730a6d55d98ff442ddec4a5c9a66e9519818",
+  "files": {
+    "native_io.py": {
+      "basis_sha256": "7c37ebbf651bd80eb4ddaf8ac1cb53a37cb336bacb6fffea59e50929eabdfae7",
+      "proposed_sha256": "950cda4835661fda6ea921ce82cb1e0ab6a695ddcd94d64dac3a320f9ca55f35"
+    },
+    "preplan_history.py": {
+      "basis_sha256": "715fa28c48a446dabd5833129273143402755c238f4203299afeed4698354e77",
+      "proposed_sha256": "0c330ba90f07e92e9196f4fad234eceacf973fbebf1bb68d9611f99423e5830a"
+    }
+  },
+  "scope": "original504-authenticated four full maps only16MiB; generic2MiB/aggregate64MiB and entireProtectedReaderraw unchanged",
+  "test_scope": "actualTEMPbytes/syntheticPOSIXmetadataWindows, publicSyntheticexpiredDAG; no actualreceipt/privateoriginalfailureproof",
+  "program_membership": "16 unchanged; no new runtime module",
+  "native": "unobserved/primary future invocation",
+  "current_program_commit": "UNALLOCATED_PRIMARY_OWNED"
+}

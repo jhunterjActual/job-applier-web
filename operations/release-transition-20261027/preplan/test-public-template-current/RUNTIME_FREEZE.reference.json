@@ -1,0 +1,19 @@
+{
+  "schema": "careertrellis.rpc-framing-runtime-freeze/v1",
+  "files": {
+    "collector.py": "3d77ca301480b3a1497a6ab1c6ecb60c442fd73cd0e1dc6e4d8b37eff88fbb59",
+    "pair_boundary.py": "d9dd9121d21e486a7fe8c8fd0c58baf8a785e253f87fb45d5a18104a3cbf3d15",
+    "readiness_bridge.py": "c3f10844b85dc6176eb6011b753e2fdc5fc52bde200f57c9f4c01fe6cc13641f",
+    "peer_server.py": "30a13b24f20600c80bd22856ce962249c45da9b2dc773d757e24e3c16c179e70",
+    "native_backend.py": "92bc552a30ab992d4dd0d038d26e7315b3164ba332ecadbbed6a234c23e28ef7",
+    "operator/drive.py": "f166f00ce55220bdf2590ea14dd380605584ce455c4f8c48f1d7f7e61dfc61ae"
+  },
+  "source_only": true,
+  "native_acceptance": false,
+  "tests": {
+    "count": 10,
+    "seconds": 1.891,
+    "exit_code": 0
+  },
+  "public_projection_pending": true
+}

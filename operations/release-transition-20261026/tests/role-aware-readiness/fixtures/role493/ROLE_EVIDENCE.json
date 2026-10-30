@@ -1,0 +1,49 @@
+{
+  "files": {
+    "build_bundle.py": {
+      "bytes": 13667,
+      "commit": "493bf14a3bae2cb2b36f3a57191602b72ea6e3d3",
+      "path": "deploy/paired_maintenance/build_bundle.py",
+      "sha256": "c420b7bd99a670e1a7b3c6e4cd6118315b3cfd392c430ef1cd26e26655fb2dd0"
+    },
+    "install_bundle.py": {
+      "bytes": 18827,
+      "commit": "493bf14a3bae2cb2b36f3a57191602b72ea6e3d3",
+      "path": "deploy/paired_maintenance/install_bundle.py",
+      "sha256": "111f9a66517876c260d431c480503b29360d1120108a423b1e1ec43606f95177"
+    }
+  },
+  "host_observed": false,
+  "installer_selection": {
+    "function": "prepare",
+    "lines": [
+      231,
+      232
+    ],
+    "source": "selected = {name: raw for name, raw in values.items() if name.startswith(bundle.PACKAGE)\n                or target.role in bundle.sources()[name][1]}"
+  },
+  "schema": "careertrellis.authenticated493-role-evidence/v1",
+  "selected_units": {
+    "db": [
+      "etc/systemd/system/careertrellis-paired-db-recovery@.service",
+      "etc/systemd/system/careertrellis-paired-db@.service"
+    ],
+    "web": [
+      "etc/systemd/system/careertrellis-erasure-worker.service.d/80-paired-maintenance.conf",
+      "etc/systemd/system/careertrellis-paired-bootstrap.service",
+      "etc/systemd/system/careertrellis-paired-maintenance.service",
+      "etc/systemd/system/careertrellis-paired-maintenance.timer",
+      "etc/systemd/system/careertrellis-paired-recovery.service",
+      "etc/systemd/system/careertrellis-paired-recovery.timer",
+      "etc/systemd/system/careertrellis-web.service.d/80-paired-maintenance.conf",
+      "etc/systemd/system/careertrellis-worker.service.d/80-paired-maintenance.conf"
+    ]
+  },
+  "sources_function": {
+    "ast_sha256": "9b94116a1c7e4afb894a973e918f8c699af8c90437fb387d977b861f9685fa2a",
+    "lines": [
+      144,
+      153
+    ]
+  }
+}

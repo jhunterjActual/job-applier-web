@@ -1,0 +1,136 @@
+{
+  "one_shot_readiness/collector.py": {
+    "kind": "typed_timer_arrays_source02",
+    "basis_sha256": "de4b3b72fbf5d783050991c43be66645bed9ff0317c7630efd129abd44f8bd04",
+    "proposed_sha256": "b73a840773ee31de63cef05136e69fcdcd6f3b40f3749cdd2bdffcff3bbaba0c",
+    "source_freeze": "8352904bd95664efc6476cb0d02bcb5ca806fe0d7b51ff0ad30b3a37e57da960",
+    "delta": "scalar3 + raw typed arrays + closedcoveragev3; changed-method identity explicit",
+    "native_values": "UNOBSERVED; actual prior names-only evidence external",
+    "preserved": "privateReader/unit13timer8/artifact15/history05/authority/custody",
+    "publication_commit": "UNALLOCATED_PRIMARY_OWNED"
+  },
+  "one_shot_readiness/pair_boundary.py": {
+    "kind": "typed_timer_arrays_source02",
+    "basis_sha256": "ed95a0347cb68b26fc10925e7907d5c459cb91759829b4dc13763c3d37e90736",
+    "proposed_sha256": "035a8eb086005d15b3375be4337672d757870220157065a44215caec87ebc836",
+    "source_freeze": "8352904bd95664efc6476cb0d02bcb5ca806fe0d7b51ff0ad30b3a37e57da960",
+    "delta": "scalar3 + raw typed arrays + closedcoveragev3; changed-method identity explicit",
+    "native_values": "UNOBSERVED; actual prior names-only evidence external",
+    "preserved": "privateReader/unit13timer8/artifact15/history05/authority/custody",
+    "publication_commit": "UNALLOCATED_PRIMARY_OWNED"
+  },
+  "readiness_bridge.py": {
+    "kind": "reviewed_framing_proposal_source",
+    "basis_8853_sha256": "d1a12d97331fc560db844e819e79c40ef1b514342db7dcade68d9e5477a67888",
+    "proposed_sha256": "0e7a5a0650f3c2edd23b23a3b3c9cd640f92f6c49841a9f2089cde4e58f4afe4",
+    "publication_commit": "UNALLOCATED_PRIMARY_OWNED"
+  },
+  "peer_server.py": {
+    "kind": "reviewed_framing_proposal_source",
+    "basis_8853_sha256": "c19faaffd23f6cfe6b41b46179858f05a5cc96e0d7065e188be49a1443d6ebbc",
+    "proposed_sha256": "30a13b24f20600c80bd22856ce962249c45da9b2dc773d757e24e3c16c179e70",
+    "publication_commit": "UNALLOCATED_PRIMARY_OWNED"
+  },
+  "native_backend.py": {
+    "kind": "reviewed_framing_proposal_source",
+    "basis_8853_sha256": "e7bda6e9504baedd9a734d97b6fc252ad31d755b63bf77da64495a111a2370a9",
+    "proposed_sha256": "92bc552a30ab992d4dd0d038d26e7315b3164ba332ecadbbed6a234c23e28ef7",
+    "publication_commit": "UNALLOCATED_PRIMARY_OWNED"
+  },
+  "tests/role-aware-readiness/fixtures/git504/native_peer.py": {
+    "commit": "504756d8b949163dbe1386e60be48cec0ec4117c",
+    "git_path": "operations/release-transition-20261026/native_peer.py",
+    "kind": "exact_public_git_source"
+  },
+  "tests/role-aware-readiness/fixtures/git504/release_transaction.py": {
+    "commit": "504756d8b949163dbe1386e60be48cec0ec4117c",
+    "git_path": "operations/release-transition-20261026/release_transaction.py",
+    "kind": "exact_public_git_source"
+  },
+  "tests/role-aware-readiness/fixtures/collector.py.baseline.txt": {
+    "commit": "504756d8b949163dbe1386e60be48cec0ec4117c",
+    "git_path": "operations/release-transition-20261026/one_shot_readiness/collector.py",
+    "kind": "exact_public_git_source"
+  },
+  "tests/role-aware-readiness/fixtures/readiness_bridge.py.baseline.txt": {
+    "commit": "504756d8b949163dbe1386e60be48cec0ec4117c",
+    "git_path": "operations/release-transition-20261026/readiness_bridge.py",
+    "kind": "exact_public_git_source"
+  },
+  "tests/role-aware-readiness/fixtures/db_core.reference.py": {
+    "commit": "1229ed9bce42c66f6d4b613e56abdfeb00da347d",
+    "git_path": "backend/backup_health.py",
+    "kind": "exact_public_git_source",
+    "retained_origin_evidence": "one-shot-readiness/native-collector-snapshot03/prepare_originals.py; originalGitshow+assert8d2",
+    "fresh_git_reverification": "primary_required_before_publication"
+  },
+  "tests/role-aware-readiness/fixtures/role493/build_bundle.py": {
+    "commit": "493bf14a3bae2cb2b36f3a57191602b72ea6e3d3",
+    "git_path": "deploy/paired_maintenance/build_bundle.py",
+    "kind": "exact_public_git_source"
+  },
+  "tests/role-aware-readiness/fixtures/role493/install_bundle.py": {
+    "commit": "493bf14a3bae2cb2b36f3a57191602b72ea6e3d3",
+    "git_path": "deploy/paired_maintenance/install_bundle.py",
+    "kind": "exact_public_git_source"
+  },
+  "tests/role-aware-readiness/fixtures/role493/ROLE_EVIDENCE.json": {
+    "kind": "public_derived_role_selection_evidence",
+    "source_commits": [
+      "493bf14a3bae2cb2b36f3a57191602b72ea6e3d3"
+    ],
+    "source_members": [
+      "build_bundle.py",
+      "install_bundle.py"
+    ]
+  },
+  "tests/role-aware-readiness/public_schema_fixtures.py": {
+    "kind": "public_ast_projection",
+    "commit": "bc68ea0dc253425a44e268452130becdf35d764e",
+    "git_path": "backend/test_backup_health.py",
+    "source_sha256": "41d885a1b4d50d1a66ea682cf873d0a2e6e2e77959b0a995e37fd697b1eeef2f",
+    "archive_sha256": "e91b4c04c4fc004ae7574ff091bd99c43e75ac6be15e84caa39d57d9dfa02e07",
+    "selected_function_asts_equal": true,
+    "imports_plus_public_constants_only": true
+  },
+  "tests/role-aware-readiness/test_role_coverage.py": {
+    "kind": "portable_test_projection",
+    "basis_sha256": "bc59a4c0f8e1dc9696a37f1347af56e1eb597167f1f9690cd528bee5fdc357d8",
+    "basis_freeze": "88530ce943e582068cc54ef7f1eaf240c3cb838aea51ea2bdbb94897ec1363c3",
+    "semantic_changes": "bootstrap and exact fixture/runtime paths only; actual core TemporaryDirectory parent honors TMPDIR"
+  },
+  "tests/role-aware-readiness/test_real_db_core.py": {
+    "kind": "portable_test_projection",
+    "basis_sha256": "dcd1aafd8d710e7eec653143b61278906ef3cc7d070a3679b75be3997b9f9de7",
+    "basis_freeze": "88530ce943e582068cc54ef7f1eaf240c3cb838aea51ea2bdbb94897ec1363c3",
+    "semantic_changes": "bootstrap and exact fixture/runtime paths only; actual core TemporaryDirectory parent honors TMPDIR"
+  },
+  "tests/role-aware-readiness/test_qualification.py": {
+    "kind": "portable_test_projection",
+    "basis_sha256": "9a4d19398be1b84eb52fd47ac97c9e60a2d4a7579c0e787b40c60e9df815dcf9",
+    "basis_freeze": "88530ce943e582068cc54ef7f1eaf240c3cb838aea51ea2bdbb94897ec1363c3",
+    "semantic_changes": "bootstrap and exact fixture/runtime paths only; actual core TemporaryDirectory parent honors TMPDIR"
+  },
+  "tests/role-aware-readiness/test_consumer_token.py": {
+    "kind": "portable_test_projection",
+    "basis_sha256": "9bdc1212ca71c00d591659af3c5bc492ea9239a70d8071e345a8f3a770c8217b",
+    "basis_freeze": "88530ce943e582068cc54ef7f1eaf240c3cb838aea51ea2bdbb94897ec1363c3",
+    "semantic_changes": "bootstrap and exact fixture/runtime paths only; actual core TemporaryDirectory parent honors TMPDIR"
+  },
+  "tests/role-aware-readiness/test_orchestration.py": {
+    "kind": "portable_test_projection",
+    "basis_sha256": "cec4e5a147e480d192ad89b463ca00664ed9d2277799853106d9d49c43757ed8",
+    "basis_freeze": "e3b83e1a9611a67f27ccb8bff6828b21cd95e40fd6de309b68fc98632914dda6",
+    "semantic_changes": "bootstrap and exact fixture/runtime paths only; actual core TemporaryDirectory parent honors TMPDIR"
+  },
+  "tests/role-aware-readiness/test_rpc_sequence.py": {
+    "kind": "portable_test_projection",
+    "basis_sha256": "8235df812639843c0ecdb0efeb530f03aaa8041cc4e534991b2c394695c8e760",
+    "basis_freeze": "e3b83e1a9611a67f27ccb8bff6828b21cd95e40fd6de309b68fc98632914dda6",
+    "semantic_changes": "bootstrap and exact fixture/runtime paths only; actual core TemporaryDirectory parent honors TMPDIR"
+  },
+  "tests/role-aware-readiness/portable_bootstrap.py": {
+    "kind": "new_portable_source_hash_bootstrap",
+    "authority": "none/test_only"
+  }
+}

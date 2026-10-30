@@ -1,0 +1,3 @@
+# Reviewed public operator resource boundary
+
+Four exact source resources: carrier.py, wire_builder.py, compress_wire.reference.py and Invoke-PreplanPublicReviewedSource.proposed.ps1. Root PREPLAN test_operator_carrier.py/test_operator_operations.py physically resolve this directory; no artifact fallback. These tools are not members of16PROGRAM_FILES/55host cache or nativeDAG. Source-level acceptance does not create an actual manifest/wire or authorize a host action. See ../OPERATOR_INTERFACE.md for fixed8modes/closedpayloads/source-before-inspect/packet-before-allocation/plan readback/driver ordering.
