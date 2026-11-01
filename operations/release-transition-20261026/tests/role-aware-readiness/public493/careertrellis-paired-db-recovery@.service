@@ -1,0 +1,34 @@
+[Unit]
+Description=Recover only the existing database maintenance transaction %i
+After=postgresql.service
+
+[Service]
+Type=exec
+User=root
+Group=root
+WorkingDirectory=/
+UMask=0077
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/careertrellis/paired_maintenance/entry.py db-recover %i
+Restart=no
+KillMode=control-group
+TimeoutStopSec=30s
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=20
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=false
+DevicePolicy=closed
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SETGID CAP_SETUID
+AmbientCapabilities=CAP_SETUID
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+RestrictSUIDSGID=false
+RestrictNamespaces=false
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/run
+ReadWritePaths=/run/lock
+ReadWritePaths=/var/lib/careertrellis/paired-maintenance
+ReadWritePaths=/var/backups/careertrellis

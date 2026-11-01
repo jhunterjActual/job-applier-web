@@ -29,6 +29,21 @@ jobs:
         run: python -m playwright install --with-deps chromium
       - name: Verify packages
         run: python -m pip check
+      - name: Run inactive runtime repair controls
+        working-directory: ${{ github.workspace }}/operations/release-transition-20261027/repair98
+        run: python -B -m unittest discover -s . -p 'test*.py'
+      - name: Run corrected fixture preparation controls
+        working-directory: ${{ github.workspace }}/operations/release-transition-20261027/corrected97
+        run: python -B -m unittest discover -s . -p 'test*.py'
+      - name: Run app-only release protocol regressions
+        working-directory: ${{ github.workspace }}/operations/release-transition-20261026
+        run: |
+          python -B -m unittest discover -s tests -p 'test*.py'
+          python -B -m unittest discover -s tests -p 'builder_contract_checks.py'
+          python -B -m unittest discover -s tests/target-context-rebind -p 'test*.py'
+          python -B -m unittest discover -s tests/role-aware-readiness -p 'test_*.py'
+          python -B -m unittest discover -s tests/rpc-framing -p 'test_*.py'
+          python -B -m unittest discover -s ../release-transition-20261027/preplan -p 'test_*.py'
       - name: Run evaluation budget controls
         working-directory: ${{ github.workspace }}/scripts/value_evaluation
         run: python -B -m unittest -v test_budget_guard test_ct_budget_transport test_campaign_state test_study_upstream test_study_native_corrections

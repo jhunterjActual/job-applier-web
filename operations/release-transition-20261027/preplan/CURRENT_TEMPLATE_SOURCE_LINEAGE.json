@@ -1,0 +1,11 @@
+{
+  "actual_profile": "UNALLOCATED",
+  "backend_sha256": "92bc552a30ab992d4dd0d038d26e7315b3164ba332ecadbbed6a234c23e28ef7",
+  "files": {
+    "collector.py": "77b814c7f84e6eea977190ecb15d4e6e2a22697fd5e999744e18973c04fd825b",
+    "pair_boundary.py": "59fb0b698e8845731624b8de313fb19f99a2ffa8aef5900d33b4e3cc7e6d9caa"
+  },
+  "schema": "careertrellis.preplan-current-template-source-inputs/v1",
+  "scope": "hashbound public test-copy only; source reviews/native registration evidence pending",
+  "source_freeze_sha256": "15fb21ac23eea7340f25bc1e98b50b3b6b9e06c8e5159b778ff6ddc165f0b5c1"
+}
