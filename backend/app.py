@@ -143,7 +143,7 @@ from searcher import (
     provider_for_url,
     validate_public_http_url,
 )
-from utils import generate_resume_pdf, resume_pdf_metadata
+from utils import PdfPageLimitError, generate_resume_pdf, resume_pdf_metadata
 from lifecycle_repository import MAX_LIFECYCLE_NOTES_CHARS, runtime_lifecycle_repository
 from verification_repository import (
     VerificationTargetChanged,
@@ -2423,7 +2423,10 @@ def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
         temporary_resume_path = Path(temporary_pdf.name)
     operation.track_temporary_file(temporary_resume_path)
     
-    # Save the tailored resume PDF only when it satisfies the two-page contract.
+    # Save the tailored resume PDF when it satisfies the page limit; if it exceeds
+    # the page limit, persist materials with a warning and stage the rendered PDF
+    # so both resume and cover letter remain available.
+    resume_warning = None
     try:
         page_limit = 6 if (profile["resume_mode"] or "") == "academic_cv" else 2
         pdf_result = generate_resume_pdf(
@@ -2432,6 +2435,22 @@ def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
             max_pages=page_limit,
             metadata=resume_pdf_metadata(profile["name"], job["title"], job["company"]),
         )
+        operation.checkpoint()
+    except PdfPageLimitError as exc:
+        resume_warning = str(exc)
+        if exc.pdf_bytes:
+            temporary_resume_path.write_bytes(exc.pdf_bytes)
+        elif not temporary_resume_path.exists():
+            import fitz
+            doc = fitz.open()
+            p = doc.new_page()
+            p.insert_text((50, 72), res["tailored_resume"][:2000])
+            doc.save(str(temporary_resume_path))
+            doc.close()
+        pdf_result = {
+            "page_count": exc.page_count or (page_limit + 1),
+            "compact": True,
+        }
         operation.checkpoint()
     except ValueError as exc:
         temporary_resume_path.unlink(missing_ok=True)
@@ -2578,12 +2597,15 @@ def _tailor_resume_endpoint(job_id: int, operation: OperationToken) -> dict:
             "duration_bucket": duration_bucket(time.monotonic() - started_at),
         },
     )
-    outcome = "completed_with_review" if headquarters.warning else "completed"
+    tailoring_warning = resume_warning or headquarters.warning
+    outcome = "completed_with_review" if tailoring_warning else "completed"
     operation.update_progress(outcome, completed=5, total=5)
 
     return {
         "success": True,
         "outcome": outcome,
+        "warning": tailoring_warning,
+        "resume_warning": resume_warning,
         "tailored_resume": res["tailored_resume"],
         "cover_letter": cover_letter_text,
         "us_hq": headquarters.address,
@@ -2757,6 +2779,7 @@ def _update_tailored_details(job_id: int, req: MaterialsUpdateRequest, operation
     ) as temporary_pdf:
         temporary_resume_path = Path(temporary_pdf.name)
     operation.track_temporary_file(temporary_resume_path)
+    resume_warning = None
     try:
         pdf_result = generate_resume_pdf(
             resume_text,
@@ -2768,6 +2791,22 @@ def _update_tailored_details(job_id: int, req: MaterialsUpdateRequest, operation
                 application["company"],
             ),
         )
+        operation.checkpoint()
+    except PdfPageLimitError as exc:
+        resume_warning = str(exc)
+        if exc.pdf_bytes:
+            temporary_resume_path.write_bytes(exc.pdf_bytes)
+        elif not temporary_resume_path.exists():
+            import fitz
+            doc = fitz.open()
+            p = doc.new_page()
+            p.insert_text((50, 72), resume_text[:2000])
+            doc.save(str(temporary_resume_path))
+            doc.close()
+        pdf_result = {
+            "page_count": exc.page_count or (page_limit + 1),
+            "compact": True,
+        }
         operation.checkpoint()
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -2839,6 +2878,8 @@ def _update_tailored_details(job_id: int, req: MaterialsUpdateRequest, operation
         conn.close()
     return {
         "success": True,
+        "warning": resume_warning,
+        "resume_warning": resume_warning,
         "pdf_page_count": pdf_result["page_count"],
         "pdf_compact": pdf_result["compact"],
         "resume_download_url": f"/api/jobs/{job_id}/materials/resume",

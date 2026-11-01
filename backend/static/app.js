@@ -3521,15 +3521,23 @@ async function tailorResumeForJob(jobId) {
             const outcome = result.outcome === "completed_with_review"
                 ? "completed_with_review"
                 : "completed";
+            const warningMsg = result.resume_warning || result.warning || result.headquarters_warning;
+            const statusMsg = result.resume_warning
+                ? "Tailored materials generated. Resume PDF length requires review."
+                : (result.headquarters_warning
+                    ? "Tailored materials are ready with a headquarters item to review."
+                    : "Tailored materials are ready.");
             finishTailorProgress(
                 operation,
                 outcome,
-                outcome === "completed_with_review"
-                    ? "Tailored materials are ready with a headquarters item to review."
-                    : "Tailored materials are ready."
+                outcome === "completed_with_review" ? statusMsg : "Tailored materials are ready."
             );
             hideLoading();
             logActivity("Tailoring Complete", `Resume and Cover Letter customized.`, "success");
+            if (result.resume_warning) {
+                logActivity("Resume PDF Length Needs Review", result.resume_warning, "warning");
+                alert(result.resume_warning);
+            }
             if (result.headquarters_warning) {
                 logActivity("Headquarters Address Needs Review", result.headquarters_warning, "warning");
                 alert(result.headquarters_warning);
@@ -3615,8 +3623,14 @@ async function saveTailoredMaterials() {
         }
         tailoredResumeSnapshot = tailoredResumeDisplay.value;
         coverLetterSnapshot = coverLetterDisplay.value;
-        logActivity("Materials Saved", `Resume PDF regenerated at ${result.pdf_page_count} page(s).`, "success");
-        alert(t("materials.save.success"));
+        if (result.warning || result.resume_warning) {
+            const warningText = result.resume_warning || result.warning;
+            logActivity("Materials Saved With Review", warningText, "warning");
+            alert(`${t("materials.save.success")}\n\nNotice: ${warningText}`);
+        } else {
+            logActivity("Materials Saved", `Resume PDF regenerated at ${result.pdf_page_count} page(s).`, "success");
+            alert(t("materials.save.success"));
+        }
     } catch (error) {
         hideLoading();
         alert(error.message);

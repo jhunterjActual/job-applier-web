@@ -1118,6 +1118,195 @@ class ApplicationMaterialsSafetyTests(unittest.TestCase):
             connection.close()
             self.assertEqual("Old resume", stored["tailored_resume_text"])
             self.assertEqual("Old letter", stored["cover_letter"])
+
+    def test_tailoring_retains_materials_and_warns_when_pdf_exceeds_page_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database_path = root / "materials.db"
+            connection = sqlite3.connect(database_path)
+            connection.executescript("""
+                CREATE TABLE profile (
+                    id INTEGER PRIMARY KEY, name TEXT, base_resume_text TEXT,
+                    active_base_resume_id INTEGER, resume_mode TEXT,
+                    ai_provider TEXT, ai_model TEXT, gemini_api_key TEXT,
+                    maps_provider TEXT, prefer_us_headquarters INTEGER
+                );
+                CREATE TABLE jobs (
+                    id INTEGER PRIMARY KEY, title TEXT, company TEXT,
+                    description TEXT, location TEXT, url TEXT, source TEXT, status TEXT
+                );
+                CREATE TABLE applications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, company TEXT, position TEXT, date_applied TEXT,
+                    us_hq TEXT, headquarters_source TEXT, headquarters_attribution TEXT,
+                    tailored_resume_path TEXT, cover_letter_path TEXT,
+                    tailored_resume_text TEXT, cover_letter TEXT, status TEXT,
+                    created_at TEXT, tailored_at TEXT, base_resume_id INTEGER,
+                    base_resume_name TEXT, base_resume_version INTEGER
+                );
+                INSERT INTO profile VALUES (
+                    1, 'Candidate Name', 'Base resume text', NULL,
+                    'general_professional', 'gemini', 'gemini-2.5-flash',
+                    'test-key', 'openstreetmap', 1
+                );
+                INSERT INTO jobs VALUES (
+                    7, 'VP Data', 'Example Corp', 'Desc', 'Dayton, OH',
+                    'https://example.test/job', 'manual', 'matched'
+                );
+            """)
+            connection.commit()
+            connection.close()
+
+            opened_connections = []
+
+            def connection_factory():
+                database = sqlite3.connect(database_path)
+                database.row_factory = sqlite3.Row
+                opened_connections.append(database)
+                return database
+
+            repository = Mock()
+            repository.get.return_value = None
+            resolved = HeadquartersResult("Synthetic address", "openstreetmap", "attrib", "US")
+
+            def render_oversized(markdown, output_path, max_pages=2, **kwargs):
+                raise app_module.PdfPageLimitError(
+                    f"Generated document exceeds the {max_pages}-page limit after compact formatting (rendered 3 pages). Shorten the source content and regenerate it.",
+                    page_count=3,
+                    max_pages=max_pages,
+                    pdf_bytes=b"%PDF-1.4 synthetic multi-page pdf",
+                )
+
+            with (
+                patch.object(app_module, "get_db_connection", side_effect=connection_factory),
+                patch.object(app_module.config, "OUTPUT_DIR", str(root)),
+                patch.object(
+                    app_module,
+                    "runtime_headquarters_cache_repository",
+                    return_value=repository,
+                ),
+                patch.object(
+                    app_module,
+                    "tailor_resume_and_cover_letter",
+                    return_value={
+                        "success": True,
+                        "tailored_resume": "# Long Tailored Resume Text",
+                        "cover_letter": "Tailored Cover Letter Text",
+                    },
+                ),
+                patch.object(app_module, "generate_resume_pdf", side_effect=render_oversized),
+                patch.object(app_module, "resolve_headquarters", return_value=resolved),
+                patch.object(app_module, "capture_event"),
+            ):
+                operation = operations_module.OperationToken(kind="tailor")
+                result = app_module._tailor_resume_endpoint(7, operation)
+
+            self.assertTrue(result["success"])
+            self.assertEqual("completed_with_review", result["outcome"])
+            self.assertIn("exceeds the 2-page limit", result["warning"])
+            self.assertIn("exceeds the 2-page limit", result["resume_warning"])
+            self.assertEqual(3, result["pdf_page_count"])
+            self.assertEqual("# Long Tailored Resume Text", result["tailored_resume"])
+            self.assertEqual("Tailored Cover Letter Text", result["cover_letter"])
+
+            connection = connection_factory()
+            application = connection.execute("SELECT * FROM applications WHERE job_id = 7").fetchone()
+            job = connection.execute("SELECT status FROM jobs WHERE id = 7").fetchone()
+            connection.close()
+
+            for conn in opened_connections:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+            self.assertIsNotNone(application)
+            self.assertEqual("tailored", application["status"])
+            self.assertEqual("tailored", job["status"])
+            self.assertEqual("# Long Tailored Resume Text", application["tailored_resume_text"])
+            self.assertEqual("Tailored Cover Letter Text", application["cover_letter"])
+            self.assertTrue(Path(application["tailored_resume_path"]).exists())
+            self.assertTrue(Path(application["cover_letter_path"]).exists())
+
+    def test_save_tailored_materials_retains_materials_and_warns_when_pdf_exceeds_page_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database_path = root / "materials.db"
+            resume_path = root / "tailored_resume_1.pdf"
+            cover_path = root / "cover_letter_1.txt"
+            resume_path.write_bytes(b"%PDF-1.4 old pdf")
+            cover_path.write_text("Old letter\n", encoding="utf-8")
+            connection = sqlite3.connect(database_path)
+            connection.executescript("""
+                CREATE TABLE profile (id INTEGER PRIMARY KEY, name TEXT, resume_mode TEXT);
+                CREATE TABLE applications (
+                    id INTEGER PRIMARY KEY, job_id INTEGER, company TEXT, position TEXT,
+                    tailored_resume_text TEXT,
+                    tailored_resume_path TEXT, cover_letter_path TEXT, cover_letter TEXT
+                );
+                INSERT INTO profile VALUES (1, 'Candidate Name', 'general_professional');
+            """)
+            connection.execute(
+                "INSERT INTO applications VALUES (1, 1, 'Example Corp', 'Data Leader', 'Old resume', ?, ?, 'Old letter')",
+                (str(resume_path), str(cover_path)),
+            )
+            connection.commit()
+            connection.close()
+
+            opened_connections = []
+
+            def connection_factory():
+                database = sqlite3.connect(database_path)
+                database.row_factory = sqlite3.Row
+                opened_connections.append(database)
+                return database
+
+            operation_id = str(uuid4())
+
+            def render_oversized(markdown, output_path, max_pages=2, **kwargs):
+                raise app_module.PdfPageLimitError(
+                    f"Generated document exceeds the {max_pages}-page limit after compact formatting (rendered 3 pages). Shorten the source content and regenerate it.",
+                    page_count=3,
+                    max_pages=max_pages,
+                    pdf_bytes=b"%PDF-1.4 oversized new pdf",
+                )
+
+            with (
+                patch.object(app_module, "get_db_connection", side_effect=connection_factory),
+                patch.object(app_module.config, "OUTPUT_DIR", str(root)),
+                patch.object(app_module, "apply_resume_section_template", side_effect=lambda text, mode: text),
+                patch.object(app_module, "finalize_cover_letter", return_value="Updated cover letter"),
+                patch.object(app_module, "generate_resume_pdf", side_effect=render_oversized),
+            ):
+                result = app_module.update_tailored_details(
+                    1,
+                    app_module.MaterialsUpdateRequest(
+                        tailored_resume="Oversized updated resume",
+                        cover_letter="Updated cover letter",
+                    ),
+                    operation_id,
+                )
+
+            self.assertTrue(result["success"])
+            self.assertEqual(3, result["pdf_page_count"])
+            self.assertIn("exceeds the 2-page limit", result["warning"])
+            self.assertIn("exceeds the 2-page limit", result["resume_warning"])
+
+            connection = connection_factory()
+            stored = connection.execute(
+                "SELECT tailored_resume_text, cover_letter FROM applications WHERE job_id = 1"
+            ).fetchone()
+            connection.close()
+
+            for conn in opened_connections:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+            self.assertEqual("Oversized updated resume", stored["tailored_resume_text"])
+            self.assertEqual("Updated cover letter", stored["cover_letter"])
+            self.assertEqual(b"%PDF-1.4 oversized new pdf", resume_path.read_bytes())
+            self.assertEqual("Updated cover letter\n", cover_path.read_text(encoding="utf-8"))
     def test_cover_letter_date_placeholders_are_resolved(self) -> None:
         expected = "August 3, 2026"
         for placeholder in ("[Date]", "{DATE}", "<date>"):

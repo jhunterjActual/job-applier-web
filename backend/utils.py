@@ -218,6 +218,16 @@ def markdown_to_html(md_text: str) -> str:
         output.append("</section>")
     return "\n".join(output)
 
+class PdfPageLimitError(ValueError):
+    """The complete document cannot fit the selected page policy."""
+
+    def __init__(self, message: str, *, page_count: int | None = None, max_pages: int | None = None, pdf_bytes: bytes | None = None):
+        super().__init__(message)
+        self.page_count = page_count
+        self.max_pages = max_pages
+        self.pdf_bytes = pdf_bytes
+
+
 def generate_pdf_from_html(
     html_content: str,
     output_pdf_path: str,
@@ -339,6 +349,8 @@ def generate_pdf_from_html(
         page = browser.new_page(viewport={"width": 701, "height": 945})
         page.set_content(full_html, wait_until="load")
         try:
+            last_bytes = None
+            last_page_count = None
             for compact in (False, True):
                 if compact:
                     page.evaluate("document.body.classList.add('compact')")
@@ -350,14 +362,19 @@ def generate_pdf_from_html(
                     outline=True,
                 )
                 pdf_bytes, page_count = _apply_pdf_metadata(pdf_bytes, document_metadata)
+                last_bytes = pdf_bytes
+                last_page_count = page_count
                 if page_count <= max_pages:
                     output_path = Path(output_pdf_path)
                     output_path.parent.mkdir(parents=True, exist_ok=True)
                     output_path.write_bytes(pdf_bytes)
                     return {"page_count": page_count, "compact": compact}
-            raise ValueError(
-                f"Generated document exceeds the {max_pages}-page limit after compact formatting. "
-                "Shorten the source content and regenerate it."
+            raise PdfPageLimitError(
+                f"Generated document exceeds the {max_pages}-page limit after compact formatting (rendered {last_page_count} pages). "
+                "Shorten the source content and regenerate it.",
+                page_count=last_page_count,
+                max_pages=max_pages,
+                pdf_bytes=last_bytes,
             )
         finally:
             browser.close()
