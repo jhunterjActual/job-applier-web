@@ -48,6 +48,8 @@ class Usage:
     reasoning_tokens: int | None = None
     total_tokens: int | None = None
     cache_creation_input_tokens: int | None = None
+    cache_creation_5m_input_tokens: int | None = None
+    cache_creation_1h_input_tokens: int | None = None
 
     @property
     def known(self):
@@ -72,8 +74,20 @@ def normalize_usage(provider, metadata):
         if any(value is None for value in counts):
             return Usage()
         incoming, cached, created, outgoing = counts
+        five_minute = one_hour = None
+        if ((isinstance(metadata, dict) and 'cache_creation' in metadata)
+                or (not isinstance(metadata, dict) and hasattr(metadata, 'cache_creation'))):
+            split = _value(metadata, 'cache_creation')
+            expected = {'ephemeral_5m_input_tokens', 'ephemeral_1h_input_tokens'}
+            if not isinstance(split, dict) or set(split) != expected:
+                return Usage()
+            five_minute, one_hour = [_count(split, name) for name in
+                                    ('ephemeral_5m_input_tokens', 'ephemeral_1h_input_tokens')]
+            if five_minute is None or one_hour is None or five_minute + one_hour != created:
+                return Usage()
         incoming += cached + created
-        return Usage(incoming, outgoing, cached, None, incoming + outgoing, created)
+        return Usage(incoming, outgoing, cached, None, incoming + outgoing, created,
+                     five_minute, one_hour)
     if provider == 'openai':
         incoming = _count(metadata, 'input_tokens')
         outgoing = _count(metadata, 'output_tokens')
@@ -111,25 +125,54 @@ class RateCard:
     input_per_million_usd: Decimal
     output_per_million_usd: Decimal
     cached_input_per_million_usd: Decimal
+    cache_creation_5m_per_million_usd: Decimal | None = None
+    cache_creation_1h_per_million_usd: Decimal | None = None
 
     def __post_init__(self):
         for rate in (self.input_per_million_usd, self.output_per_million_usd,
                      self.cached_input_per_million_usd):
             if not isinstance(rate, Decimal) or not rate.is_finite() or rate < 0:
                 raise ValueError('Rates must be finite nonnegative Decimals')
+        for rate in (self.cache_creation_5m_per_million_usd, self.cache_creation_1h_per_million_usd):
+            if rate is not None and (not isinstance(rate, Decimal) or not rate.is_finite() or rate < 0):
+                raise ValueError('Cache write rates must be finite nonnegative Decimals or unknown')
 
 
 def estimated_cost(usage, rate):
-    if not usage.known or rate is None or usage.cache_creation_input_tokens not in (None, 0):
+    if not usage.known or rate is None:
+        return None
+    if rate.provider == 'anthropic' and (usage.cache_creation_input_tokens is None
+                                         or usage.cached_input_tokens is None):
         return None
     cached = usage.cached_input_tokens
     if cached is None:
         if rate.input_per_million_usd != rate.cached_input_per_million_usd:
             return None
         cached = 0
-    return ((usage.input_tokens - cached) * rate.input_per_million_usd
+    created = 0 if usage.cache_creation_input_tokens is None else usage.cache_creation_input_tokens
+    if any(type(n) is not int or not 0 <= n <= 1_000_000_000
+           for n in (usage.input_tokens, usage.output_tokens, cached, created)):
+        return None
+    if cached + created > usage.input_tokens:
+        return None
+    write_cost = Decimal(0)
+    split = (usage.cache_creation_5m_input_tokens, usage.cache_creation_1h_input_tokens)
+    if any(n is not None for n in split):
+        if (rate.provider != 'anthropic' or any(type(n) is not int or n < 0 for n in split)
+                or sum(split) != created):
+            return None
+    if created:
+        # Aggregate-only evidence never identifies the cache's write TTL.
+        if any(n is None for n in split):
+            return None
+        for count, write_rate in zip(split, (rate.cache_creation_5m_per_million_usd,
+                                            rate.cache_creation_1h_per_million_usd)):
+            if count and write_rate is None:
+                return None
+            write_cost += count * (write_rate or Decimal(0))
+    return ((usage.input_tokens - cached - created) * rate.input_per_million_usd
             + cached * rate.cached_input_per_million_usd
-            + usage.output_tokens * rate.output_per_million_usd) / Decimal(1_000_000)
+            + write_cost + usage.output_tokens * rate.output_per_million_usd) / Decimal(1_000_000)
 
 
 @dataclass(frozen=True)

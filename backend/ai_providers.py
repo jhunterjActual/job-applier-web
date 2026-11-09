@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 import config
 import ai_contracts as contracts
+from claude_cache import CachedPrompt
 from provider_secrets import (
     SHARED_SECRET_STORE,
     current_provider_secret,
@@ -541,7 +542,7 @@ def _settings_for_operation(settings, operation, *, structured):
 
 def generate_structured(
     settings: AIProviderSettings,
-    prompt: str,
+    prompt: str | CachedPrompt,
     schema: type[BaseModel],
     *,
     timeout_seconds: int = PROVIDER_TIMEOUT_SECONDS,
@@ -552,12 +553,10 @@ def generate_structured(
 ) -> dict:
     """Generate and validate structured data through the selected provider."""
     if normalize_provider(settings.provider) == 'anthropic':
-        if rate_card is not None:
-            raise AIProviderError('anthropic', 'invalid_rate', 'Claude cost estimation is not available.')
         from claude_adapter import generate_structured as generate_claude
         return generate_claude(settings, prompt, schema, operation=operation,
                                timeout_seconds=timeout_seconds, cancel_check=cancel_check,
-                               disable_thinking=disable_thinking)
+                               disable_thinking=disable_thinking, rate_card=rate_card)
     operation = operation or contracts.SCHEMA_OPERATIONS.get(schema.__name__, 'structured')
     normalized = _settings_for_operation(settings, operation, structured=True)
     limits = contracts.OPERATIONS[operation]

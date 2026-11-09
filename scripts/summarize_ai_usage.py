@@ -11,6 +11,7 @@ MAX_RECEIPTS = 1000
 MAX_INPUT_BYTES = 1024 * 1024
 USAGE_FIELDS = {'input_tokens', 'output_tokens', 'cached_input_tokens',
                 'reasoning_tokens', 'total_tokens', 'cache_creation_input_tokens'}
+CACHE_TTL_FIELDS = {'cache_creation_5m_input_tokens', 'cache_creation_1h_input_tokens'}
 RECEIPT_FIELDS = {'provider', 'model', 'operation', 'outcome', 'dispatched',
                   'usage', 'estimated_cost_usd', 'rate_version'}
 OPERATIONS = {'structured', 'query_preparation', 'scoring', 'tailoring',
@@ -58,19 +59,28 @@ def validate_receipt(record):
             or type(record['dispatched']) is not bool):
         raise ValueError('Invalid operation, outcome or dispatch state')
     usage = record['usage']
-    fields(usage, USAGE_FIELDS)
+    if not isinstance(usage, dict) or set(usage) not in (USAGE_FIELDS, USAGE_FIELDS | CACHE_TTL_FIELDS):
+        raise ValueError('Unexpected or missing usage fields')
     for value in usage.values():
         if value is not None and (type(value) is not int or not 0 <= value <= 1_000_000_000):
             raise ValueError('Invalid token count')
     incoming, outgoing = usage['input_tokens'], usage['output_tokens']
     cached, created = usage['cached_input_tokens'], usage['cache_creation_input_tokens']
     reasoning, total = usage['reasoning_tokens'], usage['total_tokens']
+    split = [usage.get(name) for name in ('cache_creation_5m_input_tokens', 'cache_creation_1h_input_tokens')]
+    if any(value is not None for value in split):
+        if record['provider'] != 'anthropic' or any(value is None for value in split) or created != sum(split):
+            raise ValueError('Inconsistent cache write TTL counts')
     if (incoming is not None and sum(v or 0 for v in (cached, created)) > incoming
             or reasoning is not None and outgoing is not None and reasoning > outgoing
             or total is not None and incoming is not None and outgoing is not None
             and total != incoming + outgoing):
         raise ValueError('Inconsistent token counts')
     estimate = cost(record['estimated_cost_usd'])
+    if estimate is not None and record['provider'] == 'anthropic' and (created is None or cached is None):
+        raise ValueError('Claude estimate requires explicit read and write aggregates')
+    if estimate is not None and created and any(value is None for value in split):
+        raise ValueError('Cache write estimate requires explicit TTL evidence')
     if record['rate_version'] is not None:
         identifier(record['rate_version'])
     if estimate is not None and (incoming is None or outgoing is None or record['rate_version'] is None):
@@ -146,10 +156,13 @@ def receipt_document(records, *, provenance, capture_complete):
     document = {'version': VERSION, 'provenance': provenance,
                 'capture_complete': capture_complete, 'receipts': []}
     for record in records:
+        usage_fields = USAGE_FIELDS
+        if any(getattr(record.usage, name, None) is not None for name in CACHE_TTL_FIELDS):
+            usage_fields = USAGE_FIELDS | CACHE_TTL_FIELDS
         document['receipts'].append({
             'provider': record.provider, 'model': record.model, 'operation': record.operation,
             'outcome': record.outcome, 'dispatched': record.dispatched,
-            'usage': {name: getattr(record.usage, name) for name in sorted(USAGE_FIELDS)},
+            'usage': {name: getattr(record.usage, name) for name in sorted(usage_fields)},
             'estimated_cost_usd': None if record.estimated_cost_usd is None else str(record.estimated_cost_usd),
             'rate_version': record.rate_version,
         })
