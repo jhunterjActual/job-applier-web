@@ -69,6 +69,33 @@ its materials stage to be recorded as skipped, but material dispatch requires a
 successful fit. `succeeded`, `failed` and `skipped` are execution declarations,
 never quality scores or evidence of complete product acceptance.
 
+## Explicit bounded concurrency (v2)
+
+Version 1 remains single-flight with its original policy and journal bytes. To
+opt in, create a new campaign with `schema: study-campaign-policy-v2` and the
+additional strict integer field `max_inflight_requests` from 1 through 4. This
+field is hash-bound with the policy; reopening cannot change it. V2 preserves
+all existing stage, packet, total-dollar and admitted-request ceilings. Every
+unsettled reservation contributes its full exposure atomically.
+
+Concurrent workers must share one live `Campaign` handle. Its metadata lock
+protects journal transitions; external provider work occurs outside that lock.
+The handle records a reservation as live only after the journal and head are
+durable. A second or reopened handle cannot admit calls beside unresolved
+reservations it does not own, even when capacity remains. Replaying history does
+not reconstruct liveness or authorize recovery after a crash.
+
+Any UNKNOWN outcome halts new admissions globally. Other calls already durably
+RESERVED may still settle exact known usage after that halt. UNKNOWN calls cannot
+be released, ordinarily settled, or replayed. Capacity is not permission to
+retry, dispatch after an ambiguous commit, or finish a stage with pending calls.
+The broker must separately reject orphan active-stage state at startup.
+
+The synthetic v2 suite includes four overlapping external-work windows,
+out-of-order settlement, crash/head-write boundaries and unchanged v1 canonical
+journals against a pinned test-only copy of the PR #101 controller. This proves
+the controller contract, not provider transport, funding or native acceptance.
+
 ## Persistence and interruption
 
 The append-only JSONL journal hash-links each canonical event to its predecessor.
@@ -103,7 +130,7 @@ preserves evidence for inspection; it does not repair state.
 ## Verification and resources
 
 ```powershell
-python -B -m unittest -v test_budget_guard test_ct_budget_transport test_campaign_state
+python -B -m unittest -v test_budget_guard test_ct_budget_transport test_campaign_state test_campaign_v2
 ```
 
 Tests use fabricated accounting and temporary files only. They include shared
