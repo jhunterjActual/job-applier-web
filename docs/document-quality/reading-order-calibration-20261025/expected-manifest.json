@@ -1,0 +1,23 @@
+{
+  "schema": "quality002-case-expectations-v1",
+  "case_id": "QUALITY002-READING-ORDER-001",
+  "public_synthetic": true,
+  "manual_status": "not_run",
+  "resume": {
+    "document_kind": "ordinary_resume",
+    "maximum_pages": 2,
+    "declared_heading_order": ["Zoë Rivera", "Summary", "Experience", "Quality Engineer - Example Orchard Laboratory", "Projects", "Reading Order Garden", "Education", "Skills"],
+    "source_bullet_count": 5,
+    "expected_text": {"name": "Zoë Rivera", "employer": "Example Orchard Laboratory", "experience_dates": "2024-03 - 2026-08", "project_dates": "2023-09 - 2024-02", "education": "Bachelor of Science, Example College, 2023", "unicode_cafe": "Café", "unicode_resume": "résumé", "unicode_naive": "naïve", "acceptance_count": "24 reproducible acceptance checks", "queue_fact": "18 cases to 6 cases"},
+    "manual_checks": ["Read every page in visual order and compare all eight headings to declared order.", "Check each section heading and entry heading remains with its following content; record page/bbox evidence.", "Count five visible bullet items and compare their order and sentence endings to the original source.", "Compare unsorted extractor spans with the visual pages; record any divergence without asserting universal reading order.", "Inspect all accent marks, dash substitutions, date ranges, gaps and clipping on every exported page."]
+  },
+  "cover": {
+    "document_kind": "cover_letter",
+    "maximum_pages": 1,
+    "declared_paragraph_order": ["Zoë Rivera", "25 October 2026", "Dear Hiring Team,", "I am applying", "At Example Orchard Laboratory", "My Reading Order Garden", "Thank you", "Sincerely,", "Zoë Rivera"],
+    "source_bullet_count": 0,
+    "expected_text": {"name": "Zoë Rivera", "letter_date": "25 October 2026", "position": "Quality Engineer", "experience_dates": "March 2024 to August 2026", "project_dates": "September 2023 to February 2024", "unicode_cafe": "Café", "unicode_naive": "naïve", "queue_fact": "18 cases to 6 cases"},
+    "manual_checks": ["Read the exported page in visual paragraph order, including repeated sender name and closing.", "Check date, salutation and closing placement and their following/preceding paragraphs.", "Compare Unicode, sentence endings, internal clipping and vertical gaps with the exact plain-text fixture."]
+  },
+  "qualifications": ["Resume markdown renderer intentionally maps nonbreaking hyphen/en dash/em dash to ASCII hyphen before HTML conversion; expectations declare this transformation.", "Expected-text presence is not an order assertion.", "Keep existing diagnostic skipped statuses for reading_order/orphaned_headings/visual_readability/internal_clipping/excessive_gaps; manual observations are a separate case-specific record.", "No ATS compatibility score, generalized layout threshold or application delivery claim is authorized by this case."]
+}

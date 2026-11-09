@@ -1,0 +1,9 @@
+{
+  "schema": "quality002-public-synthetic-pair-v1",
+  "public_synthetic": true,
+  "candidate_name": "Zoë Rivera",
+  "job_title": "Quality Engineer",
+  "company": "Example Orchard Laboratory",
+  "resume_markdown": "# Zoë Rivera\nQuality Engineer | zoe.rivera@example.org\n\n## Summary\nPublic synthetic calibration candidate. Builds reproducible tests and explains evidence clearly.\n\n## Experience\n### Quality Engineer — Example Orchard Laboratory\n2024-03 – 2026-08\n- Designed 24 reproducible acceptance checks for the Café inventory prototype.\n- Reduced a synthetic review queue from 18 cases to 6 cases.\n- Documented résumé parsing and naïve Unicode edge cases without real applicant data.\n\n## Projects\n### Reading Order Garden\n2023-09 – 2024-02\n- Kept three headings with their following paragraphs in the declared source order.\n- Recorded exact PDF hashes before manual review.\n\n## Education\nBachelor of Science, Example College, 2023\n\n## Skills\nPython; test design; evidence review; accessibility collaboration.\n",
+  "cover_letter_text": "Zoë Rivera\nzoe.rivera@example.org\n25 October 2026\n\nHiring Team\nExample Orchard Laboratory\n\nDear Hiring Team,\n\nI am applying for the Quality Engineer position. This public synthetic letter accompanies the reading-order calibration résumé.\n\nAt Example Orchard Laboratory, from March 2024 to August 2026, I designed 24 reproducible acceptance checks for the Café inventory prototype. I reduced a synthetic review queue from 18 cases to 6 cases and documented naïve Unicode edge cases.\n\nMy Reading Order Garden project ran from September 2023 to February 2024. It kept headings with their following paragraphs and recorded exact PDF hashes before review.\n\nThank you for reviewing this synthetic calibration pair. No real application or candidate claim is represented.\n\nSincerely,\nZoë Rivera\n"
+}
