@@ -1,0 +1,322 @@
+{
+  "schema": "careertrellis.qualified97-source-registry/v3",
+  "source_kind": "qualified97-new/v1",
+  "revision": "56c8b137fd6c6e778a9f09e3b04b925edea6270e",
+  "build": "20261026.97",
+  "ops_commit": "UNALLOCATED",
+  "native_ready": false,
+  "source_git_prefix": "operations/release-transition-20261027/qualified97/",
+  "source_stage": "/opt/careertrellis/staging/preparation97-qualified-source-20261027/qualified97-fixture-g1",
+  "domain": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1",
+  "attempt": "qualified97-fixture-g1-20261027",
+  "files": {
+    "accepted98_dependency.py": {
+      "bytes": 6036,
+      "sha256": "680451f765f3591594e0f1e16cb83fd055e13731f0cfa1def000a51e50adcf36"
+    },
+    "admission97.py": {
+      "bytes": 43206,
+      "sha256": "6610cdc592d2d75e42d4e41c5c8994091be738a7c878a8ee9e21fbde65367b90"
+    },
+    "checks97.py": {
+      "bytes": 4973,
+      "sha256": "aa55821abf25b6106085238a8d84e8296f50469034183a40a312bb820400bd52"
+    },
+    "fixture_relocation97.py": {
+      "bytes": 12086,
+      "sha256": "9f756132b2d47ec435ad42f5a447eb5b30fca2d715d9fd1482c719b55c66735f"
+    },
+    "historical98_controls.py": {
+      "bytes": 5484,
+      "sha256": "dfc9246cf028a060af4e2b02db83305212ef5bc9671c8f3391fced75261bb7ed"
+    },
+    "materialize97.py": {
+      "bytes": 6172,
+      "sha256": "6ae5c7429d63dc35e1eb02998a4eb2fb530b9d66accb5812c10c4c9c9a543378"
+    },
+    "native97_unit.py": {
+      "bytes": 1860,
+      "sha256": "2b1f38eb24df66a616c7311a84943a89e965046e7a441c95250d274a6834b258"
+    },
+    "qualified97_records.py": {
+      "bytes": 5304,
+      "sha256": "f2c80c4da12da43135f7a7bc1a6b3fd026b7148a75d97cc235d66aad2c10a680"
+    },
+    "qualified_entry.py": {
+      "bytes": 5120,
+      "sha256": "f25d3a1021948c0eaf6484962773800413fdb88833c631db1237e1eada53f337"
+    },
+    "qualified_route.py": {
+      "bytes": 6349,
+      "sha256": "146f8f49275a2676603bf2fbac1bd6bf0959db92fdbd5e98a2d467c36d97acf2"
+    },
+    "qualified_specs.py": {
+      "bytes": 1408,
+      "sha256": "f6e5ca790d602e74d35fd6cfeb836185db2a71754df377560bdff5f7ecbd78e4"
+    },
+    "run_checks_qualified97.py": {
+      "bytes": 17595,
+      "sha256": "c35ad7162e11c98e0924f89afeac4fc5a09eb2402293ee6e215a33911eb8607b"
+    },
+    "source_boundary.py": {
+      "bytes": 2392,
+      "sha256": "50b1c041fef2631817ec8eab4991237aba21ef14cd77f7bc01defb785ce15c99"
+    }
+  },
+  "records": {
+    "materialization-intent.json": {
+      "path": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1/materialization-intent.json",
+      "schema": "careertrellis.qualified97-materialization-intent/v1",
+      "closed_keys": [
+        "accepted98_sha256",
+        "boot_id",
+        "created_at",
+        "peak_bytes",
+        "plan_sha256",
+        "revision",
+        "schema",
+        "source_manifest_sha256"
+      ]
+    },
+    "materialization-proof.json": {
+      "path": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1/materialization-proof.json",
+      "schema": "careertrellis.qualified97-materialization-proof/v1",
+      "closed_keys": [
+        "accepted98_sha256",
+        "boot_id",
+        "completed_at",
+        "plan_sha256",
+        "revision",
+        "runtime_manifest_sha256",
+        "schema",
+        "source_manifest_sha256"
+      ]
+    },
+    "preflight.json": {
+      "path": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1/preflight.json",
+      "schema": "careertrellis.qualified97-preflight/v1",
+      "closed_keys": [
+        "accepted98_receipt_sha256",
+        "archive_sha256",
+        "baseline",
+        "boot_id",
+        "browser_manifest_sha256",
+        "capacity",
+        "kind",
+        "live_build",
+        "namespace_absent",
+        "observed_at",
+        "previous",
+        "provenance_sha256",
+        "release_absent",
+        "result",
+        "schema",
+        "software_inventory_sha256",
+        "source_manifest_sha256",
+        "unit_absent"
+      ]
+    },
+    "owner.json": {
+      "path": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1/owner.json",
+      "schema": "careertrellis.qualified97-owner/v1",
+      "closed_keys": [
+        "birth",
+        "boot_id",
+        "pid",
+        "plan_sha256",
+        "schema",
+        "started_at"
+      ]
+    },
+    "coordinator.json": {
+      "path": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1/coordinator.json",
+      "schema": "careertrellis.qualified97-coordinator/v1",
+      "closed_keys": [
+        "birth",
+        "boot_id",
+        "owner_pid",
+        "pid",
+        "plan_sha256",
+        "schema",
+        "started_at"
+      ]
+    },
+    "child-spawn.json": {
+      "path": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1/child-spawn.json",
+      "schema": "careertrellis.qualified97-child-spawn/v1",
+      "closed_keys": [
+        "birth",
+        "boot_id",
+        "decision_sha256",
+        "owner_pid",
+        "pid",
+        "plan_sha256",
+        "schema",
+        "source_manifest_sha256"
+      ]
+    },
+    "unit-intent.json": {
+      "path": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1/unit-intent.json",
+      "schema": "careertrellis.qualified97-unit-intent/v1",
+      "closed_keys": [
+        "argv",
+        "boot_id",
+        "coordinator_birth",
+        "coordinator_pid",
+        "created_at",
+        "decision_sha256",
+        "kind",
+        "plan_sha256",
+        "properties",
+        "schema",
+        "source_manifest_sha256"
+      ]
+    },
+    "unit-client.json": {
+      "path": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1/unit-client.json",
+      "schema": "careertrellis.qualified97-unit-client/v1",
+      "closed_keys": [
+        "birth",
+        "boot_id",
+        "intent_sha256",
+        "pid",
+        "schema"
+      ]
+    },
+    "unit-terminal.json": {
+      "path": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1/unit-terminal.json",
+      "schema": "careertrellis.qualified97-unit-terminal/v1",
+      "closed_keys": [
+        "after",
+        "boot_id",
+        "cgroup_after",
+        "client_birth",
+        "client_exit",
+        "client_pid",
+        "client_sha256",
+        "execution",
+        "intent_sha256",
+        "kind",
+        "observed_at",
+        "schema",
+        "unit"
+      ]
+    },
+    "candidate.json": {
+      "path": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1/candidate.json",
+      "schema": "careertrellis.qualified97-candidate/v1",
+      "closed_keys": [
+        "accepted98_receipt_sha256",
+        "browser_after_sha256",
+        "browser_before_sha256",
+        "build",
+        "checks_sha256",
+        "completed_at",
+        "decision_sha256",
+        "kind",
+        "materialization_proof_sha256",
+        "ops_commit",
+        "plan_sha256",
+        "result",
+        "revision",
+        "runtime_after_sha256",
+        "runtime_before_sha256",
+        "schema",
+        "source_manifest_sha256",
+        "unit_terminal_sha256"
+      ]
+    },
+    "owner-terminal.json": {
+      "path": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1/owner-terminal.json",
+      "schema": "careertrellis.qualified97-owner-terminal/v1",
+      "closed_keys": [
+        "boot_id",
+        "candidate_sha256",
+        "captures",
+        "checks_sha256",
+        "child_spawn_sha256",
+        "coordinator",
+        "coordinator_exit",
+        "decision_sha256",
+        "ended_at",
+        "kind",
+        "owner",
+        "owner_self_exit_claim",
+        "plan_sha256",
+        "runtime_after_sha256",
+        "schema",
+        "source_manifest_sha256",
+        "unit_terminal_sha256"
+      ]
+    },
+    "postterminal-proof.json": {
+      "path": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1/postterminal-proof.json",
+      "schema": "careertrellis.qualified97-postterminal-proof/v1",
+      "closed_keys": [
+        "accepted98_receipt_sha256",
+        "boot_id",
+        "browser_manifest_sha256",
+        "candidate_sha256",
+        "cgroup_after",
+        "coordinator_state",
+        "decision_sha256",
+        "kind",
+        "observed_at",
+        "original_deadline",
+        "owner_state",
+        "owner_terminal_sha256",
+        "plan_sha256",
+        "runtime_manifest_sha256",
+        "schema",
+        "source_manifest_sha256",
+        "unit"
+      ]
+    },
+    "accepted.json": {
+      "path": "/var/backups/careertrellis/preparation97-qualified-20261027/qualified97-fixture-g1/accepted.json",
+      "schema": "careertrellis.preparation97-qualified-acceptance/v1",
+      "closed_keys": [
+        "accepted98_receipt_sha256",
+        "activated",
+        "archive_sha256",
+        "attempt_id",
+        "baseline",
+        "build",
+        "candidate_sha256",
+        "checks",
+        "checks_sha256",
+        "child_spawn_sha256",
+        "completed_utc",
+        "decision_sha256",
+        "fixture_qualification",
+        "materialization_proof_sha256",
+        "ops_commit",
+        "owner_terminal_sha256",
+        "plan_sha256",
+        "postterminal_proof_sha256",
+        "previous",
+        "result",
+        "revision",
+        "runtime_before_sha256",
+        "runtime_manifest",
+        "runtime_manifest_sha256",
+        "schema",
+        "source_kind",
+        "source_manifest_sha256",
+        "unit_intent_sha256",
+        "unit_terminal_sha256"
+      ]
+    }
+  },
+  "readiness": {
+    "qualified_entry.py:READY": true,
+    "qualified_route.py:READY": true,
+    "admission97.py:READY": true,
+    "materialize97.py:READY": true,
+    "run_checks_qualified97.py:QUALIFIED97_READY": true
+  },
+  "accepted98_dependency_contract_sha256": "6eacc5f98edd31dfecf209f8e0692ab5ec993396fde6990e42e547cde598ce8f",
+  "historical_controls": "pure explicit historical_time; full ordered distinctactor chain; current observations separate",
+  "entrypoints_enabled": true,
+  "qualification": "Enabled source projection for review only; no host execution/installation/plan authority; inherited module docstrings are byte-identical to reviewed disabled source."
+}

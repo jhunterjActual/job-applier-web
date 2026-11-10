@@ -45,6 +45,9 @@ jobs:
       - name: Run inactive runtime repair controls
         working-directory: ${{ github.workspace }}/operations/release-transition-20261027/repair98
         run: python -B -m unittest discover -s . -p 'test*.py'
+      - name: Run qualified runtime preparation controls
+        working-directory: ${{ github.workspace }}/operations/release-transition-20261027/qualified97
+        run: python -B -m unittest discover -s . -p 'test*.py'
       - name: Run corrected fixture preparation controls
         working-directory: ${{ github.workspace }}/operations/release-transition-20261027/corrected97
         run: python -B -m unittest discover -s . -p 'test*.py'

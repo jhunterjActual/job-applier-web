@@ -1,0 +1,74 @@
+{
+  "repair_contract.py": {
+    "repository": "web/job-applier-web",
+    "commit": "ae4e5171b9f0c874721cce8db5170a5815d59e8e",
+    "path": "operations/release-transition-20261027/repair98/repair_contract.py",
+    "git_blob_sha1": "3f40aeeb4d88feb02b8a983e7be5a3b6b9764369",
+    "sha256": "6eacc5f98edd31dfecf209f8e0692ab5ec993396fde6990e42e547cde598ce8f",
+    "bytes": 42620,
+    "fixture_relative_path": "repair98-source/repair_contract.py"
+  },
+  "repair_owner.py": {
+    "repository": "web/job-applier-web",
+    "commit": "ae4e5171b9f0c874721cce8db5170a5815d59e8e",
+    "path": "operations/release-transition-20261027/repair98/repair_owner.py",
+    "git_blob_sha1": "d3fb571db39e58f52bb77b23e957dfb3a948c306",
+    "sha256": "71fb50b7f420bb05b291933c5d22744bc8caa4e9ead6e7b96ea146c637c5d3a5",
+    "bytes": 7931,
+    "fixture_relative_path": "repair98-source/repair_owner.py"
+  },
+  "repair_coordinator.py": {
+    "repository": "web/job-applier-web",
+    "commit": "ae4e5171b9f0c874721cce8db5170a5815d59e8e",
+    "path": "operations/release-transition-20261027/repair98/repair_coordinator.py",
+    "git_blob_sha1": "79d8d5a3279ba06319b03859a90f63d6cc7bdf39",
+    "sha256": "38ff4b22ad2f5767f4ec25d5abcf424a50ecaa83dee19acf7a3a3c778996f855",
+    "bytes": 8211,
+    "fixture_relative_path": "repair98-source/repair_coordinator.py"
+  },
+  "repair_seal.py": {
+    "repository": "web/job-applier-web",
+    "commit": "ae4e5171b9f0c874721cce8db5170a5815d59e8e",
+    "path": "operations/release-transition-20261027/repair98/repair_seal.py",
+    "git_blob_sha1": "c6e4da162d9199d4a9d23ff4b8ab97a30881571b",
+    "sha256": "2b4aa725bcd2a730feb8bae7a353d8fa7860889944a07383bfeb8a401dc4c887",
+    "bytes": 5773,
+    "fixture_relative_path": "repair98-source/repair_seal.py"
+  },
+  "repair_preflight.py": {
+    "repository": "web/job-applier-web",
+    "commit": "ae4e5171b9f0c874721cce8db5170a5815d59e8e",
+    "path": "operations/release-transition-20261027/repair98/repair_preflight.py",
+    "git_blob_sha1": "c014d7582392d5c0fc9a4d752d77e2173658f4b0",
+    "sha256": "90900e22b84276e72366cbfd41d199e2b45a81deacc2d6aae1061360eaa66511",
+    "bytes": 2530,
+    "fixture_relative_path": "repair98-source/repair_preflight.py"
+  },
+  "fixture_relocation.py": {
+    "repository": "web/job-applier-web",
+    "commit": "ae4e5171b9f0c874721cce8db5170a5815d59e8e",
+    "path": "operations/release-transition-20261027/repair98/fixture_relocation.py",
+    "git_blob_sha1": "314981632a2098cbb65439f31b2107df065bfbce",
+    "sha256": "8f2fe0960f0ddeed2b4545c347c439d3f6c2caed55e70dfd4ed93183e0ca0ed5",
+    "bytes": 12080,
+    "fixture_relative_path": "repair98-source/fixture_relocation.py"
+  },
+  "run_checks_repair98.py": {
+    "repository": "web/job-applier-web",
+    "commit": "ae4e5171b9f0c874721cce8db5170a5815d59e8e",
+    "path": "operations/release-transition-20261027/repair98/run_checks_repair98.py",
+    "git_blob_sha1": "7b669afebcddeb2d1ca1e4a86bfbe6ae50cbd181",
+    "sha256": "1e2914452eb6fbb48dc5062ed56b29c553ac5e54a8990f9224d734cdda442349",
+    "bytes": 16660,
+    "fixture_relative_path": "repair98-source/run_checks_repair98.py"
+  },
+  "prepare_release291d.py": {
+    "repository": "web/job-applier-web",
+    "commit": "291d1b4b58bb17448395012408556090bea5ede1",
+    "path": "operations/release-transition-20261026/preparation/prepare_release.py",
+    "git_blob_sha1": "478e56716108d982f8cd89e1edb8607e8c6ee45d",
+    "sha256": "a0d3db047dda8062969ba7005054ab147dd2ccae6efab5a9b4789b2137b852b3",
+    "bytes": 31336,
+    "fixture_relative_path": "prepare_release291d.py"
+  }
+}
