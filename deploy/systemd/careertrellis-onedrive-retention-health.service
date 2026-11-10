@@ -1,0 +1,33 @@
+[Unit]
+Description=Deliver authenticated OneDrive backup schedule health
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/careertrellis/onedrive_retention/entry.py health-web
+Restart=no
+RemainAfterExit=no
+RuntimeMaxSec=5min
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+KillMode=control-group
+SendSIGKILL=yes
+PrivateNetwork=no
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+DevicePolicy=closed
+DeviceAllow=
+RestrictAddressFamilies=AF_INET AF_UNIX
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SETGID CAP_SETUID
+AmbientCapabilities=CAP_SETUID
+ReadWritePaths=/run /run/lock /var/lib/careertrellis/paired-maintenance /var/lib/careertrellis/onedrive-retention
+MemoryMax=256M
+TasksMax=64
+StandardOutput=null
+StandardError=null

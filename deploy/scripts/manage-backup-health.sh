@@ -15,6 +15,53 @@ readonly alert_root=/var/lib/careertrellis/backup-health/database/alerts
 readonly unit_alert_root=/var/lib/careertrellis/backup-health/database/unit-alerts
 readonly lock_path=/run/lock/careertrellis-pgbackrest-repository.lock
 readonly wal_baseline_path=/var/lib/careertrellis/backup-health/database/wal-failed-count
+readonly retention_entry=/usr/local/libexec/careertrellis/onedrive_retention/entry.py
+
+retention_monitor_mode() {
+    local mode_document
+    if [[ ! -e ${retention_entry} && ! -L ${retention_entry} ]]; then
+        if [[ -e /etc/careertrellis/onedrive-retention/activation.json || \
+              -L /etc/careertrellis/onedrive-retention/activation.json || \
+              -e /etc/careertrellis/onedrive-retention/activation-intent.json || \
+              -L /etc/careertrellis/onedrive-retention/activation-intent.json || \
+              -e /etc/careertrellis/onedrive-retention/activation-pending.json || \
+              -L /etc/careertrellis/onedrive-retention/activation-pending.json || \
+              -e /etc/careertrellis/onedrive-retention/activation-finalized.json || \
+              -L /etc/careertrellis/onedrive-retention/activation-finalized.json ]]; then
+            return 2
+        fi
+        /usr/bin/python3 -I -B - <<'PY' || return 2
+import pathlib, stat
+for name in ('activation.json', 'activation-intent.json', 'activation-pending.json', 'activation-finalized.json'):
+    path = pathlib.Path('/etc/careertrellis/onedrive-retention') / name
+    for parent in reversed(path.parents):
+        try: meta = parent.lstat()
+        except FileNotFoundError: continue
+        assert stat.S_ISDIR(meta.st_mode) and meta.st_uid == 0 and not meta.st_mode & 0o022
+    try: path.lstat()
+    except FileNotFoundError: pass
+    else: raise SystemExit(1)
+PY
+        printf 'legacy\n'
+        return 0
+    fi
+    mode_document=$(/usr/bin/python3 -I -B "${retention_entry}" monitor-mode 2>/dev/null) || return 2
+    /usr/bin/jq -er '
+        select(.schema == "careertrellis.onedrive-monitor-mode/v1"
+            and (.result == "legacy" or .result == "bundle")) | .result
+    ' <<<"${mode_document}" 2>/dev/null
+}
+
+retention_schedule_ready() {
+    local schedule_document
+    schedule_document=$(/usr/bin/python3 -I -B "${retention_entry}" schedule-check 2>/dev/null) || return 1
+    /usr/bin/jq -e '
+        .schema == "careertrellis.onedrive-schedule-status/v1"
+        and .result == "ready" and .authenticated == true
+        and .paired_full_ready == true and .retention_ready == true
+        and .provider_calls == 0 and .locks_acquired == 0
+    ' <<<"${schedule_document}" >/dev/null 2>&1
+}
 
 if [[ -L ${core} || ! -f ${core} || ! -r ${core} ]]; then
     echo "The reviewed backup-health core is unavailable." >&2
@@ -292,6 +339,7 @@ operation_unit_state() {
     local operation=$1
     local service_name=$2
     local timer_name=$3
+    local selected_profile=${4:-legacy}
     local alert_path service_result timer_active timer_enabled timer_loaded latest_result
     alert_path=$(unit_alert_path "${service_name}")
     service_result=$(systemctl show "${service_name}" --property=Result --value 2>/dev/null || true)
@@ -302,6 +350,10 @@ operation_unit_state() {
     local missed=false
     if [[ ${timer_active} != active || ${timer_enabled} != enabled || ${timer_loaded} != loaded ]]; then
         missed=true
+    fi
+    if [[ ${operation} == full_backup && ${selected_profile} == bundle ]]; then
+        missed=true
+        if retention_schedule_ready; then missed=false; fi
     fi
 
     local last_result=never
@@ -327,6 +379,8 @@ operation_unit_state() {
 
 audit_monitor_schedule() {
     local timer_name timer_active timer_enabled timer_loaded
+    local selected_profile
+    selected_profile=$(retention_monitor_mode) || return 1
     local -a required_timers=(
         careertrellis-pgbackrest-full.timer
         careertrellis-pgbackrest-differential.timer
@@ -336,6 +390,16 @@ audit_monitor_schedule() {
         careertrellis-backup-health.timer
     )
     for timer_name in "${required_timers[@]}"; do
+        if [[ ${selected_profile} == bundle ]]; then
+            case "${timer_name}" in
+                careertrellis-pgbackrest-full.timer | \
+                careertrellis-pgbackrest-onedrive.timer | \
+                careertrellis-pgbackrest-inventory.timer)
+                    retention_schedule_ready || return 1
+                    continue
+                    ;;
+            esac
+        fi
         timer_active=$(/usr/bin/systemctl is-active "${timer_name}" 2>/dev/null || true)
         timer_enabled=$(/usr/bin/systemctl is-enabled "${timer_name}" 2>/dev/null || true)
         timer_loaded=$(/usr/bin/systemctl show "${timer_name}" --property=LoadState --value 2>/dev/null || true)
@@ -348,6 +412,8 @@ audit_monitor_schedule() {
 
 evaluate_database_health() {
     local caller_mode=${1:-timer}
+    local selected_profile native_bundle_unavailable=false
+    selected_profile=$(retention_monitor_mode) || return 2
     local alert_audit_result
     for command_path in \
         /usr/bin/flock \
@@ -369,6 +435,15 @@ evaluate_database_health() {
     set -e
     if [[ ${alert_audit_result} -eq 2 ]]; then
         return 2
+    fi
+
+    # Native OneDrive census acquires its own repository lock before this shell
+    # acquires FD9. Never nest two independent lock owners or unlock mid-check.
+    # A failed census is explicit unavailable evidence, not cached health.
+    if [[ ${selected_profile} == bundle && ${caller_mode} != acknowledge ]]; then
+        if ! /usr/bin/python3 -I -B "${retention_entry}" health-db >/dev/null 2>&1; then
+            native_bundle_unavailable=true
+        fi
     fi
 
     umask 077
@@ -485,7 +560,7 @@ evaluate_database_health() {
     local full_result full_missed differential_result differential_missed
     local mirror_result mirror_missed inventory_result inventory_missed restore_result restore_missed
     full_state=$(operation_unit_state full_backup \
-        careertrellis-pgbackrest-full.service careertrellis-pgbackrest-full.timer)
+        careertrellis-pgbackrest-full.service careertrellis-pgbackrest-full.timer "${selected_profile}")
     differential_state=$(operation_unit_state differential_backup \
         careertrellis-pgbackrest-differential.service careertrellis-pgbackrest-differential.timer)
     mirror_state=$(operation_unit_state pgbackrest_mirror \
@@ -539,12 +614,29 @@ evaluate_database_health() {
             }
         }')
 
+    local -a evaluation_command=(/usr/bin/python3 -B "${core}" evaluate
+        --receipt-root "${receipt_root}" --status-root "${status_root}")
+    if [[ ${selected_profile} == bundle ]]; then
+        evaluation_command=(/usr/bin/python3 -I -B "${retention_entry}" evaluate-core)
+        if [[ ${native_bundle_unavailable} == true ]]; then
+            evaluation_command+=(--bundle-unavailable)
+        fi
+    fi
     set +e
-    printf '%s\n' "${snapshot}" | /usr/bin/python3 -B "${core}" evaluate \
-        --receipt-root "${receipt_root}" \
-        --status-root "${status_root}" >"${evaluation_output}"
+    printf '%s\n' "${snapshot}" | "${evaluation_command[@]}" >"${evaluation_output}"
     evaluation_result=$?
     set -e
+    if [[ ${selected_profile} == bundle && ${evaluation_result} -eq 0 ]]; then
+        if /usr/bin/jq -e '.schema == "careertrellis.backup-health-status/v1" and .result == "ok"' \
+            "${evaluation_output}" >/dev/null 2>&1; then
+            evaluation_result=0
+        elif /usr/bin/jq -e '.schema == "careertrellis.backup-health-status/v1" and .result == "alert"' \
+            "${evaluation_output}" >/dev/null 2>&1; then
+            evaluation_result=1
+        else
+            evaluation_result=2
+        fi
+    fi
     if [[ ${evaluation_result} -gt 1 ]]; then
         echo "Backup-health rejected the collected database evidence." >&2
         return "${evaluation_result}"
@@ -597,6 +689,14 @@ acknowledge_wal_failures() {
     if [[ ${alert_audit_result} -ne 0 ]]; then
         printf '{"operation":"acknowledge_wal","result":"refused","surface":"database"}\n'
         return 1
+    fi
+
+    # The final acknowledgment evaluation retains FD8. Collect native evidence
+    # before acquiring it; never try to open an independent owner under that lock.
+    local acknowledgment_profile
+    acknowledgment_profile=$(retention_monitor_mode) || return 2
+    if [[ ${acknowledgment_profile} == bundle ]]; then
+        /usr/bin/python3 -I -B "${retention_entry}" health-db >/dev/null 2>&1 || return 1
     fi
 
     umask 077

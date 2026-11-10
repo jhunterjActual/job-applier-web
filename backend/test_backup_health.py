@@ -172,6 +172,87 @@ class TemporaryRoots(unittest.TestCase):
             )
 
 
+class NativeBundleReplacementTests(unittest.TestCase):
+    def setUp(self):
+        # Exercise the pure evaluator only. File-authentication/persistence is
+        # covered by the existing suite and the native fixture; no real paths
+        # or temporary owner-dependent files are needed for this policy test.
+        self.receipts=Path('/synthetic')
+        receipts={operation:() for operation in backup_health.OPERATIONS}
+        for operation in backup_health.SURFACE_OPERATIONS['database']:
+            at=OBSERVED-timedelta(days=1) if operation=='full_backup' else OBSERVED-timedelta(hours=1)
+            receipts[operation]=(operation_receipt(operation,completed=at),)
+        inventory=backup_health.ReceiptInventory(receipts=receipts,invalid_operations=frozenset())
+        patcher=mock.patch.object(backup_health,'scan_receipts',return_value=inventory)
+        patcher.start();self.addCleanup(patcher.stop)
+
+    def publish_healthy_database(self):pass
+
+    def replacement(self, result="ok"):
+        return {"schema":"careertrellis.onedrive-native-monitor-evidence/v1","result":result,
+                "observed_at":timestamp(OBSERVED),"backup_label":LATEST_LABEL,"restore_age_seconds":600,
+                "accepted_bundle_count":2,"health_sha256":"a"*64}
+
+    def test_v2_ages_real_recovery_point_without_latest_r2_label_false_failure(self):
+        self.publish_healthy_database();value=snapshot('database')
+        replacement=dict(self.replacement(),schema='careertrellis.onedrive-native-monitor-evidence/v2',
+            backup_label=FULL_LABEL,recovery_point_age_seconds=3600)
+        result=backup_health.evaluate_backup_health(value,receipt_root=self.receipts,bundle_replacement=replacement)
+        self.assertEqual(result['result'],'ok');self.assertNotIn('onedrive_bundle_label_mismatch',result['failure_codes'])
+        self.assertEqual(result['ages_seconds']['pgbackrest_mirror'],3600)
+        replacement['recovery_point_age_seconds']=36*3600+1
+        result=backup_health.evaluate_backup_health(value,receipt_root=self.receipts,bundle_replacement=replacement)
+        self.assertIn('onedrive_bundle_recovery_point_stale',result['failure_codes'])
+        self.assertNotIn('onedrive_bundle_restore_stale',result['failure_codes'])
+        for age in (True,-1,599):
+            replacement['recovery_point_age_seconds']=age
+            with self.assertRaises(ValueError):backup_health.evaluate_backup_health(value,receipt_root=self.receipts,bundle_replacement=replacement)
+
+    def test_only_explicit_replacement_claims_replace_onedrive_domains(self):
+        self.publish_healthy_database()
+        value=snapshot("database")
+        for operation in ("pgbackrest_mirror","pgbackrest_inventory"):
+            value["units"][operation]={"last_result":"failed","missed":True}
+        legacy=backup_health.evaluate_backup_health(value,receipt_root=self.receipts)
+        self.assertIn("pgbackrest_mirror_unit_failed",legacy["failure_codes"])
+        native=backup_health.evaluate_backup_health(value,receipt_root=self.receipts,
+                                                    bundle_replacement=self.replacement())
+        self.assertEqual(native["result"],"ok")
+        self.assertEqual(native["ages_seconds"]["pgbackrest_mirror"],600)
+        self.assertEqual(native["ages_seconds"]["pgbackrest_inventory"],600)
+        value["wal"]["failed_count"]=1
+        value["units"]["pgbackrest_restore"]["last_result"]="failed"
+        value["units"]["differential_backup"]["missed"]=True
+        native=backup_health.evaluate_backup_health(value,receipt_root=self.receipts,
+                                                    bundle_replacement=self.replacement())
+        self.assertTrue({"wal_failed_count_growth","pgbackrest_restore_unit_failed",
+                         "differential_backup_unit_missed"}<=set(native["failure_codes"]))
+
+    def test_unavailable_warning_stale_and_label_mismatch_are_real_alerts(self):
+        self.publish_healthy_database();value=snapshot("database")
+        cases=[(self.replacement("warning"),"onedrive_bundle_capacity_warning"),
+               (self.replacement("urgent"),"onedrive_bundle_capacity_urgent"),
+               (self.replacement("alert"),"onedrive_bundle_health_alert"),
+               (dict(self.replacement(),restore_age_seconds=36*3600+1),"onedrive_bundle_restore_stale"),
+               (dict(self.replacement(),backup_label=FULL_LABEL),"onedrive_bundle_label_mismatch")]
+        unknown=dict(self.replacement("unavailable"),backup_label=None,restore_age_seconds=None,
+                     accepted_bundle_count=0,health_sha256=None)
+        cases.append((unknown,"onedrive_bundle_health_unavailable"))
+        for replacement,code in cases:
+            with self.subTest(code=code):
+                result=backup_health.evaluate_backup_health(value,receipt_root=self.receipts,bundle_replacement=replacement)
+                self.assertEqual(result["result"],"alert");self.assertIn(code,result["failure_codes"])
+
+    def test_malformed_replacement_cannot_disable_legacy_checks(self):
+        self.publish_healthy_database()
+        for changes in ({"accepted_bundle_count":True},{"health_sha256":"bad"},{"result":[]},
+                        {"observed_at":timestamp(OBSERVED+timedelta(seconds=2))},
+                        {"observed_at":timestamp(OBSERVED-timedelta(seconds=301))}):
+            with self.assertRaises(backup_health.BackupHealthValidationError):
+                backup_health.evaluate_backup_health(snapshot("database"),receipt_root=self.receipts,
+                    bundle_replacement=dict(self.replacement(),**changes))
+
+
 class SchemaTests(unittest.TestCase):
     def test_every_operation_has_a_strict_schema(self) -> None:
         for operation in backup_health.OPERATIONS:
@@ -1157,6 +1238,29 @@ class CliTests(TemporaryRoots):
         self.assertEqual(2, bad_choice.returncode)
         self.assertEqual("Backup-health input is invalid.", bad_choice.stderr.strip())
         self.assertNotIn("sensitive-value", bad_choice.stderr)
+
+
+class BundleRecoveryPointPureTests(unittest.TestCase):
+    """Pure v2 arithmetic/legacy separation; no filesystem fixtures or IO."""
+    def test_point_age_not_restore_age_and_no_daily_r2_label_equality_requirement(self):
+        row={'schema':'careertrellis.onedrive-native-monitor-evidence/v2','result':'ok',
+            'observed_at':timestamp(OBSERVED),'backup_label':FULL_LABEL,'restore_age_seconds':600,
+            'recovery_point_age_seconds':3600,'accepted_bundle_count':2,'health_sha256':'a'*64}
+        normalized={'surface':'database','latest_backup_label':LATEST_LABEL}
+        codes=set();ages={}
+        backup_health._apply_bundle_health(row,normalized,OBSERVED,codes,ages)
+        self.assertEqual(codes,set());self.assertEqual(ages['pgbackrest_mirror'],3600)
+        row['recovery_point_age_seconds']=36*3600+1;codes=set()
+        backup_health._apply_bundle_health(row,normalized,OBSERVED,codes,ages)
+        self.assertIn('onedrive_bundle_recovery_point_stale',codes)
+        self.assertNotIn('onedrive_bundle_restore_stale',codes)
+        for age in (True,-1,599):
+            row['recovery_point_age_seconds']=age
+            with self.assertRaises(ValueError):backup_health._apply_bundle_health(row,normalized,OBSERVED,set(),{})
+        old=dict(row,schema='careertrellis.onedrive-native-monitor-evidence/v1')
+        del old['recovery_point_age_seconds'];codes=set()
+        backup_health._apply_bundle_health(old,normalized,OBSERVED,codes,{})
+        self.assertIn('onedrive_bundle_label_mismatch',codes) # Explicit legacy contract.
 
 
 if __name__ == "__main__":

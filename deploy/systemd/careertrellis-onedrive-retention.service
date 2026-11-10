@@ -1,0 +1,35 @@
+[Unit]
+Description=Guarded complete OneDrive backup bundles
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=root
+Group=root
+UMask=0077
+# Scheduled preflight requires current activation and two actual native
+# recovery acceptances before creating a new backup transaction.
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/careertrellis/onedrive_retention/entry.py scheduled-run
+Restart=no
+RemainAfterExit=no
+RuntimeMaxSec=36h
+TimeoutStartSec=30s
+TimeoutStopSec=90s
+KillMode=control-group
+SendSIGKILL=yes
+PrivateNetwork=no
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+DevicePolicy=closed
+DeviceAllow=
+RestrictAddressFamilies=AF_INET AF_UNIX
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SETGID CAP_SETUID
+AmbientCapabilities=CAP_SETUID
+ReadWritePaths=/run /run/lock /var/lib/careertrellis/paired-maintenance /var/lib/careertrellis/generated-object-recovery /var/lib/careertrellis/generated-object-captures /var/lib/careertrellis/onedrive-retention /var/lib/careertrellis/onedrive-retention-public /var/backups/careertrellis
+MemoryMax=1G
+TasksMax=256
+StandardOutput=null
+StandardError=null

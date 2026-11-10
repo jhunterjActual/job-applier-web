@@ -225,6 +225,13 @@ _POLICY_CODES = frozenset(
         "pgbackrest_restore_promotion_failed",
         "pgbackrest_restore_checksum_failed",
         "pgbackrest_restore_cleanup_failed",
+        "onedrive_bundle_health_unavailable",
+        "onedrive_bundle_health_alert",
+        "onedrive_bundle_capacity_warning",
+        "onedrive_bundle_capacity_urgent",
+        "onedrive_bundle_label_mismatch",
+        "onedrive_bundle_restore_stale",
+        "onedrive_bundle_recovery_point_stale",
         "generated_object_mirror_stale",
         "generated_object_mirror_divergence",
         "generated_object_restore_stale",
@@ -1058,8 +1065,63 @@ def _age(
     return max(0, difference)
 
 
+def _apply_bundle_health(replacement, normalized, observed, codes, ages):
+    """Pure replacement claims only; native authentication belongs to the caller.
+
+    This never manufactures a legacy mirror/inventory operation receipt. The
+    independent configured-primary R2 restore, source backups and WAL stay in
+    their original domains. Only the installed authenticated bridge supplies
+    this argument in operational use.
+    """
+    expected = {"schema", "result", "observed_at", "backup_label", "restore_age_seconds",
+                "accepted_bundle_count", "health_sha256"}
+    version2=isinstance(replacement,dict) and replacement.get("schema")=="careertrellis.onedrive-native-monitor-evidence/v2"
+    if version2:expected.add("recovery_point_age_seconds")
+    if (not isinstance(replacement, dict) or set(replacement) != expected
+            or replacement["schema"] not in ("careertrellis.onedrive-native-monitor-evidence/v1","careertrellis.onedrive-native-monitor-evidence/v2")
+            or normalized["surface"] != "database"
+            or not isinstance(replacement["result"], str)
+            or replacement["result"] not in {"ok", "warning", "urgent", "alert", "unavailable"}):
+        raise _invalid()
+    at = _parse_timestamp(replacement["observed_at"])
+    # The existing shell snapshot has whole-second precision; permit only its
+    # final truncated fraction, not a future native health observation.
+    if not -1 <= (observed - at).total_seconds() <= 300:
+        raise _invalid()
+    if replacement["result"] == "unavailable":
+        if (replacement["backup_label"] is not None or replacement["restore_age_seconds"] is not None
+                or (version2 and replacement["recovery_point_age_seconds"] is not None)
+                or replacement["health_sha256"] is not None or replacement["accepted_bundle_count"] != 0
+                or type(replacement["accepted_bundle_count"]) is not int):
+            raise _invalid()
+        codes.add("onedrive_bundle_health_unavailable")
+    else:
+        _validate_label(replacement["backup_label"])
+        if (type(replacement["restore_age_seconds"]) is not int or replacement["restore_age_seconds"] < 0
+                or type(replacement["accepted_bundle_count"]) is not int or replacement["accepted_bundle_count"] < 2
+                or not isinstance(replacement["health_sha256"], str)
+                or re.fullmatch("[0-9a-f]{64}", replacement["health_sha256"]) is None):
+            raise _invalid()
+        if version2:
+            recovery_age=replacement["recovery_point_age_seconds"]
+            if type(recovery_age) is not int or recovery_age<replacement["restore_age_seconds"]:raise _invalid()
+            if recovery_age>36*3600:codes.add("onedrive_bundle_recovery_point_stale")
+        elif replacement["backup_label"] != normalized["latest_backup_label"]:
+            codes.add("onedrive_bundle_label_mismatch")
+        if not version2 and replacement["restore_age_seconds"] > 36 * 3600:
+            codes.add("onedrive_bundle_restore_stale")
+        result_codes = {"warning": "onedrive_bundle_capacity_warning", "urgent": "onedrive_bundle_capacity_urgent",
+                        "alert": "onedrive_bundle_health_alert"}
+        if replacement["result"] in result_codes:
+            codes.add(result_codes[replacement["result"]])
+    codes.difference_update({code for code in codes if code.startswith(("pgbackrest_mirror_", "pgbackrest_inventory_"))})
+    age=replacement["recovery_point_age_seconds"] if version2 else replacement["restore_age_seconds"]
+    ages["pgbackrest_mirror"] = age
+    ages["pgbackrest_inventory"] = age
+
+
 def evaluate_backup_health(
-    snapshot: object, *, receipt_root: Path | str = RECEIPT_ROOT
+    snapshot: object, *, receipt_root: Path | str = RECEIPT_ROOT, bundle_replacement=None
 ) -> dict[str, object]:
     """Evaluate the strict snapshot against all latest verified receipts."""
 
@@ -1214,6 +1276,8 @@ def evaluate_backup_health(
             if not latest_generated_restore["target_left_intact"]:
                 codes.add("generated_object_restore_target_not_retained")
 
+    if bundle_replacement is not None:
+        _apply_bundle_health(bundle_replacement, normalized, observed, codes, ages)
     if not codes.issubset(FAILURE_CODES):  # pragma: no cover - invariant guard
         raise _invalid()
     ordered_codes = sorted(codes)
