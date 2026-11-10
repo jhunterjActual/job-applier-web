@@ -1,0 +1,345 @@
+{
+  "schema": "careertrellis.repair98-nested-registry/v3",
+  "domain": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1",
+  "source_stage": "/opt/careertrellis/staging/preparation98-repair-source-20261027/repair98-fixture-g1",
+  "code": "/opt/careertrellis/staging/preparation98-repair-code-20261027/repair98-fixture-g1",
+  "work": "/opt/careertrellis/staging/preparation98-repair-work-20261027/repair98-fixture-g1",
+  "source_files": [
+    "fixture_relocation.py",
+    "repair_contract.py",
+    "repair_coordinator.py",
+    "repair_owner.py",
+    "repair_preflight.py",
+    "repair_seal.py",
+    "run_checks_repair98.py"
+  ],
+  "records": {
+    "source-manifest.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/source-manifest.json",
+      "schema": "careertrellis.repair98-source-manifest/v1",
+      "closed_keys": [
+        "files",
+        "repair_ops_commit",
+        "schema"
+      ]
+    },
+    "repair-plan.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/repair-plan.json",
+      "schema": "careertrellis.repair98-plan/v1",
+      "closed_keys": [
+        "attempt_id",
+        "baseline",
+        "build",
+        "decision_at",
+        "expires_at",
+        "full_live_preflight_sha256",
+        "old_failure_chain_sha256",
+        "previous",
+        "release",
+        "repair_ops_commit",
+        "retained_runtime_manifest_sha256",
+        "schema",
+        "source_archive_sha256",
+        "source_diff_sha256",
+        "source_manifest_sha256"
+      ]
+    },
+    "repair-decision.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/repair-decision.json",
+      "schema": "careertrellis.repair98-decision/v1",
+      "closed_keys": [
+        "attempt_id",
+        "decision_at",
+        "expires_at",
+        "full_live_preflight_sha256",
+        "repair_plan_sha256",
+        "schema",
+        "source_manifest_sha256"
+      ]
+    },
+    "full-preflight.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/full-preflight.json",
+      "schema": "careertrellis.repair98-preflight/v1",
+      "closed_keys": [
+        "attempt_id",
+        "authority",
+        "baseline",
+        "boot_id",
+        "browser_manifest_sha256",
+        "capacity",
+        "live_build",
+        "locks_clear",
+        "observed_at",
+        "old_failure_chain_sha256",
+        "previous",
+        "result",
+        "runtime_manifest_sha256",
+        "schema",
+        "source_archive_sha256",
+        "source_diff_sha256",
+        "source_manifest_sha256",
+        "units"
+      ]
+    },
+    "candidate.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/candidate.json",
+      "schema": "careertrellis.repair98-candidate/v1",
+      "closed_keys": [
+        "attempt_id",
+        "browser_after_sha256",
+        "browser_before_sha256",
+        "build",
+        "checks_sha256",
+        "completed_utc",
+        "full_live_preflight_sha256",
+        "old_failure_chain_sha256",
+        "release",
+        "repair_decision_sha256",
+        "repair_ops_commit",
+        "repair_plan_sha256",
+        "result",
+        "runtime_after_sha256",
+        "runtime_before_sha256",
+        "schema",
+        "source_manifest_sha256",
+        "unit_terminal_sha256"
+      ]
+    },
+    "owner.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/owner.json",
+      "schema": "careertrellis.repair98-owner/v1",
+      "closed_keys": [
+        "attempt_id",
+        "boot_id",
+        "pid",
+        "repair_decision_sha256",
+        "repair_plan_sha256",
+        "schema",
+        "start_ticks",
+        "started_at"
+      ]
+    },
+    "coordinator.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/coordinator.json",
+      "schema": "careertrellis.repair98-coordinator/v1",
+      "closed_keys": [
+        "attempt_id",
+        "boot_id",
+        "owner_pid",
+        "pid",
+        "schema",
+        "start_ticks",
+        "started_at"
+      ]
+    },
+    "unit-terminal.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/unit-terminal.json",
+      "schema": "careertrellis.repair98-unit-terminal/v1",
+      "closed_keys": [
+        "after",
+        "attempt_id",
+        "boot_id",
+        "cgroup_after",
+        "client_exit",
+        "client_pid",
+        "client_start_ticks",
+        "execution",
+        "observed_at",
+        "schema",
+        "test_client_sha256",
+        "unit",
+        "unit_intent_sha256"
+      ]
+    },
+    "owner-terminal.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/owner-terminal.json",
+      "schema": "careertrellis.repair98-owner-terminal/v1",
+      "closed_keys": [
+        "attempt_id",
+        "boot_id",
+        "candidate_sha256",
+        "captures",
+        "checks_sha256",
+        "child_spawn_sha256",
+        "coordinator",
+        "coordinator_exit",
+        "ended_at",
+        "owner",
+        "owner_self_exit_claim",
+        "repair_decision_sha256",
+        "repair_plan_sha256",
+        "runtime_after_sha256",
+        "schema",
+        "source_manifest_sha256",
+        "unit_terminal_sha256"
+      ]
+    },
+    "postterminal-owner-proof.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/postterminal-owner-proof.json",
+      "schema": "careertrellis.repair98-postterminal-proof/v1",
+      "closed_keys": [
+        "attempt_id",
+        "boot_id",
+        "browser_manifest_sha256",
+        "candidate_sha256",
+        "cgroup_after",
+        "coordinator_state",
+        "observed_at",
+        "original_deadline",
+        "owner_state",
+        "owner_terminal_sha256",
+        "runtime_manifest_sha256",
+        "schema",
+        "source_manifest_sha256",
+        "unit"
+      ]
+    },
+    "accepted.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/accepted.json",
+      "schema": "careertrellis.preparation98-repair-acceptance/v1",
+      "closed_keys": [
+        "activated",
+        "baseline",
+        "build",
+        "candidate_sha256",
+        "checks",
+        "checks_sha256",
+        "completed_utc",
+        "fixture_qualification",
+        "full_live_preflight_sha256",
+        "old_failure_chain_sha256",
+        "owner_terminal_sha256",
+        "postterminal_proof_sha256",
+        "previous",
+        "qualifier_sha256",
+        "release",
+        "repair_attempt_id",
+        "repair_decision_sha256",
+        "repair_ops_commit",
+        "repair_plan_sha256",
+        "result",
+        "retained_runtime_after_sha256",
+        "retained_runtime_before_sha256",
+        "runner_sha256",
+        "runtime_manifest",
+        "runtime_manifest_sha256",
+        "schema",
+        "source_archive_sha256",
+        "source_diff_sha256",
+        "source_manifest_sha256",
+        "unit_terminal_sha256"
+      ]
+    },
+    "repair-checks.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/repair-checks.json",
+      "schema": "careertrellis.preparation98-repair-checks/v1",
+      "closed_keys": [
+        "schema",
+        "repair_ops_commit",
+        "runner_sha256",
+        "qualifier_sha256",
+        "old_failure_chain_sha256",
+        "retained_runtime_manifest_sha256",
+        "qualification",
+        "revision",
+        "build",
+        "checks",
+        "details",
+        "started_utc",
+        "ended_utc",
+        "network_namespace_loopback_only",
+        "provider_requests"
+      ]
+    },
+    "old-failure-chain.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/old-failure-chain.json",
+      "schema": "careertrellis.repair98-old-failure-chain/v1",
+      "closed_keys": [
+        "schema",
+        "release",
+        "old_plan_sha256",
+        "files"
+      ],
+      "fixed_file_keys": [
+        "intent",
+        "failed",
+        "dispatch",
+        "log",
+        "classifier02"
+      ]
+    },
+    "child-spawn.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/child-spawn.json",
+      "schema": "careertrellis.repair98-child-spawn/v1",
+      "closed_keys": [
+        "attempt_id",
+        "boot_id",
+        "owner_pid",
+        "pid",
+        "repair_decision_sha256",
+        "repair_plan_sha256",
+        "schema",
+        "source_manifest_sha256",
+        "start_ticks"
+      ]
+    },
+    "test-client.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/test-client.json",
+      "schema": "careertrellis.repair98-test-client/v1",
+      "closed_keys": [
+        "attempt_id",
+        "boot_id",
+        "pid",
+        "schema",
+        "start_ticks",
+        "unit",
+        "unit_intent_sha256"
+      ]
+    },
+    "unit-intent.json": {
+      "path": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/unit-intent.json",
+      "schema": "careertrellis.repair98-unit-intent/v1",
+      "closed_keys": [
+        "argv",
+        "attempt_id",
+        "boot_id",
+        "coordinator_pid",
+        "coordinator_start_ticks",
+        "created_at",
+        "description_binding",
+        "qualifier_sha256",
+        "repair_decision_sha256",
+        "repair_plan_sha256",
+        "runner_sha256",
+        "sandbox_properties",
+        "schema",
+        "source_manifest_sha256",
+        "unit"
+      ]
+    }
+  },
+  "plain_full_maps": {
+    "runtime-before.json": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/runtime-before.json",
+    "runtime-manifest.json": "/var/backups/careertrellis/preparation98-repair-20261027/repair98-fixture-g1/runtime-manifest.json"
+  },
+  "raw_protected_only": [
+    "synthetic-tests.log",
+    "coordinator-stdout.bin",
+    "coordinator-stderr.bin"
+  ],
+  "sequence": [
+    "candidate written",
+    "coordinator child exits",
+    "retained owner writes owner-terminal with no self-exit claim",
+    "retained owner exits",
+    "independent seal verifies actual original births absent + current full maps + unchanged deadline",
+    "seal creates postterminal proof then acceptance"
+  ],
+  "hold_flags": {
+    "coordinator": false,
+    "owner": false,
+    "seal": false,
+    "preflight": false
+  },
+  "qualification": "Static review packet only; holds explicit; not executable admission/native acceptance."
+}

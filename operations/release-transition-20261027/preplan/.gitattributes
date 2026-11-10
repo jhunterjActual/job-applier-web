@@ -1,0 +1,12 @@
+* -text
+**/* -text
+public-runtime35/native_backend.py -text whitespace=cr-at-eol
+public-runtime35/native_peer.py -text whitespace=cr-at-eol
+public-runtime35/one_shot_readiness/pair_boundary.py -text whitespace=cr-at-eol
+public-runtime35/one_shot_readiness/terminal493.py -text whitespace=cr-at-eol
+public-runtime35/peer_server.py -text whitespace=cr-at-eol
+public-runtime35/readiness_bridge.py -text whitespace=cr-at-eol
+scanner-original-native_backend.py -text whitespace=cr-at-eol
+fixtures/native_io-precap.reference.py -text
+test_historical_read_caps.py -text
+HISTORICAL_READ_CAP_SOURCE.json -text

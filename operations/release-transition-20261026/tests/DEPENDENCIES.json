@@ -1,0 +1,26 @@
+{
+  "adapter.py": {
+    "bytes": 5821,
+    "sha256": "a3d2ef212d3730afb36013a44e9c5881f4bbfb676e02fc3947750620e2ce3767"
+  },
+  "checks97.py": {
+    "bytes": 4857,
+    "sha256": "23c667c24daf288c8f70540a2802a92e6bcbc82f46d848217c77f6ba3d4719d3"
+  },
+  "historical.py": {
+    "bytes": 19103,
+    "sha256": "364fe5eeca9f12bcb43d33cdd1874a5a4267d864fa76dfeefa99912e61d0ee8e"
+  },
+  "historical98_controls.py": {
+    "bytes": 5484,
+    "sha256": "dfc9246cf028a060af4e2b02db83305212ef5bc9671c8f3391fced75261bb7ed"
+  },
+  "qualified97_records.py": {
+    "bytes": 5302,
+    "sha256": "a9be564f8842f67debe85a355107c0837b23305cfb6283de7321b2ace58d0aeb"
+  },
+  "qualified_specs.py": {
+    "bytes": 1416,
+    "sha256": "8428bbc1e7cb81b53aacca92dae521df24024e260a8f24212f894f15ac0a187f"
+  }
+}

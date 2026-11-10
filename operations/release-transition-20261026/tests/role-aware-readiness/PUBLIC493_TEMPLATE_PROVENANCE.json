@@ -1,0 +1,14 @@
+{
+  "careertrellis-paired-db-recovery@.service": {
+    "commit": "493bf14a3bae2cb2b36f3a57191602b72ea6e3d3",
+    "git_path": "deploy/systemd/careertrellis-paired-db-recovery@.service",
+    "sha256": "c8b08e6b60f0a875e0affc88b8ce5f13fcb99cfe9fd625872e215b4933cf0e1e",
+    "no_install_section": true
+  },
+  "careertrellis-paired-db@.service": {
+    "commit": "493bf14a3bae2cb2b36f3a57191602b72ea6e3d3",
+    "git_path": "deploy/systemd/careertrellis-paired-db@.service",
+    "sha256": "91bf2fa1e3eab6035247fa58fe8b9dfa3cef8191fe130bf9cadf27e21fa41cb0",
+    "no_install_section": true
+  }
+}

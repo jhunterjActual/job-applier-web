@@ -1,0 +1,627 @@
+{
+  "whole_files": {
+    "release_transaction.py": {
+      "old": "75b871612b0d394dd90be69fad336654fb332bfe17d7a62d25e35d4a3d7bd8b2",
+      "new": "75b871612b0d394dd90be69fad336654fb332bfe17d7a62d25e35d4a3d7bd8b2"
+    },
+    "native_peer.py": {
+      "old": "baeb0f91e08d08009394cafe4885713051e5d309bc4f3000fbebfa066c979137",
+      "new": "baeb0f91e08d08009394cafe4885713051e5d309bc4f3000fbebfa066c979137"
+    },
+    "native_backend.py": {
+      "old": "5c86f98fe6059330d5025a7d0041015a44fa406963cac8b137fe1e6c0a1b4c03",
+      "new": "92bc552a30ab992d4dd0d038d26e7315b3164ba332ecadbbed6a234c23e28ef7"
+    }
+  },
+  "methods": [
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.__init__",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "43bbf629a0ea0c712d8780345babd2fb7a15d37ac1a9969aac0544ec1fb05805",
+      "new_sha256": "43bbf629a0ea0c712d8780345babd2fb7a15d37ac1a9969aac0544ec1fb05805",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.accept_release_decision",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "8a0fa058719369276ee404fdc03558e1b816fdb1bf083b920ef160c57e74b140",
+      "new_sha256": "8a0fa058719369276ee404fdc03558e1b816fdb1bf083b920ef160c57e74b140",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.acquire",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "7fdd7ed22eb4b2ed561faf0dd2b6acdeb9e0ffc3e1975f9439a703450a8a2b9a",
+      "new_sha256": "7fdd7ed22eb4b2ed561faf0dd2b6acdeb9e0ffc3e1975f9439a703450a8a2b9a",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.assert_known",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "3b03cc5bf1b4b4e7373a97491cceaba8c4a3e9bd12722a5f5d5eb95e161adee7",
+      "new_sha256": "3b03cc5bf1b4b4e7373a97491cceaba8c4a3e9bd12722a5f5d5eb95e161adee7",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.assert_preserved",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "d5de3f638b8665942910a1fd7fc6aa63e4df408d558ef7b18c777a790b804484",
+      "new_sha256": "d5de3f638b8665942910a1fd7fc6aa63e4df408d558ef7b18c777a790b804484",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.authorize_global",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "dd47aeb1dffbdf3b41ebcdffb7017eede67b576390af9ec7726d39473f414377",
+      "new_sha256": "dd47aeb1dffbdf3b41ebcdffb7017eede67b576390af9ec7726d39473f414377",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.baseline",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "e71077b2e10967ec4416a5206cdfe35bc0b2f7d297287d2dd30acdfd20cb26ca",
+      "new_sha256": "e71077b2e10967ec4416a5206cdfe35bc0b2f7d297287d2dd30acdfd20cb26ca",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.check_locks",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "32d15f418bf169908a83c9daceaa90ebbf9f5dee525e84ba7545f584d9b8af1d",
+      "new_sha256": "32d15f418bf169908a83c9daceaa90ebbf9f5dee525e84ba7545f584d9b8af1d",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.check_release_remaining",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "402854e433636ac5ae1d64e8f9f4bfbc2d87e7332af1623afd4aa8e2692035a1",
+      "new_sha256": "402854e433636ac5ae1d64e8f9f4bfbc2d87e7332af1623afd4aa8e2692035a1",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.claim",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "18524de935b26ae928a7c7e0652c4cc6fc78362751e07c9df0402ee9dc5fdcd2",
+      "new_sha256": "18524de935b26ae928a7c7e0652c4cc6fc78362751e07c9df0402ee9dc5fdcd2",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.claim_window",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "721bfc1180237a0bce57785c8de02f1c4d31931b28ef779aced0aa65fbe5961f",
+      "new_sha256": "721bfc1180237a0bce57785c8de02f1c4d31931b28ef779aced0aa65fbe5961f",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.commit_release_decision",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "b75180988d4dc47a9c6dde7acf8aac4bfd56b5a8153199725846aa5e13398a15",
+      "new_sha256": "b75180988d4dc47a9c6dde7acf8aac4bfd56b5a8153199725846aa5e13398a15",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.completion_digest",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "49f0cd8f5632b09a6c3592a31b46cde7ea5f2d76ac6c9aaf01a0e72c8743ede1",
+      "new_sha256": "49f0cd8f5632b09a6c3592a31b46cde7ea5f2d76ac6c9aaf01a0e72c8743ede1",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.create",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "f4e94dcd7949d3635ec7a483e9184b10c985eb61f6a0fca22f5c737cc0d8e02f",
+      "new_sha256": "f4e94dcd7949d3635ec7a483e9184b10c985eb61f6a0fca22f5c737cc0d8e02f",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.decision_guard",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "040b3d0f95b20e0c0fdced3d7b01ed327f669f982160ba7853d27623495979f7",
+      "new_sha256": "040b3d0f95b20e0c0fdced3d7b01ed327f669f982160ba7853d27623495979f7",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.decision_identity_guard",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "154ce302690f690cc96627daa95f2b16aa8b2a7ac22cd37c6a3420d01f080fdf",
+      "new_sha256": "154ce302690f690cc96627daa95f2b16aa8b2a7ac22cd37c6a3420d01f080fdf",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.decision_path",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "ceb5ac2180ba8f80951a04372c6a6d927ad681d76eb36fc08aa126b4997c6382",
+      "new_sha256": "ceb5ac2180ba8f80951a04372c6a6d927ad681d76eb36fc08aa126b4997c6382",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.deny_under_retained_control",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "1cf170c117b5c7266a4db3c658a7c5aa3cb783a45b580a7bb850b121e1b13ebe",
+      "new_sha256": "1cf170c117b5c7266a4db3c658a7c5aa3cb783a45b580a7bb850b121e1b13ebe",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.directory",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "483126bcbaa61976f9173a8458e5e83188710569ae22f857babda954dc74b5c0",
+      "new_sha256": "483126bcbaa61976f9173a8458e5e83188710569ae22f857babda954dc74b5c0",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.finish",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "7277a3589b23c17c37ea9d674add83ebc3fba7bbd208072d8e7618377c3e183c",
+      "new_sha256": "7277a3589b23c17c37ea9d674add83ebc3fba7bbd208072d8e7618377c3e183c",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.global_path",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "3de2951a7acdfc98be44942ef9fa30197b176bd6c9bfb525ab4d145679518739",
+      "new_sha256": "3de2951a7acdfc98be44942ef9fa30197b176bd6c9bfb525ab4d145679518739",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.json",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "5013caa34d4271e06db3bffe015a94f2c0f6d1a2e75e73295c92eda7e06a5df1",
+      "new_sha256": "5013caa34d4271e06db3bffe015a94f2c0f6d1a2e75e73295c92eda7e06a5df1",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.marker",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "cdb638e0f058a84fde102cf92bd1b47f9b6dbe082bfa13343ae369d23bbf3960",
+      "new_sha256": "cdb638e0f058a84fde102cf92bd1b47f9b6dbe082bfa13343ae369d23bbf3960",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.path",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "c1485c5e4d97799afe3984147cd5313bdc7af0e1d659d40baf48db3bf908a317",
+      "new_sha256": "c1485c5e4d97799afe3984147cd5313bdc7af0e1d659d40baf48db3bf908a317",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.policy_readback",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "62701f2ea2f5bd0754618a25663dab48a63209d6fd8f0e07274c312f9f67bd66",
+      "new_sha256": "62701f2ea2f5bd0754618a25663dab48a63209d6fd8f0e07274c312f9f67bd66",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.project_verifying",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "592f13e63632e3222790a7e3bc2be5f40b9b873bfe8310c91fd655e863b28cc6",
+      "new_sha256": "592f13e63632e3222790a7e3bc2be5f40b9b873bfe8310c91fd655e863b28cc6",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.read",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "8ba3fab754b370a5eec6d884d610b9f8f8368113149796b204fc385c7104f2b2",
+      "new_sha256": "8ba3fab754b370a5eec6d884d610b9f8f8368113149796b204fc385c7104f2b2",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.read_global",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "5ed0d9877d954998ab9a08f304aaf704a83a53e9e25a9cc25e2508d7bcb8a49c",
+      "new_sha256": "5ed0d9877d954998ab9a08f304aaf704a83a53e9e25a9cc25e2508d7bcb8a49c",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.recovery_started",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "3f91e73197847171494e18965737c3ae52698b25499aa1e0e1132d44adf84c59",
+      "new_sha256": "3f91e73197847171494e18965737c3ae52698b25499aa1e0e1132d44adf84c59",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.release_terminal",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "b8bdd0d7ee4b60f28392a2540c697869618cf1a2b825b55d46b2d0aef50799ad",
+      "new_sha256": "b8bdd0d7ee4b60f28392a2540c697869618cf1a2b825b55d46b2d0aef50799ad",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.remaining_fd_state",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "d008fd29fe9271f2a3a06e8ecbd50f2c19596f4caa95d88a4917715409d6cd2e",
+      "new_sha256": "d008fd29fe9271f2a3a06e8ecbd50f2c19596f4caa95d88a4917715409d6cd2e",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.restore",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "b5daa1aa98caebef4a9b7de38eb1ec5fb97ddda25e3a0f1f490e7772b5aa6d0d",
+      "new_sha256": "b5daa1aa98caebef4a9b7de38eb1ec5fb97ddda25e3a0f1f490e7772b5aa6d0d",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.select_policy",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "91a764f084c9330f191c9370f2da124be6a708ae4b6fa7d95854cd7f7cf25e49",
+      "new_sha256": "91a764f084c9330f191c9370f2da124be6a708ae4b6fa7d95854cd7f7cf25e49",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.selected_release_state",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "b6bd126c7235181fb3deedfdf208d6e82f874396092dd3ca88418cff9d8b8b87",
+      "new_sha256": "b6bd126c7235181fb3deedfdf208d6e82f874396092dd3ca88418cff9d8b8b87",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.snapshot_preserved",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "ce3bf5b45c3b63b787ba31c51c8fb3fbd7b8d0f3e237065d02e592cc4c1a2690",
+      "new_sha256": "ce3bf5b45c3b63b787ba31c51c8fb3fbd7b8d0f3e237065d02e592cc4c1a2690",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.verify_install",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "7e13fa10edff3ea80f1bae7e147a81f2c9fd0cc78a6d1833e8c2381665749977",
+      "new_sha256": "7e13fa10edff3ea80f1bae7e147a81f2c9fd0cc78a6d1833e8c2381665749977",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_peer.py",
+      "method": "NativePeer.write_marker",
+      "category": "EXACT_RAW_SAME",
+      "old_sha256": "fc54709cb813f797579d804cb26fe4902d4c0b484a54618c702028c3159f17cf",
+      "new_sha256": "fc54709cb813f797579d804cb26fe4902d4c0b484a54618c702028c3159f17cf",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.__init__",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "18835dd812c8cc0ec66d742124a4b7bcdb26f994ab6f42163f6847fba858c4d5",
+      "new_sha256": "3179a87daaa198f5b032713e8ba07b4b6266c6e5cbb38bba10492187c9022857",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.assert_healthy",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "6248d9fa043850bae489fbe91e397ebee3d275494ebfcb99cbad35e4bf495b00",
+      "new_sha256": "5c5aa7eac21435c2321db9d38a56bcb16668e85b221c5f3f457393e6bfd26969",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.assert_owned_state",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "b5b5703b4564b5b7572b99ad376cbdd1369e8be6267d5511e1c45f2122684aa0",
+      "new_sha256": "bcaf7ddfe7e7a52099a41c56a2d50789bb6d558a7980e3a69c3c89905e3e1c11",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.assert_preserved",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "2fd7cf1a98e3bfea12e36946b7586243ac583a075634f59a5180c72eb1d1f970",
+      "new_sha256": "c7c6164931a3dbe96e733bfeada8a4e8b8abb4e1da75b800e8520e3f1b4993a9",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.assert_readiness_current",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "c0894829c38d1faf03733730bb49907833eb8411f73cd8a811c880717c28ae72",
+      "new_sha256": "2f2fb6c38bab865ae99d97832e0ceaa5db86b1bb4456a4a71330ab1f19f7e790",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.assert_starts_blocked",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "ee2bf07f397b560c824b4342f814754e8013792a1bef500567862926121ede72",
+      "new_sha256": "d337559596c61ffb10fd32ae6f553ddc8275cf557c23926798b5fe322f2e2c1b",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.assert_stopped",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "865ecba44bd4e3415ad2c61e47afb3f877e40a1c1a72b748f66d5c689675e229",
+      "new_sha256": "34ef57aad38259dddc36bfd394ea36dede961d4f21add82981e2423079d4ad1b",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.assert_terminal_readiness_current",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "8db1f92d721adc1c10a02494714cc542621f7164531dc908b5d3723c2c9aeb9e",
+      "new_sha256": "992a1d6414813c64a6e691c93c9df5f73f0f5fc7d5d78c64c1fd99413893af59",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.assert_writer_gate",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "7927731f25e1ac92e4f0e0cabd00ff721f6a20dde8c60344efd2e9e0c4027679",
+      "new_sha256": "ea9b4a019c3fba9e308490d9d582512b8b9bb25439d543d1b555a86922d98db0",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.audit",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "43d31387dc436d98d940e2093a69fdafac01805981318902a809bd57267c5061",
+      "new_sha256": "4df2d3bf6e80a05ab0ed5687e8a42e9bc47810a09b5dc04a3a6be99ee87ba9fd",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.authorize_terminal",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "9d3d8224f2773891026b55f03802ed3d211b03a9c9e67f5011a23b2c26b04cd7",
+      "new_sha256": "640baa616e745146deef546b754b8993ddd6e58a4f59289909ced799d5793753",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.baseline",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "d52e1aff65b3be308c4a1b846a9d1486f01f507715c7678ece3f48fb58806309",
+      "new_sha256": "8ccf1d848ea894e674650d7e2310fe6ab0bbec767a2235ad5ccbe96273a693b5",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.begin_recovery",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "257373c241a78e11c258143bf213bfb5f54f73215d92da403b4a6145778a4eca",
+      "new_sha256": "2d5efde7bfa7d271e2117b27c30be02be720b4c58afc2eacf94ba31625328a5a",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.block_starts",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "c4af42cda5cb5055c3a5b7c4751095562ef350a579a30094e3ea982bd8957d0f",
+      "new_sha256": "d2b743dcc209460b33be2d455855f5cfeae3ac004b8484f12527d17622befec0",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.claim",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "3027d5bb7b33a45223a33c7d9b73383ea39bb797d002ff44c4e128df5407583b",
+      "new_sha256": "9558b436e360233d62904097c8e1415b0ad0fe92a473c9c58d84e160b9886546",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.contain",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "4a06b81c7c7c900aa994dadeff73346ab338b45b2c72872cfadd8143f4381dac",
+      "new_sha256": "65c3f71139c012af08cbf4fc0287f648345e1bd29ed86679ff8cd3d581130de1",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.db_locks",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "f60d1199e5757d427981311e6aaae6cac31000e630f29ac0e33085719563aa66",
+      "new_sha256": "13b25b0b8c1bdece6c9ce0d05b2d2ba6a62846e6918d97632841aa503f264f6f",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.finish",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "a2f4f4bdea6b791088f72997b4f98397539bc9f79a0d3c6ba5a0f7f0dd226d65",
+      "new_sha256": "d5a2689175ffed94c014cbaeac326730b1a8d9dcfe7592a85c24607c6c95dda0",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.finish_original",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "190f7dced58514753c978bff66a0d7680873f04e3b960eaddfaaa734588665ac",
+      "new_sha256": "8552758d2a3b1f2146b3b066e0e40c16827b10134e70fe9fbee3ec7729989af9",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.interlock_readback",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "9dd769ed8f0a223003083dea1b010947db3007452a78966bb63f65466dbab68e",
+      "new_sha256": "027c432d7f44cb425b506168a072189258a54d45b32d28fb30aa25b8757e6532",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.phase",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "252cbe790b7d35e0e3962de14290c36251d83cc9ab544609ef66a6235f8fb762",
+      "new_sha256": "b9b98ca43bbbd18dd07014fbb55ea6834fffc8b6bd9be4b38e75bc2f3b1fc343",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.point",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "cc3a9851626bead0fea1bc4a289d1cbaa0c40edc3bf70ad3985ed0dc5fe5d109",
+      "new_sha256": "61bde901d847b320346830d0009ec148114d2dcbf8ae57339e0fc28926ba2a32",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.policy_readback",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "3141ad6f6a79a105db8cb9a0b6e9a97c2704db0d6f61447a45e8357f13dfa8e8",
+      "new_sha256": "d099bbc972ac4a6f2772b6b0e925671a5e4ab931aecadd297e43bf65b9f03b2a",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.project_verifying",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "4b42edecedb6d5fc3c17abff333d09ad81abbd0c819cafbaedd978bcb001fe17",
+      "new_sha256": "83ca68340ffd7372595213bb52d7f58624f7c14f621adf3224f42fb9afe80780",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.record_containment",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "fb41a517e4ebb950402ebc9ecb225806b5bca7d521d5992c9d24ca23019bf35d",
+      "new_sha256": "1618772c874cafd7006aadde42dd098823901f0bb6db344775eadc962359cd3b",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.recovery_signals",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "1f21c752ea54c3b622639d8ac3a26bcb2608d9fc43e3189ad8b0a1a978da4231",
+      "new_sha256": "94bc418e343152d5e40f3ba716a3371e7ca1b9f4c5c787ca1b3902a3fdf51a0b",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.restore_original",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "6a724ab0b659495df32582d935b784b2e65659a26bfa90d98e543cb6d8577dce",
+      "new_sha256": "4088f2e29ab14d40ad6a750ee5f2326997b2b9ba89e64f228c8116a1885c733f",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.revoke_terminal",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "2d2574ee450e494c6821c427e1024ce7e4dd598cdc4d9d7d2210373a312406f5",
+      "new_sha256": "7e405d7ebdc7c43cbbd48527916596c6f3a24b8e1721d07bf2933eb390018f5d",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.runtime_digest",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "32e8b67172e1e769f757e9f6bc3c610cdb3da92832ce6eeb2ae56e67a4b3f3ae",
+      "new_sha256": "7c2fa96e5d684c3d598d59d59cff52e8a1bbf4e01c9fc28f4b7ab33f1cb50902",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.start_and_stabilize",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "f4030b23f90e1705c8ae7aafb502fbd4943be517ffcc2dbc7aaa3ec56e70669c",
+      "new_sha256": "16fda258782457dbd795923c9a58883ca623b49f7082f5dd20ac9b762b5d72bb",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.terminal_release_failure",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "1874f67fdf1099a60e2537bc3eaeb3888c5c5af88ffa0b19d7898096734763b0",
+      "new_sha256": "4295e3b136dc85951294f33865c71e918b8ee3ea751843b917cb9d6683ae8b9f",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.verify_fresh_proofs",
+      "category": "INTENTIONAL_CHANGED",
+      "old_sha256": "05b02355d55a27bc1fbdc46ca6d9e3d3a9e96082b5de213b7ec3d557a6bba620",
+      "new_sha256": "b26406f712517f96ca50cbfb77a315578d53995dcb43f85bf85068e35741cf1c",
+      "normalized_ast_same": false
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.verify_packet",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "262101d213c3a431722a451f050e4a636af487950a5f2a4927cc4d70dca13020",
+      "new_sha256": "f51a1880ed65eb1ce7898508db665e07f75791d69b0ed31340adf93e686ff01c",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.verify_prepared",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "fd816d2c6eafa30615ddc626687391e009d414e8d0ef2d23dbee64ac1960ec7c",
+      "new_sha256": "e2243f0cba5f57560a1123847b1c94dc973262c97606d03f34d88353cc0f6cef",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.web_locks",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "34cb2c5aaa7c221c439f3c4f380d49953656a6129c5e69a5108cec051617b6fd",
+      "new_sha256": "b15e4bd3f7ec6d5a037e812d0ad9c5189b13d58c8e39e3edd4628d450c871cf4",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.write_interlock",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "d8ed62b53437a4fa29ef1e0ff4397953962c886a41063a03d80e6fc11bab8f5f",
+      "new_sha256": "5e41a36e4e91715b8263550c7ed0ef978c2bd447387a03d68c79761a5737f96b",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "Backend.write_policies",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "0c1df0252e5cbd62e3eb519ff0b3badf9b77d2d2a2a80b92ad475995a8b8c32c",
+      "new_sha256": "481676f7fd561533a81e3fb962ed5f1c809d9b0bfa0a8e07b0864e41113c5bca",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "DBProxy.__init__",
+      "category": "EXACT_CRLF_TO_LF_ONLY",
+      "old_sha256": "055443f65bd102b2dc0e7f52fc16495e97e77790250622d845e8f27efb35eefe",
+      "new_sha256": "fe0a1569a75fbdb205a14467c464b6d5a5e368996a043d1cb40aa77e42ee9562",
+      "normalized_ast_same": true
+    },
+    {
+      "file": "native_backend.py",
+      "method": "DBProxy.call",
+      "category": "INTENTIONAL_CHANGED",
+      "old_sha256": "95b4d61d7452bfea90bc01907e091c3aa9d0936ca2b7d17a6df395e1b5e0a93a",
+      "new_sha256": "991bf9b7a39fb19aa3b76c65ab772e7135a4db8cb52d51634f8cd0f6f5e48a79",
+      "normalized_ast_same": false
+    }
+  ],
+  "native09_not_new_transport_acceptance": true
+}
