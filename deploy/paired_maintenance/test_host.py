@@ -6,6 +6,7 @@ import types
 import unittest
 import urllib.error
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -229,6 +230,219 @@ class HostTests(unittest.TestCase):
             marker.assert_not_called()
             value.client.call.assert_not_called()
             value.r.run.assert_not_called()
+
+    def test_clear_writer_block_accepts_valid_backup_strategy_and_rejects_malformed(self):
+        for strategy in (
+            {'mode': 'legacy-mirror'},
+            {'mode': 'native-bundle-v2', 'retention_policy_sha256': 'd' * 64, 'activation_sha256': 'e' * 64},
+        ):
+            value = released_backend()
+            value.store.values['start-intent.json']['backup_strategy'] = strategy
+            with self.subTest(strategy=strategy), patch.object(host, 'public_marker') as marker:
+                value.clear_writer_block()
+                self.assertTrue(value.restored)
+                marker.assert_called_once_with(value.policy, BOOT, 'idle')
+                value.r.health.assert_called_once()
+
+        for bad in (
+            {'mode': 'unknown'},
+            {'mode': 'legacy-mirror', 'extra': True},
+            {'mode': 'native-bundle-v2'},
+            'legacy-mirror',
+            None,
+        ):
+            value = released_backend()
+            value.store.values['start-intent.json']['backup_strategy'] = bad
+            with self.subTest(bad=bad), patch.object(host, 'public_marker') as marker:
+                with self.assertRaises(Refused):
+                    value.clear_writer_block()
+                self.assertFalse(value.restored)
+                marker.assert_not_called()
+                value.r.health.assert_not_called()
+
+        value = released_backend()
+        value.store.values['start-intent.json']['unexpected'] = 1
+        with patch.object(host, 'public_marker') as marker:
+            with self.assertRaises(Refused):
+                value.clear_writer_block()
+            self.assertFalse(value.restored)
+            marker.assert_not_called()
+            value.r.health.assert_not_called()
+
+    def test_web_control_run_with_real_clear_writer_block_completes_end_to_end(self):
+        policy = types.SimpleNamespace(
+            digest=HASH,
+            data={
+                'application_release': RELEASE,
+                'backup_wait_seconds': 7200,
+                'max_capture_objects': 128,
+                'max_capture_bytes': 32 * 1024**2,
+                'minimum_onedrive_reserve_bytes': 64,
+                'approved_egress_ipv4_cidr': '192.0.2.1/32',
+                'planned_stop_budget_seconds': 1800,
+            },
+            require_new_start=Mock(return_value='20261120'),
+            due=Mock(return_value=True),
+        )
+        store = Store()
+        root = Store()
+        captured = dict(capture(), capture_started_epoch=103, captured_epoch=104)
+        published = {key: captured[key] for key in ('authority', 'backup_label', 'manifest_sha256', 'release', 'snapshot_id')}
+        published['result'] = 'onedrive_snapshot_created'
+        pair = {'backup_label': captured['backup_label'], 'started_at': '1970-01-01T00:01:43Z',
+                'completed_at': '1970-01-01T00:01:44Z', 'receipt_sha256': '2' * 64}
+        peer_base = {'transaction': TX, 'policy_sha256': HASH, 'release': RELEASE,
+                     'boot_id': BOOT, 'worker_invocation': 'f' * 32}
+
+        native = Mock(boot=BOOT, invocation='d' * 32, fence=None)
+        native.live_group.return_value = False
+        writers_stopped = False
+        health_started = False
+
+        def fake_state(unit):
+            if unit in runtime.SERVICES:
+                if writers_stopped:
+                    return {'ActiveState': 'inactive'}
+                return {'ActiveState': 'active', 'SubState': 'running', 'Job': '', 'MainPID': '42'}
+            if unit == host.HEALTH:
+                return {'ActiveState': 'inactive', 'MainPID': '0', 'Job': '',
+                        'InvocationID': 'f' * 32 if health_started else '0' * 32,
+                        'Result': 'success', 'ExecMainStatus': '0'}
+            raise AssertionError(unit)
+
+        def fake_terminal(unit):
+            if unit in runtime.SERVICES:
+                return {'ActiveState': 'inactive', 'MainPID': '0', 'ControlPID': '0', 'Job': ''}
+            if unit == host.HEALTH:
+                return {'InvocationID': 'f' * 32 if health_started else '0' * 32,
+                        'FragmentPath': '/etc/systemd/system/' + host.HEALTH,
+                        'DropInPaths': host.DROPINS, 'NeedDaemonReload': 'no',
+                        'Result': 'success', 'ExecMainStatus': '0'}
+            if unit == host.REPORTER:
+                return {'Result': 'success', 'ExecMainStatus': '0', 'InvocationID': '1' * 32}
+            raise AssertionError(unit)
+
+        def fake_run(args, **kwargs):
+            nonlocal writers_stopped, health_started
+            if args[:3] == ['/usr/bin/python3', '-B', runtime.CORE]:
+                return canonical({'operation': 'generated_object_mirror', 'result': 'ok', 'started_at': '2026-10-01T00:00:00Z'})
+            if args == ['/usr/bin/systemctl', 'stop', *runtime.SERVICES]:
+                writers_stopped = True
+                return b''
+            if args == ['/usr/bin/systemctl', 'start', *runtime.SERVICES]:
+                writers_stopped = False
+                return b''
+            if args[:2] == [runtime.HELPER, 'capture']:
+                return canonical(captured)
+            if args[:2] == [runtime.HELPER, 'publish-captured']:
+                return canonical(published)
+            if args == ['/usr/bin/systemctl', 'start', '--no-block', host.HEALTH]:
+                health_started = True
+                return b''
+            if args == ['/usr/local/sbin/careertrellis-backup-health', 'status']:
+                return canonical({'result': 'ok', 'failure_codes': [], 'evaluated_at': '1970-01-01T00:02:00Z'})
+            if args == ['/usr/bin/systemctl', 'show', host.HEALTH, '--property=OnSuccess', '--value']:
+                return (host.REPORTER + '\n').encode()
+            if args[:3] == ['/usr/bin/journalctl', '-u', host.HEALTH]:
+                return (canonical({'__REALTIME_TIMESTAMP': '106000000', '_SYSTEMD_INVOCATION_ID': 'f' * 32,
+                                   'MESSAGE': canonical({'schema': 'careertrellis.backup-health-status/v1',
+                                                         'surface': 'objects', 'result': 'ok', 'failure_codes': []}).decode()}).decode() + '\n').encode()
+            if args[:3] == ['/usr/bin/journalctl', '-u', host.REPORTER]:
+                return (canonical({'__REALTIME_TIMESTAMP': '107000000', '_SYSTEMD_INVOCATION_ID': '1' * 32,
+                                   'MESSAGE': canonical({'observation': 'healthy', 'provider_acceptance': 'accepted'}).decode()}).decode() + '\n').encode()
+            raise AssertionError(args)
+
+        def fake_wait_peer(client, wanted, timeout, on_wait=None):
+            for state in ('fenced', 'pair_ready', 'sealed', 'released'):
+                if state in wanted:
+                    reply = dict(peer_base, state=state)
+                    if state == 'pair_ready':
+                        reply['pair'] = pair
+                    return reply
+            raise AssertionError(wanted)
+
+        native.state.side_effect = fake_state
+        native.terminal.side_effect = fake_terminal
+        native.run.side_effect = fake_run
+        native.wait_peer.side_effect = fake_wait_peer
+
+        def fake_fence(path, mode):
+            fence = Mock(fd=10)
+            fence.acquire.return_value = fence
+            return fence
+
+        def fake_client_call(op, payload):
+            if op == 'preflight':
+                return {'ready': True}
+            if op == 'mirror_status':
+                return {'state': 'mirror_complete', 'backup_label': captured['backup_label']}
+            if op == 'health_status':
+                return {'state': 'health_complete', 'normal_report_accepted': True}
+            if op == 'complete':
+                return dict(peer_base, state='complete')
+            return {}
+
+        def fake_protected(path, limit, modes=(0o644, 0o755, 0o600)):
+            key = str(path).replace('\\', '/')
+            if key in host.HEALTH_PINS:
+                # Return deterministic content matching pinned hash via mocked sha256 below if needed.
+                return b'pinned:' + key.encode()
+            raise AssertionError(key)
+
+        real_sha256 = host.hashlib.sha256
+        class FakeDigest:
+            def __init__(self, digest_hex):
+                self._hex = digest_hex
+            def hexdigest(self):
+                return self._hex
+        def fake_sha256(data=b''):
+            if isinstance(data, bytes) and data.startswith(b'pinned:'):
+                key = data[len(b'pinned:'):].decode()
+                return FakeDigest(host.HEALTH_PINS[key])
+            return real_sha256(data)
+
+        time_calls = 0
+        def fake_time():
+            nonlocal time_calls
+            time_calls += 1
+            return 103 if time_calls == 1 else 105
+
+        with patch.object(runtime, 'HostRuntime', return_value=native), \
+             patch.object(host, 'Client') as client_cls, \
+             patch.object(host, 'Journal', return_value=root), \
+             patch.object(runtime, 'Fence', side_effect=fake_fence), \
+             patch.object(runtime, 'retention_absent', return_value=True), \
+             patch.object(runtime, 'RELEASE', RELEASE), \
+             patch.object(runtime, 'protected', side_effect=fake_protected), \
+             patch.object(host.hashlib, 'sha256', side_effect=fake_sha256), \
+             patch.object(host, 'public_marker') as marker, \
+             patch.object(host.provider, 'web_facts', return_value={
+                 'source_count': 2, 'source_bytes': 100,
+                 'onedrive_free_bytes': 200, 'egress_ipv4_cidr': '192.0.2.1/32'}), \
+             patch.object(host.time, 'time', side_effect=fake_time), \
+             patch.object(host.time, 'monotonic', return_value=10), \
+             patch.object(host.time, 'sleep'):
+            client_cls.return_value.call.side_effect = fake_client_call
+            value = host.WebBackend(policy, TX, store)
+            with patch.object(value, '_replace_generation_projection'):
+                result = WebControl(policy, store, value).run(TX)
+
+        self.assertEqual(result['state'], 'complete')
+        self.assertTrue(result['services_restored'])
+        self.assertEqual(result['backup_label'], captured['backup_label'])
+        self.assertEqual(result['manifest_sha256'], captured['manifest_sha256'])
+        self.assertEqual(store.read('start-intent.json')['backup_strategy'], {'mode': 'legacy-mirror'})
+        self.assertTrue(store.exists('db-released.json'))
+        self.assertTrue(store.exists('publication-result.json'))
+        self.assertTrue(store.exists('db-mirror-accepted.json'))
+        self.assertTrue(store.exists('db-health-accepted.json'))
+        self.assertTrue(store.exists('normal-reports-accepted.json'))
+        self.assertTrue(store.exists('complete.json'))
+        self.assertTrue(root.exists('verified-generation-' + TX + '.json'))
+        self.assertEqual(root.read('status.json')['phase'], 'complete')
+        self.assertEqual(root.read('status.json')['result'], 'ok')
+        self.assertEqual(marker.call_args_list[-1].args, (policy, BOOT, 'idle'))
+
     def test_peer_boot_and_original_invocation_are_immutable(self):
         value = backend()
         peer = {'state': 'fenced', 'transaction': TX, 'policy_sha256': HASH,
@@ -261,6 +475,38 @@ class HostTests(unittest.TestCase):
                 patch.object(value,'retention_strategy',return_value={'mode':'legacy-mirror'}):
             self.assertTrue(value.preflight()['ready'])
         self.assertEqual(held, [])
+
+    def test_retention_strategy_absent_returns_legacy_and_partial_fails_closed(self):
+        value = backend()
+        def fake_lstat(present=()):
+            def _lstat(path):
+                p = str(path).replace('\\', '/')
+                if p in present:
+                    return types.SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0)
+                if p in ('/', '/usr', '/usr/local', '/usr/local/libexec', '/usr/local/libexec/careertrellis',
+                         '/etc', '/etc/careertrellis'):
+                    return types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
+                raise FileNotFoundError(p)
+            return _lstat
+
+        with patch.object(runtime.Path, 'lstat', new=fake_lstat()):
+            self.assertEqual(value.retention_strategy(), {'mode': 'legacy-mirror'})
+
+        marker = str(runtime.RETENTION_MARKERS[1]).replace('\\', '/')
+        with patch.object(runtime.Path, 'lstat', new=fake_lstat((marker,))), \
+             patch.dict(sys.modules, {'onedrive_retention': None, 'onedrive_retention.entry': None}):
+            with self.assertRaises(ModuleNotFoundError):
+                value.retention_strategy()
+
+        entry_path = str(runtime.RETENTION_ENTRY).replace('\\', '/')
+        verify = Mock(side_effect=RuntimeError('install_invalid'))
+        fake_pkg = types.ModuleType('onedrive_retention')
+        fake_pkg.entry = types.SimpleNamespace(verify_install=verify)
+        with patch.object(runtime.Path, 'lstat', new=fake_lstat((entry_path,))), \
+             patch.dict(sys.modules, {'onedrive_retention': fake_pkg, 'onedrive_retention.entry': fake_pkg.entry}):
+            with self.assertRaisesRegex(RuntimeError, 'install_invalid'):
+                value.retention_strategy()
+        verify.assert_called_once_with()
 
     def test_fresh_skip_is_durable_idle_success_without_transaction(self):
         value = backend()

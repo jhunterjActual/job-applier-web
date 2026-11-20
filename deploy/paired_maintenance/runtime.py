@@ -75,7 +75,7 @@ PINS={
  '/usr/local/libexec/careertrellis/generated_object_recovery.py':'866a054532b2a8a7def685168d7783eaf2dbdf80701191dd922b646f7aa77d30',
  '/usr/local/libexec/careertrellis/maintenance-lock.sh':'d6e448f41dd3d6932bce4c0e87a9aa676b4de6e15111aa53aca3a576f40d7cc1',
  '/usr/local/sbin/careertrellis-authority':'07399780faffbc8a761b558f3d116e0fd7d0cf2d1bb0226de987c5455ad45206'},
- 'db':{'/usr/local/sbin/careertrellis-backup-health':'58bc6e0e408e02830691b34fbebc71a3919a69834df5950c8fae8228db66bf41',
+ 'db':{'/usr/local/sbin/careertrellis-backup-health':'a16d514c8e96d86e56b6892ff67be418ec88ba7a5820bc192aada59b50c5befa',
  '/usr/local/sbin/careertrellis-mirror-pgbackrest-onedrive':'630de3092529f165ee305601dc52ad6b89b912e90294dc42ab09ec419de552ca',
  '/usr/local/sbin/careertrellis-run-pgbackrest-backup':'70d95eafce97e6bae0ba6cf28b61c9d764a7b82ce9bd4fb67843bedf642ec25e',
  CORE:'293212836a6c3df380ea4e8b77fff92c6be4383ad08fbb9a26adfc12c89010e8',
@@ -434,6 +434,29 @@ MAX_CAPTURE_BYTES = 32 * 1024 ** 2
 _BASE_PINS = {role: dict(values) for role, values in PINS.items()}
 _BASE_OPS = OPS
 _AcceptedRuntime = Runtime
+RETENTION_ENTRY = Path('/usr/local/libexec/careertrellis/onedrive_retention/entry.py')
+RETENTION_MARKERS = tuple(
+    Path('/etc/careertrellis/onedrive-retention') / name
+    for name in ('activation.json', 'activation-intent.json', 'activation-pending.json', 'activation-finalized.json')
+)
+
+
+def retention_absent():
+    """Return True only when entry.py and all activation markers are absent."""
+    for path in (RETENTION_ENTRY, *RETENTION_MARKERS):
+        for parent in reversed(path.parents):
+            try:
+                meta = parent.lstat()
+            except FileNotFoundError:
+                continue
+            require(stat.S_ISDIR(meta.st_mode) and meta.st_uid == 0 and not meta.st_mode & 0o022,
+                    'retention_unsafe_parent')
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        return False
+    return True
 
 
 class _JournalAdapter(DurableJournal):

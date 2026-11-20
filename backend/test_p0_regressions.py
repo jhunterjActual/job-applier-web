@@ -4649,6 +4649,72 @@ class DependencyLockTests(unittest.TestCase):
         self.assertIn("/usr/bin/systemctl is-enabled", schedule_audit)
         self.assertIn("--property=LoadState", schedule_audit)
 
+    def test_legacy_paired_full_schedule_ready_is_read_only_and_fail_closed(self) -> None:
+        project_dir = self.project_dir()
+        manager = (
+            project_dir / "deploy" / "scripts" / "manage-backup-health.sh"
+        ).read_text(encoding="utf-8")
+        backup_health_core = (
+            project_dir / "backend" / "backup_health.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("FULL_MAX_AGE_SECONDS = 8 * 24 * 60 * 60", backup_health_core)
+        self.assertIn("GENERATED_MIRROR_MAX_AGE_SECONDS = 8 * 24 * 60 * 60", backup_health_core)
+
+        retention_pos = manager.index("retention_schedule_ready() {")
+        paired_pos = manager.index("paired_full_schedule_ready() {")
+        self.assertLess(retention_pos, paired_pos)
+        paired_fn = manager[paired_pos : manager.index("if [[ -L ${core}", paired_pos)]
+        self.assertIn("<<'PAIRED_PY'", paired_fn)
+        self.assertNotIn("<<'PY'", paired_fn)
+        self.assertIn("/usr/local/libexec/careertrellis/paired_maintenance", paired_fn)
+        self.assertIn("'__init__.py', 'entry.py', 'manifest.json'", paired_fn)
+        self.assertIn("entry.verify_install()", paired_fn)
+        self.assertIn("entry.load_policy()", paired_fn)
+        self.assertIn("policy.data['enabled'] is True", paired_fn)
+        self.assertIn("policy.data['source_readonly_attested'] is True", paired_fn)
+        self.assertIn("policy.data['no_external_writers_attested'] is True", paired_fn)
+        self.assertIn("policy.valid_from <= now < policy.valid_until", paired_fn)
+        self.assertIn("source_custody_reviewed_at", paired_fn)
+        self.assertIn(
+            "/usr/bin/systemctl show careertrellis-pgbackrest-full.service --property=LoadState --value",
+            paired_fn,
+        )
+        self.assertNotIn('systemctl show "${unit_name}"', paired_fn)
+        self.assertIn(
+            '/usr/bin/systemctl list-unit-files --no-legend --no-pager --full "${unit_name}"',
+            paired_fn,
+        )
+        self.assertIn('unit_path="/etc/systemd/system/${unit_name}"', paired_fn)
+        self.assertIn("static | enabled | enabled-runtime", paired_fn)
+        for unit in (
+            "careertrellis-pgbackrest-full.service",
+            "careertrellis-paired-db@.service",
+            "careertrellis-paired-db-recovery@.service",
+        ):
+            self.assertIn(unit, paired_fn)
+        self.assertNotIn("flock", paired_fn)
+        self.assertNotIn("rclone", paired_fn)
+
+        unit_state = manager[
+            manager.index("operation_unit_state() {") : manager.index("audit_monitor_schedule() {")
+        ]
+        self.assertIn(
+            "if [[ ${operation} == full_backup && ${selected_profile} == legacy && ${missed} == true ]]; then",
+            unit_state,
+        )
+        self.assertIn("paired_full_schedule_ready", unit_state)
+        self.assertIn("${service_result} != success", unit_state)
+
+        schedule_audit = manager[
+            manager.index("audit_monitor_schedule() {") : manager.index("evaluate_database_health() {")
+        ]
+        self.assertIn(
+            "if [[ ${selected_profile} == legacy && ${timer_name} == careertrellis-pgbackrest-full.timer ]]; then",
+            schedule_audit,
+        )
+        self.assertIn("paired_full_schedule_ready || return 1", schedule_audit)
+        self.assertLess(schedule_audit.index("/usr/bin/systemctl is-active"), schedule_audit.index("paired_full_schedule_ready"))
+
     def test_generated_object_health_is_local_receipt_only_and_truthful(self) -> None:
         project_dir = self.project_dir()
         scripts = project_dir / "deploy" / "scripts"

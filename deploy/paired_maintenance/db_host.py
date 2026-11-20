@@ -29,7 +29,7 @@ MIRROR_PINS = {
  '/usr/local/sbin/careertrellis-mirror-pgbackrest-onedrive': '630de3092529f165ee305601dc52ad6b89b912e90294dc42ab09ec419de552ca',
  '/etc/systemd/system/' + MIRROR: 'bb1796a7b2131e5964cc119a77fbc0a4260d39a69ef6d6aca6d8e6646d1720a4'}
 HEALTH_PINS = {
- '/usr/local/sbin/careertrellis-backup-health': '58bc6e0e408e02830691b34fbebc71a3919a69834df5950c8fae8228db66bf41',
+ '/usr/local/sbin/careertrellis-backup-health': 'a16d514c8e96d86e56b6892ff67be418ec88ba7a5820bc192aada59b50c5befa',
  '/etc/systemd/system/' + HEALTH: '7466dc73af94a06a1ee53f92dca2ee2ed64358ef4806f2b3b2ec56f172e7b3e0',
  '/etc/systemd/system/' + HEALTH + '.d/50-backup-reporting.conf': '34272f25158e3b6dea3c5243a7f0d5d1c516c72f6703bc50032270c4e57448f3'}
 
@@ -231,6 +231,8 @@ class DBBackend:
 
     def _native_retention(self):
         """An invalid selector never falls back to the legacy mirror proof."""
+        if runtime.retention_absent():
+            return None
         from onedrive_retention import entry as retention_entry
         revision=retention_entry.verify_install()
         activation=retention_entry._load('activation')

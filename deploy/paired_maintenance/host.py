@@ -411,9 +411,12 @@ class WebBackend:
         """Use only the explicit activated selector, never policy-file presence.
 
         New paired source is installed together with the standalone namespace.
-        A missing/corrupt installation is a preflight failure. The selector
-        alone may return the legacy contract before the explicit activation.
+        A missing/corrupt installation is a preflight failure. When neither
+        the standalone namespace nor any activation marker is present, return
+        the legacy contract; any partial/broken state fails closed.
         """
+        if runtime.retention_absent():
+            return {'mode': 'legacy-mirror'}
         from onedrive_retention import entry as retention_entry
         retention_entry.verify_install()
         activation=retention_entry._load('activation')
@@ -565,8 +568,12 @@ class WebBackend:
 
     def _restoration_identity(self):
         original = self.store.read('start-intent.json')
-        need(set(original) == {'transaction', 'policy_sha256', 'identity'}
+        need(type(original) is dict
+             and set(original) in ({'transaction', 'policy_sha256', 'identity'},
+                                   {'transaction', 'policy_sha256', 'identity', 'backup_strategy'})
              and original['transaction'] == self.transaction and original['policy_sha256'] == self.policy.digest)
+        if 'backup_strategy' in original:
+            validate_backup_strategy(original['backup_strategy'])
         identity = original['identity']
         need(type(identity) is dict and set(identity) == {'release', 'web_boot', 'web_invocation'}
              and identity['release'] == self.policy.data['application_release']

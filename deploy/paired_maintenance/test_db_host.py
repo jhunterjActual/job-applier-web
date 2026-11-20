@@ -3,6 +3,8 @@ import copy
 import datetime as dt
 import hashlib
 import json
+import stat
+import sys
 import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -258,6 +260,39 @@ class DBHostTests(unittest.TestCase):
         with patch.object(h.runtime, 'protected', return_value=b'changed'):
             with self.assertRaises(h.Refused): h.latest(self.r, 'full_backup')
         self.assertEqual([], self.r.events)
+
+    def test_native_retention_absent_returns_none_and_partial_fails_closed(self):
+        backend = object.__new__(h.DBBackend)
+        backend.policy = self.p
+        def fake_lstat(present=()):
+            def _lstat(path):
+                p = str(path).replace('\\', '/')
+                if p in present:
+                    return SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0)
+                if p in ('/', '/usr', '/usr/local', '/usr/local/libexec', '/usr/local/libexec/careertrellis',
+                         '/etc', '/etc/careertrellis'):
+                    return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
+                raise FileNotFoundError(p)
+            return _lstat
+
+        with patch.object(h.runtime.Path, 'lstat', new=fake_lstat()):
+            self.assertIsNone(backend._native_retention())
+
+        marker = str(h.runtime.RETENTION_MARKERS[0]).replace('\\', '/')
+        with patch.object(h.runtime.Path, 'lstat', new=fake_lstat((marker,))), \
+             patch.dict(sys.modules, {'onedrive_retention': None, 'onedrive_retention.entry': None}):
+            with self.assertRaises(ModuleNotFoundError):
+                backend._native_retention()
+
+        entry_path = str(h.runtime.RETENTION_ENTRY).replace('\\', '/')
+        verify = Mock(side_effect=RuntimeError('install_invalid'))
+        pkg = type(sys)('onedrive_retention')
+        pkg.entry = SimpleNamespace(verify_install=verify)
+        with patch.object(h.runtime.Path, 'lstat', new=fake_lstat((entry_path,))), \
+             patch.dict(sys.modules, {'onedrive_retention': pkg, 'onedrive_retention.entry': pkg.entry}):
+            with self.assertRaisesRegex(RuntimeError, 'install_invalid'):
+                backend._native_retention()
+        verify.assert_called_once_with()
 
 
 class NativeBundleDBTests(unittest.TestCase):
