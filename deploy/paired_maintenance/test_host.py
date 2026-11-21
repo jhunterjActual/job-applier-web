@@ -476,6 +476,47 @@ class HostTests(unittest.TestCase):
             self.assertTrue(value.preflight()['ready'])
         self.assertEqual(held, [])
 
+    def test_preflight_acquire_fence_and_restore_use_expected_lock_modes(self):
+        self.assertEqual(host.MAINTENANCE_MODES, (0o600, 0o644))
+
+        value = backend()
+        root = Store()
+        calls = []
+        def fake_fence(path, mode):
+            calls.append((path, mode))
+            fence = Mock(fd=42)
+            fence.acquire.return_value = fence
+            return fence
+        value.client.call.return_value = {'ready': True}
+        value.r.run.return_value = canonical({'operation': 'generated_object_mirror', 'result': 'ok', 'started_at': '2026-10-25T00:00:00Z'})
+        with patch.object(host, 'Journal', return_value=root), \
+             patch.object(runtime, 'Fence', side_effect=fake_fence), \
+             patch.object(host.provider, 'web_facts', return_value={
+                 'source_count': 2, 'source_bytes': 100, 'onedrive_free_bytes': 200,
+                 'egress_ipv4_cidr': '192.0.2.1/32'}), \
+             patch.object(value, 'retention_strategy', return_value={'mode': 'legacy-mirror'}):
+            self.assertTrue(value.preflight()['ready'])
+        self.assertEqual(calls, [(runtime.MAINTENANCE, host.MAINTENANCE_MODES), (runtime.RECOVERY, 0o600)])
+
+        calls.clear()
+        value = backend()
+        with patch.object(runtime, 'Fence', side_effect=fake_fence):
+            value.acquire_fence()
+        self.assertEqual(calls, [(runtime.MAINTENANCE, host.MAINTENANCE_MODES)])
+        value.r.fence.inherit10.assert_called_once_with()
+
+        calls.clear()
+        value = backend()
+        value.restored = False
+        value.last_peer = {'state': 'sealed'}
+        value.store.write_once('stop-intent.json', {'writers': {unit: index + 10 for index, unit in enumerate(runtime.SERVICES)}})
+        value.r.live_group.return_value = False
+        value.r.state.return_value = {'ActiveState': 'inactive'}
+        with patch.object(runtime, 'Fence', side_effect=fake_fence), \
+             patch.object(host.time, 'monotonic', return_value=10), patch.object(host.time, 'sleep'):
+            value.restore_writers()
+        self.assertEqual(calls, [(runtime.RECOVERY, 0o600)])
+
     def test_retention_strategy_absent_returns_legacy_and_partial_fails_closed(self):
         value = backend()
         def fake_lstat(present=()):
@@ -1132,6 +1173,60 @@ class NativeBundleAcceptanceTests(unittest.TestCase):
                 process.terminate.assert_not_called();process.kill.assert_not_called()
             finally:
                 if fence.fd is not None:fence.close()
+
+    def test_run_native_bundle_passes_maintenance_modes_to_fence(self):
+        captured, strategy, documents = self.fixture()
+        value = backend()
+        value.r.live_group.return_value = False
+        value.bundle_unconfirmed = False
+        value.retention_strategy = Mock(return_value=copy.deepcopy(strategy))
+        value.status = Mock()
+        parent_pid = os.getpid()
+        child_pid = parent_pid + 10000
+        def identity(pid):
+            return {'pid': pid, 'start_ticks': 123 if pid == parent_pid else 456,
+                    'process_group': parent_pid if pid == parent_pid else child_pid, 'boot_id': BOOT}
+        native = types.SimpleNamespace(process_identity=identity)
+        preservation = types.SimpleNamespace(require_owned_lock=lambda path, fd: {'device': 1, 'inode': 2, 'owner_pid': parent_pid})
+        coordinator = types.SimpleNamespace(STATE=Path('/fixed-retention'),
+            read_private=lambda path: copy.deepcopy(documents[path.name]))
+        entry = types.SimpleNamespace(verify_install=Mock(return_value='a' * 40),
+            _load=lambda name: {'native_restore': native, 'preservation': preservation, 'coordinator': coordinator}[name])
+        package = types.ModuleType('onedrive_retention')
+        package.entry = entry
+        value.r.state.return_value = {
+            'ActiveState': 'active', 'SubState': 'running', 'MainPID': str(parent_pid),
+            'ControlPID': '0', 'Job': '', 'InvocationID': value.r.invocation}
+        publication = {key: captured[key] for key in ('release', 'backup_label', 'snapshot_id', 'manifest_sha256', 'authority')}
+        for name, record in {
+            'start-intent.json': {'backup_strategy': strategy},
+            'writers-restored.json': {'services_restored': True, 'capture_sha256': digest(captured)},
+            'db-released.json': {'services_restored': True},
+            'publication-result.json': dict(publication, result='onedrive_snapshot_created'),
+        }.items():
+            value.store.write_once(name, record)
+        process = types.SimpleNamespace(pid=child_pid, poll=lambda: 0, wait=lambda: 0, terminate=Mock(), kill=Mock())
+        fence = Mock(fd=42)
+        fence.acquire.return_value = fence
+        with tempfile.TemporaryDirectory(prefix='paired-native-fence-') as temporary:
+            value.store.root = Path(temporary)
+            with patch.dict(sys.modules, {'onedrive_retention': package}), \
+                 patch.object(host.runtime, 'Fence', return_value=fence) as fence_cls, \
+                 patch.object(host.os, 'O_NOFOLLOW', 0x20000, create=True), \
+                 patch.object(host.os, 'O_DIRECTORY', 0x10000, create=True), \
+                 patch.object(host.os, 'fchmod', create=True), \
+                 patch.object(host.os, 'fsync'), \
+                 patch.object(host.os, 'open', side_effect=[101, 102]), \
+                 patch.object(host.os, 'close'), \
+                 patch.object(host.os, 'fstat', return_value=types.SimpleNamespace(st_size=128)), \
+                 patch.object(host.subprocess, 'Popen', return_value=process), \
+                 patch.object(host.Path, 'read_text', return_value='0::/system.slice/careertrellis-paired-maintenance.service'), \
+                 patch.object(host.runtime, 'protected', return_value=canonical(documents['retire-complete.json'])):
+                accepted = value.run_native_bundle(captured, strategy)
+        self.assertTrue(accepted['native_restore_accepted'])
+        fence_cls.assert_called_once_with(runtime.MAINTENANCE, host.MAINTENANCE_MODES)
+        fence.acquire.assert_called_once_with()
+        fence.close.assert_called_once_with()
 
 
 if __name__ == '__main__': unittest.main()

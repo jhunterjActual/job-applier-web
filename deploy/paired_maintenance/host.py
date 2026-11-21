@@ -27,6 +27,7 @@ ROOT = Path('/var/lib/careertrellis/paired-maintenance')
 ROLE_ROOT = ROOT / 'web'
 HEALTH = 'careertrellis-generated-object-backup-health.service'
 REPORTER = 'careertrellis-backup-reporter@25b88cde302be38ed3d4c86742f406451f058d97.service'
+MAINTENANCE_MODES = (0o600, 0o644)
 HEALTH_PINS = {
  '/usr/local/sbin/careertrellis-backup-health': 'e7b51cf999481554e3fc68c9cc4159a81dd19cb38464de13b1c9304db09361af',
  '/etc/systemd/system/' + HEALTH: 'beaf0a520da2c4cfcb763ce3ea510236e2534822379aab77387a7a8aac9cb29e',
@@ -386,7 +387,7 @@ class WebBackend:
         self.status('preflight', services_restored=True)
         self.r.verify_sources()
         self.r.health()
-        temporary = runtime.Fence(runtime.MAINTENANCE, 0o644).acquire()
+        temporary = runtime.Fence(runtime.MAINTENANCE, MAINTENANCE_MODES).acquire()
         recovery = None
         try:
             recovery = runtime.Fence(runtime.RECOVERY, 0o600).acquire()
@@ -431,7 +432,7 @@ class WebBackend:
     def acquire_fence(self):
         need(not self.heartbeat_failure)
         self.r.verify_sources()
-        self.r.fence = runtime.Fence(runtime.MAINTENANCE, 0o644).acquire()
+        self.r.fence = runtime.Fence(runtime.MAINTENANCE, MAINTENANCE_MODES).acquire()
         self.r.fence.inherit10()
 
     def release_fence(self):
@@ -668,7 +669,7 @@ class WebBackend:
              and parent_state.get('Job')=='' and parent_state.get('InvocationID')==self.r.invocation
              and Path('/proc/self/cgroup').read_text().strip()=='0::/system.slice/'+parent_unit)
         self.r.verify_sources();self.r.health()
-        self.r.fence=runtime.Fence(runtime.MAINTENANCE,0o644).acquire()
+        self.r.fence=runtime.Fence(runtime.MAINTENANCE,MAINTENANCE_MODES).acquire()
         # From this point, only a fully verified successful child may close it.
         self.bundle_unconfirmed=True
         maintenance_fd=self.r.fence.fd

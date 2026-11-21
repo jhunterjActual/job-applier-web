@@ -211,7 +211,12 @@ def protected(path,limit,modes=(0o644,0o755,0o600)):
     finally: os.close(fd)
 
 class Fence:
-    def __init__(self,path,mode): self.path=Path(path); self.mode=mode; self.fd=None
+    def __init__(self,path,mode):
+        if type(mode) is int: modes=(mode,)
+        elif isinstance(mode,(tuple,list,set,frozenset)): modes=tuple(mode)
+        else: raise Refused('lock_mode')
+        require(bool(modes) and all(type(m) is int and 0<=m<=0o777 for m in modes),'lock_mode')
+        self.path=Path(path); self.mode=mode; self.modes=frozenset(modes); self.fd=None; self.acquired_mode=None
     def acquire(self):
         import fcntl
         # /run/lock is intentionally root sticky 1777; pins protect the leaf.
@@ -221,9 +226,11 @@ class Fence:
         self.fd=os.open(self.path,os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK)
         try:
             s=os.fstat(self.fd)
-            require((s.st_dev,s.st_ino)==(prior.st_dev,prior.st_ino) and stat.S_ISREG(s.st_mode) and s.st_uid==s.st_gid==0 and s.st_nlink==1 and stat.S_IMODE(s.st_mode)==self.mode,'lock_identity')
+            mode=stat.S_IMODE(s.st_mode)
+            require((s.st_dev,s.st_ino)==(prior.st_dev,prior.st_ino) and stat.S_ISREG(s.st_mode) and s.st_uid==s.st_gid==0 and s.st_nlink==1 and mode in self.modes,'lock_identity')
             fcntl.flock(self.fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
             self.identity=(s.st_dev,s.st_ino)
+            self.acquired_mode=mode
         except BaseException:
             self.close()
             raise
@@ -233,8 +240,8 @@ class Fence:
         require(self.fd is not None,'fence_missing')
         s=self.path.lstat(); f=os.fstat(self.fd)
         require(self.identity==(s.st_dev,s.st_ino)==(f.st_dev,f.st_ino) and s.st_nlink==1,'fence_replaced')
-        require(stat.S_ISREG(s.st_mode) and s.st_uid==s.st_gid==0
-                and stat.S_IMODE(s.st_mode)==self.mode,'fence_metadata_changed')
+        expected_mode=stat.S_IMODE(s.st_mode)==self.acquired_mode if self.acquired_mode is not None else stat.S_IMODE(s.st_mode) in self.modes
+        require(stat.S_ISREG(s.st_mode) and s.st_uid==s.st_gid==0 and expected_mode,'fence_metadata_changed')
         fcntl.flock(self.fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
     def inherit10(self):
         require(self.fd!=10,'reserved_fd_in_use')
@@ -244,7 +251,10 @@ class Fence:
         else: raise Refused('reserved_fd_in_use')
         os.dup2(self.fd,10); os.close(self.fd); self.fd=10
     def close(self):
-        if self.fd is not None: os.close(self.fd); self.fd=None
+        try:
+            if self.fd is not None: os.close(self.fd)
+        finally:
+            self.fd=None; self.acquired_mode=None
 
 class Runtime:
     def __init__(self,role,transaction):
