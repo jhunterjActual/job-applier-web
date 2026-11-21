@@ -189,5 +189,62 @@ class DBControlTests(unittest.TestCase):
         with self.assertRaises(Refused):
             self.control.handle(request('complete', dict(body, publication_manifest_sha256='f' * 64)))
 
+    def test_prior_policy_sha256_permits_only_abort_and_post_abort_restored(self):
+        prior = 'f' * 64
+        def prior_req(operation, payload=None):
+            value = request(operation, payload)
+            value['policy_sha256'] = prior
+            return value
+
+        # Without prior_policy_sha256 configured, prior begin-intent refuses everything.
+        self.store.write_once('begin-intent.json', prior_req('begin', IDENTITY))
+        for op, payload in (('status', {}), ('abort', IDENTITY), ('restored', dict(IDENTITY, services_restored=True))):
+            with self.subTest(configured=False, op=op), self.assertRaises(Refused):
+                self.control.handle(request(op, payload))
+
+        # Configure prior_policy_sha256 on Policy #3.
+        self.policy.data = dict(self.policy.data, prior_policy_sha256=prior)
+        self.control.handle(request('status'))
+        for op, payload in (
+            ('begin', IDENTITY),
+            ('quiesced', dict(IDENTITY, quiesced_at=90, services_stopped=True)),
+            ('capture', dict(IDENTITY, capture=capture())),
+            ('mirror', {'release': RELEASE, 'backup_label': '20261026-001723F', 'publication_manifest_sha256': 'e' * 64}),
+            ('health', {}),
+            ('complete', {'release': RELEASE, 'backup_label': '20261026-001723F', 'publication_manifest_sha256': 'e' * 64}),
+            ('mirror_status', {}),
+            ('health_status', {}),
+            ('preflight', {}),
+            ('restored', dict(IDENTITY, services_restored=True)),  # No abort-dispatch-intent.json yet.
+        ):
+            with self.subTest(op=op), self.assertRaises(Refused):
+                self.control.handle(request(op, payload))
+
+        # Existing abort.json under prior_policy_sha256 with matching payload is accepted without re-dispatching.
+        self.store.write_once('abort.json', prior_req('abort', IDENTITY))
+        self.store.write_once('abort-dispatch-intent.json', prior_req('abort', IDENTITY))
+        self.control.handle(request('abort', IDENTITY))
+        self.assertEqual([], self.backend.calls)
+        self.assertEqual(prior, self.store.read('abort.json')['policy_sha256'])
+
+        # Mismatched abort payload refuses.
+        with self.assertRaises(Refused):
+            self.control.handle(request('abort', dict(IDENTITY, web_invocation='0' * 32)))
+
+        # restored is permitted once abort-dispatch-intent.json exists.
+        self.control.handle(request('restored', dict(IDENTITY, services_restored=True)))
+        self.assertEqual(HASH, self.store.read('restored.json')['policy_sha256'])
+
+    def test_prior_policy_sha256_abort_without_existing_abort_dispatches_once_and_repeats(self):
+        prior = 'f' * 64
+        self.policy.data = dict(self.policy.data, prior_policy_sha256=prior)
+        begin = request('begin', IDENTITY)
+        begin['policy_sha256'] = prior
+        self.store.write_once('begin-intent.json', begin)
+        self.control.handle(request('abort', IDENTITY))
+        self.control.handle(request('abort', IDENTITY))
+        self.assertEqual(['abort'], self.backend.calls)
+        self.assertEqual(HASH, self.store.read('abort.json')['policy_sha256'])
+
 
 if __name__ == '__main__': unittest.main()

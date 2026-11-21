@@ -1229,4 +1229,167 @@ class NativeBundleAcceptanceTests(unittest.TestCase):
         fence.close.assert_called_once_with()
 
 
+class PriorPolicyAbortTests(unittest.TestCase):
+    def _prior_policy(self, prior='f' * 64):
+        p = backend().policy
+        p.data['backup_wait_seconds'] = 7200
+        if prior is not None:
+            p.data['prior_policy_sha256'] = prior
+        return p
+
+    def _interrupted_stores(self, prior='f' * 64, *, include_stop=True):
+        root = Store()
+        store = Store()
+        identity = {'release': RELEASE, 'web_boot': BOOT, 'web_invocation': 'a' * 32}
+        root.replace('status.json', {
+            'schema': 'careertrellis.paired-maintenance-status/v1',
+            'policy_sha256': prior, 'boot_id': BOOT, 'release': RELEASE,
+            'phase': 'operator_required', 'result': 'failed',
+            'observed_at': '2026-11-21T15:25:15Z', 'services_restored': False,
+            'transaction': TX,
+        })
+        store.write_once('start-intent.json', {'transaction': TX, 'policy_sha256': prior, 'identity': identity})
+        store.write_once('db-begin-intent.json', identity)
+        store.write_once('peer-identity.json', {'transaction': TX, 'policy_sha256': prior,
+                                                'release': RELEASE, 'boot_id': BOOT, 'worker_invocation': 'e' * 32})
+        store.write_once('abort-intent.json', identity)
+        if include_stop:
+            store.write_once('stop-intent.json', {'writers': {unit: idx + 10 for idx, unit in enumerate(runtime.SERVICES)}})
+        return root, store, identity
+
+    def test_run_web_recovery_only_aborts_prior_policy_tx_and_rejects_normal_run_web(self):
+        prior = 'f' * 64
+        for peer_reply_policy in (HASH, prior):
+            with self.subTest(peer_reply_policy=peer_reply_policy):
+                policy = self._prior_policy(prior)
+                root, store, identity = self._interrupted_stores(prior)
+                def journal(path):
+                    return store if path == host.ROLE_ROOT / 'runs' / TX else root
+
+                # Normal run_web(recovery_only=False) must refuse active prior_policy_sha256 transaction.
+                preflight_facade = Mock(boot=BOOT)
+                with patch.object(host, '_initial_control_lock', return_value=123), \
+                     patch.object(host.os, 'close'), \
+                     patch.object(host.runtime, 'preflight_runtime', return_value=preflight_facade), \
+                     patch.object(host, 'Journal', side_effect=journal), \
+                     patch.object(host, 'public_marker'), \
+                     patch.object(host, 'WebBackend') as wb_cls:
+                    with self.assertRaises(Refused):
+                        host.run_web(policy, recovery_only=False)
+                    wb_cls.assert_not_called()
+
+                # Reset root status to prior_policy after failed run_web(False).
+                root, store, identity = self._interrupted_stores(prior)
+                native = Mock(boot=BOOT, invocation='d' * 32, fence=None)
+                native.live_group.return_value = False
+                native.state.return_value = {'ActiveState': 'inactive'}
+                fence = Mock(fd=10)
+                fence.acquire.return_value = fence
+                peer_states = iter([
+                    {'state': 'abort_ready', 'transaction': TX, 'policy_sha256': peer_reply_policy,
+                     'release': RELEASE, 'boot_id': BOOT, 'worker_invocation': 'e' * 32},
+                    {'state': 'aborted', 'transaction': TX, 'policy_sha256': peer_reply_policy,
+                     'release': RELEASE, 'boot_id': BOOT, 'worker_invocation': 'e' * 32},
+                ])
+                native.wait_peer.side_effect = lambda client, wanted, timeout, on_wait=None: next(peer_states)
+                client_inst = Mock()
+                with patch.object(host, '_initial_control_lock', return_value=123), \
+                     patch.object(host.os, 'close'), \
+                     patch.object(host.runtime, 'preflight_runtime', return_value=preflight_facade), \
+                     patch.object(host, 'Journal', side_effect=journal), \
+                     patch.object(host.runtime, 'HostRuntime', return_value=native), \
+                     patch.object(host, 'Client', return_value=client_inst), \
+                     patch.object(host.runtime, 'Fence', return_value=fence), \
+                     patch.object(host, 'public_marker') as marker, \
+                     patch.object(host.time, 'monotonic', return_value=10), \
+                     patch.object(host.time, 'sleep'):
+                    result = host.run_web(policy, recovery_only=True)
+                self.assertEqual({'state': 'aborted_restored', 'services_restored': True}, result)
+                self.assertEqual(HASH, store.read('aborted-restored.json')['policy_sha256'])
+                self.assertEqual(prior, store.read('peer-identity.json')['policy_sha256'])
+                self.assertEqual(HASH, root.read('status.json')['policy_sha256'])
+                self.assertEqual('failed', root.read('status.json')['phase'])
+                self.assertTrue(root.read('status.json')['services_restored'])
+                self.assertEqual((policy, BOOT, 'idle'), marker.call_args_list[-1].args)
+                # Once aborted-restored is recorded under new policy, _terminal_prior accepts it.
+                with patch.object(host, 'Journal', side_effect=journal):
+                    self.assertTrue(host._terminal_prior(policy, root.read('status.json')))
+
+    def test_run_web_recovery_only_refuses_post_release_or_unconfigured_prior_policy(self):
+        prior = 'f' * 64
+        for scenario in ('no_prior_config', 'db_released', 'publish_intent', 'complete_file',
+                         'phase_publishing', 'phase_mirroring', 'missing_start_intent'):
+            with self.subTest(scenario=scenario):
+                policy = self._prior_policy(None if scenario == 'no_prior_config' else prior)
+                root, store, _ = self._interrupted_stores(prior)
+                if scenario == 'db_released':
+                    store.write_once('db-released.json', {'services_restored': True})
+                elif scenario == 'publish_intent':
+                    store.write_once('publish-intent.json', {'capture_sha256': '1' * 64})
+                elif scenario == 'complete_file':
+                    store.write_once('complete.json', {'state': 'complete', 'transaction': TX, 'policy_sha256': prior, 'services_restored': True})
+                elif scenario == 'phase_publishing':
+                    root.values['status.json']['phase'] = 'publishing'
+                elif scenario == 'phase_mirroring':
+                    root.values['status.json']['phase'] = 'mirroring'
+                elif scenario == 'missing_start_intent':
+                    del store.values['start-intent.json']
+                def journal(path):
+                    return store if path == host.ROLE_ROOT / 'runs' / TX else root
+                preflight_facade = Mock(boot=BOOT)
+                with patch.object(host, '_initial_control_lock', return_value=123), \
+                     patch.object(host.os, 'close'), \
+                     patch.object(host.runtime, 'preflight_runtime', return_value=preflight_facade), \
+                     patch.object(host, 'Journal', side_effect=journal), \
+                     patch.object(host, 'public_marker'), \
+                     patch.object(host, 'WebBackend') as wb_cls:
+                    with self.assertRaises(Refused):
+                        host.run_web(policy, recovery_only=True)
+                    wb_cls.assert_not_called()
+
+    def test_terminal_prior_clear_writer_block_and_released_reconcile_never_accept_prior_policy(self):
+        prior = 'f' * 64
+        value = released_backend()
+        value.policy.data['prior_policy_sha256'] = prior
+        value.store.values['start-intent.json']['policy_sha256'] = prior
+        value.store.values['peer-identity.json']['policy_sha256'] = prior
+        value.store.write_once('abort-intent.json', value.store.read('start-intent.json')['identity'])
+
+        # _terminal_prior refuses prior_policy_sha256.
+        root = Store()
+        with patch.object(host, 'Journal', return_value=value.store):
+            with self.assertRaises(Refused):
+                host._terminal_prior(value.policy, {'phase': 'idle', 'policy_sha256': prior, 'release': RELEASE, 'services_restored': True})
+            with self.assertRaises(Refused):
+                host._terminal_prior(value.policy, {'phase': 'complete', 'policy_sha256': prior, 'release': RELEASE, 'transaction': TX})
+
+        # _restoration_identity() default and clear_writer_block() refuse prior_policy_sha256.
+        with self.assertRaises(Refused):
+            value._restoration_identity()
+        with patch.object(host, 'public_marker') as marker, self.assertRaises(Refused):
+            value.clear_writer_block()
+        marker.assert_not_called()
+
+        # reconcile_terminal_peer for 'released' refuses prior_policy_sha256.
+        del value.store.values['db-released.json']
+        released_peer = dict(value.store.read('peer-identity.json'), state='released', policy_sha256=HASH)
+        with self.assertRaises(Refused):
+            value.reconcile_terminal_peer(released_peer)
+
+        # reconcile_terminal_peer for 'aborted' succeeds only with abort-intent.json and no db-released.json.
+        value.store.write_once('restore-dispatch-intent.json', {'restore_original_writers': True})
+        aborted_peer = dict(value.store.read('peer-identity.json'), state='aborted', policy_sha256=HASH)
+        value.reconcile_terminal_peer(aborted_peer)
+        self.assertTrue(value.restored)
+
+        # _bind_peer rejects prior_policy_sha256 on non-abort states or mismatched worker_invocation.
+        for bad_peer in (
+            dict(value.store.read('peer-identity.json'), state='released', policy_sha256=prior),
+            dict(value.store.read('peer-identity.json'), state='fenced', policy_sha256=prior),
+            dict(value.store.read('peer-identity.json'), state='abort_ready', policy_sha256=HASH, worker_invocation='1' * 32),
+        ):
+            with self.subTest(bad_peer=bad_peer), self.assertRaises(Refused):
+                value._bind_peer(bad_peer)
+
+
 if __name__ == '__main__': unittest.main()

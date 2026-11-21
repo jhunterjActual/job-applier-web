@@ -147,7 +147,16 @@ class DBBackend:
         if not self.store.exists('status.json'):
             return {'state': 'unknown', 'operator_required': True}
         value = self.store.read('status.json')
-        need(value['transaction'] == transaction and value['policy_sha256'] == self.policy.digest)
+        policy_ok = value['policy_sha256'] == self.policy.digest
+        if not policy_ok:
+            prior_policy = self.policy.data.get('prior_policy_sha256')
+            policy_ok = (
+                prior_policy is not None
+                and value['policy_sha256'] == prior_policy
+                and value.get('state') in ('operator_required', 'abort_ready', 'aborted')
+                and self.store.exists('abort-dispatch-intent.json')
+            )
+        need(value['transaction'] == transaction and policy_ok)
         if value['boot_id'] != self.r.boot:
             return {'state': 'unknown', 'operator_required': True}
         if value['state'] in ('released', 'aborted', 'complete'):
@@ -426,6 +435,64 @@ class DBWorker:
             time.sleep(1)
         return self.message(name)
 
+    def _verify_gc_invocation(self, invocation, allow_failed=False):
+        need(hex_string(invocation, 32), 'backup_invocation_changed')
+        expected_boot = self.r.boot.replace('-', '').lower()
+        need(bool(expected_boot), 'backup_outcome_unknown')
+        raw = self.r.run(['/usr/bin/journalctl', '-u', runtime.FULL, '-b', '-n', '200', '--no-pager', '-o', 'json'])
+        lines = [line for line in raw.splitlines() if line.strip()]
+        need(bool(lines), 'backup_outcome_unknown')
+        entries = []
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except (ValueError, TypeError, UnicodeError):
+                raise Refused('backup_outcome_unknown') from None
+            need(isinstance(row, dict), 'backup_outcome_unknown')
+            boot = row.get('_BOOT_ID')
+            if isinstance(boot, str) and boot.replace('-', '').lower() == expected_boot:
+                entries.append(row)
+        need(bool(entries), 'backup_outcome_unknown')
+        seen = False
+        inv_rows = []
+        for row in entries:
+            row_invs = []
+            for key in ('INVOCATION_ID', '_SYSTEMD_INVOCATION_ID'):
+                val = row.get(key)
+                if val not in (None, ''):
+                    need(isinstance(val, str), 'backup_outcome_unknown')
+                    row_invs.append(val)
+            if invocation in row_invs:
+                need(all(v == invocation for v in row_invs), 'backup_invocation_changed')
+                seen = True
+                inv_rows.append(row)
+            elif seen and row_invs:
+                raise Refused('backup_invocation_changed')
+        need(seen, 'backup_outcome_unknown')
+        if allow_failed:
+            return
+        systemd_rows = [
+            row for row in inv_rows
+            if row.get('SYSLOG_IDENTIFIER') == 'systemd'
+            and row.get('_PID') == '1'
+            and row.get('UNIT') == runtime.FULL
+            and row.get('INVOCATION_ID') == invocation
+        ]
+        for row in systemd_rows:
+            if 'JOB_RESULT' in row and row['JOB_RESULT'] != 'done':
+                raise Refused('backup_failed')
+            if row.get('MESSAGE_ID') == 'be02cf6855d2428ba40df7e9d022f03d':
+                raise Refused('backup_failed')
+            msg = row.get('MESSAGE', '')
+            if isinstance(msg, str) and ('Failed with result' in msg or msg.startswith('Failed to start ')):
+                raise Refused('backup_failed')
+        finished_done = any(
+            row.get('MESSAGE_ID') == '39f53479d3a045ac8e11786248231fbf'
+            and row.get('JOB_RESULT') == 'done'
+            for row in systemd_rows
+        )
+        need(finished_done, 'backup_outcome_unknown')
+
     def observe_backup(self, allow_failed=False):
         intent = self.store.read('backup-intent.json')
         need(intent['boot_id'] == self.r.boot)
@@ -441,11 +508,27 @@ class DBWorker:
         while True:
             self.r.check()
             value = self.r.state(runtime.FULL)
-            need(value['InvocationID'] == invocation, 'backup_invocation_changed')
-            if terminal(value):
-                self.r.terminal(runtime.FULL)
-                if not allow_failed: need(value['Result'] == 'success' and value['ExecMainStatus'] == '0', 'backup_failed')
-                return invocation
+            if value['InvocationID'] == invocation:
+                if terminal(value):
+                    self.r.terminal(runtime.FULL)
+                    if not allow_failed:
+                        need(value['Result'] == 'success' and value['ExecMainStatus'] == '0', 'backup_failed')
+                    return invocation
+            elif value['InvocationID'] == '':
+                term = self.r.terminal(runtime.FULL)
+                if term['InvocationID'] != '':
+                    need(term['InvocationID'] == invocation, 'backup_invocation_changed')
+                for attempt in range(3):
+                    try:
+                        self._verify_gc_invocation(invocation, allow_failed=allow_failed)
+                        return invocation
+                    except Refused as exc:
+                        if exc.code != 'backup_outcome_unknown' or attempt == 2 or time.monotonic() >= deadline:
+                            raise
+                        self.r.check()
+                        time.sleep(1)
+            else:
+                raise Refused('backup_invocation_changed')
             need(time.monotonic() < deadline, 'backup_outcome_unknown')
             time.sleep(2)
 
@@ -504,8 +587,10 @@ class DBWorker:
             self.status('sealed', capture_sha256=digest(captured))
             restored = self.wait('restored', 300)
             need(restored['services_restored'] is True and restored.get('capture_sha256') == digest(captured))
-            self.r.terminal(runtime.FULL)
-            need(self.r.state(runtime.FULL)['InvocationID'] == invocation)
+            term = self.r.terminal(runtime.FULL)
+            if term['InvocationID'] != invocation:
+                need(term['InvocationID'] == '', 'backup_invocation_changed')
+                self._verify_gc_invocation(invocation, allow_failed=True)
             self.r.fence.close(); self.r.fence = None
             return self.status('released')
         except Exception:

@@ -285,5 +285,53 @@ class WebControlTests(unittest.TestCase):
         self.policy.data = {}
         with self.assertRaises(KeyError): WebControl(self.policy, self.store, self.backend)
 
+    def test_prior_policy_sha256_allows_abort_recovery_only_before_db_released(self):
+        prior = 'f' * 64
+        self.policy.data = dict(self.policy.data, prior_policy_sha256=prior)
+        self.store.write_once('start-intent.json', {'transaction': TX, 'policy_sha256': prior, 'identity': IDENTITY})
+        self.store.write_once('db-begin-intent.json', IDENTITY)
+        self.store.write_once('stop-intent.json', {'writers': {'web': 10}})
+        self.backend.stopped = True
+        self.backend.blocked = True
+
+        # Direct _original(TX) without allow_prior refuses prior_policy_sha256.
+        with self.assertRaises(Refused):
+            self.control._original(TX)
+
+        # Inside _recover with no db-released.json, abort recovery succeeds and writes new policy_sha256.
+        result = self.control.run(TX, recovery_only=True)
+        self.assertEqual('aborted_restored', result['state'])
+        self.assertTrue(result['services_restored'])
+        self.assertFalse(self.backend.stopped)
+        self.assertFalse(self.backend.blocked)
+        self.assertEqual(HASH, self.store.read('aborted-restored.json')['policy_sha256'])
+        self.assertEqual(prior, self.store.read('start-intent.json')['policy_sha256'])
+
+    def test_prior_policy_sha256_refused_in_recover_when_db_released_exists(self):
+        prior = 'f' * 64
+        self.policy.data = dict(self.policy.data, prior_policy_sha256=prior)
+        self.store.write_once('start-intent.json', {'transaction': TX, 'policy_sha256': prior, 'identity': IDENTITY})
+        self.store.write_once('db-begin-intent.json', IDENTITY)
+        self.store.write_once('db-released.json', {'services_restored': True})
+        self.backend.blocked = True
+        result = self.control.run(TX, recovery_only=True)
+        self.assertEqual({'state': 'operator_required', 'services_restored': False}, result)
+        self.assertTrue(self.backend.blocked)
+        self.assertNotIn('clear_writer_block', self.backend.events)
+        self.assertNotIn('peer_abort', self.backend.events)
+
+    def test_prior_policy_sha256_refused_for_complete_aborted_and_prestart(self):
+        prior = 'f' * 64
+        self.policy.data = dict(self.policy.data, prior_policy_sha256=prior)
+        for name, record in (
+            ('complete.json', {'state': 'complete', 'transaction': TX, 'policy_sha256': prior, 'services_restored': True}),
+            ('aborted-restored.json', {'transaction': TX, 'policy_sha256': prior, 'services_restored': True}),
+        ):
+            self.setUp()
+            self.policy.data = dict(self.policy.data, prior_policy_sha256=prior)
+            self.store.write_once(name, record)
+            with self.subTest(name=name), self.assertRaises(Refused):
+                self.control.run(TX, recovery_only=True)
+
 
 if __name__ == '__main__': unittest.main()

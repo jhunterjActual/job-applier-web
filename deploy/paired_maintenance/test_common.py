@@ -168,6 +168,20 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(Refused):
             policy.require_new_start(instant('2026-11-01T08:00:00Z'))
 
+    def test_prior_policy_sha256_validation_and_self_reference_rejection(self):
+        prior = 'e' * 64
+        base = Policy(policy_data())
+        updated = Policy(policy_data(prior_policy_sha256=prior))
+        self.assertEqual(prior, updated.data['prior_policy_sha256'])
+        self.assertNotEqual(base.digest, updated.digest)
+        for bad in ('0' * 64, 'E' * 64, 'e' * 63, 'e' * 65, 'g' * 64,
+                    None, 123, True, ['e' * 64], {'sha': prior}):
+            with self.subTest(bad=bad), self.assertRaises(Refused):
+                Policy(policy_data(prior_policy_sha256=bad))
+        with patch('deploy.paired_maintenance.common.digest' if __package__ else 'common.digest', return_value=prior):
+            with self.assertRaises(Refused):
+                Policy(policy_data(prior_policy_sha256=prior))
+
     def test_caller_cannot_mutate_a_validated_policy(self):
         original = policy_data()
         policy = Policy(original)

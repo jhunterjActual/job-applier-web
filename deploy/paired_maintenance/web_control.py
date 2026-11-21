@@ -97,9 +97,19 @@ class WebControl:
         need(type(value) is dict and value.get('state', value.get('phase')) == state)
         return value
 
-    def _original(self, transaction):
+    def _original(self, transaction, allow_prior=False):
         original = self.store.read('start-intent.json')
-        need(original['transaction'] == transaction and original['policy_sha256'] == self.policy.digest)
+        prior_policy = self.policy.data.get('prior_policy_sha256')
+        policy_ok = (
+            original['policy_sha256'] == self.policy.digest
+            or (
+                allow_prior
+                and prior_policy is not None
+                and original['policy_sha256'] == prior_policy
+                and not self.store.exists('db-released.json')
+            )
+        )
+        need(original['transaction'] == transaction and policy_ok)
         identity = original['identity']
         current = self.backend.identity()
         need(identity['release'] == self.policy.data['application_release'])
@@ -122,7 +132,7 @@ class WebControl:
             except Exception:
                 return self._operator()
         try:
-            identity = self._original(transaction)
+            identity = self._original(transaction, allow_prior=True)
             if self.store.exists('db-released.json'):
                 # Online publication/mirror ambiguity never aborts an active DB
                 # mirror or replays provider work. Writers were proved restored.
