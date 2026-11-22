@@ -392,8 +392,16 @@ class DBControl:
         if 'release' in payload:
             need(payload['release'] == self.policy.data['application_release'])
         intent = self.store.read('begin-intent.json') if self.store.exists('begin-intent.json') else None
+        prior_policy = None
+        prior_tx = False
         if intent is not None:
-            need(intent['transaction'] == transaction and intent['policy_sha256'] == request['policy_sha256'])
+            need(intent['transaction'] == transaction)
+            if intent['policy_sha256'] != request['policy_sha256']:
+                prior_policy = self.policy.data.get('prior_policy_sha256')
+                need(prior_policy is not None and intent['policy_sha256'] == prior_policy)
+                prior_tx = True
+                need(operation in ('status', 'abort')
+                     or (operation == 'restored' and self.store.exists('abort-dispatch-intent.json')))
         if operation == 'preflight':
             try:
                 value = self.backend.preflight()
@@ -420,7 +428,12 @@ class DBControl:
         if 'web_boot' in payload:
             need(all(payload[key] == intent['payload'][key] for key in IDENTITY))
         if operation in ('quiesced', 'capture', 'restored', 'abort'):
-            self._same_or_write(operation + '.json', request)
+            if operation == 'abort' and prior_tx and self.store.exists('abort.json'):
+                existing = validate_request(self.store.read('abort.json'))
+                need(existing['policy_sha256'] in (request['policy_sha256'], prior_policy))
+                need(canonical(dict(existing, policy_sha256=request['policy_sha256'])) == canonical(request))
+            else:
+                self._same_or_write(operation + '.json', request)
             if operation == 'abort':
                 # Abort is a durable request consumed by the existing worker;
                 # repeated requests only inspect that worker's original state.

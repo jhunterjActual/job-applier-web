@@ -361,6 +361,49 @@ class ReviewedHealthPinsTests(unittest.TestCase):
         finally:
             for name,value in saved.items():setattr(runtime,name,value)
 
+    def test_absent_onedrive_retention_routes_legacy_and_partial_state_fails_closed(self):
+        import stat
+        from deploy.paired_maintenance import runtime, host, db_host
+        def fake_lstat(present_paths=(), unsafe_parent=None):
+            def _lstat(path):
+                p = str(path).replace('\\', '/')
+                if unsafe_parent and p == unsafe_parent:
+                    return SimpleNamespace(st_mode=stat.S_IFDIR | 0o777, st_uid=0)
+                if p in present_paths:
+                    return SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0)
+                if p in ('/', '/usr', '/usr/local', '/usr/local/libexec', '/usr/local/libexec/careertrellis',
+                         '/etc', '/etc/careertrellis'):
+                    return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
+                raise FileNotFoundError(p)
+            return _lstat
+
+        web = object.__new__(host.WebBackend)
+        web.policy = SimpleNamespace(digest='a'*64)
+        db = object.__new__(db_host.DBBackend)
+        db.policy = SimpleNamespace(digest='a'*64, data={'application_release': 'b'*40})
+
+        with patch.object(runtime.Path, 'lstat', new=fake_lstat()):
+            self.assertTrue(runtime.retention_absent())
+            self.assertEqual(web.retention_strategy(), {'mode': 'legacy-mirror'})
+            self.assertIsNone(db._native_retention())
+
+        for target in (str(runtime.RETENTION_ENTRY), *(str(p) for p in runtime.RETENTION_MARKERS)):
+            normalized = target.replace('\\', '/')
+            with self.subTest(partial=normalized), \
+                 patch.object(runtime.Path, 'lstat', new=fake_lstat((normalized,))), \
+                 patch.dict(sys.modules, {'onedrive_retention': None, 'onedrive_retention.entry': None}):
+                self.assertFalse(runtime.retention_absent())
+                with self.assertRaises(ModuleNotFoundError):
+                    web.retention_strategy()
+                with self.assertRaises(ModuleNotFoundError):
+                    db._native_retention()
+
+        with patch.object(runtime.Path, 'lstat', new=fake_lstat(unsafe_parent='/etc/careertrellis')):
+            with self.assertRaises(runtime.Refused):
+                web.retention_strategy()
+            with self.assertRaises(runtime.Refused):
+                db._native_retention()
+
 
 class ActivationEvidenceRPCTests(unittest.TestCase):
     def fixture(self):

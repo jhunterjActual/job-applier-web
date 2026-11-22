@@ -63,6 +63,68 @@ retention_schedule_ready() {
     ' <<<"${schedule_document}" >/dev/null 2>&1
 }
 
+paired_full_schedule_ready() {
+    local unit_name unit_path load_state unit_files_output unit_file_name unit_file_state extra_fields
+    /usr/bin/python3 -I -B - <<'PAIRED_PY' >/dev/null 2>&1 || return 1
+import datetime as dt
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path('/usr/local/libexec/careertrellis/paired_maintenance')
+root_meta = root.lstat()
+assert stat.S_ISDIR(root_meta.st_mode) and root_meta.st_uid == 0 and root_meta.st_gid == 0 and not (root_meta.st_mode & 0o022)
+for name in ('__init__.py', 'entry.py', 'manifest.json'):
+    target = root / name
+    for parent in reversed(target.parents):
+        meta = parent.lstat()
+        assert stat.S_ISDIR(meta.st_mode) and meta.st_uid == 0 and not (meta.st_mode & 0o022)
+    meta = target.lstat()
+    assert stat.S_ISREG(meta.st_mode) and meta.st_uid == 0 and meta.st_gid == 0 and not (meta.st_mode & 0o022) and meta.st_nlink == 1
+
+sys.path.insert(0, str(root.parent))
+from paired_maintenance import entry
+
+entry.verify_install()
+policy = entry.load_policy()
+now = dt.datetime.now(dt.timezone.utc)
+assert policy.data['enabled'] is True
+assert policy.data['source_readonly_attested'] is True
+assert policy.data['no_external_writers_attested'] is True
+assert policy.valid_from <= now < policy.valid_until
+reviewed = policy.data.get('source_custody_reviewed_at')
+if reviewed is not None:
+    assert dt.datetime.fromisoformat(reviewed.replace('Z', '+00:00')).astimezone(dt.timezone.utc) <= now
+PAIRED_PY
+    load_state=$(/usr/bin/systemctl show careertrellis-pgbackrest-full.service --property=LoadState --value 2>/dev/null || true)
+    if [[ ${load_state} != loaded ]]; then
+        return 1
+    fi
+    for unit_name in \
+        careertrellis-paired-db@.service \
+        careertrellis-paired-db-recovery@.service; do
+        unit_path="/etc/systemd/system/${unit_name}"
+        if [[ -L ${unit_path} || ! -f ${unit_path} || ! -r ${unit_path} ]]; then
+            return 1
+        fi
+        if ! unit_files_output=$(/usr/bin/systemctl list-unit-files --no-legend --no-pager --full "${unit_name}" 2>/dev/null); then
+            return 1
+        fi
+        if [[ -z ${unit_files_output} || ${unit_files_output} == *$'\n'* ]]; then
+            return 1
+        fi
+        read -r unit_file_name unit_file_state extra_fields <<<"${unit_files_output}" || return 1
+        if [[ ${unit_file_name} != "${unit_name}" ]]; then
+            return 1
+        fi
+        case "${unit_file_state}" in
+            static | enabled | enabled-runtime) ;;
+            *) return 1 ;;
+        esac
+    done
+    return 0
+}
+
 if [[ -L ${core} || ! -f ${core} || ! -r ${core} ]]; then
     echo "The reviewed backup-health core is unavailable." >&2
     exit 1
@@ -351,6 +413,11 @@ operation_unit_state() {
     if [[ ${timer_active} != active || ${timer_enabled} != enabled || ${timer_loaded} != loaded ]]; then
         missed=true
     fi
+    if [[ ${operation} == full_backup && ${selected_profile} == legacy && ${missed} == true ]]; then
+        if paired_full_schedule_ready; then
+            missed=false
+        fi
+    fi
     if [[ ${operation} == full_backup && ${selected_profile} == bundle ]]; then
         missed=true
         if retention_schedule_ready; then missed=false; fi
@@ -404,6 +471,10 @@ audit_monitor_schedule() {
         timer_enabled=$(/usr/bin/systemctl is-enabled "${timer_name}" 2>/dev/null || true)
         timer_loaded=$(/usr/bin/systemctl show "${timer_name}" --property=LoadState --value 2>/dev/null || true)
         if [[ ${timer_active} != active || ${timer_enabled} != enabled || ${timer_loaded} != loaded ]]; then
+            if [[ ${selected_profile} == legacy && ${timer_name} == careertrellis-pgbackrest-full.timer ]]; then
+                paired_full_schedule_ready || return 1
+                continue
+            fi
             return 1
         fi
     done

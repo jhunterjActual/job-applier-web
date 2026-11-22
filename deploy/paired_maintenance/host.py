@@ -27,6 +27,7 @@ ROOT = Path('/var/lib/careertrellis/paired-maintenance')
 ROLE_ROOT = ROOT / 'web'
 HEALTH = 'careertrellis-generated-object-backup-health.service'
 REPORTER = 'careertrellis-backup-reporter@25b88cde302be38ed3d4c86742f406451f058d97.service'
+MAINTENANCE_MODES = (0o600, 0o644)
 HEALTH_PINS = {
  '/usr/local/sbin/careertrellis-backup-health': 'e7b51cf999481554e3fc68c9cc4159a81dd19cb38464de13b1c9304db09361af',
  '/etc/systemd/system/' + HEALTH: 'beaf0a520da2c4cfcb763ce3ea510236e2534822379aab77387a7a8aac9cb29e',
@@ -386,7 +387,7 @@ class WebBackend:
         self.status('preflight', services_restored=True)
         self.r.verify_sources()
         self.r.health()
-        temporary = runtime.Fence(runtime.MAINTENANCE, 0o644).acquire()
+        temporary = runtime.Fence(runtime.MAINTENANCE, MAINTENANCE_MODES).acquire()
         recovery = None
         try:
             recovery = runtime.Fence(runtime.RECOVERY, 0o600).acquire()
@@ -411,9 +412,12 @@ class WebBackend:
         """Use only the explicit activated selector, never policy-file presence.
 
         New paired source is installed together with the standalone namespace.
-        A missing/corrupt installation is a preflight failure. The selector
-        alone may return the legacy contract before the explicit activation.
+        A missing/corrupt installation is a preflight failure. When neither
+        the standalone namespace nor any activation marker is present, return
+        the legacy contract; any partial/broken state fails closed.
         """
+        if runtime.retention_absent():
+            return {'mode': 'legacy-mirror'}
         from onedrive_retention import entry as retention_entry
         retention_entry.verify_install()
         activation=retention_entry._load('activation')
@@ -428,7 +432,7 @@ class WebBackend:
     def acquire_fence(self):
         need(not self.heartbeat_failure)
         self.r.verify_sources()
-        self.r.fence = runtime.Fence(runtime.MAINTENANCE, 0o644).acquire()
+        self.r.fence = runtime.Fence(runtime.MAINTENANCE, MAINTENANCE_MODES).acquire()
         self.r.fence.inherit10()
 
     def release_fence(self):
@@ -444,12 +448,27 @@ class WebBackend:
 
     def _bind_peer(self, value):
         need(not value.get('operator_required'))
-        need(value.get('transaction') == self.transaction and value.get('policy_sha256') == self.policy.digest)
+        prior_policy = self.policy.data.get('prior_policy_sha256')
+        prior_abort = (
+            prior_policy is not None
+            and self.store.exists('abort-intent.json')
+            and not self.store.exists('db-released.json')
+            and value.get('state') in ('abort_ready', 'aborted')
+        )
+        need(value.get('transaction') == self.transaction
+             and (value.get('policy_sha256') == self.policy.digest
+                  or (prior_abort and value.get('policy_sha256') == prior_policy)))
         need(value.get('release') == self.policy.data['application_release'])
         need(isinstance(value.get('boot_id'), str) and str(uuid.UUID(value['boot_id'])) == value['boot_id'])
         need(hex_string(value.get('worker_invocation'), 32))
         identity = {key: value[key] for key in ('transaction', 'policy_sha256', 'release', 'boot_id', 'worker_invocation')}
-        self.store.write_once('peer-identity.json', identity)
+        if prior_abort and self.store.exists('peer-identity.json'):
+            prior_peer = self.store.read('peer-identity.json')
+            need(prior_peer.get('policy_sha256') in (self.policy.digest, prior_policy))
+            need(all(prior_peer.get(key) == identity[key]
+                     for key in ('transaction', 'release', 'boot_id', 'worker_invocation')))
+        else:
+            self.store.write_once('peer-identity.json', identity)
         self.last_peer = value
 
     def wait_peer(self, wanted, timeout):
@@ -563,10 +582,20 @@ class WebBackend:
         finally:
             del self.r.startup_prior_pids
 
-    def _restoration_identity(self):
+    def _restoration_identity(self, allow_prior=False):
         original = self.store.read('start-intent.json')
-        need(set(original) == {'transaction', 'policy_sha256', 'identity'}
-             and original['transaction'] == self.transaction and original['policy_sha256'] == self.policy.digest)
+        prior_policy = (
+            self.policy.data.get('prior_policy_sha256')
+            if allow_prior and self.store.exists('abort-intent.json') and not self.store.exists('db-released.json')
+            else None
+        )
+        expected_policies = (self.policy.digest,) if prior_policy is None else (self.policy.digest, prior_policy)
+        need(type(original) is dict
+             and set(original) in ({'transaction', 'policy_sha256', 'identity'},
+                                   {'transaction', 'policy_sha256', 'identity', 'backup_strategy'})
+             and original['transaction'] == self.transaction and original['policy_sha256'] in expected_policies)
+        if 'backup_strategy' in original:
+            validate_backup_strategy(original['backup_strategy'])
         identity = original['identity']
         need(type(identity) is dict and set(identity) == {'release', 'web_boot', 'web_invocation'}
              and identity['release'] == self.policy.data['application_release']
@@ -577,7 +606,7 @@ class WebBackend:
              and all(type(pid) is int and pid > 0 for pid in stopped['writers'].values()))
         peer = self.store.read('peer-identity.json')
         need(set(peer) == {'transaction', 'policy_sha256', 'release', 'boot_id', 'worker_invocation'}
-             and peer['transaction'] == self.transaction and peer['policy_sha256'] == self.policy.digest
+             and peer['transaction'] == self.transaction and peer['policy_sha256'] in expected_policies
              and peer['release'] == identity['release'] and hex_string(peer['worker_invocation'], 32)
              and isinstance(peer['boot_id'], str) and str(uuid.UUID(peer['boot_id'])) == peer['boot_id'])
         return identity
@@ -594,7 +623,7 @@ class WebBackend:
     def reconcile_terminal_peer(self, value):
         self.restored = False
         need(type(value) is dict and value.get('state') in ('released', 'aborted'))
-        identity = self._restoration_identity()
+        identity = self._restoration_identity(allow_prior=value.get('state') == 'aborted')
         self._bind_peer(value)
         if value['state'] == 'released':
             self._capture_restoration(identity)
@@ -661,7 +690,7 @@ class WebBackend:
              and parent_state.get('Job')=='' and parent_state.get('InvocationID')==self.r.invocation
              and Path('/proc/self/cgroup').read_text().strip()=='0::/system.slice/'+parent_unit)
         self.r.verify_sources();self.r.health()
-        self.r.fence=runtime.Fence(runtime.MAINTENANCE,0o644).acquire()
+        self.r.fence=runtime.Fence(runtime.MAINTENANCE,MAINTENANCE_MODES).acquire()
         # From this point, only a fully verified successful child may close it.
         self.bundle_unconfirmed=True
         maintenance_fd=self.r.fence.fd
@@ -1024,6 +1053,36 @@ def _run_controller(controller, backend, transaction, recovery_only):
     return result
 
 
+def _prior_abortable(policy, prior):
+    prior_policy = policy.data.get('prior_policy_sha256')
+    if prior_policy is None or prior.get('policy_sha256') != prior_policy:
+        return False
+    if prior.get('release') != policy.data['application_release']:
+        return False
+    transaction = prior.get('transaction')
+    if not hex_string(transaction, 32):
+        return False
+    if prior.get('phase') in ('idle', 'complete', 'publishing', 'mirroring', 'verifying'):
+        return False
+    store = Journal(ROLE_ROOT / 'runs' / transaction)
+    if any(store.exists(name) for name in (
+        'db-released.json', 'publish-intent.json', 'publication-result.json',
+        'bundle-intent.json', 'bundle-dispatch-intent.json', 'db-bundle-accepted.json',
+        'db-mirror-accepted.json', 'db-health-accepted.json',
+        'health-dispatch-intent.json', 'normal-reports-accepted.json',
+        'complete.json', 'prestart-aborted.json',
+    )):
+        return False
+    if not store.exists('start-intent.json'):
+        return False
+    start = store.read('start-intent.json')
+    return (isinstance(start, dict)
+            and start.get('transaction') == transaction
+            and start.get('policy_sha256') == prior_policy
+            and isinstance(start.get('identity'), dict)
+            and start['identity'].get('release') == policy.data['application_release'])
+
+
 def run_web(policy, recovery_only=False):
     descriptor = _initial_control_lock(policy, recovery_only=recovery_only)
     if descriptor is None:
@@ -1047,7 +1106,10 @@ def run_web(policy, recovery_only=False):
                        (prior.get('phase') == 'preflight' and 'transaction' not in prior)):
             active = not prior_terminal
         if active:
-            need(prior.get('policy_sha256') == policy.digest and hex_string(prior.get('transaction'), 32))
+            need(
+                (prior.get('policy_sha256') == policy.digest and hex_string(prior.get('transaction'), 32))
+                or (recovery_only and _prior_abortable(policy, prior))
+            )
             if prior.get('boot_id') != preflight.boot:
                 public_marker(policy, preflight.boot, 'blocked', prior['transaction'])
                 preflight.transaction = prior['transaction']

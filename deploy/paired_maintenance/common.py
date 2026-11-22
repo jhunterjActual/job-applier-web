@@ -102,7 +102,8 @@ class Policy:
         'source_readonly_attested', 'no_external_writers_attested',
         'retention_policy', 'approved_egress_ipv4_cidr'))
     OPTIONAL = frozenset(('artifact_hashes', 'manifest_revision',
-                          'source_custody_reviewed_at', 'policy_label'))
+                          'source_custody_reviewed_at', 'policy_label',
+                          'prior_policy_sha256'))
 
     def __init__(self, data):
         _require(isinstance(data, dict) and self.REQUIRED <= set(data)
@@ -187,7 +188,14 @@ class Policy:
                              and '..' not in Path(path).parts and
                              isinstance(expected, str) and re.fullmatch('[0-9a-f]{64}', expected),
                              'policy_artifact_hashes')
+        if 'prior_policy_sha256' in value:
+            prior = value['prior_policy_sha256']
+            _require(isinstance(prior, str)
+                     and re.fullmatch('[0-9a-f]{64}', prior) is not None
+                     and prior != '0' * 64, 'policy_prior_sha256')
         self.digest = digest(self._data)
+        if 'prior_policy_sha256' in value:
+            _require(value['prior_policy_sha256'] != self.digest, 'policy_prior_sha256')
 
     @property
     def data(self):

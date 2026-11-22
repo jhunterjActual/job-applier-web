@@ -12,15 +12,15 @@ except ImportError:
     import runtime as r
 
 
-def leaf(inode=2):
-    return SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_gid=0,
+def leaf(inode=2, mode=0o600):
+    return SimpleNamespace(st_mode=stat.S_IFREG | mode, st_uid=0, st_gid=0,
                            st_dev=1, st_ino=inode, st_nlink=1)
 
 
-def metadata(path):
+def metadata(path, mode=0o600):
     if path.name in ('run', 'lock'):
         return SimpleNamespace(st_mode=stat.S_IFDIR | (0o755 if path.name == 'run' else 0o1777), st_uid=0, st_gid=0)
-    return leaf()
+    return leaf(mode=mode)
 
 
 class RuntimeTests(unittest.TestCase):
@@ -116,6 +116,89 @@ class RuntimeTests(unittest.TestCase):
         client = SimpleNamespace(call=Mock(return_value={'state': 'pair_ready'}))
         with self.assertRaises(r.Refused): runtime.wait_peer(client, {'pair_ready'}, 20)
         runtime.fence.close.assert_not_called()
+
+    def test_fence_tuple_mode_accepts_allowed_and_rejects_disallowed_with_close(self):
+        for allowed in (0o600, 0o644):
+            with self.subTest(allowed=oct(allowed)):
+                fake = SimpleNamespace(LOCK_EX=2, LOCK_NB=4, flock=Mock())
+                with patch.dict(sys.modules, {'fcntl': fake}), \
+                     patch.object(r.Path, 'lstat', lambda path: metadata(path, mode=allowed)), \
+                     patch.object(r.os, 'open', return_value=42), \
+                     patch.object(r.os, 'fstat', return_value=leaf(mode=allowed)), \
+                     patch.object(r.os, 'close') as close:
+                    fence = r.Fence('/run/lock/careertrellis-maintenance.lock', (0o600, 0o644))
+                    self.assertIs(fence.acquire(), fence)
+                    self.assertEqual(allowed, fence.acquired_mode)
+                    fence.check()
+                    fence.close()
+                    close.assert_called_once_with(42)
+                    self.assertIsNone(fence.fd)
+                    self.assertIsNone(fence.acquired_mode)
+
+        for disallowed in (0o640, 0o664, 0o666, 0o755):
+            with self.subTest(disallowed=oct(disallowed)):
+                fake = SimpleNamespace(LOCK_EX=2, LOCK_NB=4, flock=Mock())
+                with patch.dict(sys.modules, {'fcntl': fake}), \
+                     patch.object(r.Path, 'lstat', lambda path: metadata(path, mode=disallowed)), \
+                     patch.object(r.os, 'open', return_value=42), \
+                     patch.object(r.os, 'fstat', return_value=leaf(mode=disallowed)), \
+                     patch.object(r.os, 'close') as close:
+                    fence = r.Fence('/run/lock/careertrellis-maintenance.lock', (0o600, 0o644))
+                    with self.assertRaisesRegex(r.Refused, '^lock_identity$'):
+                        fence.acquire()
+                    close.assert_called_once_with(42)
+                    self.assertIsNone(fence.fd)
+                    self.assertIsNone(fence.acquired_mode)
+
+    def test_fence_check_refuses_mid_lock_mode_change(self):
+        for initial, changed in ((0o600, 0o644), (0o644, 0o600)):
+            with self.subTest(initial=oct(initial), changed=oct(changed)):
+                current = [initial]
+                fake = SimpleNamespace(LOCK_EX=2, LOCK_NB=4, flock=Mock())
+                with patch.dict(sys.modules, {'fcntl': fake}), \
+                     patch.object(r.Path, 'lstat', lambda path: metadata(path, mode=current[0])), \
+                     patch.object(r.os, 'open', return_value=42), \
+                     patch.object(r.os, 'fstat', side_effect=lambda fd: leaf(mode=current[0])), \
+                     patch.object(r.os, 'close') as close:
+                    fence = r.Fence('/run/lock/careertrellis-maintenance.lock', (0o600, 0o644))
+                    fence.acquire()
+                    self.assertEqual(initial, fence.acquired_mode)
+                    current[0] = changed
+                    with self.assertRaisesRegex(r.Refused, '^fence_metadata_changed$'):
+                        fence.check()
+                    close.assert_not_called()
+                    self.assertEqual(42, fence.fd)
+                    self.assertEqual(initial, fence.acquired_mode)
+
+        fence = r.Fence('/run/lock/careertrellis-maintenance.lock', (0o600, 0o644))
+        fence.fd = 42; fence.identity = (1, 2)
+        with patch.dict(sys.modules, {'fcntl': SimpleNamespace(LOCK_EX=2, LOCK_NB=4, flock=Mock())}), \
+             patch.object(r.Path, 'lstat', return_value=leaf(mode=0o644)), \
+             patch.object(r.os, 'fstat', return_value=leaf(mode=0o644)):
+            fence.check()
+        with patch.dict(sys.modules, {'fcntl': SimpleNamespace(LOCK_EX=2, LOCK_NB=4, flock=Mock())}), \
+             patch.object(r.Path, 'lstat', return_value=leaf(mode=0o640)), \
+             patch.object(r.os, 'fstat', return_value=leaf(mode=0o640)):
+            with self.assertRaisesRegex(r.Refused, '^fence_metadata_changed$'):
+                fence.check()
+
+    def test_fence_rejects_invalid_mode_specifications(self):
+        for bad in ((), [], set(), frozenset(), True, False, (True,), (0o600, False),
+                    '0600', ('0600',), b'0600', -1, (0o600, -1), 0o1000, (0o600, 0o1777),
+                    None, {0o600: True}):
+            with self.subTest(bad=bad), self.assertRaisesRegex(r.Refused, '^lock_mode$'):
+                r.Fence('/run/lock/careertrellis-maintenance.lock', bad)
+
+        for spec, expected in ((0o600, frozenset({0o600})),
+                               (0, frozenset({0})),
+                               (0o777, frozenset({0o777})),
+                               ([0o600, 0o644], frozenset({0o600, 0o644})),
+                               ({0o600, 0o644}, frozenset({0o600, 0o644})),
+                               (frozenset({0o600, 0o644}), frozenset({0o600, 0o644}))):
+            with self.subTest(spec=spec):
+                fence = r.Fence('/run/lock/careertrellis-maintenance.lock', spec)
+                self.assertEqual(expected, fence.modes)
+                self.assertIsNone(fence.acquired_mode)
 
 
 if __name__ == '__main__': unittest.main()

@@ -3,6 +3,8 @@ import copy
 import datetime as dt
 import hashlib
 import json
+import stat
+import sys
 import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -259,6 +261,39 @@ class DBHostTests(unittest.TestCase):
             with self.assertRaises(h.Refused): h.latest(self.r, 'full_backup')
         self.assertEqual([], self.r.events)
 
+    def test_native_retention_absent_returns_none_and_partial_fails_closed(self):
+        backend = object.__new__(h.DBBackend)
+        backend.policy = self.p
+        def fake_lstat(present=()):
+            def _lstat(path):
+                p = str(path).replace('\\', '/')
+                if p in present:
+                    return SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0)
+                if p in ('/', '/usr', '/usr/local', '/usr/local/libexec', '/usr/local/libexec/careertrellis',
+                         '/etc', '/etc/careertrellis'):
+                    return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
+                raise FileNotFoundError(p)
+            return _lstat
+
+        with patch.object(h.runtime.Path, 'lstat', new=fake_lstat()):
+            self.assertIsNone(backend._native_retention())
+
+        marker = str(h.runtime.RETENTION_MARKERS[0]).replace('\\', '/')
+        with patch.object(h.runtime.Path, 'lstat', new=fake_lstat((marker,))), \
+             patch.dict(sys.modules, {'onedrive_retention': None, 'onedrive_retention.entry': None}):
+            with self.assertRaises(ModuleNotFoundError):
+                backend._native_retention()
+
+        entry_path = str(h.runtime.RETENTION_ENTRY).replace('\\', '/')
+        verify = Mock(side_effect=RuntimeError('install_invalid'))
+        pkg = type(sys)('onedrive_retention')
+        pkg.entry = SimpleNamespace(verify_install=verify)
+        with patch.object(h.runtime.Path, 'lstat', new=fake_lstat((entry_path,))), \
+             patch.dict(sys.modules, {'onedrive_retention': pkg, 'onedrive_retention.entry': pkg.entry}):
+            with self.assertRaisesRegex(RuntimeError, 'install_invalid'):
+                backend._native_retention()
+        verify.assert_called_once_with()
+
 
 class NativeBundleDBTests(unittest.TestCase):
     def fixture(self):
@@ -353,6 +388,282 @@ class NativeBundleDBTests(unittest.TestCase):
                     patch.object(value,'health_status',return_value=health),patch.object(value,'_global'):
                 with self.assertRaises(h.Refused):value.complete(TX,payload)
             self.assertFalse(value.store.exists('complete-result.json'))
+
+
+def _journal_lines(rows):
+    return b''.join((json.dumps(row) + '\n').encode('utf-8') for row in rows)
+
+
+def _gc_journal_rows(boot_no_hyphen, inv, *, result='done', include_finished=True,
+                     newer_inv=None, older_inv=None, other_boot=None, forged_pid=None):
+    rows = []
+    if other_boot:
+        rows.append({'_BOOT_ID': other_boot, 'INVOCATION_ID': 'e' * 32,
+                     'SYSLOG_IDENTIFIER': 'systemd', '_PID': '1', 'UNIT': h.runtime.FULL,
+                     'MESSAGE_ID': '39f53479d3a045ac8e11786248231fbf', 'JOB_RESULT': 'done',
+                     'MESSAGE': 'Finished ' + h.runtime.FULL + '.'})
+    if older_inv:
+        rows.append({'_BOOT_ID': boot_no_hyphen, 'INVOCATION_ID': older_inv,
+                     'SYSLOG_IDENTIFIER': 'systemd', '_PID': '1', 'UNIT': h.runtime.FULL,
+                     'MESSAGE_ID': '39f53479d3a045ac8e11786248231fbf', 'JOB_RESULT': 'done',
+                     'MESSAGE': 'Finished ' + h.runtime.FULL + '.'})
+    rows.append({'_BOOT_ID': boot_no_hyphen, 'INVOCATION_ID': inv,
+                 'SYSLOG_IDENTIFIER': 'systemd', '_PID': '1', 'UNIT': h.runtime.FULL,
+                 'MESSAGE_ID': '7d4958e842da4a758f6c1cdc7b36dcc5',
+                 'MESSAGE': 'Starting ' + h.runtime.FULL + '...'})
+    rows.append({'_BOOT_ID': boot_no_hyphen, '_SYSTEMD_INVOCATION_ID': inv,
+                 'SYSLOG_IDENTIFIER': 'careertrellis-run-pgbackrest-backup', '_PID': '791059',
+                 'MESSAGE': '{"operation":"full_backup","result":"ok"}'})
+    if include_finished:
+        rows.append({'_BOOT_ID': boot_no_hyphen, 'INVOCATION_ID': inv,
+                     'SYSLOG_IDENTIFIER': 'systemd', '_PID': '1', 'UNIT': h.runtime.FULL,
+                     'MESSAGE_ID': '7ad2d189f7e94e70a38c781354912448',
+                     'MESSAGE': h.runtime.FULL + ': Deactivated successfully.'})
+        rows.append({'_BOOT_ID': boot_no_hyphen, 'INVOCATION_ID': inv,
+                     'SYSLOG_IDENTIFIER': 'systemd', '_PID': forged_pid or '1', 'UNIT': h.runtime.FULL,
+                     'MESSAGE_ID': '39f53479d3a045ac8e11786248231fbf' if result == 'done' else 'be02cf6855d2428ba40df7e9d022f03d',
+                     'JOB_RESULT': result,
+                     'MESSAGE': ('Finished ' if result == 'done' else 'Failed with result \'exit-code\'. ') + h.runtime.FULL + '.'})
+    if newer_inv:
+        rows.append({'_BOOT_ID': boot_no_hyphen, '_SYSTEMD_INVOCATION_ID': newer_inv,
+                     'SYSLOG_IDENTIFIER': 'careertrellis-run-pgbackrest-backup', '_PID': '791099',
+                     'MESSAGE': 'newer'})
+    return _journal_lines(rows)
+
+
+class SystemdGCAndPriorPolicyDBHostTests(unittest.TestCase):
+    def setUp(self):
+        self.store = Memory()
+        self.p = policy()
+        self.boot_uuid = 'c7d1f8ea-d232-4fff-8233-9e93d7e04b18'
+        self.boot_hex = 'c7d1f8ead2324fff82339e93d7e04b18'
+        self.inv = '9f6cab3ebc96415eb833cbb862e4e0f4'
+        self.r = Runtime(self.store)
+        self.r.boot = self.boot_uuid
+        self.store.write_once('begin-intent.json', request('begin', IDENTITY))
+        self.store.write_once('quiesced.json', request('quiesced', dict(IDENTITY, quiesced_at=90, services_stopped=True)))
+        self.store.write_once('capture.json', request('capture', dict(IDENTITY, capture=capture())))
+        self.store.write_once('restored.json', request('restored', dict(IDENTITY, services_restored=True, capture_sha256=h.digest(capture()))))
+        self.patches = [
+            patch.object(h.runtime, 'Fence', Fence),
+            patch.object(h.provider, 'database_facts', return_value=facts()),
+            patch.object(h.provider, 'retention_facts', return_value=copy.deepcopy(self.p.data['retention_policy'])),
+            patch.object(h.runtime, 'validate_pair'),
+            patch.object(h.runtime, 'validate_capture'),
+            patch.object(h.time, 'sleep'),
+            patch.object(h, 'pins'),
+            patch.object(h.runtime, 'protected', return_value=b'core'),
+            patch.dict(h.runtime.PINS['db'], {h.runtime.CORE: hashlib.sha256(b'core').hexdigest()}),
+        ]
+        for value in self.patches:
+            value.start()
+            self.addCleanup(value.stop)
+
+    def _setup_gc_runtime(self, journal_bytes, *, gc_immediately=True, post_restore_inv='', active_during_run=False):
+        inv = self.inv
+        after_start = {'n': 0}
+        def fake_state(unit):
+            if unit == h.runtime.FULL:
+                if not self.r.started:
+                    return {'ActiveState': 'inactive', 'MainPID': '0', 'ControlPID': '0', 'Job': '', 'InvocationID': ''}
+                after_start['n'] += 1
+                if after_start['n'] == 1:
+                    return {'ActiveState': 'active', 'MainPID': '50', 'ControlPID': '0', 'Job': '',
+                            'InvocationID': inv, 'ExecMainStartTimestampMonotonic': str(10**18)}
+                if gc_immediately:
+                    if post_restore_inv and after_start['n'] >= 4:
+                        return {'ActiveState': 'inactive', 'MainPID': '0', 'ControlPID': '0', 'Job': '',
+                                'InvocationID': post_restore_inv, 'Result': 'success', 'ExecMainStatus': '0'}
+                    return {'ActiveState': 'inactive', 'MainPID': '0', 'ControlPID': '0', 'Job': '',
+                            'InvocationID': '', 'Result': 'success', 'ExecMainStatus': '0'}
+                return {'ActiveState': 'active' if active_during_run else 'inactive',
+                        'MainPID': '50' if active_during_run else '0', 'ControlPID': '0', 'Job': '',
+                        'InvocationID': inv, 'Result': 'success', 'ExecMainStatus': '0',
+                        'ExecMainStartTimestampMonotonic': str(10**18)}
+            return {'ActiveState': 'inactive', 'MainPID': '0', 'ControlPID': '0', 'Job': '',
+                    'InvocationID': '3' * 32, 'Result': 'success', 'ExecMainStatus': '0'}
+        def fake_run(args):
+            self.r.events.append(tuple(args))
+            if args[:3] == ['/usr/bin/systemctl', 'start', '--no-block']:
+                self.r.started = True
+                return b''
+            if args[:2] == ['/usr/bin/journalctl', '-u']:
+                self.assertEqual(args, ['/usr/bin/journalctl', '-u', h.runtime.FULL, '-b', '-n', '200', '--no-pager', '-o', 'json'])
+                return journal_bytes() if callable(journal_bytes) else journal_bytes
+            if '--operation' in args:
+                operation = args[args.index('--operation') + 1]
+                return json.dumps({'operation': operation, 'result': 'ok', 'backup_label': '20261026-001723F',
+                                   'started_at': '2026-10-26T00:00:00Z', 'completed_at': '2026-10-26T00:01:00Z'}).encode()
+            raise AssertionError(args)
+        self.r.state = fake_state
+        self.r.run = fake_run
+
+    def test_gc_unit_in_observe_and_post_restore_succeeds_with_normalized_boot_journal_proof(self):
+        journal = _gc_journal_rows(
+            self.boot_hex, self.inv,
+            older_inv='1' * 32, other_boot='a' * 32,
+        )
+        self._setup_gc_runtime(journal)
+        result = h.DBWorker(self.p, TX, self.r).run()
+        self.assertEqual('released', result['state'])
+        self.assertIsNone(self.r.fence)
+
+    def test_gc_unit_observe_backup_rejects_failure_unknown_forged_pid_or_newer_invocation(self):
+        cases = [
+            ('failed_job', _gc_journal_rows(self.boot_hex, self.inv, result='failed'), 'backup_failed'),
+            ('missing_finished', _gc_journal_rows(self.boot_hex, self.inv, include_finished=False), 'backup_outcome_unknown'),
+            ('forged_pid', _gc_journal_rows(self.boot_hex, self.inv, forged_pid='99999'), 'backup_outcome_unknown'),
+            ('wrong_boot', _gc_journal_rows('f' * 32, self.inv), 'backup_outcome_unknown'),
+            ('missing_invocation', _gc_journal_rows(self.boot_hex, 'a' * 32), 'backup_outcome_unknown'),
+            ('empty_journal', b'', 'backup_outcome_unknown'),
+            ('bad_json', b'{bad\n', 'backup_outcome_unknown'),
+            ('newer_invocation', _gc_journal_rows(self.boot_hex, self.inv, newer_inv='d' * 32), 'backup_invocation_changed'),
+        ]
+        for label, payload, expected_code in cases:
+            with self.subTest(label=label):
+                self.setUp()
+                self.store.write_once('backup-intent.json', {'boot_id': self.boot_uuid, 'prior_invocation': '', 'started_monotonic_us': 1})
+                self.store.write_once('backup-invocation.json', {'invocation': self.inv})
+                self.r.started = True
+                self._setup_gc_runtime(payload)
+                self.r.state = lambda unit: {'ActiveState': 'inactive', 'MainPID': '0', 'ControlPID': '0',
+                                             'Job': '', 'InvocationID': '', 'Result': 'success', 'ExecMainStatus': '0'}
+                with self.assertRaisesRegex(h.Refused, '^' + expected_code + '$'):
+                    h.DBWorker(self.p, TX, self.r).observe_backup(allow_failed=False)
+
+    def test_gc_unit_failed_backup_falls_back_to_aborted_cleanly(self):
+        self._setup_gc_runtime(_gc_journal_rows(self.boot_hex, self.inv, result='failed'))
+        result = h.DBWorker(self.p, TX, self.r).run()
+        self.assertEqual('aborted', result['state'])
+        self.assertIn('state_abort_ready', self.r.events)
+        self.assertIsNone(self.r.fence)
+
+    def test_gc_unit_abort_path_allows_missing_finished_but_refuses_newer_or_missing_invocation(self):
+        self.store.write_once('worker-started.json', {'boot_id': self.boot_uuid, 'worker_invocation': '1' * 32})
+        self.store.write_once('backup-intent.json', {'boot_id': self.boot_uuid, 'prior_invocation': '', 'started_monotonic_us': 1})
+        self.store.write_once('backup-invocation.json', {'invocation': self.inv})
+        self._setup_gc_runtime(_gc_journal_rows(self.boot_hex, self.inv, include_finished=False))
+        self.r.state = lambda unit: {'ActiveState': 'inactive', 'MainPID': '0', 'ControlPID': '0',
+                                     'Job': '', 'InvocationID': ''}
+        self.assertEqual('aborted', h.DBWorker(self.p, TX, self.r).run(recovery_only=True)['state'])
+
+        for bad_journal in (
+            _gc_journal_rows(self.boot_hex, self.inv, newer_inv='d' * 32),
+            _gc_journal_rows(self.boot_hex, 'a' * 32),
+        ):
+            self.setUp()
+            self.store.write_once('worker-started.json', {'boot_id': self.boot_uuid, 'worker_invocation': '1' * 32})
+            self.store.write_once('backup-intent.json', {'boot_id': self.boot_uuid, 'prior_invocation': '', 'started_monotonic_us': 1})
+            self.store.write_once('backup-invocation.json', {'invocation': self.inv})
+            self._setup_gc_runtime(bad_journal)
+            self.r.state = lambda unit: {'ActiveState': 'inactive', 'MainPID': '0', 'ControlPID': '0',
+                                         'Job': '', 'InvocationID': ''}
+            result = h.DBWorker(self.p, TX, self.r).run(recovery_only=True)
+            self.assertTrue(result['operator_required'])
+
+    def test_post_restore_refuses_newer_or_changed_invocation_after_gc(self):
+        # 1. Newer invocation appeared in journald before line 508.
+        calls = {'j': 0}
+        def journal_changes():
+            calls['j'] += 1
+            return _gc_journal_rows(self.boot_hex, self.inv,
+                                    newer_inv='d' * 32 if calls['j'] > 1 else None)
+        self._setup_gc_runtime(journal_changes)
+        result = h.DBWorker(self.p, TX, self.r).run()
+        self.assertTrue(result['operator_required'])
+
+        # 2. Non-empty changed InvocationID at line 508.
+        self.setUp()
+        self._setup_gc_runtime(_gc_journal_rows(self.boot_hex, self.inv), post_restore_inv='e' * 32)
+        result = h.DBWorker(self.p, TX, self.r).run()
+        self.assertNotEqual('released', result['state'])
+
+    def test_worker_status_permits_prior_policy_only_for_abort_states_with_intent(self):
+        prior = 'f' * 64
+        backend = object.__new__(h.DBBackend)
+        backend.transaction = TX
+        backend.store = self.store
+        backend.policy = copy.deepcopy(self.p)
+        backend.r = self.r
+        self.r.state = lambda unit: {'ActiveState': 'active', 'Job': ''}
+
+        # Without prior_policy_sha256 configured: refused.
+        self.store.replace('status.json', {'state': 'operator_required', 'transaction': TX,
+                                           'policy_sha256': prior, 'boot_id': self.boot_uuid, 'operator_required': True})
+        self.store.write_once('abort-dispatch-intent.json', {'transaction': TX})
+        with self.assertRaises(h.Refused):
+            backend.worker_status(TX)
+
+        # Configure prior_policy_sha256, verify allowed only with abort-dispatch-intent.json & allowed states.
+        backend.policy.data['prior_policy_sha256'] = prior
+        for state in ('operator_required', 'abort_ready', 'aborted'):
+            self.store.replace('status.json', {'state': state, 'transaction': TX,
+                                               'policy_sha256': prior, 'boot_id': self.boot_uuid})
+            self.assertEqual(state, backend.worker_status(TX)['state'])
+
+        for forbidden_state in ('starting', 'fenced', 'pair_ready', 'sealed', 'released', 'complete'):
+            self.store.replace('status.json', {'state': forbidden_state, 'transaction': TX,
+                                               'policy_sha256': prior, 'boot_id': self.boot_uuid})
+            with self.assertRaises(h.Refused):
+                backend.worker_status(TX)
+
+        # Missing abort-dispatch-intent.json refuses even for operator_required.
+        del self.store.values['abort-dispatch-intent.json']
+        self.store.replace('status.json', {'state': 'operator_required', 'transaction': TX,
+                                           'policy_sha256': prior, 'boot_id': self.boot_uuid})
+        with self.assertRaises(h.Refused):
+            backend.worker_status(TX)
+
+    def test_gc_unit_exact_ubuntu_2404_schema_and_transient_journal_flush_retry(self):
+        exact_rows = [
+            {'INVOCATION_ID': self.inv, 'MESSAGE': 'Starting careertrellis-pgbackrest-full.service - Full encrypted PostgreSQL backup to R2...',
+             'MESSAGE_ID': '7d4958e842da4a758f6c1cdc7b36dcc5', 'SYSLOG_IDENTIFIER': 'systemd',
+             'UNIT': h.runtime.FULL, '_BOOT_ID': self.boot_hex, '_PID': '1', '__REALTIME_TIMESTAMP': '1795274367451669'},
+            {'MESSAGE': '{"manifest_name":"20261121T152514Z-full_backup-71bb5e5e8b4d264b.sha256","operation":"full_backup","result":"ok","schema":"careertrellis.backup-health-publish-result/v1"}',
+             'SYSLOG_IDENTIFIER': 'careertrellis-run-pgbackrest-backup', '_BOOT_ID': self.boot_hex,
+             '_PID': '791059', '_SYSTEMD_INVOCATION_ID': self.inv, '__REALTIME_TIMESTAMP': '1795274714909558'},
+            {'MESSAGE': '{"operation":"backup_health_alert","result":"already_clear","surface":"database","unit":"careertrellis-pgbackrest-full.service"}',
+             'SYSLOG_IDENTIFIER': 'careertrellis-backup-health', '_BOOT_ID': self.boot_hex,
+             '_PID': '791061', '_SYSTEMD_INVOCATION_ID': self.inv, '__REALTIME_TIMESTAMP': '1795274715041470'},
+            {'INVOCATION_ID': self.inv, 'MESSAGE': 'careertrellis-pgbackrest-full.service: Deactivated successfully.',
+             'MESSAGE_ID': '7ad2d189f7e94e70a38c781354912448', 'SYSLOG_IDENTIFIER': 'systemd',
+             'UNIT': h.runtime.FULL, '_BOOT_ID': self.boot_hex, '_PID': '1', '__REALTIME_TIMESTAMP': '1795274715044077'},
+            {'INVOCATION_ID': self.inv, 'JOB_RESULT': 'done',
+             'MESSAGE': 'Finished careertrellis-pgbackrest-full.service - Full encrypted PostgreSQL backup to R2.',
+             'MESSAGE_ID': '39f53479d3a045ac8e11786248231fbf', 'SYSLOG_IDENTIFIER': 'systemd',
+             'UNIT': h.runtime.FULL, '_BOOT_ID': self.boot_hex, '_PID': '1', '__REALTIME_TIMESTAMP': '1795274715045103'},
+            {'INVOCATION_ID': self.inv,
+             'MESSAGE': 'careertrellis-pgbackrest-full.service: Consumed 11.560s CPU time, 96.6M memory peak, 0B memory swap peak.',
+             'MESSAGE_ID': 'ae8f7b866b0347b9af31fe1c80b127c0', 'SYSLOG_IDENTIFIER': 'systemd',
+             'UNIT': h.runtime.FULL, '_BOOT_ID': self.boot_hex, '_PID': '1', '__REALTIME_TIMESTAMP': '1795274715045330'},
+        ]
+        calls = {'n': 0}
+        def delayed_journal():
+            calls['n'] += 1
+            if calls['n'] == 1:
+                return _journal_lines(exact_rows[:3])
+            return _journal_lines(exact_rows)
+        self._setup_gc_runtime(delayed_journal)
+        result = h.DBWorker(self.p, TX, self.r).run()
+        self.assertEqual('released', result['state'])
+        self.assertGreaterEqual(calls['n'], 2)
+
+    def test_prior_policy_db_worker_recovery_aborts_gc_unit_cleanly(self):
+        prior = 'f' * 64
+        self.p.data['prior_policy_sha256'] = prior
+        begin = request('begin', IDENTITY)
+        begin['policy_sha256'] = prior
+        self.store.values['begin-intent.json'] = begin
+        self.store.write_once('worker-started.json', {'boot_id': self.boot_uuid, 'worker_invocation': '1' * 32})
+        self.store.write_once('backup-intent.json', {'boot_id': self.boot_uuid, 'prior_invocation': '', 'started_monotonic_us': 1})
+        self.store.write_once('backup-invocation.json', {'invocation': self.inv})
+        self._setup_gc_runtime(_gc_journal_rows(self.boot_hex, self.inv))
+        self.r.state = lambda unit: {'ActiveState': 'inactive', 'MainPID': '0', 'ControlPID': '0',
+                                     'Job': '', 'InvocationID': ''}
+        result = h.DBWorker(self.p, TX, self.r).run(recovery_only=True)
+        self.assertEqual('aborted', result['state'])
+        self.assertEqual(HASH, result['policy_sha256'])
+        self.assertIsNone(self.r.fence)
 
 
 if __name__ == '__main__': unittest.main()
